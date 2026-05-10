@@ -10,12 +10,12 @@
 
 Most agent stacks are infrastructure: an inference server, an agent runtime, a vector store, glue code — wired together over HTTP and shipped as a Docker compose. lloyal HDK collapses that into a single Node process you can ship: embedded in a desktop app, bundled in a CLI, deployed to a serverless function, anywhere a Node runtime runs.
 
-The unit you build isn't an agent — it's a *harness*: an orchestrated system of agents that share live attention state. You treat it as code, not as infrastructure.
+The unit you build isn't an agent — it's a _harness_: an orchestrated system of agents that share live attention state. You treat it as code, not as infrastructure.
 
 <p>
-  <img src="assets/demo.gif" alt="Deep Research: 3 agents analyzing DOJ v Apple complaint — plan, research with tool calls, verify, synthesize" width="100%">
+  <img src="assets/demo.gif" alt="Deep Research: 5 agents researching concurrently inside a shared 32K-token context window, plan → research with tool calls → synthesize" width="100%">
   <br>
-  <em>Qwen3 4B + 0.6B reranker · 3 agents · 14 tool calls · 98s · fully offline on M2 MacBook Pro</em>
+  <em>Qwen3.5 4B + Qwen3 0.6B reranker · 5 parallel agents · shared 32K context · fully offline on M2 MacBook Pro 16 GB</em>
 </p>
 
 ## Three pillars
@@ -24,15 +24,17 @@ The unit you build isn't an agent — it's a *harness*: an orchestrated system o
 - **Continuous Context.** Agents share KV state, not strings. Forks are O(1) metadata; sub-agents inherit the parent's full attention state. Breaks the "runs locally but is a toy" barrier.
 - **Retrieval Interleaved Generation.** Retrieval inside the generation loop. Cross-encoder reranking, entailment scoring, explore/exploit gating, default delegation guards.
 
-Full positioning, mechanics, and receipts in the [docs site](https://docs.lloyal.ai).
+Full positioning, mechanics, and receipts in the [docs site](https://hdk.lloyal.ai).
 
 ## Install
 
 ```bash
-npm i @lloyal-labs/lloyal-agents @lloyal-labs/lloyal.node
+npm i @lloyal-labs/lloyal-agents @lloyal-labs/lloyal.node @lloyal-labs/rig
 ```
 
-`lloyal-agents` is the runtime. [`lloyal.node`](https://github.com/lloyal-ai/lloyal.node) is the native binding — prebuilt for macOS, Linux, and Windows with CPU and GPU support. Both required.
+- `lloyal-agents` — the agent runtime (tick loop, orchestrators, policy).
+- [`lloyal.node`](https://github.com/lloyal-ai/lloyal.node) — native binding for [liblloyal](https://github.com/lloyal-ai/liblloyal); prebuilt for macOS, Linux, and Windows with CPU and GPU support.
+- `rig` — Retrieval-Interleaved Generation building blocks: pre-built `WebSource` / `CorpusSource`, the `reportTool`, `DelegateTool`. Optional if you're only writing custom tools.
 
 ## Quickstart
 
@@ -70,6 +72,17 @@ main(function* () {
   });
 
   // Multiple agents on shared KV
+  const tasks = [
+    {
+      content: "What datasets does the corpus index?",
+      systemPrompt: WORKER_PROMPT,
+    },
+    {
+      content: "What's the most-cited reference inside?",
+      systemPrompt: WORKER_PROMPT,
+    },
+    { content: "Summarize the main thesis.", systemPrompt: WORKER_PROMPT },
+  ];
   const toolkit = createToolkit([...corpusTools, reportTool]);
   yield* withSharedRoot(
     { systemPrompt: skillCatalog, toolsJson: toolkit.toolsJson },
@@ -85,21 +98,31 @@ main(function* () {
 });
 ```
 
-Swap the orchestrator (`parallel` / `chain` / `fanout` / `dag`) to reshape the harness without changing the call. Full walkthrough: [Quick Start](https://docs.lloyal.ai/learn/quick-start).
+Swap the orchestrator (`parallel` / `chain` / `fanout` / `dag`) to reshape the harness without changing the call. Full walkthrough: [Quick Start](https://hdk.lloyal.ai/learn/quick-start).
 
 ## Public API surface
 
 ```typescript
 import {
   initAgents,
-  useAgent, agent,
-  agentPool, useAgentPool,
+  useAgent,
+  agent,
+  agentPool,
+  useAgentPool,
   diverge,
-  parallel, chain, fanout, dag, reduce,
+  parallel,
+  chain,
+  fanout,
+  dag,
+  reduce,
   withSharedRoot,
   createToolkit,
-  Tool, Source, DefaultAgentPolicy,
-  Ctx, Store, Events,
+  Tool,
+  Source,
+  DefaultAgentPolicy,
+  Ctx,
+  Store,
+  Events,
 } from "@lloyal-labs/lloyal-agents";
 ```
 
@@ -117,22 +140,22 @@ When an agent needs to go deeper, `DelegateTool` spawns sub-agents that fork fro
 
 ## Packages
 
-| Package | Purpose |
-|---|---|
-| [`@lloyal-labs/lloyal-agents`](packages/agents) | Continuous Context agent runtime — five-phase tick loop, tools, orchestrators |
-| [`@lloyal-labs/sdk`](packages/sdk) | Inference primitives — `Branch`, `BranchStore`, `Session`, `Rerank` |
-| [`@lloyal-labs/rig`](packages/rig) | Retrieval-Interleaved Generation — sources, reranker, delegation |
-| [`@lloyal-labs/lloyal.node`](https://github.com/lloyal-ai/lloyal.node) | Native Node binding for liblloyal (separate repo) |
+| Package                                                                | Purpose                                                                       |
+| ---------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| [`@lloyal-labs/lloyal-agents`](packages/agents)                        | Continuous Context agent runtime — five-phase tick loop, tools, orchestrators |
+| [`@lloyal-labs/sdk`](packages/sdk)                                     | Inference primitives — `Branch`, `BranchStore`, `Session`, `Rerank`           |
+| [`@lloyal-labs/rig`](packages/rig)                                     | Retrieval-Interleaved Generation — sources, reranker, delegation              |
+| [`@lloyal-labs/lloyal.node`](https://github.com/lloyal-ai/lloyal.node) | Native Node binding for liblloyal (separate repo)                             |
 
 Underneath: **[liblloyal](https://github.com/lloyal-ai/liblloyal)** — the C++ core. Goes wherever C++ runs (desktop OSes, mobile, browser via WASM, game engines, edge).
 
 ## Examples
 
-| Example | What it shows |
-|---|---|
-| [`examples/react-agent`](examples/react-agent) | Single agent with corpus tools — `useAgent` baseline |
-| [`examples/reflection`](examples/reflection) | Research → draft → critique → revise via manual branch lifecycle and `diverge` |
-| [`examples/compare`](examples/compare) | DAG primer: research two subjects in parallel, compare across axes, synthesize. Skill-catalog convention applied. |
+| Example                                        | What it shows                                                                                                     |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| [`examples/react-agent`](examples/react-agent) | Single agent with corpus tools — `useAgent` baseline                                                              |
+| [`examples/reflection`](examples/reflection)   | Research → draft → critique → revise via manual branch lifecycle and `diverge`                                    |
+| [`examples/compare`](examples/compare)         | DAG primer: research two subjects in parallel, compare across axes, synthesize. Skill-catalog convention applied. |
 
 ## Documentation
 
