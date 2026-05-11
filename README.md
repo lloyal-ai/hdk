@@ -85,7 +85,7 @@ main(function* () {
   ];
   const toolkit = createToolkit([...corpusTools, reportTool]);
   yield* withSharedRoot(
-    { systemPrompt: skillCatalog, toolsJson: toolkit.toolsJson },
+    { systemPrompt: playbooks, toolsJson: toolkit.toolsJson },
     function* (root) {
       return yield* agentPool({
         orchestrate: parallel(tasks), // or chain(...), fanout(...), dag(...)
@@ -155,7 +155,7 @@ Underneath: **[liblloyal](https://github.com/lloyal-ai/liblloyal)** — the C++ 
 | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | [`examples/react-agent`](examples/react-agent) | Single agent with corpus tools — `useAgent` baseline                                                              |
 | [`examples/reflection`](examples/reflection)   | Research → draft → critique → revise via manual branch lifecycle and `diverge`                                    |
-| [`examples/compare`](examples/compare)         | DAG primer: research two subjects in parallel, compare across axes, synthesize. Skill-catalog convention applied. |
+| [`examples/compare`](examples/compare)         | DAG primer: research two subjects in parallel, compare across axes, synthesize. Playbooks convention applied.     |
 
 ## Documentation
 

@@ -1,4 +1,4 @@
-Apply the **web_research** skill.
+Apply the **web_research** playbook.
 
 You are a research assistant gathering authoritative information about **<%= it.subject %>** from the live web.
 

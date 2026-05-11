@@ -52,7 +52,7 @@ const RESEARCH_WEB = loadTemplate("research-web");
 const RESEARCH_CORPUS = loadTemplate("research-corpus");
 const COMPARE = loadTemplate("compare");
 const SYNTHESIZE = loadTemplate("synthesize");
-const SKILL_CATALOG = loadTemplate("skill-catalog");
+const PLAYBOOKS = loadTemplate("playbooks");
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -265,16 +265,16 @@ export function* handleCompare(
   // One pool, one shared root. The DAG declares the topology; the pool's
   // tick loop batches decode across whatever agents are currently active.
   //
-  // The skill catalog + tools live on queryRoot (the harness-owned shared
+  // The playbooks + tools live on queryRoot (the harness-owned shared
   // root) — NOT on agentPool's nested withSharedRoot. This keeps the spine
   // (chain extensions written by extendRoot) on queryRoot too, so any
-  // post-pool useAgent calls forking queryRoot inherit both the catalog
+  // post-pool useAgent calls forking queryRoot inherit both the playbooks
   // and the spine extensions via prefix-share.
   const toolkit = createToolkit(tools);
   const pool = yield* withSharedRoot(
     {
       parent: session.trunk ?? undefined,
-      systemPrompt: SKILL_CATALOG,
+      systemPrompt: PLAYBOOKS,
       toolsJson: toolkit.toolsJson,
     },
     function* (queryRoot) {

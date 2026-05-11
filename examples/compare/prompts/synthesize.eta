@@ -1,4 +1,4 @@
-Apply the **synth** skill.
+Apply the **synth** playbook.
 
 You are writing a final compare-and-contrast report on **<%= it.x %>** vs **<%= it.y %>**.
 

@@ -67,7 +67,7 @@ Everything before the frontier is shared context. Everything after is independen
 
 ```typescript
 yield* withSharedRoot(
-  { systemPrompt: SKILL_CATALOG, toolsJson: toolkit.toolsJson },
+  { systemPrompt: PLAYBOOKS, toolsJson: toolkit.toolsJson },
   function* (root) {
     // root is a prefilled branch — system prompt + tool schemas already in KV.
     // Every agent forked from root shares that prefix.
@@ -217,7 +217,7 @@ class SearchTool extends Tool<{ query: string }> {
 }
 ```
 
-`createToolkit(tools)` aggregates tools into a `{ toolMap, toolsJson }` pair — `toolMap` for runtime dispatch, `toolsJson` for prompt formatting. With `withSharedRoot({ systemPrompt, toolsJson })`, the schemas are decoded once at the root and inherited by every fork — see the [skill catalog](https://docs.lloyal.ai/reference/skill-catalog) convention for mixed-role pools.
+`createToolkit(tools)` aggregates tools into a `{ toolMap, toolsJson }` pair — `toolMap` for runtime dispatch, `toolsJson` for prompt formatting. With `withSharedRoot({ systemPrompt, toolsJson })`, the schemas are decoded once at the root and inherited by every fork — see the [playbooks](https://hdk.lloyal.ai/reference/playbooks) convention for mixed-role pools.
 
 ## Events
 
