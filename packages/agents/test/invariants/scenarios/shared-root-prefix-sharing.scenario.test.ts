@@ -108,6 +108,16 @@ describe('scenario: shared root [system + tools] prefix-sharing', () => {
     // Three spawns + at least one root-related setup call without tools is fine;
     // the load-bearing assertion is that NO per-spawn call carried tools.
     expect(withoutTools.length).toBeGreaterThanOrEqual(3);
+
+    // Role-string assertions — these lock the literal role values emitted by
+    // shared-root.ts so emission and any consumer (replay.ts filter, doc-site
+    // examples, downstream replay tooling) stay in lockstep. A typo in either
+    // emission or consumer would compile cleanly but break production replay;
+    // these tests catch that.
+    const rootCreate = trace.ofType('branch:create').find((e) => e.role === 'sharedRoot');
+    expect(rootCreate, 'expected branch:create with role=sharedRoot').toBeDefined();
+    const headerPrefill = trace.ofType('branch:prefill').find((e) => e.role === 'sharedPrefix');
+    expect(headerPrefill, 'expected branch:prefill with role=sharedPrefix').toBeDefined();
   });
 
   it('non-shared mode (no systemPrompt option) preserves per-spawn tools — regression guard', async () => {
