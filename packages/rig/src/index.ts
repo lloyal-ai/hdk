@@ -14,12 +14,13 @@
 // Tools (pure TS + Effection + linkedom — platform-agnostic)
 export {
   createTools, reportTool, ReportTool,
-  WebSearchTool, TavilyProvider, FetchPageTool,
+  WebSearchTool, TavilyProvider, createKeylessSearchProvider, FetchPageTool,
   DelegateTool,
   PlanTool, taskToContent,
 } from './tools';
 export type {
   DelegateToolOpts,
+  KeylessSearchOptions,
   PlanToolOpts,
   PlanResult, PlanIntent, ResearchTask,
   SearchProvider, SearchResult,

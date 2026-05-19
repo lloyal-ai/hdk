@@ -8,6 +8,8 @@ import { GrepTool } from './grep';
 import { ReportTool } from './report';
 
 export { WebSearchTool, TavilyProvider } from './web-search';
+export { createKeylessSearchProvider } from './keyless-search';
+export type { KeylessSearchOptions } from './keyless-search';
 export { FetchPageTool } from './fetch-page';
 export { ReportTool } from './report';
 export { DelegateTool } from './delegate';
