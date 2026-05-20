@@ -31,9 +31,10 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -b"
+    "build": "tsc -b",
+    "prepublishOnly": "npm run build"
   },
   "files": [
-    "dist/"
+    "dist/**/*.js"
   ]
 }
