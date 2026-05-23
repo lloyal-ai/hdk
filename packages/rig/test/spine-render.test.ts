@@ -18,7 +18,7 @@
  * - **P-boundary-marker** — `renderAgentPreamble` output starts with
  *   `BOUNDARY_MARKER(app.manifest.contract.name)` bytes verbatim.
  * - **P-per-spawn-isolation** — preamble for app A contains ONLY app A's
- *   `agent.eta`/`examples.eta` content; another app's templates never appear.
+ *   `skill.eta`/`examples.eta` content; another app's templates never appear.
  *
  * @category Testing
  */
@@ -181,7 +181,7 @@ describe('renderAgentPreamble', () => {
     expect(out).toContain('agents=2 turns=5');
   });
 
-  it('supports a function-form agent template (AgentTemplateFn)', () => {
+  it('supports a function-form agent template (SkillTemplateFn)', () => {
     const app: App = {
       ...makeApp({ name: 'fn', contractName: 'fn_x' }),
       agent: (params) => `fnAgent[count=${params.agentCount}]`,

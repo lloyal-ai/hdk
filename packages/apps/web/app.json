@@ -1,0 +1,16 @@
+{
+  "name": "web",
+  "version": "1.0.0",
+  "modelContractVersion": "3.0",
+  "contract": {
+    "name": "web_research",
+    "useWhen": "gathering evidence from the open web — verifying current claims, retrieving primary sources from URLs, surveying official documentation and authoritative discussion.",
+    "tools": ["web_search", "fetch_page"]
+  },
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "tavilyKey": { "type": "string", "x-secret": true }
+    }
+  }
+}

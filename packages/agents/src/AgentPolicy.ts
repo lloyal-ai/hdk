@@ -79,8 +79,9 @@ export const defaultToolGuards: ToolGuard[] = [
     name: 'scope_reject',
     tools: '*',
     reject: (_args, _history, agent, toolName) => {
-      if (!agent.allowedTools) return false;
-      return !agent.allowedTools.includes(toolName);
+      const allowed = agent.allowedTools; // resolved live at dispatch (RFC §5.3c)
+      if (!allowed) return false;
+      return !allowed.includes(toolName);
     },
     message:
       'Tool not in scope for this spawn. Use only the tools listed for ' +

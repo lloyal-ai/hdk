@@ -30,7 +30,7 @@
  * `[a-z][a-z0-9_-]{1,63}` at `defineApp` time (§3.2 M3) so it cannot break
  * the markdown bold or inject newlines.
  *
- * Framework-prepended by `renderAgentPreamble`. App `agent.eta` source
+ * Framework-prepended by `renderAgentPreamble`. App `skill.eta` source
  * MUST NOT contain the literal `Apply the **` substring — `defineApp`
  * rejects sources that do.
  */

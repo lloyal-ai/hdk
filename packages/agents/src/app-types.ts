@@ -8,7 +8,7 @@
  *    {@link AppHints}). Authored in `app.json` and imported into the
  *    factory; describes what the app *is* without any runtime values.
  *
- * 2. **Runtime App object** ({@link App}, {@link AgentTemplateFn},
+ * 2. **Runtime App object** ({@link App}, {@link SkillTemplateFn},
  *    {@link ExamplesTemplateFn}). Constructed by `defineApp(...)` inside
  *    the app's factory; bundles the manifest with the live `Source`,
  *    `Tool[]`, and template renderers.
@@ -109,7 +109,7 @@ export interface AppManifest {
 // ── Per-spawn render context ─────────────────────────────────────
 
 /**
- * Variables the framework provides to `agent.eta` template renderers
+ * Variables the framework provides to `skill.eta` template renderers
  * at per-spawn render time. Apps reference these as `it.agentCount`,
  * `it.maxTurns`, etc. inside their Eta templates.
  *
@@ -144,7 +144,7 @@ export interface ExamplesRenderCtx extends AgentRenderCtx {
 }
 
 /**
- * Function alternative to a string `agent.eta` template — for apps whose
+ * Function alternative to a string `skill.eta` template — for apps whose
  * per-spawn prompt needs runtime parameterization beyond what Eta covers.
  *
  * The returned string is the per-spawn body; the framework prepends
@@ -154,7 +154,7 @@ export interface ExamplesRenderCtx extends AgentRenderCtx {
  * `defineApp` cannot statically validate function outputs — the first-render
  * check on canonical apps catches it, per RFC §4.7).
  */
-export type AgentTemplateFn = (params: AgentRenderCtx) => string;
+export type SkillTemplateFn = (params: AgentRenderCtx) => string;
 
 /**
  * Function alternative to a string `examples.eta` template.
@@ -226,11 +226,11 @@ export interface App {
    */
   readonly tools: readonly Tool[];
   /**
-   * The per-spawn `agent.eta` template (string) or function. The
-   * framework prepends the boundary marker; `agent.eta` MUST NOT
+   * The per-spawn `skill.eta` template (string) or function. The
+   * framework prepends the boundary marker; `skill.eta` MUST NOT
    * contain the literal `Apply the **` substring.
    */
-  readonly agent: string | AgentTemplateFn;
+  readonly agent: string | SkillTemplateFn;
   /**
    * Optional discipline content (GOOD/BAD examples, anti-patterns)
    * rendered into the per-spawn preamble of agents assigned to this

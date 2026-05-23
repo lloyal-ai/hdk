@@ -1,0 +1,17 @@
+{
+  "name": "corpus",
+  "version": "1.0.0",
+  "modelContractVersion": "3.0",
+  "contract": {
+    "name": "corpus_research",
+    "useWhen": "investigating a local document corpus — finding occurrences of terms, reading specific files at line offsets, semantic retrieval over indexed corpus content.",
+    "tools": ["grep", "read_file", "search"]
+  },
+  "configSchema": {
+    "type": "object",
+    "required": ["corpusPath"],
+    "properties": {
+      "corpusPath": { "type": "string" }
+    }
+  }
+}

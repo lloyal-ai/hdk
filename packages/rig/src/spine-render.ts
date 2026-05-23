@@ -31,7 +31,7 @@
  *
  * The *only* place the framework emits the boundary marker (RFC §1.1).
  * Called once per spawn with the assigned app's templates only — no
- * other app's `agent.eta` / `examples.eta` enters this rendering, which
+ * other app's `skill.eta` / `examples.eta` enters this rendering, which
  * is what makes per-spawn isolation a framework invariant rather than
  * a convention (RFC §3.2 M1).
  *
@@ -43,7 +43,7 @@ import { renderTemplate } from '@lloyal-labs/lloyal-agents';
 import type {
   App,
   AgentRenderCtx,
-  AgentTemplateFn,
+  SkillTemplateFn,
   ExamplesRenderCtx,
   ExamplesTemplateFn,
 } from '@lloyal-labs/lloyal-agents';
@@ -143,7 +143,7 @@ export function renderAgentPreamble(app: App, params: AgentRenderCtx): string {
 }
 
 function renderAgentBody(
-  agent: string | AgentTemplateFn,
+  agent: string | SkillTemplateFn,
   params: AgentRenderCtx,
 ): string {
   return typeof agent === 'function'

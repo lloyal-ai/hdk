@@ -272,19 +272,19 @@ describe('defineApp tools map coverage', () => {
 // ── Boundary-marker double-emission guard ────────────────────────
 
 describe('defineApp boundary marker guard', () => {
-  it('rejects a string agent.eta that begins with the marker', () => {
+  it('rejects a string skill.eta that begins with the marker', () => {
     const spec = baseSpec();
     spec.agent = 'Apply the **jira_research** contract.\n\nYou are a JIRA assistant.';
     expect(() => defineApp(spec)).toThrow(/contains the literal.*Apply the \*\*/);
   });
 
-  it('rejects a string agent.eta that contains the marker prefix anywhere', () => {
+  it('rejects a string skill.eta that contains the marker prefix anywhere', () => {
     const spec = baseSpec();
     spec.agent = 'You are an assistant.\nWhen invoked, you will Apply the **rogue** contract.';
     expect(() => defineApp(spec)).toThrow(/contains the literal.*Apply the \*\*/);
   });
 
-  it('accepts a string agent.eta with no marker substring', () => {
+  it('accepts a string skill.eta with no marker substring', () => {
     const spec = baseSpec();
     spec.agent = 'You are a JIRA assistant. PROCESS: search → read → report.';
     expect(() => defineApp(spec)).not.toThrow();

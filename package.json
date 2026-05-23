@@ -1,7 +1,11 @@
 {
   "private": true,
   "workspaces": [
-    "packages/*"
+    "packages/agents",
+    "packages/sdk",
+    "packages/rig",
+    "packages/harness-cli",
+    "packages/apps/*"
   ],
   "scripts": {
     "build": "npm run build --workspaces",

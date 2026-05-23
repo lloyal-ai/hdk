@@ -51,7 +51,7 @@ const BASE_CONFIG: PolicyConfig = {
 };
 
 function makeAgent(opts: {
-  allowedTools?: readonly string[] | null;
+  allowedTools?: readonly string[] | null | (() => readonly string[] | null);
   assignedApp?: string | null;
   toolHistory?: Array<{ name: string; args: string }>;
 }) {
@@ -196,6 +196,37 @@ describe('scope-guard (default ToolGuard)', () => {
       BASE_CONFIG,
     );
     expect(action.type).toBe('return');
+  });
+});
+
+describe('scope-guard dispatch-time resolution (RFC §5.3c)', () => {
+  it('re-resolves allowed-tools on every call — a mid-session change is reflected live', () => {
+    const policy = new DefaultAgentPolicy();
+    // Registry-backed resolver: the app's contract tools, looked up live.
+    // Flipping `live` to [] models a mid-session `disable` (app vanishes from
+    // the registry → resolver returns [] → all non-terminal calls reject).
+    let live: readonly string[] = ['web_search', 'fetch_page'];
+    const agent = makeAgent({
+      allowedTools: () => live,
+      assignedApp: 'web',
+    });
+
+    const first = policy.onProduced(
+      agent,
+      { content: null, toolCalls: [tc('web_search', { query: 'a' })] },
+      pressure(),
+      BASE_CONFIG,
+    );
+    expect(first.type).toBe('tool_call');
+
+    live = []; // app disabled mid-agent-life
+    const second = policy.onProduced(
+      agent,
+      { content: null, toolCalls: [tc('web_search', { query: 'b' })] },
+      pressure(),
+      BASE_CONFIG,
+    );
+    expect(second).toMatchObject({ type: 'nudge', guard: 'scope_reject' });
   });
 });
 

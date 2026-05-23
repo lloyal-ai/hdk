@@ -70,7 +70,7 @@ export type {
   AppState,
   AgentRenderCtx,
   ExamplesRenderCtx,
-  AgentTemplateFn,
+  SkillTemplateFn,
   ExamplesTemplateFn,
   ConfigFlow,
 } from './app-types';

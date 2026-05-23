@@ -397,10 +397,16 @@ function* setupAgent(
   //                           the M2 enforcement.
   // When both are unset the spawn is "unscoped" (legacy harnesses);
   // the scope-guard becomes a no-op (`agent.allowedTools === null`).
-  let allowedTools: readonly string[] | null = null;
+  // Resolved LIVE at dispatch time (RFC §5.3c): the scope-guard reads
+  // `agent.allowedTools` on every tool call, so App-assigned spawns re-read
+  // `manifest.contract.tools` from the registry each time — a mid-session
+  // `disable` is reflected immediately (app gone → `[]` → all non-terminal
+  // calls reject; the terminal tool bypasses the scope-guard).
+  let resolveAllowedTools: () => readonly string[] | null = () => null;
   let assignedApp: string | null = null;
   if (task.allowedTools !== undefined) {
-    allowedTools = task.allowedTools;
+    const explicit = task.allowedTools; // harness-internal spawn — static list
+    resolveAllowedTools = () => explicit;
   } else if (task.assignedApp !== undefined) {
     assignedApp = task.assignedApp;
     let registry: AppRegistry | null = null;
@@ -411,15 +417,17 @@ function* setupAgent(
         `spawning App-assigned agents.`,
       );
     }
-    const app = registry.byName(task.assignedApp);
-    if (!app) {
+    // Fail-closed at spawn if the app isn't enabled (don't silently drop M2).
+    if (!registry.byName(task.assignedApp)) {
       throw new Error(
         `setupAgent: spawn declared assignedApp="${task.assignedApp}" but no app with that ` +
         `name is enabled. Register it via createAppRegistry({apps}) or registry.enable(...) ` +
         `before spawning, and verify the name matches manifest.name.`,
       );
     }
-    allowedTools = app.manifest.contract.tools;
+    const reg = registry;
+    const appName = task.assignedApp;
+    resolveAllowedTools = () => reg.byName(appName)?.manifest.contract.tools ?? [];
   }
 
   // In shared mode the new agent's parser/grammar/format/triggers come
@@ -455,7 +463,7 @@ function* setupAgent(
     parent: callingAgent,
     task: task.content,
     fmt: fmtConfig,
-    allowedTools,
+    allowedTools: resolveAllowedTools,
     assignedApp,
   });
 

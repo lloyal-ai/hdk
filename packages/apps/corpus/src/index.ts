@@ -1,0 +1,64 @@
+/**
+ * `@lloyal-labs/corpus-app` — HDK reference app: local-corpus research.
+ *
+ * Zero-arg factory (RFC §4.5): requires a reranker (its `search` tool scores
+ * chunks), loads + tokenizes the corpus at construction, and returns a
+ * validated {@link App} whose {@link CorpusSource} is already-bound.
+ *
+ * @packageDocumentation
+ */
+
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { call } from "effection";
+import type { Operation } from "effection";
+import { AppConfigStoreCtx, RerankerCtx } from "@lloyal-labs/lloyal-agents";
+import type { App, AppManifest, Tool } from "@lloyal-labs/lloyal-agents";
+import { defineApp } from "@lloyal-labs/rig";
+import type { Reranker } from "@lloyal-labs/rig";
+import { loadResources, chunkResources } from "@lloyal-labs/rig/node";
+import { CorpusSource } from "./source";
+
+export { CorpusSource } from "./source";
+export type { CorpusSourceOpts, CorpusPromptData } from "./source";
+
+/**
+ * Construct the corpus research app. Reads `corpusPath` from the app's stored
+ * config, loads + chunks the corpus, tokenizes the chunks through the shared
+ * reranker (from `RerankerCtx`), and wires the three corpus tools.
+ */
+export function* createCorpusApp(): Operation<App> {
+  const dir = join(__dirname, "..");
+  const manifest = JSON.parse(readFileSync(join(dir, "app.json"), "utf8")) as AppManifest;
+  const agent = readFileSync(join(dir, "skill.eta"), "utf8");
+
+  let reranker: Reranker;
+  try {
+    reranker = yield* RerankerCtx.expect();
+  } catch {
+    throw new Error(
+      "createCorpusApp: the corpus app requires a reranker (its `search` tool scores " +
+        "chunks). Set RerankerCtx via createReranker(...) before enabling.",
+    );
+  }
+
+  const cfgStore = yield* AppConfigStoreCtx.expect();
+  const cfg = (yield* cfgStore.get("corpus")) ?? {};
+  const corpusPath = typeof cfg.corpusPath === "string" ? cfg.corpusPath : undefined;
+  if (!corpusPath) {
+    throw new Error(
+      "createCorpusApp: missing config `corpusPath`. Set it via " +
+        "configStore.set('corpus', { corpusPath }) before enabling.",
+    );
+  }
+
+  const resources = loadResources(corpusPath);
+  const chunks = chunkResources(resources);
+  yield* call(() => reranker.tokenizeChunks(chunks));
+
+  const source = new CorpusSource(resources, chunks, reranker);
+  const tools: Record<string, Tool> = {};
+  for (const t of source.tools) tools[t.name] = t;
+
+  return defineApp({ manifest, source, tools, agent });
+}

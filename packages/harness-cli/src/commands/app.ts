@@ -15,7 +15,7 @@ const USAGE = [
   '  --dir <path>  Parent directory to create the app in (default: cwd)',
   '  -h, --help    Show this help',
   '',
-  'Emits the minimum authoring surface (RFC §4.1): app.json, agent.eta,',
+  'Emits the minimum authoring surface (RFC §4.1): app.json, skill.eta,',
   'src/{index,source,tools/*}.ts, package.json, tsconfig.json, README.md.',
 ].join('\n');
 

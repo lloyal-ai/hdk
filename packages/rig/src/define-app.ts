@@ -18,7 +18,7 @@
  *   implementation, no extras.
  * - **Boundary-marker double-emission.** `agent` (when string-typed) MUST
  *   NOT contain the literal `Apply the **` substring — the framework
- *   prepends the marker via `BOUNDARY_MARKER`, so an `agent.eta` that
+ *   prepends the marker via `BOUNDARY_MARKER`, so an `skill.eta` that
  *   includes the line would emit it twice (RFC §1.1).
  *
  * Validation errors throw synchronously with a clear message naming the
@@ -36,7 +36,7 @@ import type {
   Source,
   App,
   AppManifest,
-  AgentTemplateFn,
+  SkillTemplateFn,
   ExamplesTemplateFn,
   ConfigFlow,
   AppHints,
@@ -70,7 +70,7 @@ export interface DefineAppSpec {
    * MUST NOT contain the literal `Apply the **` substring when given as
    * a string — the framework prepends the boundary marker.
    */
-  agent: string | AgentTemplateFn;
+  agent: string | SkillTemplateFn;
   /**
    * Optional discipline content rendered into the per-spawn preamble of
    * agents assigned to this app. Per RFC §4.4 — never enters the shared
@@ -234,7 +234,7 @@ function assertToolMapCoverage(
   }
 }
 
-function assertAgentTemplate(agent: string | AgentTemplateFn): void {
+function assertAgentTemplate(agent: string | SkillTemplateFn): void {
   if (typeof agent === 'function') {
     // Function-typed templates can't be statically validated here. The
     // framework's first-render check (RFC §4.7) catches double-emission
@@ -242,14 +242,14 @@ function assertAgentTemplate(agent: string | AgentTemplateFn): void {
     return;
   }
   if (typeof agent !== 'string') {
-    throw new Error(`defineApp: spec.agent must be a string or AgentTemplateFn, got ${typeof agent}`);
+    throw new Error(`defineApp: spec.agent must be a string or SkillTemplateFn, got ${typeof agent}`);
   }
   if (agent.includes(BOUNDARY_MARKER_PREFIX)) {
     throw new Error(
       `defineApp: agent template contains the literal ${JSON.stringify(BOUNDARY_MARKER_PREFIX)} substring. ` +
         `The framework prepends \`Apply the **<name>** contract.\\n\\n\` via BOUNDARY_MARKER at ` +
         `render time; including it in the template would emit it twice. Strip the ` +
-        `\`Apply the **...** contract.\` line (and its trailing blank line) from agent.eta — ` +
+        `\`Apply the **...** contract.\` line (and its trailing blank line) from skill.eta — ` +
         `see RFC §1.1 / §4.3.`,
     );
   }

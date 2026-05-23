@@ -1,0 +1,17 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "baseUrl": ".",
+    "paths": {
+      "@lloyal-labs/rig/node": ["../../rig/dist/node.d.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../../sdk" },
+    { "path": "../../agents" },
+    { "path": "../../rig" }
+  ]
+}

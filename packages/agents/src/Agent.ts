@@ -117,21 +117,17 @@ export class Agent {
   readonly task: string;
 
   /**
-   * Tool names this spawn is allowed to invoke, or `null` when no scope
-   * was declared at spawn time (legacy harness-internal pools).
+   * Resolves the tool names this spawn is allowed to invoke, or `null`
+   * when no scope was declared (legacy harness-internal pools).
    *
-   * The framework-injected scope-guard (RFC §5.3c, `AgentPolicy.ts`
-   * `defaultToolGuards[0]`) consults this on every tool call: a call
-   * whose name is absent from this set produces a `scope_reject` nudge
-   * and a `tool:scopeReject` trace event. `null` means "no scope
-   * declared" and the scope-guard becomes a no-op for this spawn.
-   *
-   * For App-assigned spawns this is `manifest.contract.tools` of the
-   * assigned app (RFC §5.3c — "App-assigned spawn"). For harness-
-   * internal spawns the harness passes an explicit list via
-   * `SpawnSpec.allowedTools` (RFC §5.3c — "Harness-internal spawn").
+   * **Resolved live at dispatch time** (RFC §5.3c): the scope-guard reads
+   * `agent.allowedTools` on *every* tool call, so for App-assigned spawns
+   * this re-reads `manifest.contract.tools` from the registry each time —
+   * a mid-session `disable` of the app is reflected immediately (the app
+   * vanishes from the registry → resolver returns `[]` → all non-terminal
+   * calls reject). Harness-internal spawns resolve a static list.
    */
-  readonly allowedTools: readonly string[] | null;
+  private readonly _resolveAllowedTools: () => readonly string[] | null;
 
   /**
    * The App that owns this spawn's contract (`SpawnSpec.assignedApp`),
@@ -172,7 +168,13 @@ export class Agent {
     fmt: FormatConfig;
     parent?: Agent | null;
     task?: string;
-    allowedTools?: readonly string[] | null;
+    /**
+     * Allowed-tools scope: either a static list/`null` (harness-internal
+     * spawns), or a resolver evaluated **live on every access** (App-assigned
+     * spawns re-read `manifest.contract.tools` from the registry — RFC §5.3c
+     * dispatch-time enforcement).
+     */
+    allowedTools?: readonly string[] | null | (() => readonly string[] | null);
     assignedApp?: string | null;
   }) {
     this.id = opts.id;
@@ -181,8 +183,17 @@ export class Agent {
     this.fmt = opts.fmt;
     this.task = opts.task ?? '';
     this.parent = opts.parent ?? null;
-    this.allowedTools = opts.allowedTools ?? null;
+    const at = opts.allowedTools;
+    this._resolveAllowedTools = typeof at === 'function' ? at : () => at ?? null;
     this.assignedApp = opts.assignedApp ?? null;
+  }
+
+  /**
+   * The tool names this spawn may invoke right now, or `null` if unscoped.
+   * Resolved live (RFC §5.3c dispatch-time) — see {@link _resolveAllowedTools}.
+   */
+  get allowedTools(): readonly string[] | null {
+    return this._resolveAllowedTools();
   }
 
   // ── Status ──────────────────────────────────────────────

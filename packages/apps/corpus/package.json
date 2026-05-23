@@ -1,0 +1,32 @@
+{
+  "name": "@lloyal-labs/corpus-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "HDK reference app — local-corpus research (Source + tools + contract). Distributed via the signed-bundle channel, never public npm.",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "app.json",
+    "skill.eta"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@lloyal-labs/lloyal-agents": "^2.1.0",
+    "@lloyal-labs/rig": "^2.1.0",
+    "effection": "^4.0.2"
+  },
+  "peerDependencies": {
+    "@lloyal-labs/lloyal.node": "^2.1.0"
+  }
+}
