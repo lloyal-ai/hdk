@@ -20,7 +20,7 @@ describe('createWebApp', () => {
     // App.tools (array) must cover exactly the contract's tools.
     expect(app.tools.map((t) => t.name).sort()).toEqual(['fetch_page', 'web_search']);
     // skill.eta must NOT carry the framework boundary marker (defineApp would reject it).
-    const agentSrc = typeof app.agent === 'string' ? app.agent : '';
+    const agentSrc = typeof app.skill === 'string' ? app.skill : '';
     expect(agentSrc).not.toContain('Apply the **');
   });
 });

@@ -230,7 +230,7 @@ export interface App {
    * framework prepends the boundary marker; `skill.eta` MUST NOT
    * contain the literal `Apply the **` substring.
    */
-  readonly agent: string | SkillTemplateFn;
+  readonly skill: string | SkillTemplateFn;
   /**
    * Optional discipline content (GOOD/BAD examples, anti-patterns)
    * rendered into the per-spawn preamble of agents assigned to this

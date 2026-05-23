@@ -111,7 +111,7 @@ export function renderSpine(opts: RenderSpineOptions): string {
  *
  * ```
  * <BOUNDARY_MARKER(app.manifest.contract.name)>
- * <renderTemplate(app.agent, params)>
+ * <renderTemplate(app.skill, params)>
  *
  * <renderTemplate(app.examples, examplesParams)>   // if app.examples is defined
  * ```
@@ -127,7 +127,7 @@ export function renderSpine(opts: RenderSpineOptions): string {
  */
 export function renderAgentPreamble(app: App, params: AgentRenderCtx): string {
   const marker = BOUNDARY_MARKER(app.manifest.contract.name);
-  const body = renderAgentBody(app.agent, params);
+  const body = renderSkillBody(app.skill, params);
 
   if (!app.examples) {
     return marker + body;
@@ -142,13 +142,13 @@ export function renderAgentPreamble(app: App, params: AgentRenderCtx): string {
   return marker + body + '\n\n' + examples;
 }
 
-function renderAgentBody(
-  agent: string | SkillTemplateFn,
+function renderSkillBody(
+  skill: string | SkillTemplateFn,
   params: AgentRenderCtx,
 ): string {
-  return typeof agent === 'function'
-    ? agent(params)
-    : renderTemplate(agent, params as unknown as Record<string, unknown>);
+  return typeof skill === 'function'
+    ? skill(params)
+    : renderTemplate(skill, params as unknown as Record<string, unknown>);
 }
 
 function renderExamples(

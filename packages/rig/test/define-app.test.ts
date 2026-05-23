@@ -72,7 +72,7 @@ function baseSpec() {
       jira_search: new FakeTool('jira_search'),
       jira_read: new FakeTool('jira_read'),
     },
-    agent: 'You are a JIRA research assistant.\nPROCESS: search, read, report.',
+    skill: 'You are a JIRA research assistant.\nPROCESS: search, read, report.',
   };
 }
 
@@ -86,7 +86,7 @@ describe('defineApp happy path', () => {
     expect(app.manifest).toBe(baseSpec().manifest);
     expect(app.source).toBeInstanceOf(FakeSource);
     expect(app.tools).toHaveLength(2);
-    expect(app.agent).toContain('JIRA research assistant');
+    expect(app.skill).toContain('JIRA research assistant');
   });
 
   it('preserves contract.tools insertion order in app.tools[]', () => {
@@ -109,7 +109,7 @@ describe('defineApp happy path', () => {
 
   it('accepts a function-typed agent template (no static double-emission check)', () => {
     const spec = baseSpec();
-    spec.agent = (params) => `agentCount=${params.agentCount}`;
+    spec.skill = (params) => `agentCount=${params.agentCount}`;
     expect(() => defineApp(spec)).not.toThrow();
   });
 });
@@ -274,19 +274,19 @@ describe('defineApp tools map coverage', () => {
 describe('defineApp boundary marker guard', () => {
   it('rejects a string skill.eta that begins with the marker', () => {
     const spec = baseSpec();
-    spec.agent = 'Apply the **jira_research** contract.\n\nYou are a JIRA assistant.';
+    spec.skill = 'Apply the **jira_research** contract.\n\nYou are a JIRA assistant.';
     expect(() => defineApp(spec)).toThrow(/contains the literal.*Apply the \*\*/);
   });
 
   it('rejects a string skill.eta that contains the marker prefix anywhere', () => {
     const spec = baseSpec();
-    spec.agent = 'You are an assistant.\nWhen invoked, you will Apply the **rogue** contract.';
+    spec.skill = 'You are an assistant.\nWhen invoked, you will Apply the **rogue** contract.';
     expect(() => defineApp(spec)).toThrow(/contains the literal.*Apply the \*\*/);
   });
 
   it('accepts a string skill.eta with no marker substring', () => {
     const spec = baseSpec();
-    spec.agent = 'You are a JIRA assistant. PROCESS: search → read → report.';
+    spec.skill = 'You are a JIRA assistant. PROCESS: search → read → report.';
     expect(() => defineApp(spec)).not.toThrow();
   });
 });

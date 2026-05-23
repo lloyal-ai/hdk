@@ -30,7 +30,7 @@ export type { CorpusSourceOpts, CorpusPromptData } from "./source";
 export function* createCorpusApp(): Operation<App> {
   const dir = join(__dirname, "..");
   const manifest = JSON.parse(readFileSync(join(dir, "app.json"), "utf8")) as AppManifest;
-  const agent = readFileSync(join(dir, "skill.eta"), "utf8");
+  const skill = readFileSync(join(dir, "skill.eta"), "utf8");
 
   let reranker: Reranker;
   try {
@@ -60,5 +60,5 @@ export function* createCorpusApp(): Operation<App> {
   const tools: Record<string, Tool> = {};
   for (const t of source.tools) tools[t.name] = t;
 
-  return defineApp({ manifest, source, tools, agent });
+  return defineApp({ manifest, source, tools, skill });
 }

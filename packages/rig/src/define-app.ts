@@ -16,7 +16,7 @@
  * - **Tool map coverage.** The keys of the supplied `tools` object equal
  *   `manifest.contract.tools[]` as a set — every declared tool has an
  *   implementation, no extras.
- * - **Boundary-marker double-emission.** `agent` (when string-typed) MUST
+ * - **Boundary-marker double-emission.** `skill` (when string-typed) MUST
  *   NOT contain the literal `Apply the **` substring — the framework
  *   prepends the marker via `BOUNDARY_MARKER`, so an `skill.eta` that
  *   includes the line would emit it twice (RFC §1.1).
@@ -70,7 +70,7 @@ export interface DefineAppSpec {
    * MUST NOT contain the literal `Apply the **` substring when given as
    * a string — the framework prepends the boundary marker.
    */
-  agent: string | SkillTemplateFn;
+  skill: string | SkillTemplateFn;
   /**
    * Optional discipline content rendered into the per-spawn preamble of
    * agents assigned to this app. Per RFC §4.4 — never enters the shared
@@ -118,7 +118,7 @@ const USE_WHEN_FORBIDDEN: readonly RegExp[] = [
   /\n/,
 ];
 
-/** Substring whose presence in `agent` (string form) would cause double-emission. */
+/** Substring whose presence in `skill` (string form) would cause double-emission. */
 const BOUNDARY_MARKER_PREFIX = 'Apply the **';
 
 // ── Validation helpers ───────────────────────────────────────────
@@ -234,19 +234,19 @@ function assertToolMapCoverage(
   }
 }
 
-function assertAgentTemplate(agent: string | SkillTemplateFn): void {
-  if (typeof agent === 'function') {
+function assertSkillTemplate(skill: string | SkillTemplateFn): void {
+  if (typeof skill === 'function') {
     // Function-typed templates can't be statically validated here. The
     // framework's first-render check (RFC §4.7) catches double-emission
     // at the first preamble render, not at defineApp time.
     return;
   }
-  if (typeof agent !== 'string') {
-    throw new Error(`defineApp: spec.agent must be a string or SkillTemplateFn, got ${typeof agent}`);
+  if (typeof skill !== 'string') {
+    throw new Error(`defineApp: spec.skill must be a string or SkillTemplateFn, got ${typeof skill}`);
   }
-  if (agent.includes(BOUNDARY_MARKER_PREFIX)) {
+  if (skill.includes(BOUNDARY_MARKER_PREFIX)) {
     throw new Error(
-      `defineApp: agent template contains the literal ${JSON.stringify(BOUNDARY_MARKER_PREFIX)} substring. ` +
+      `defineApp: skill template contains the literal ${JSON.stringify(BOUNDARY_MARKER_PREFIX)} substring. ` +
         `The framework prepends \`Apply the **<name>** contract.\\n\\n\` via BOUNDARY_MARKER at ` +
         `render time; including it in the template would emit it twice. Strip the ` +
         `\`Apply the **...** contract.\` line (and its trailing blank line) from skill.eta — ` +
@@ -279,7 +279,7 @@ function assertAgentTemplate(agent: string | SkillTemplateFn): void {
  *     manifest,
  *     source,
  *     tools: { jira_search: searchTool, jira_read: readTool },
- *     agent: agentTemplate,
+ *     skill: skillTemplate,
  *   });
  * }
  * ```
@@ -300,7 +300,7 @@ export function defineApp(spec: DefineAppSpec): App {
   assertToolMapCoverage(spec.manifest.contract.tools, spec.tools);
 
   // 5. Agent template double-emission guard.
-  assertAgentTemplate(spec.agent);
+  assertSkillTemplate(spec.skill);
 
   // Preserve `contract.tools` insertion order in the runtime tools array
   // — that's the order the catalog renders and the order the spine
@@ -314,7 +314,7 @@ export function defineApp(spec: DefineAppSpec): App {
     manifest: spec.manifest,
     source: spec.source,
     tools,
-    agent: spec.agent,
+    skill: spec.skill,
     examples: spec.examples,
     configSchema: spec.manifest.configSchema,
     hints: spec.hints ?? spec.manifest.hints,
