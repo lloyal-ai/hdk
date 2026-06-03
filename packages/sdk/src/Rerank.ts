@@ -363,10 +363,27 @@ export class Rerank {
     }
   }
 
+  /**
+   * Score = `logit(yes) − logit(no)` (raw logit diff, range unbounded).
+   *
+   * Higher = more relevant. Positive ⇒ model would emit "yes" rather than
+   * "no" if forced; negative ⇒ "no." Magnitude reflects model confidence.
+   *
+   * Why logit-diff, not `softmax(yes, no)`: the softmax form compresses
+   * small logit gaps into extreme probabilities (a gap of 5 → 0.993; gap
+   * of 10 → 0.99995), saturating top-K ordering and erasing confidence
+   * differences in dense result sets. Logit-diff preserves the full
+   * dynamic range — consumers can rank, threshold, or normalize as
+   * needed. See the TICK-002 calibration probe in
+   * `reasoning.run/scripts/inspect-rerank.mjs` for the empirical evidence
+   * behind this choice.
+   *
+   * Breaking: prior callers that assumed `score ∈ (0, 1)` need updating.
+   * A positive logit-diff threshold (e.g. `>= 0` for "more yes than no",
+   * `>= 2` for "confident yes") replaces the prior `>= 0.5` softmax
+   * threshold.
+   */
   private _rerankScore(logits: Float32Array): number {
-    const max = Math.max(logits[this._yesId], logits[this._noId]);
-    const yesExp = Math.exp(logits[this._yesId] - max);
-    const noExp = Math.exp(logits[this._noId] - max);
-    return yesExp / (yesExp + noExp);
+    return logits[this._yesId] - logits[this._noId];
   }
 }

@@ -12,8 +12,8 @@
  * mid-session path. There are no install/uninstall hooks and no
  * standalone register verb.
  *
- * Contracts verified:
- * 1. **Boot set (`apps: []`) is enabled** — `byName`/`installed`/`stateOf` reflect it.
+ * Protocols verified:
+ * 1. **Boot set (`apps: []`) is enabled** — `byName`/`enabled`/`stateOf` reflect it.
  * 2. **Factory runs in a context-bearing scope** — a factory reading
  *    `AppConfigStoreCtx` works (the regression for the detached-scope bug).
  * 3. **Factory body is setup; runs during enable.**
@@ -21,7 +21,7 @@
  * 5. **`ensure()` teardown fires on `disable`.**
  * 6. **`ensure()` teardown fires on registry scope-exit, reverse order.**
  * 7. **Teardown is best-effort** — a throwing `ensure` doesn't strand siblings.
- * 8. **modelContractVersion gate** — unsupported version rejects (ensure still fires).
+ * 8. **appProtocolVersion gate** — unsupported version rejects (ensure still fires).
  * 9. **Stored-config validation** — missing key / wrong type rejects.
  * 10. **Duplicate names** throw; the first survives.
  * 11. **`disable` idempotent** — unknown name is a no-op.
@@ -40,14 +40,14 @@ import { createInMemoryConfigStore } from '../src/config-store';
 
 function fakeApp(opts: {
   name: string;
-  modelContractVersion?: string;
+  appProtocolVersion?: string;
   configSchema?: AppManifest['configSchema'];
 }): App {
   const manifest: AppManifest = {
     name: opts.name,
     version: '1.0.0',
-    modelContractVersion: opts.modelContractVersion ?? '3.0',
-    contract: { name: `${opts.name}_research`, useWhen: 'do things', tools: ['x'] },
+    appProtocolVersion: opts.appProtocolVersion ?? '3.0',
+    protocol: { name: `${opts.name}_research`, useWhen: 'do things', tools: ['x'] },
     configSchema: opts.configSchema,
   };
   return {
@@ -86,7 +86,7 @@ function resourceFactory(
 // ── Tests ────────────────────────────────────────────────────────
 
 describe('createAppRegistry', () => {
-  it('enables the declarative boot set and exposes it via byName / installed / stateOf', async () => {
+  it('enables the declarative boot set and exposes it via byName / enabled / stateOf', async () => {
     const result = await run(function* () {
       const registry = yield* createAppRegistry({
         configStore: createInMemoryConfigStore(),
@@ -94,13 +94,13 @@ describe('createAppRegistry', () => {
       });
       return {
         viaByName: registry.byName('web')?.manifest.name,
-        installedNames: registry.installed().map((a) => a.manifest.name),
+        enabledNames: registry.enabled().map((a) => a.manifest.name),
         state: registry.stateOf('web'),
         absent: registry.stateOf('nope'),
       };
     });
     expect(result.viaByName).toBe('web');
-    expect(result.installedNames).toEqual(['web', 'corpus']);
+    expect(result.enabledNames).toEqual(['web', 'corpus']);
     expect(result.state).toBe('enabled');
     expect(result.absent).toBe('disabled');
   });
@@ -230,16 +230,16 @@ describe('createAppRegistry', () => {
     consoleError.mockRestore();
   });
 
-  it('rejects unsupported modelContractVersion (and the factory ensure still fires)', async () => {
+  it('rejects unsupported appProtocolVersion (and the factory ensure still fires)', async () => {
     const onTeardown = vi.fn();
     await expect(
       run(function* () {
         const registry = yield* createAppRegistry({ configStore: createInMemoryConfigStore() });
         yield* registry.enable(
-          resourceFactory({ name: 'future', modelContractVersion: '99.0' }, { onTeardown }),
+          resourceFactory({ name: 'future', appProtocolVersion: '99.0' }, { onTeardown }),
         );
       }),
-    ).rejects.toThrow('modelContractVersion="99.0"');
+    ).rejects.toThrow('appProtocolVersion="99.0"');
     expect(onTeardown).toHaveBeenCalledTimes(1);
   });
 
@@ -298,7 +298,7 @@ describe('createAppRegistry', () => {
         return {
           message: (err as Error).message,
           stillThere: registry.byName('dup') === first,
-          count: registry.installed().filter((a) => a.manifest.name === 'dup').length,
+          count: registry.enabled().filter((a) => a.manifest.name === 'dup').length,
         };
       }
       return { message: undefined, stillThere: false, count: -1 };

@@ -79,8 +79,22 @@ export abstract class Source<TCtx = unknown, TChunk = unknown> {
 
   /** Reranker instance, set during {@link bind}. Used by {@link createScorer}. */
   protected _reranker: ScorerReranker | null = null;
-  /** Minimum entailment score for delegation to proceed. */
-  protected _entailmentFloor: number = 0.25;
+  /**
+   * Minimum entailment score for delegation to proceed.
+   *
+   * Reranker scores are logit-diffs (`logit(yes) − logit(no)`); a value
+   * `> 0` means the cross-encoder model prefers "yes" over "no" when
+   * asked whether the document matches the query. Default `0` ⇒ "the
+   * model agrees this passage is relevant"; subclasses may tighten
+   * (e.g. `2` for "confident yes") or loosen (negative, for noisy
+   * corpora where leaning-no hits are still worth investigating).
+   *
+   * The prior softmax-prob default was `0.25`, which corresponded to
+   * logit-diff `≈ −1.1`. The new default is stricter: only hits the
+   * model genuinely leans toward are surfaced. See TICK-002 calibration
+   * notes (`reasoning.run/scripts/inspect-rerank.mjs`) for the data.
+   */
+  protected _entailmentFloor: number = 0;
 
   /**
    * Create an immutable entailment scorer scoped to one invocation.

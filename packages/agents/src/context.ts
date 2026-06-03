@@ -9,6 +9,7 @@ import type { Agent, FormatConfig } from './Agent';
 import type { Reranker } from './chunk';
 import type { AppRegistry } from './app-types';
 import type { AppConfigStore } from './app-config';
+import type { GrantStore } from './grant-store';
 
 /**
  * Effection context holding the active {@link SessionContext}
@@ -131,7 +132,7 @@ export const RerankerCtx = createContext<Reranker>('lloyal.reranker');
  * scope-guard (RFC §5.3c) reads this at tool-dispatch time to resolve
  * the allowed-tools set for an App-assigned spawn — looking up
  * `registry.byName(spawn.assignedApp)` and matching the dispatched
- * `toolName` against `manifest.contract.tools`.
+ * `toolName` against `manifest.protocol.tools`.
  *
  * The spine renderer also reads this to compose the catalog in
  * registration order.
@@ -156,3 +157,20 @@ export const AppRegistryCtx = createContext<AppRegistry>('lloyal.appRegistry');
  * @category Contract
  */
 export const AppConfigStoreCtx = createContext<AppConfigStore>('lloyal.appConfigStore');
+
+/**
+ * Effection context holding the session's {@link GrantStore}.
+ *
+ * Seeded by `createAppRegistry({ grantStore })` (lives in `@lloyal-labs/rig`)
+ * alongside {@link AppConfigStoreCtx}. The authGuard (RFC §3.2 M2, §5.3c)
+ * reads it once per pool to resolve which `protected` tools the session is
+ * authorized to call — `protected` tools without a grant reject at dispatch
+ * time (`tool:authReject`). The store holds the consent decision; the
+ * **credential never enters the model's context**.
+ *
+ * Absent context = fail-closed: no grants, every protected tool denied.
+ * Open (non-protected) tools never consult it.
+ *
+ * @category Contract
+ */
+export const GrantStoreCtx = createContext<GrantStore>('lloyal.grantStore');

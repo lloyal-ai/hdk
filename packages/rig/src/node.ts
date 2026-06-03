@@ -4,8 +4,9 @@
  * These require node:fs and/or @lloyal-labs/lloyal.node.
  * Import from `@lloyal-labs/rig/node` only in Node.js environments.
  *
- * Sources (WebSource, CorpusSource) are now platform-agnostic and
- * exported from the main `@lloyal-labs/rig` entry.
+ * Per-source bundles (web, corpus) live in their own packages
+ * (`@lloyal-labs/web-app`, `@lloyal-labs/corpus-app`); rig now owns
+ * only cross-app primitives (chunking, types, tools, reranker).
  *
  * @packageDocumentation
  * @category Rig

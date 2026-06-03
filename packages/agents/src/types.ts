@@ -140,21 +140,13 @@ export interface AgentTaskSpec {
   /** Parent branch to fork from (required by {@link useAgentPool}) */
   parent?: Branch;
   /**
-   * Identifier of the App that owns this spawn's contract (RFC §5.3c).
-   * When set, `setupAgent` resolves the spawn's allowed-tools list from
-   * the matching `AppRegistry` entry's `manifest.contract.tools`. Leave
-   * unset for harness-internal spawns — pass `allowedTools` explicitly
-   * instead.
+   * Non-enforcing label naming the App this spawn nominally belongs to
+   * (RFC §3.2 M2). Carried for trace attribution (`tool:authReject`) and
+   * harness UI only — tool access is gated by {@link Tool.protected} +
+   * session grants (the authGuard), not by app membership. Unset for
+   * harness-internal spawns.
    */
   assignedApp?: string;
-  /**
-   * Explicit allowed-tools list for this spawn. Takes precedence over
-   * `assignedApp` resolution. Used by harness-internal spawns (RFC §5.3c
-   * "Harness-internal spawn") that aren't backed by an App — plan /
-   * synth / compare-axis style workers — so they receive the same
-   * dispatch-time scope-guard protection without registering an App.
-   */
-  allowedTools?: readonly string[];
 }
 
 /**
@@ -295,6 +287,17 @@ export interface AgentPoolOptions {
   /** Entailment scorer for semantic coherence across recursive depths.
    *  Passed to every tool via {@link ToolContext.scorer}. */
   scorer?: EntailmentScorer;
+  /**
+   * Eager GBNF grammar applied to every spawned agent's generating branch —
+   * constrains generation from the first sampled token (no trigger). Used for
+   * schema-constrained single-shot agents (e.g. the planner via
+   * {@link useAgent} with a `schema`). Applied at the same point as lazy tool
+   * grammar — in `applyLazyGrammar`, AFTER the suffix prefill — so it
+   * constrains generated tokens only, never the prompt. Unlike a lazy grammar
+   * (gated on tool triggers), this is unconditional; agents with tool grammars
+   * use the lazy path instead. @default undefined (unconstrained)
+   */
+  eagerGrammar?: string;
 }
 
 /**

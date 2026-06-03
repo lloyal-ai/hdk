@@ -8,6 +8,7 @@ export {
   RerankerCtx,
   AppRegistryCtx,
   AppConfigStoreCtx,
+  GrantStoreCtx,
 } from './context';
 export { Tool } from './Tool';
 export { Agent } from './Agent';
@@ -63,7 +64,7 @@ export type {
 export type {
   App,
   AppManifest,
-  AppContract,
+  AppProtocol,
   AppHints,
   AppRegistry,
   AppFactory,
@@ -76,4 +77,5 @@ export type {
 } from './app-types';
 
 export type { AppConfigStore } from './app-config';
+export type { GrantStore } from './grant-store';
 export type { Resource, Chunk, ScoredChunk, ScoredResult, Reranker } from './chunk';

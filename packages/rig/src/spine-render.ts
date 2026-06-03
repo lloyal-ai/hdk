@@ -1,8 +1,8 @@
 /**
  * Spine + per-spawn preamble assembly — RFC §5.3 / §5.3b.
  *
- * Two pure render functions. Both pull bytes from `contract.ts`
- * constants rather than inlining literals — the codified contract
+ * Two pure render functions. Both pull bytes from `protocol.ts`
+ * constants rather than inlining literals — the codified protocol
  * (RFC §1.1–§1.4) has exactly one source of truth.
  *
  * ## `renderSpine`
@@ -17,7 +17,7 @@
  * ```
  * <FRAMEWORK_INTRO>
  *
- * # Contracts
+ * # Protocols
  *
  * <CATALOG_ENTRY for each app, in registration order>
  *
@@ -36,7 +36,7 @@
  * a convention (RFC §3.2 M1).
  *
  * @packageDocumentation
- * @category Contract
+ * @category Protocol
  */
 
 import { renderTemplate } from '@lloyal-labs/lloyal-agents';
@@ -52,7 +52,7 @@ import {
   CATALOG_ENTRY,
   FRAMEWORK_INTRO,
   TOOL_SELECTION_RULE,
-} from './contract';
+} from './protocol';
 
 /**
  * Arguments for {@link renderSpine}. `apps` order is observable to
@@ -62,7 +62,7 @@ import {
 export interface RenderSpineOptions {
   /**
    * Registered apps to compose into the catalog. Pass
-   * `registry.installed()` from {@link AppRegistryCtx}, or any
+   * `registry.enabled()` from {@link AppRegistryCtx}, or any
    * subset/ordering the harness wants reflected in the spine.
    */
   apps: readonly App[];
@@ -73,7 +73,7 @@ export interface RenderSpineOptions {
  *
  * The output has a fixed shape across pool sizes and pool composition
  * — the only variability is the per-app catalog block, sourced from
- * each app's `manifest.contract`. No app prose; no harness prose
+ * each app's `manifest.protocol`. No app prose; no harness prose
  * (RFC §3.2 M1, §5.3).
  *
  * The returned string is intended for `SpineOptions.systemPrompt` in
@@ -85,16 +85,16 @@ export function renderSpine(opts: RenderSpineOptions): string {
   const catalogBlocks = opts.apps
     .map((app) =>
       CATALOG_ENTRY(
-        app.manifest.contract.name,
-        [...app.manifest.contract.tools],
-        app.manifest.contract.useWhen,
+        app.manifest.protocol.name,
+        [...app.manifest.protocol.tools],
+        app.manifest.protocol.useWhen,
       ),
     )
     .join('\n');
 
   return (
     FRAMEWORK_INTRO +
-    '\n\n# Contracts\n\n' +
+    '\n\n# Protocols\n\n' +
     catalogBlocks +
     '\n' +
     TOOL_SELECTION_RULE
@@ -110,23 +110,30 @@ export function renderSpine(opts: RenderSpineOptions): string {
  * Output (RFC §5.3b):
  *
  * ```
- * <BOUNDARY_MARKER(app.manifest.contract.name)>
+ * <BOUNDARY_MARKER(app.manifest.protocol.name)>
  * <renderTemplate(app.skill, params)>
  *
  * <renderTemplate(app.examples, examplesParams)>   // if app.examples is defined
  * ```
  *
- * `app.manifest.contract.name` is grammar-restricted at `defineApp`
+ * `app.manifest.protocol.name` is grammar-restricted at `defineApp`
  * time (RFC §3.2 M3): matches `[a-z][a-z0-9_-]{1,63}`, so it cannot
  * break the markdown bold or inject newlines into the marker bytes.
  *
  * `app.examples` (if present) receives an extended render context
- * carrying the contract `name` and `tools[]` in addition to the
+ * carrying the protocol `name` and `tools[]` in addition to the
  * standard {@link AgentRenderCtx} fields, allowing discipline content
- * to reference the contract identity directly.
+ * to reference the protocol identity directly.
+ *
+ * `params` accepts app-specific render data beyond {@link AgentRenderCtx}
+ * (e.g. a corpus app merges its `source.promptData()` to supply `it.toc`).
+ * Extra keys are spread into the Eta render data unchanged.
  */
-export function renderAgentPreamble(app: App, params: AgentRenderCtx): string {
-  const marker = BOUNDARY_MARKER(app.manifest.contract.name);
+export function renderAgentPreamble(
+  app: App,
+  params: AgentRenderCtx & Record<string, unknown>,
+): string {
+  const marker = BOUNDARY_MARKER(app.manifest.protocol.name);
   const body = renderSkillBody(app.skill, params);
 
   if (!app.examples) {
@@ -135,8 +142,8 @@ export function renderAgentPreamble(app: App, params: AgentRenderCtx): string {
 
   const examplesParams: ExamplesRenderCtx = {
     ...params,
-    name: app.manifest.contract.name,
-    tools: app.manifest.contract.tools,
+    name: app.manifest.protocol.name,
+    tools: app.manifest.protocol.tools,
   };
   const examples = renderExamples(app.examples, examplesParams);
   return marker + body + '\n\n' + examples;

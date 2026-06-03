@@ -117,24 +117,12 @@ export class Agent {
   readonly task: string;
 
   /**
-   * Resolves the tool names this spawn is allowed to invoke, or `null`
-   * when no scope was declared (legacy harness-internal pools).
-   *
-   * **Resolved live at dispatch time** (RFC §5.3c): the scope-guard reads
-   * `agent.allowedTools` on *every* tool call, so for App-assigned spawns
-   * this re-reads `manifest.contract.tools` from the registry each time —
-   * a mid-session `disable` of the app is reflected immediately (the app
-   * vanishes from the registry → resolver returns `[]` → all non-terminal
-   * calls reject). Harness-internal spawns resolve a static list.
-   */
-  private readonly _resolveAllowedTools: () => readonly string[] | null;
-
-  /**
-   * The App that owns this spawn's contract (`SpawnSpec.assignedApp`),
-   * or `null` for harness-internal spawns. Surfaced to trace events
-   * (`tool:scopeReject` includes this for cross-app attribution per
-   * RFC §3.2 M2) and to telemetry so operators can correlate
-   * out-of-contract attempts to the originating App.
+   * Optional non-enforcing label naming the App a spawn nominally belongs
+   * to (`SpawnSpec.assignedApp`), or `null` for harness-internal spawns.
+   * Purely informational since the authGuard moved the security boundary
+   * into the tool (RFC §3.2 M2): tool access is gated by {@link Tool.protected}
+   * + session grants, not by app membership. Carried so trace events
+   * (`tool:authReject`) and harness UI can attribute work to an app.
    */
   readonly assignedApp: string | null;
 
@@ -168,13 +156,7 @@ export class Agent {
     fmt: FormatConfig;
     parent?: Agent | null;
     task?: string;
-    /**
-     * Allowed-tools scope: either a static list/`null` (harness-internal
-     * spawns), or a resolver evaluated **live on every access** (App-assigned
-     * spawns re-read `manifest.contract.tools` from the registry — RFC §5.3c
-     * dispatch-time enforcement).
-     */
-    allowedTools?: readonly string[] | null | (() => readonly string[] | null);
+    /** Optional non-enforcing app label — see {@link assignedApp}. */
     assignedApp?: string | null;
   }) {
     this.id = opts.id;
@@ -183,17 +165,7 @@ export class Agent {
     this.fmt = opts.fmt;
     this.task = opts.task ?? '';
     this.parent = opts.parent ?? null;
-    const at = opts.allowedTools;
-    this._resolveAllowedTools = typeof at === 'function' ? at : () => at ?? null;
     this.assignedApp = opts.assignedApp ?? null;
-  }
-
-  /**
-   * The tool names this spawn may invoke right now, or `null` if unscoped.
-   * Resolved live (RFC §5.3c dispatch-time) — see {@link _resolveAllowedTools}.
-   */
-  get allowedTools(): readonly string[] | null {
-    return this._resolveAllowedTools();
   }
 
   // ── Status ──────────────────────────────────────────────

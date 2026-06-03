@@ -2,7 +2,7 @@ export { Branch } from './Branch';
 export { BranchStore } from './BranchStore';
 export { Session } from './Session';
 export { Rerank } from './Rerank';
-export { buildUserDelta, buildToolResultDelta, buildTurnDelta } from './deltas';
+export { buildUserDelta, buildAssistantDelta, buildToolResultDelta, buildTurnDelta } from './deltas';
 export type { DeltaOpts } from './deltas';
 
 // ── Enums + constants ────────────────────────────────────────

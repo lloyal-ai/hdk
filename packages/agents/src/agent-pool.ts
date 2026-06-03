@@ -3,8 +3,7 @@ import type { Operation, Subscription } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import { CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, GrammarTriggerType, type ParsedToolCall, type SessionContext } from '@lloyal-labs/sdk';
 import type { BranchStore } from '@lloyal-labs/sdk';
-import { Ctx, Store, Trace, TraceParent, CallingAgent, SpineFmt, AppRegistryCtx } from './context';
-import type { AppRegistry } from './app-types';
+import { Ctx, Store, Trace, TraceParent, CallingAgent, SpineFmt, GrantStoreCtx } from './context';
 import type { FormatConfig } from './Agent';
 import { buildToolResultDelta, buildTurnDelta } from '@lloyal-labs/sdk';
 import { traceScope } from './trace-scope';
@@ -386,49 +385,11 @@ function* setupAgent(
   let callingAgent: Agent | null = null;
   try { const a = yield* CallingAgent.get(); if (a) callingAgent = a; } catch { /* top-level — no caller */ }
 
-  // Resolve the spawn's allowed-tools scope for the framework-injected
-  // scope-guard (RFC §3.2 M2, §5.3c). Two paths, mutually exclusive at
-  // the harness layer:
-  //   • `task.allowedTools` — explicit list (harness-internal spawns).
-  //   • `task.assignedApp`  — look up `manifest.contract.tools` via
-  //                           `AppRegistryCtx`. Throws if no registry
-  //                           is set or the app is unknown — failing
-  //                           closed is safer than silently dropping
-  //                           the M2 enforcement.
-  // When both are unset the spawn is "unscoped" (legacy harnesses);
-  // the scope-guard becomes a no-op (`agent.allowedTools === null`).
-  // Resolved LIVE at dispatch time (RFC §5.3c): the scope-guard reads
-  // `agent.allowedTools` on every tool call, so App-assigned spawns re-read
-  // `manifest.contract.tools` from the registry each time — a mid-session
-  // `disable` is reflected immediately (app gone → `[]` → all non-terminal
-  // calls reject; the terminal tool bypasses the scope-guard).
-  let resolveAllowedTools: () => readonly string[] | null = () => null;
-  let assignedApp: string | null = null;
-  if (task.allowedTools !== undefined) {
-    const explicit = task.allowedTools; // harness-internal spawn — static list
-    resolveAllowedTools = () => explicit;
-  } else if (task.assignedApp !== undefined) {
-    assignedApp = task.assignedApp;
-    let registry: AppRegistry | null = null;
-    try { registry = yield* AppRegistryCtx.expect(); } catch {
-      throw new Error(
-        `setupAgent: spawn declared assignedApp="${task.assignedApp}" but no AppRegistry ` +
-        `is set on AppRegistryCtx. Construct one via createAppRegistry({configStore}) before ` +
-        `spawning App-assigned agents.`,
-      );
-    }
-    // Fail-closed at spawn if the app isn't enabled (don't silently drop M2).
-    if (!registry.byName(task.assignedApp)) {
-      throw new Error(
-        `setupAgent: spawn declared assignedApp="${task.assignedApp}" but no app with that ` +
-        `name is enabled. Register it via createAppRegistry({apps}) or registry.enable(...) ` +
-        `before spawning, and verify the name matches manifest.name.`,
-      );
-    }
-    const reg = registry;
-    const appName = task.assignedApp;
-    resolveAllowedTools = () => reg.byName(appName)?.manifest.contract.tools ?? [];
-  }
+  // The spawn's app membership is now a non-enforcing label (RFC §3.2 M2):
+  // the authGuard gates tools by `Tool.protected` + session grants at the
+  // pool level, not by app-scoped allow-lists. The label is carried for
+  // trace attribution (`tool:authReject`) and harness UI only.
+  const assignedApp: string | null = task.assignedApp ?? null;
 
   // In shared mode the new agent's parser/grammar/format/triggers come
   // from the spine's pre-computed fmt — those fields know about the tool
@@ -463,7 +424,6 @@ function* setupAgent(
     parent: callingAgent,
     task: task.content,
     fmt: fmtConfig,
-    allowedTools: resolveAllowedTools,
     assignedApp,
   });
 
@@ -533,7 +493,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       }
     });
     const tw = yield* Trace.expect();
-    const { spine, orchestrate, toolsJson, tools, maxTurns = 100, terminalToolName, trace = false, pruneOnReturn = false, enableThinking = false } = opts;
+    const { spine, orchestrate, toolsJson, tools, maxTurns = 100, terminalToolName, trace = false, pruneOnReturn = false, enableThinking = false, eagerGrammar } = opts;
 
     // Tool index map for trace — position in toolkit array
     const toolIndexMap = new Map([...tools.keys()].map((name, i) => [name, i]));
@@ -576,7 +536,24 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       );
     }
 
-    const policyConfig: PolicyConfig = { maxTurns, terminalToolName, hasNonTerminalTools };
+    // authGuard inputs (RFC §3.2 M2, §5.3c), resolved once per pool:
+    //   • protectedTools — names this pool's registry flags `Tool.protected`.
+    //   • grants — protected names the session is authorized to call, read
+    //     from GrantStoreCtx. Absent store = fail-closed (no grants).
+    // When nothing is protected (the common case) the authGuard never fires.
+    const protectedTools = new Set(
+      [...tools].filter(([, t]) => t.protected).map(([name]) => name),
+    );
+    let grants: ReadonlySet<string> = new Set();
+    if (protectedTools.size > 0) {
+      try {
+        const grantStore = yield* GrantStoreCtx.expect();
+        grants = new Set(yield* grantStore.granted());
+      } catch { /* no grant store on context — fail-closed (no grants) */ }
+    }
+    const policyConfig: PolicyConfig = {
+      maxTurns, terminalToolName, hasNonTerminalTools, protectedTools, grants,
+    };
 
     // ── Orchestrator-driven setup ────────────────────────────
     // Agents are spawned lazily via `ctx.spawn` from the orchestrator.
@@ -626,7 +603,16 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
 
     // Lazy grammar setup — applied inside ctx.spawn after prefill completes.
     const applyLazyGrammar = (a: Agent): void => {
-      if (a.fmt.grammar && a.fmt.grammarLazy && a.fmt.grammarTriggers.length > 0) {
+      // Eager grammar (schema-based agents like the planner) takes priority
+      // over lazy tool-call grammar. Qwen3.5's chat template emits a lazy
+      // tool-call grammar even when no tools are passed (a non-empty
+      // fmt.grammar with a `<tool_call>` trigger), which would otherwise
+      // overwrite a schema grammar set elsewhere — the planner would still
+      // be unconstrained. With eager set, we use the strict schema grammar
+      // and skip the (no-tools-anyway) lazy trigger.
+      if (eagerGrammar) {
+        a.branch.setGrammar(eagerGrammar);
+      } else if (a.fmt.grammar && a.fmt.grammarLazy && a.fmt.grammarTriggers.length > 0) {
         const triggers = a.fmt.grammarTriggers.map(t => {
           if (t.type === GrammarTriggerType.WORD) {
             const nlIdx = t.value.indexOf('\n');
@@ -662,7 +648,6 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           seed: spec.seed,
           parent,
           assignedApp: spec.assignedApp,
-          allowedTools: spec.allowedTools,
         };
 
         // Synchronous setup — fork, tokenize suffix, pressure check.
@@ -1065,16 +1050,15 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
               yield* handleIdleDrop(a, action.reason, poolChannel, tw, poolScope.traceId);
               continue;
             case 'nudge':
-              // Scope-guard rejection (RFC §3.2 M2): emit the structured
-              // tool:scopeReject event BEFORE the generic agentNudge so a
+              // authGuard rejection (RFC §3.2 M2): emit the structured
+              // tool:authReject event BEFORE the generic agentNudge so a
               // single trace pass captures attribution + rejection context.
-              if (action.guard === 'scope_reject' && a.allowedTools) {
+              if (action.guard === 'auth_reject') {
                 tw.write({
                   traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-                  type: 'tool:scopeReject',
+                  type: 'tool:authReject',
                   agentId: a.id,
                   assignedApp: a.assignedApp,
-                  allowedTools: [...a.allowedTools],
                   attemptedTool: parsed.toolCalls[0].name,
                   lineageHistory: a.walkAncestors((x) => x.toolHistory),
                 });

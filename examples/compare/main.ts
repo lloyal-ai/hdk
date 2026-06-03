@@ -3,8 +3,8 @@
  * Compare — DAG-centric framework primer for the lloyal SDK.
  *
  * Visualizes a 6-node DAG that:
- *   1. researches X on the live web (WebSource: web_search + fetch_page)
- *   2. researches Y in a local corpus (CorpusSource: grep + read_file + search)
+ *   1. researches X on the live web (web app: web_search + fetch_page)
+ *   2. researches Y in a local corpus (corpus app: grep + read_file + search)
  *   3. compares X vs Y along three axes in parallel (after BOTH research
  *      lanes complete — the multi-parent edge is what makes this a DAG and
  *      not a chain or fanout)
@@ -41,17 +41,17 @@ import { createContext } from "@lloyal-labs/lloyal.node";
 import {
   initAgents,
   JsonlTraceWriter,
+  RerankerCtx,
 } from "@lloyal-labs/lloyal-agents";
 import type { AgentEvent, Source } from "@lloyal-labs/lloyal-agents";
-import { TavilyProvider } from "@lloyal-labs/rig";
 import type { Chunk, SourceContext } from "@lloyal-labs/rig";
 import {
-  CorpusSource,
-  WebSource,
-  chunkResources,
-  createReranker,
-  loadResources,
-} from "@lloyal-labs/rig/node";
+  createAppRegistry,
+  createInMemoryConfigStore,
+} from "@lloyal-labs/rig";
+import { createReranker } from "@lloyal-labs/rig/node";
+import { createWebApp } from "@lloyal-labs/web-app";
+import { createCorpusApp } from "@lloyal-labs/corpus-app";
 import { handleCompare, type DagEvent } from "./harness";
 
 // ── CLI args ─────────────────────────────────────────────────────
@@ -232,19 +232,26 @@ main(function* () {
     });
   }
 
-  // ── Build sources ──────────────────────────────────────────────
+  // ── Build sources via the App registry (RFC §5.4) ─────────────
+  // Sources used to be constructed directly; under the 3.0 App protocol
+  // they are produced by app factories that bind the reranker from
+  // `RerankerCtx` and read provider config (Tavily key, corpus path)
+  // from `AppConfigStoreCtx`. The DAG below still treats them as plain
+  // `Source` instances — the contract change is upstream of handleCompare.
   process.stderr.write(`[compare] loading corpus from ${corpusDir}…\n`);
-  const resources = loadResources(corpusDir!);
-  const chunks = chunkResources(resources);
+  yield* RerankerCtx.set(reranker);
+  const configStore = createInMemoryConfigStore();
+  if (tavilyKey) yield* configStore.set("web", { tavilyKey });
+  yield* configStore.set("corpus", { corpusPath: corpusDir! });
+  const registry = yield* createAppRegistry({ configStore });
+  const webApp = yield* registry.enable(createWebApp);
+  const corpusApp = yield* registry.enable(createCorpusApp);
+  // Pass the App-provided sources to handleCompare. Web first so
+  // primaryScorer (sources[0]) keeps using the web app's reranker call
+  // path — identical behaviour to the pre-registry construction.
   const sources: Source<SourceContext, Chunk>[] = [
-    new WebSource(new TavilyProvider(tavilyKey!), {
-      topN: 5,
-      fetch: { maxChars: 3000, topK: 5, timeout: 10_000, tokenBudget: 1200 },
-    }),
-    new CorpusSource(resources, chunks, {
-      grep: { maxResults: 50, lineMaxChars: 200 },
-      readFile: { defaultMaxLines: 100 },
-    }),
+    webApp.source as unknown as Source<SourceContext, Chunk>,
+    corpusApp.source as unknown as Source<SourceContext, Chunk>,
   ];
 
   // ── Run the DAG ────────────────────────────────────────────────

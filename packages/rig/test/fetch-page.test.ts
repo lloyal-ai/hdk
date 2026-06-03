@@ -139,7 +139,7 @@ describe('FetchPageTool — URL dedup cache', () => {
   it('clearCache resets for new research run', () => {
     cache.clear();
     simulateFetch('https://example.com', { content: 'old' });
-    cache.clear(); // simulate WebSource.bind() clearing cache
+    cache.clear(); // simulate web app source resetting its cache between runs
     const res = simulateFetch('https://example.com', { content: 'new' });
     expect(res.cached).toBe(false);
     expect((res.result as any).content).toBe('new');

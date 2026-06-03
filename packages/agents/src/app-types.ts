@@ -1,10 +1,10 @@
 /**
- * App contract types — what a third-party app developer declares + what
+ * App protocol types — what a third-party app developer declares + what
  * the framework consumes when registering and rendering apps.
  *
  * Three groups of types live here:
  *
- * 1. **Declarative manifest** ({@link AppManifest}, {@link AppContract},
+ * 1. **Declarative manifest** ({@link AppManifest}, {@link AppProtocol},
  *    {@link AppHints}). Authored in `app.json` and imported into the
  *    factory; describes what the app *is* without any runtime values.
  *
@@ -21,7 +21,7 @@
  * and {@link ConfigFlow} for the optional credential handoff.
  *
  * @packageDocumentation
- * @category Contract
+ * @category Protocol
  */
 
 import type { Operation } from 'effection';
@@ -33,9 +33,9 @@ import type { JsonSchema } from './types';
 
 /**
  * The model-facing identity of an app — three fields under
- * `manifest.contract` in `app.json`. The framework renders these into
+ * `manifest.protocol` in `app.json`. The framework renders these into
  * the boundary marker (RFC §1.1), the spine catalog entry (RFC §1.2),
- * and the scope-guard allowed-tools set (RFC §5.3c).
+ * and the auth-guard allowed-tools set (RFC §5.3c).
  *
  * Constraints (enforced synchronously by `defineApp` per RFC §3.2 M3):
  * - `name` matches `[a-z][a-z0-9_-]{1,63}`.
@@ -46,12 +46,12 @@ import type { JsonSchema } from './types';
  *   length, with no chat-role markers (`SYSTEM:`/`USER:`/etc.), no
  *   markdown code fences, and no newlines.
  */
-export interface AppContract {
-  /** Model-facing contract identifier (e.g., `"web_research"`). */
+export interface AppProtocol {
+  /** Model-facing protocol identifier (e.g., `"web_research"`). */
   readonly name: string;
   /** Single-sentence routing hint rendered into the catalog `Use when:` line. */
   readonly useWhen: string;
-  /** Tool names exposed by this contract; must match the app's `tools` map keys. */
+  /** Tool names exposed by this protocol; must match the app's `tools` map keys. */
   readonly tools: readonly string[];
 }
 
@@ -73,13 +73,13 @@ export interface AppHints {
 
 /**
  * The declarative app manifest — content of `app.json` plus the
- * `modelContractVersion` declaration. Imported into the app's factory
+ * `appProtocolVersion` declaration. Imported into the app's factory
  * and passed to `defineApp(...)`.
  *
  * `manifest.name` is the **app identifier** used in code paths
  * (`SpawnSpec.assignedApp`, `registry.byName(...)`, the AppConfigStore
  * key, filesystem paths). The model never sees this — it only sees
- * `manifest.contract.name`. One app, one contract.
+ * `manifest.protocol.name`. One app, one protocol.
  */
 export interface AppManifest {
   /** App identifier used for routing, config storage, and registry lookup. */
@@ -87,13 +87,13 @@ export interface AppManifest {
   /** Semver version of the app package. */
   readonly version?: string;
   /**
-   * Which codified model contract version this app targets. The framework
+   * Which codified App protocol version this app targets. The framework
    * refuses to register apps whose declared version is not in
-   * `SUPPORTED_MODEL_CONTRACT_VERSIONS` (currently `['3.0']`). Per RFC §1.6.
+   * `SUPPORTED_APP_PROTOCOL_VERSIONS` (currently `['3.0']`). Per RFC §1.6.
    */
-  readonly modelContractVersion?: string;
+  readonly appProtocolVersion?: string;
   /** The model-facing identity. */
-  readonly contract: AppContract;
+  readonly protocol: AppProtocol;
   /** Optional UX/marketplace metadata (RFC §4.2 / §3.2 M4). */
   readonly hints?: AppHints;
   /**
@@ -133,13 +133,13 @@ export interface AgentRenderCtx {
 /**
  * Variables provided to `examples.eta` renderers in addition to all
  * fields of {@link AgentRenderCtx}. Apps can reference `it.name`
- * (contract name) and `it.tools` (the contract's tool-name list) when
+ * (protocol name) and `it.tools` (the protocol's tool-name list) when
  * authoring discipline content.
  */
 export interface ExamplesRenderCtx extends AgentRenderCtx {
-  /** The contract's name (same as `app.manifest.contract.name`). */
+  /** The protocol's name (same as `app.manifest.protocol.name`). */
   readonly name: string;
-  /** The contract's tool-name list (same as `app.manifest.contract.tools`). */
+  /** The protocol's tool-name list (same as `app.manifest.protocol.tools`). */
   readonly tools: readonly string[];
 }
 
@@ -148,7 +148,7 @@ export interface ExamplesRenderCtx extends AgentRenderCtx {
  * per-spawn prompt needs runtime parameterization beyond what Eta covers.
  *
  * The returned string is the per-spawn body; the framework prepends
- * `BOUNDARY_MARKER(contract.name)` and (optionally) appends the rendered
+ * `BOUNDARY_MARKER(protocol.name)` and (optionally) appends the rendered
  * `examples.eta`. The function MUST NOT return content containing the
  * literal `Apply the **` substring (the framework prepends it and
  * `defineApp` cannot statically validate function outputs — the first-render
@@ -220,7 +220,7 @@ export interface App {
   readonly source: Source;
   /**
    * The tool instances exposed by this app. Their names must match
-   * `manifest.contract.tools` exactly. The framework concatenates all
+   * `manifest.protocol.tools` exactly. The framework concatenates all
    * registered apps' `tools` into the spine prefill (one shared decode
    * of all schemas, amortized across every spawn in the pool).
    */
@@ -280,8 +280,8 @@ export type AppState = 'enabled' | 'disabled';
 // ── App registry ─────────────────────────────────────────────────
 
 /**
- * The harness-owned registry of installed apps. Lives behind
- * `AppRegistryCtx`; the scope-guard (RFC §5.3c) consults it at
+ * The harness-owned registry of enabled apps. Lives behind
+ * `AppRegistryCtx`; the auth-guard (RFC §5.3c) consults it at
  * tool-dispatch time to resolve the allowed-tools set for an
  * App-assigned spawn (`SpawnSpec.assignedApp`). The concrete factory
  * `createAppRegistry(...)` lives in `@lloyal-labs/rig`; dynamic
@@ -297,7 +297,7 @@ export type AppState = 'enabled' | 'disabled';
 export interface AppRegistry {
   /**
    * Look up an enabled app by `manifest.name` (the routing key —
-   * **not** `manifest.contract.name`). Returns `undefined` if no app
+   * **not** `manifest.protocol.name`). Returns `undefined` if no app
    * with that name is enabled.
    */
   byName(name: string): App | undefined;
@@ -306,7 +306,7 @@ export interface AppRegistry {
    * spine renderer (RFC §1.2) walks this list to compose the catalog;
    * order is observable to the model.
    */
-  installed(): readonly App[];
+  enabled(): readonly App[];
   /**
    * Binary state of an app: `'enabled'` if it's in the registry,
    * `'disabled'` otherwise (RFC §6). Convenience over `byName(name) !==
@@ -314,7 +314,7 @@ export interface AppRegistry {
    */
   stateOf(name: string): AppState;
   /**
-   * Enable an app dynamically (the mid-session `/install` path). Runs
+   * Enable an app dynamically (the mid-session enable path). Runs
    * the factory in a fresh per-app detached scope (seeded with `App*Ctx`),
    * validates the manifest, and adds it. Returns the constructed App.
    * Throws — and tears down the partial scope — if the factory

@@ -1,7 +1,7 @@
 {
   "name": "@lloyal-labs/lloyal-agents",
-  "version": "2.1.0",
-  "description": "Multi-agent inference inside the decode loop — structured concurrency over shared KV state",
+  "version": "3.0.0",
+  "description": "Multi-agent inference inside the decode loop \u2014 structured concurrency over shared KV state",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "publishConfig": {
@@ -25,17 +25,19 @@
     "effection",
     "llama.cpp"
   ],
-  "license": "Apache-2.0",
+  "license": "SEE LICENSE IN LICENSE",
   "type": "commonjs",
   "scripts": {
     "build": "tsc -b"
   },
   "dependencies": {
-    "@lloyal-labs/sdk": "^2.1.0",
+    "@lloyal-labs/sdk": "^3.0.0",
     "effection": "^4.0.2",
     "eta": "^4.5.1"
   },
   "files": [
-    "dist/"
+    "dist/",
+    "LICENSE",
+    "LICENSE-FAQ.md"
   ]
 }

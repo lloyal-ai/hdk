@@ -14,7 +14,7 @@
  *   crashes the harness. The harness does **not** call a per-app register
  *   verb at boot.
  * - `registry.enable(factory)` / `registry.disable(name)` handle the
- *   genuine dynamic case (mid-session install/uninstall). `enable` →
+ *   genuine dynamic case (mid-session enable/disable). `enable` →
  *   `'enabled'`, `disable` → `'disabled'` (matching {@link AppState}).
  *   `disable` swallows + logs a throwing teardown, so a mid-session
  *   uninstall can't crash the session — possible only because each app
@@ -27,7 +27,7 @@
  * Per-app independent — one app's failure can't roll back another.
  *
  * @packageDocumentation
- * @category Contract
+ * @category Protocol
  */
 
 import { call, createScope, ensure, suspend } from 'effection';
@@ -35,6 +35,7 @@ import type { Operation } from 'effection';
 import {
   AppRegistryCtx,
   AppConfigStoreCtx,
+  GrantStoreCtx,
   RerankerCtx,
 } from '@lloyal-labs/lloyal-agents';
 import type {
@@ -42,9 +43,10 @@ import type {
   AppFactory,
   AppRegistry,
   AppConfigStore,
+  GrantStore,
   Reranker,
 } from '@lloyal-labs/lloyal-agents';
-import { SUPPORTED_MODEL_CONTRACT_VERSIONS } from './contract';
+import { SUPPORTED_APP_PROTOCOL_VERSIONS } from './protocol';
 
 /**
  * Options for {@link createAppRegistry}.
@@ -56,6 +58,15 @@ export interface CreateAppRegistryOpts {
    * read config at construction.
    */
   configStore: AppConfigStore;
+  /**
+   * The session's protected-tool grant store (RFC §3.2 M2, §5.3c). The
+   * registry seeds it on `GrantStoreCtx` so the agent pool's authGuard can
+   * resolve which `protected` tools the session is authorized to call.
+   * Optional — omit it when no app exposes protected tools (the authGuard
+   * is a no-op then). When omitted with protected tools present, the
+   * authGuard fails closed (every protected tool denied).
+   */
+  grantStore?: GrantStore;
   /**
    * App factories to enable at construction (the boot set). Each runs in
    * its own detached scope and is torn down on registry scope exit. The
@@ -98,7 +109,7 @@ interface RegistryEntry {
 export function* createAppRegistry(
   opts: CreateAppRegistryOpts,
 ): Operation<AppRegistry> {
-  const { configStore, apps } = opts;
+  const { configStore, grantStore, apps } = opts;
   const entries = new Map<string, RegistryEntry>();
   const order: string[] = [];
 
@@ -106,7 +117,7 @@ export function* createAppRegistry(
     byName(name: string): App | undefined {
       return entries.get(name)?.app;
     },
-    installed(): readonly App[] {
+    enabled(): readonly App[] {
       return order.map((n) => entries.get(n)!.app).filter(Boolean);
     },
     stateOf(name: string): 'enabled' | 'disabled' {
@@ -151,12 +162,12 @@ export function* createAppRegistry(
             }),
         );
 
-        const declared = app.manifest.modelContractVersion ?? '3.0';
-        if (!SUPPORTED_MODEL_CONTRACT_VERSIONS.includes(declared)) {
+        const declared = app.manifest.appProtocolVersion ?? '3.0';
+        if (!SUPPORTED_APP_PROTOCOL_VERSIONS.includes(declared)) {
           throw new Error(
-            `App "${app.manifest.name}" declares modelContractVersion="${declared}", ` +
-              `but the framework supports [${SUPPORTED_MODEL_CONTRACT_VERSIONS.map((v) => `"${v}"`).join(', ')}]. ` +
-              `Upgrade the app or use a framework version that supports this contract.`,
+            `App "${app.manifest.name}" declares appProtocolVersion="${declared}", ` +
+              `but the framework supports [${SUPPORTED_APP_PROTOCOL_VERSIONS.map((v) => `"${v}"`).join(', ')}]. ` +
+              `Upgrade the app or use a framework version that supports this protocol.`,
           );
         }
 
@@ -208,6 +219,9 @@ export function* createAppRegistry(
 
   yield* AppRegistryCtx.set(registry);
   yield* AppConfigStoreCtx.set(configStore);
+  // Seed the grant store so the agent pool's authGuard (RFC §3.2 M2) can
+  // read the session's protected-tool grants. Absent = fail-closed.
+  if (grantStore) yield* GrantStoreCtx.set(grantStore);
 
   // Tear down every still-enabled app on registry scope exit, reverse
   // register-order, best-effort (a throwing teardown is logged, never

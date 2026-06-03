@@ -1,7 +1,7 @@
 {
   "name": "harness.dev",
-  "version": "0.1.0",
-  "description": "The Harness Development Kit CLI — scaffold HDK harnesses and apps.",
+  "version": "0.2.0",
+  "description": "The Harness Development Kit CLI \u2014 scaffold HDK harnesses and apps.",
   "bin": {
     "harness.dev": "dist/cli.js"
   },
@@ -35,6 +35,7 @@
     "prepublishOnly": "npm run build"
   },
   "files": [
-    "dist/**/*.js"
+    "dist/**/*.js",
+    "LICENSE"
   ]
 }

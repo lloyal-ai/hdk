@@ -4,7 +4,7 @@
 [![GPU Tests](https://github.com/lloyal-ai/lloyal.node/actions/workflows/gpu-test.yml/badge.svg)](https://github.com/lloyal-ai/lloyal.node/actions/workflows/gpu-test.yml)
 [![npm agents](https://img.shields.io/npm/v/@lloyal-labs/lloyal-agents.svg?label=lloyal-agents)](https://www.npmjs.com/package/@lloyal-labs/lloyal-agents)
 [![npm sdk](https://img.shields.io/npm/v/@lloyal-labs/sdk.svg?label=sdk)](https://www.npmjs.com/package/@lloyal-labs/sdk)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-FSL--1.1--Apache--2.0-blue.svg)](LICENSE)
 
 **Full-stack agentic AI for llama.cpp. One Node process — no inference server, no Docker, no vector DB, no glue code.**
 
@@ -24,20 +24,20 @@ Agents are branches of a live llama.cpp KV cache, scheduled under structured con
 
 The honest comparison is full stack against full stack. Each row of the right column is a service to install, configure, version, secure, and orchestrate. Each row of the left column is an import.
 
-| Typical agent stack | HDK |
-| --- | --- |
-| Inference server (vLLM / Ollama / llama-server) | `@lloyal-labs/lloyal.node` |
-| Agent runtime (LangChain / LangGraph / AutoGen / CrewAI) | `@lloyal-labs/lloyal-agents` |
+| Typical agent stack                                             | HDK                                   |
+| --------------------------------------------------------------- | ------------------------------------- |
+| Inference server (vLLM / Ollama / llama-server)                 | `@lloyal-labs/lloyal.node`            |
+| Agent runtime (LangChain / LangGraph / AutoGen / CrewAI)        | `@lloyal-labs/lloyal-agents`          |
 | Vector DB (Pinecone / Weaviate / pgvector) + embedding pipeline | `Source` contract — sources are tools |
-| Retrieval orchestration (Haystack / LlamaIndex) | `@lloyal-labs/rig` |
-| Process orchestrator (Docker compose / Kubernetes / Airflow) | TypeScript scopes (Effection) |
-| Glue code | `npm i` |
+| Retrieval orchestration (Haystack / LlamaIndex)                 | `@lloyal-labs/rig`                    |
+| Process orchestrator (Docker compose / Kubernetes / Airflow)    | TypeScript scopes (Effection)         |
+| Glue code                                                       | `npm i`                               |
 
 ## What you get
 
 - **Structured Concurrency.** Agents bind to parent scopes via [Effection](https://frontside.com/effection); cancellation propagates, teardown runs in reverse. The model that powers Kotlin coroutines, Swift Tasks, Java Project Loom, and C++26 — applied to GPU-native agents.
 - **Continuous-Context Agents.** Agents share GPU state, not strings. Forks are O(1), zero tensor copy — sub-agents inherit the parent's full attention state instead of re-encoding lossy summaries. **4.4× fewer tokens processed** than a prompt-rebuilding approach.
-- **Retrieval-Interleaved Generation.** Agents assemble context *during* generation — searching, reading, and reranking across your app's own data. One `Source` shape for files, SQL, the web, or user records. A cross-encoder focal lens admits only verbatim top-K chunks — never summarized.
+- **Retrieval-Interleaved Generation.** Agents assemble context _during_ generation — searching, reading, and reranking across your app's own data. One `Source` shape for files, SQL, the web, or user records. A cross-encoder focal lens admits only verbatim top-K chunks — never summarized.
 
 Mechanics, receipts, and the case for the architecture at [hdk.lloyal.ai](https://hdk.lloyal.ai).
 
@@ -53,11 +53,11 @@ Mechanics, receipts, and the case for the architecture at [hdk.lloyal.ai](https:
 npm i @lloyal-labs/lloyal-agents @lloyal-labs/lloyal.node @lloyal-labs/rig
 ```
 
-| Package | Role |
-| --- | --- |
-| `lloyal-agents` | Agent runtime — tick loop, orchestrators, policy, tools |
-| `lloyal.node` | Native binding for llama.cpp ([liblloyal](https://github.com/lloyal-ai/liblloyal)); prebuilt for 13 platform/GPU combinations |
-| `rig` | Retrieval-Interleaved Generation — `WebSource`, `CorpusSource`, `reportTool`, `DelegateTool`. Optional if you write your own tools |
+| Package         | Role                                                                                                                               |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `lloyal-agents` | Agent runtime — tick loop, orchestrators, policy, tools                                                                            |
+| `lloyal.node`   | Native binding for llama.cpp ([liblloyal](https://github.com/lloyal-ai/liblloyal)); prebuilt for 13 platform/GPU combinations      |
+| `rig`           | Retrieval-Interleaved Generation — `WebSource`, `CorpusSource`, `reportTool`, `DelegateTool`. Optional if you write your own tools |
 
 ## Quickstart
 
@@ -95,22 +95,25 @@ main(function* () {
 
   // Multiple agents on shared KV
   const tasks = [
-    { content: "What datasets does the corpus index?", systemPrompt: WORKER_PROMPT },
-    { content: "What's the most-cited reference inside?", systemPrompt: WORKER_PROMPT },
+    {
+      content: "What datasets does the corpus index?",
+      systemPrompt: WORKER_PROMPT,
+    },
+    {
+      content: "What's the most-cited reference inside?",
+      systemPrompt: WORKER_PROMPT,
+    },
     { content: "Summarize the main thesis.", systemPrompt: WORKER_PROMPT },
   ];
   const tools = [...corpusTools, reportTool];
-  yield* withSpine(
-    { systemPrompt: playbooks, tools },
-    function* (spine) {
-      return yield* agentPool({
-        orchestrate: parallel(tasks), // or chain(...), fanout(...), dag(...)
-        tools,
-        parent: spine,
-        terminalToolName: "report",
-      });
-    },
-  );
+  yield* withSpine({ systemPrompt: playbooks, tools }, function* (spine) {
+    return yield* agentPool({
+      orchestrate: parallel(tasks), // or chain(...), fanout(...), dag(...)
+      tools,
+      parent: spine,
+      terminalToolName: "report",
+    });
+  });
 });
 ```
 
@@ -164,22 +167,22 @@ The native binding [`@lloyal-labs/lloyal.node`](https://github.com/lloyal-ai/llo
 
 GPU integration tests run against six architectures and chat-template families on every PR:
 
-| Model | Params | Quant | Template |
-| --- | --- | --- | --- |
-| SmolLM2-1.7B-Instruct | 1.7B | Q4_K_M | ChatML |
-| Llama-3.2-1B-Instruct | 1B | Q4_K_M | Llama 3 |
-| Phi-3.5-mini-instruct | 3.8B | Q4_K_M | Phi 3 |
-| Qwen3-4B-Thinking | 4B | Q4_K_M | ChatML |
-| gemma-3-1b-it | 1B | Q4_K_M | Gemma |
-| GLM-Edge | — | Q4_K_M | GLM-Edge |
+| Model                 | Params | Quant  | Template |
+| --------------------- | ------ | ------ | -------- |
+| SmolLM2-1.7B-Instruct | 1.7B   | Q4_K_M | ChatML   |
+| Llama-3.2-1B-Instruct | 1B     | Q4_K_M | Llama 3  |
+| Phi-3.5-mini-instruct | 3.8B   | Q4_K_M | Phi 3    |
+| Qwen3-4B-Thinking     | 4B     | Q4_K_M | ChatML   |
+| gemma-3-1b-it         | 1B     | Q4_K_M | Gemma    |
+| GLM-Edge              | —      | Q4_K_M | GLM-Edge |
 
 The native backend ships prebuilt binaries across 13 platform/GPU combinations:
 
-| Platform | arm64 | x64 |
-| --- | --- | --- |
-| **macOS** | Metal | CPU |
-| **Linux** | CPU, CUDA, Vulkan | CPU, CUDA, Vulkan |
-| **Windows** | CPU, Vulkan | CPU, CUDA, Vulkan |
+| Platform    | arm64             | x64               |
+| ----------- | ----------------- | ----------------- |
+| **macOS**   | Metal             | CPU               |
+| **Linux**   | CPU, CUDA, Vulkan | CPU, CUDA, Vulkan |
+| **Windows** | CPU, Vulkan       | CPU, CUDA, Vulkan |
 
 ## Development
 
@@ -201,4 +204,22 @@ Every PR runs build, typecheck, and unit tests on CI, plus a cross-repo GPU inte
 
 ## License
 
-Apache-2.0
+You can build and sell commercial products using HDK.
+
+HDK 3.0 runtime packages (`@lloyal-labs/lloyal-agents`, `@lloyal-labs/sdk`,
+`@lloyal-labs/rig`, `@lloyal-labs/corpus-app`, `@lloyal-labs/web-app`) are
+source-available under FSL-1.1-Apache-2.0 and convert to Apache 2.0 two
+years after each release. The restriction is narrow: you cannot offer a
+competing HDK runtime, managed HDK service, or alternative HDK App
+distribution channel. The canonical App distribution channel is
+`apps.lloyal.ai` — every listed App is reviewed by Lloyal Labs for
+tool-safety and manifest conformance, so consumers get a single AI-safety
+boundary across every HDK harness and the App protocol does not fragment
+into incompatible sub-catalogs.
+
+`packages/harness-cli` (the `harness.dev` CLI) is licensed separately under
+Apache 2.0 — see its own `LICENSE` file.
+
+See [`LICENSE-FAQ.md`](./LICENSE-FAQ.md) for concrete examples of what's
+permitted and what's restricted. See [`LICENSE`](./LICENSE) for the legal
+text and [`NOTICE`](./NOTICE) for attribution.

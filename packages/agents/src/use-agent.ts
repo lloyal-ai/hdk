@@ -106,13 +106,15 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
       yield* call(() => root.prefill(prefillTokens));
     }
 
-    // Eager grammar from schema — set on root before fork.
-    // Fork inherits grammar state. formatChatSync returns no grammar for
-    // no-tools case, so applyLazyGrammar is a no-op and the inherited
-    // eager grammar persists on the forked agent branch.
+    // Eager grammar from schema. Compile here, but apply it on the GENERATING
+    // branch via the pool (eagerGrammar below), not on root — setting it on
+    // root and relying on fork-inheritance didn't survive to the branch that
+    // decodes, so the agent free-ran (e.g. the planner emitting ```json fences
+    // / dropping required fields). The pool sets it in applyLazyGrammar, after
+    // the suffix prefill, the same seam tool grammar uses.
+    let eagerGrammar: string | undefined;
     if (opts.schema) {
-      const grammar = yield* call(() => ctx.jsonSchemaToGrammar(JSON.stringify(opts.schema)));
-      root.setGrammar(grammar);
+      eagerGrammar = yield* call(() => ctx.jsonSchemaToGrammar(JSON.stringify(opts.schema)));
     }
 
     // Delegate to useAgentPool N=1 via a trivial parallel orchestrator
@@ -126,6 +128,7 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
       maxTurns: opts.maxTurns,
       policy: opts.policy,
       trace: opts.trace,
+      eagerGrammar,
     });
 
     // Drain Subscription inline — forward to broadcast

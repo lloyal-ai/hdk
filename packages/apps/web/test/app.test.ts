@@ -14,10 +14,10 @@ describe('createWebApp', () => {
     });
 
     expect(app.manifest.name).toBe('web');
-    expect(app.manifest.contract.name).toBe('web_research');
-    expect(app.manifest.contract.tools).toEqual(['web_search', 'fetch_page']);
+    expect(app.manifest.protocol.name).toBe('web_research');
+    expect(app.manifest.protocol.tools).toEqual(['web_search', 'fetch_page']);
     expect(app.source.name).toBe('web');
-    // App.tools (array) must cover exactly the contract's tools.
+    // App.tools (array) must cover exactly the protocol's tools.
     expect(app.tools.map((t) => t.name).sort()).toEqual(['fetch_page', 'web_search']);
     // skill.eta must NOT carry the framework boundary marker (defineApp would reject it).
     const agentSrc = typeof app.skill === 'string' ? app.skill : '';

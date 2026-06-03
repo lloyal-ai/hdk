@@ -1,9 +1,9 @@
 {
   "name": "@lloyal-labs/web-app",
-  "version": "1.0.0",
+  "version": "3.0.0",
   "private": true,
-  "description": "HDK reference app — web research (Source + tools + contract). Distributed via the signed-bundle channel, never public npm.",
-  "license": "Apache-2.0",
+  "description": "HDK reference app \u2014 web research (Source + tools + contract). Distributed via the signed-bundle channel, never public npm.",
+  "license": "SEE LICENSE IN LICENSE",
   "type": "commonjs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -16,14 +16,16 @@
   "files": [
     "dist/",
     "app.json",
-    "skill.eta"
+    "skill.eta",
+    "LICENSE",
+    "LICENSE-FAQ.md"
   ],
   "scripts": {
     "build": "tsc -b"
   },
   "dependencies": {
-    "@lloyal-labs/lloyal-agents": "^2.1.0",
-    "@lloyal-labs/rig": "^2.1.0",
+    "@lloyal-labs/lloyal-agents": "^3.0.0",
+    "@lloyal-labs/rig": "^3.0.0",
     "@mozilla/readability": "^0.6.0",
     "effection": "^4.0.2",
     "linkedom": "^0.18.12"

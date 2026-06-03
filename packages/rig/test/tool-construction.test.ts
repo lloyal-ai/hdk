@@ -63,7 +63,7 @@ describe('new PlanTool(opts)', () => {
     const tool = new PlanTool({
       prompt: { system: 's', user: 'u' },
       session: fakeSession,
-      maxQuestions: 5,
+      maxTasks: 5,
     });
     expect(tool.name).toBe('plan');
     expect(tool.parameters.required).toEqual(['query']);
@@ -71,13 +71,13 @@ describe('new PlanTool(opts)', () => {
 
   it('accepts availableApps without throwing (grammar-constrained task.app)', () => {
     const apps = [
-      { manifest: { contract: { name: 'web_research' } } },
-      { manifest: { contract: { name: 'corpus_search' } } },
+      { manifest: { protocol: { name: 'web_research' } } },
+      { manifest: { protocol: { name: 'corpus_search' } } },
     ] as never[];
     const tool = new PlanTool({
       prompt: { system: 's', user: 'u' },
       session: fakeSession,
-      maxQuestions: 5,
+      maxTasks: 5,
       availableApps: apps,
     });
     expect(tool).toBeInstanceOf(PlanTool);

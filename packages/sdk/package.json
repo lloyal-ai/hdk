@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/sdk",
-  "version": "2.2.0",
+  "version": "3.0.0",
   "description": "Backend-agnostic TypeScript SDK for the lloyal inference platform",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -24,12 +24,14 @@
     "tree-search",
     "llama.cpp"
   ],
-  "license": "Apache-2.0",
+  "license": "SEE LICENSE IN LICENSE",
   "type": "commonjs",
   "scripts": {
     "build": "tsc -b"
   },
   "files": [
-    "dist/"
+    "dist/",
+    "LICENSE",
+    "LICENSE-FAQ.md"
   ]
 }

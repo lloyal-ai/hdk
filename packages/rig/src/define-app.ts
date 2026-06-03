@@ -5,16 +5,16 @@
  * Performs all framework-side validations of the app's declared shape
  * before the App enters the registry:
  *
- * - **Manifest schema.** `name` and `contract.name` match
- *   `[a-z][a-z0-9_-]{1,63}`; `contract.tools` is a non-empty unique array
- *   of names matching the same regex; `contract.useWhen` is a single
+ * - **Manifest schema.** `name` and `protocol.name` match
+ *   `[a-z][a-z0-9_-]{1,63}`; `protocol.tools` is a non-empty unique array
+ *   of names matching the same regex; `protocol.useWhen` is a single
  *   bounded sentence with no chat-role markers, code fences, or newlines
  *   (RFC §3.2 M3 metadata sanitization).
- * - **Model contract version.** `manifest.modelContractVersion` is in
- *   `SUPPORTED_MODEL_CONTRACT_VERSIONS` (RFC §1.6). Absence is permitted
+ * - **App protocol version.** `manifest.appProtocolVersion` is in
+ *   `SUPPORTED_APP_PROTOCOL_VERSIONS` (RFC §1.6). Absence is permitted
  *   (treated as `"3.0"`).
  * - **Tool map coverage.** The keys of the supplied `tools` object equal
- *   `manifest.contract.tools[]` as a set — every declared tool has an
+ *   `manifest.protocol.tools[]` as a set — every declared tool has an
  *   implementation, no extras.
  * - **Boundary-marker double-emission.** `skill` (when string-typed) MUST
  *   NOT contain the literal `Apply the **` substring — the framework
@@ -27,7 +27,7 @@
  * manifest fails at construction time, not later at registration.
  *
  * @packageDocumentation
- * @category Contract
+ * @category Protocol
  */
 
 import type { Operation } from 'effection';
@@ -41,7 +41,7 @@ import type {
   ConfigFlow,
   AppHints,
 } from '@lloyal-labs/lloyal-agents';
-import { SUPPORTED_MODEL_CONTRACT_VERSIONS } from './contract';
+import { SUPPORTED_APP_PROTOCOL_VERSIONS } from './protocol';
 
 /**
  * Argument to {@link defineApp}. The fields that survive into the
@@ -56,7 +56,7 @@ export interface DefineAppSpec {
   source: Source;
   /**
    * Map of tool-name → Tool instance. Keys MUST equal
-   * `manifest.contract.tools[]` as a set (exact membership match — no
+   * `manifest.protocol.tools[]` as a set (exact membership match — no
    * missing tools, no extras). Each value's `.name` property must match
    * its key (otherwise the catalog's `Tools:` line and the agent's
    * dispatched tool call would disagree).
@@ -86,7 +86,7 @@ export interface DefineAppSpec {
 // ── Validation regexes / constants ───────────────────────────────
 
 /**
- * Identifier shape for app names and contract names. Lowercase ASCII
+ * Identifier shape for app names and protocol names. Lowercase ASCII
  * start, lowercase alphanumeric / underscore / hyphen rest, length 2-64.
  * This grammar is the M3 sanitization on shared-spine metadata — it
  * ensures app-supplied strings can't break the markdown bold in the
@@ -96,14 +96,14 @@ export interface DefineAppSpec {
 const ID_RE = /^[a-z][a-z0-9_-]{1,63}$/;
 
 /**
- * Maximum length of `contract.useWhen`. Bounded so the rendered catalog
+ * Maximum length of `protocol.useWhen`. Bounded so the rendered catalog
  * stays compact and to limit the residual semantic-injection surface
  * available within the grammar's allowed character set (RFC §3.3 row 2).
  */
 const USE_WHEN_MAX_LEN = 280;
 
 /**
- * Patterns forbidden anywhere in `contract.useWhen` — chat-role markers
+ * Patterns forbidden anywhere in `protocol.useWhen` — chat-role markers
  * (would confuse the model into treating the catalog text as a fake
  * conversation) and markdown code fences (would let an attacker break
  * out of the catalog block into structured content). RFC §3.2 M3.
@@ -131,7 +131,7 @@ function assertIdentifier(value: string, field: string): void {
     throw new Error(
       `defineApp: ${field} ${JSON.stringify(value)} does not match the required ` +
         `identifier grammar ${ID_RE.toString()} (lowercase alphanumeric + _-, length 2-64). ` +
-        `This is a model-contract metadata invariant — names appear in the boundary ` +
+        `This is an App protocol metadata invariant — names appear in the boundary ` +
         `marker and shared spine catalog where injection-prone characters must be excluded.`,
     );
   }
@@ -139,18 +139,18 @@ function assertIdentifier(value: string, field: string): void {
 
 function assertUseWhen(value: string): void {
   if (typeof value !== 'string') {
-    throw new Error(`defineApp: manifest.contract.useWhen must be a string, got ${typeof value}`);
+    throw new Error(`defineApp: manifest.protocol.useWhen must be a string, got ${typeof value}`);
   }
   if (value.length === 0 || value.length > USE_WHEN_MAX_LEN) {
     throw new Error(
-      `defineApp: manifest.contract.useWhen length ${value.length} out of bounds ` +
+      `defineApp: manifest.protocol.useWhen length ${value.length} out of bounds ` +
         `[1, ${USE_WHEN_MAX_LEN}]. Keep it to a single short sentence.`,
     );
   }
   for (const pattern of USE_WHEN_FORBIDDEN) {
     if (pattern.test(value)) {
       throw new Error(
-        `defineApp: manifest.contract.useWhen contains forbidden pattern ${pattern.toString()}. ` +
+        `defineApp: manifest.protocol.useWhen contains forbidden pattern ${pattern.toString()}. ` +
           `useWhen renders into the shared spine catalog; chat-role markers, code fences, and ` +
           `line breaks are excluded to prevent injection at the catalog-text layer (RFC §3.2 M3).`,
       );
@@ -158,66 +158,66 @@ function assertUseWhen(value: string): void {
   }
 }
 
-function assertContractTools(tools: readonly string[]): void {
+function assertProtocolTools(tools: readonly string[]): void {
   if (!Array.isArray(tools) || tools.length === 0) {
     throw new Error(
-      `defineApp: manifest.contract.tools must be a non-empty array of tool-name strings`,
+      `defineApp: manifest.protocol.tools must be a non-empty array of tool-name strings`,
     );
   }
   const seen = new Set<string>();
   for (const name of tools) {
-    assertIdentifier(name, `manifest.contract.tools[*] (${JSON.stringify(name)})`);
+    assertIdentifier(name, `manifest.protocol.tools[*] (${JSON.stringify(name)})`);
     if (seen.has(name)) {
-      throw new Error(`defineApp: manifest.contract.tools contains duplicate ${JSON.stringify(name)}`);
+      throw new Error(`defineApp: manifest.protocol.tools contains duplicate ${JSON.stringify(name)}`);
     }
     seen.add(name);
   }
 }
 
-function assertModelContractVersion(version: string | undefined): void {
+function assertAppProtocolVersion(version: string | undefined): void {
   // Undefined is permitted — apps that don't declare a version are
   // assumed to target the framework's default ("3.0"). The registry
   // (enable-time) may tighten this if needed.
   if (version === undefined) return;
-  if (!SUPPORTED_MODEL_CONTRACT_VERSIONS.includes(version)) {
+  if (!SUPPORTED_APP_PROTOCOL_VERSIONS.includes(version)) {
     throw new Error(
-      `defineApp: manifest.modelContractVersion ${JSON.stringify(version)} is not in the ` +
-        `supported set ${JSON.stringify(SUPPORTED_MODEL_CONTRACT_VERSIONS)}. ` +
+      `defineApp: manifest.appProtocolVersion ${JSON.stringify(version)} is not in the ` +
+        `supported set ${JSON.stringify(SUPPORTED_APP_PROTOCOL_VERSIONS)}. ` +
         `This build of @lloyal-labs/rig only validates apps targeting one of those versions.`,
     );
   }
 }
 
 function assertToolMapCoverage(
-  contractTools: readonly string[],
+  protocolTools: readonly string[],
   toolsMap: Readonly<Record<string, Tool>>,
 ): void {
-  const declared = new Set(contractTools);
+  const declared = new Set(protocolTools);
   const provided = new Set(Object.keys(toolsMap));
 
-  // Missing — tools declared in the contract but not supplied as instances.
+  // Missing — tools declared in the protocol but not supplied as instances.
   const missing: string[] = [];
   for (const name of declared) {
     if (!provided.has(name)) missing.push(name);
   }
   if (missing.length > 0) {
     throw new Error(
-      `defineApp: tools map is missing implementations for contract.tools: ` +
+      `defineApp: tools map is missing implementations for protocol.tools: ` +
         `${JSON.stringify(missing)}. Every declared tool must have a corresponding ` +
         `entry in the \`tools\` map passed to defineApp.`,
     );
   }
 
-  // Extras — tools supplied as instances but not declared in the contract.
+  // Extras — tools supplied as instances but not declared in the protocol.
   const extras: string[] = [];
   for (const name of provided) {
     if (!declared.has(name)) extras.push(name);
   }
   if (extras.length > 0) {
     throw new Error(
-      `defineApp: tools map contains entries not declared in manifest.contract.tools: ` +
-        `${JSON.stringify(extras)}. Add them to contract.tools or remove from the tools map ` +
-        `— the catalog Tools: line is rendered from contract.tools and the scope-guard's ` +
+      `defineApp: tools map contains entries not declared in manifest.protocol.tools: ` +
+        `${JSON.stringify(extras)}. Add them to protocol.tools or remove from the tools map ` +
+        `— the catalog Tools: line is rendered from protocol.tools and the auth-guard's ` +
         `allowed-tools set is derived from the same array, so extras would never be callable.`,
     );
   }
@@ -247,9 +247,9 @@ function assertSkillTemplate(skill: string | SkillTemplateFn): void {
   if (skill.includes(BOUNDARY_MARKER_PREFIX)) {
     throw new Error(
       `defineApp: skill template contains the literal ${JSON.stringify(BOUNDARY_MARKER_PREFIX)} substring. ` +
-        `The framework prepends \`Apply the **<name>** contract.\\n\\n\` via BOUNDARY_MARKER at ` +
+        `The framework prepends \`Apply the **<name>** protocol.\\n\\n\` via BOUNDARY_MARKER at ` +
         `render time; including it in the template would emit it twice. Strip the ` +
-        `\`Apply the **...** contract.\` line (and its trailing blank line) from skill.eta — ` +
+        `\`Apply the **...** protocol.\` line (and its trailing blank line) from skill.eta — ` +
         `see RFC §1.1 / §4.3.`,
     );
   }
@@ -288,25 +288,25 @@ export function defineApp(spec: DefineAppSpec): App {
   // 1. Manifest top-level identifier.
   assertIdentifier(spec.manifest.name, 'manifest.name');
 
-  // 2. Model contract version (if declared).
-  assertModelContractVersion(spec.manifest.modelContractVersion);
+  // 2. App protocol version (if declared).
+  assertAppProtocolVersion(spec.manifest.appProtocolVersion);
 
-  // 3. Contract substructure: name, useWhen, tools.
-  assertIdentifier(spec.manifest.contract.name, 'manifest.contract.name');
-  assertUseWhen(spec.manifest.contract.useWhen);
-  assertContractTools(spec.manifest.contract.tools);
+  // 3. Protocol substructure: name, useWhen, tools.
+  assertIdentifier(spec.manifest.protocol.name, 'manifest.protocol.name');
+  assertUseWhen(spec.manifest.protocol.useWhen);
+  assertProtocolTools(spec.manifest.protocol.tools);
 
   // 4. Tools map coverage and name agreement.
-  assertToolMapCoverage(spec.manifest.contract.tools, spec.tools);
+  assertToolMapCoverage(spec.manifest.protocol.tools, spec.tools);
 
   // 5. Agent template double-emission guard.
   assertSkillTemplate(spec.skill);
 
-  // Preserve `contract.tools` insertion order in the runtime tools array
+  // Preserve `protocol.tools` insertion order in the runtime tools array
   // — that's the order the catalog renders and the order the spine
   // prefill receives schemas in. The framework relies on stable ordering
   // for the §10.1 snapshot gate.
-  const tools = spec.manifest.contract.tools.map((name) => spec.tools[name]);
+  const tools = spec.manifest.protocol.tools.map((name) => spec.tools[name]);
 
   return {
     name: spec.manifest.name,

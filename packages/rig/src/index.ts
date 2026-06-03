@@ -27,33 +27,31 @@ export type {
   Reranker, ScoredChunk, ScoredResult,
 } from './tools';
 
-// Sources (platform-agnostic — no node:fs)
-export { WebSource } from './sources/web';
-export type { WebSourceOpts } from './sources/web';
-export { CorpusSource } from './sources/corpus';
-export type { CorpusSourceOpts, CorpusPromptData } from './sources/corpus';
+// Cross-app Source type re-export (platform-agnostic)
 export type { SourceContext } from './sources/types';
 
-// Chunking (platform-agnostic — linkedom is pure JS)
+// Chunking helpers (platform-agnostic — linkedom is pure JS).
+// Shared by the web app's source and the rig-resident fetch_page tool.
 export { chunkFetchedPages, chunkHtml } from './sources/chunking';
 export type { FetchedPage } from './sources/chunking';
 
 // Resource types (pure TS — RN-safe)
 export type { Resource, Chunk } from './resources/types';
 
-// HDK 3.0 App Contract surfaces (RFC §5)
+// HDK 3.0 App Protocol surfaces (RFC §5)
 export {
   BOUNDARY_MARKER,
   FRAMEWORK_INTRO,
   TOOL_SELECTION_RULE,
   CATALOG_ENTRY,
   VALIDATED_MODELS_3_0,
-  MODEL_CONTRACT_VERSION,
-  SUPPORTED_MODEL_CONTRACT_VERSIONS,
-} from './contract';
+  APP_PROTOCOL_VERSION,
+  SUPPORTED_APP_PROTOCOL_VERSIONS,
+} from './protocol';
 export { defineApp } from './define-app';
 export { cancellableFetch, FetchTimeoutError } from './cancellable-fetch';
 export { createInMemoryConfigStore } from './config-store';
+export { createGrantStore } from './grant-store';
 export { createAppRegistry } from './registry';
 export type { CreateAppRegistryOpts } from './registry';
 export { verifyBundle, loadBundle, BundleVerificationError } from './bundle';

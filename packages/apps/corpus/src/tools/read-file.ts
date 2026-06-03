@@ -75,6 +75,7 @@ export function mergeRanges(ranges: [number, number][]): [number, number][] {
  */
 export class ReadFileTool extends Tool<{ filename: string; startLine?: number; endLine?: number }> {
   readonly name = 'read_file';
+  readonly protected = false;
   readonly description = 'Read content from a file at specific line ranges. Use startLine/endLine from search results.';
   readonly parameters: JsonSchema;
 

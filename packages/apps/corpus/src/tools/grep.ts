@@ -16,6 +16,7 @@ import type { Resource } from '@lloyal-labs/rig';
  */
 export class GrepTool extends Tool<{ pattern: string; ignoreCase?: boolean }> {
   readonly name = 'grep';
+  readonly protected = false;
   readonly description = 'Search the entire corpus for a regex pattern. Returns every matching line with line numbers and total match count. Complements search() which ranks by relevance — grep scans exhaustively.';
   readonly parameters: JsonSchema = {
     type: 'object',

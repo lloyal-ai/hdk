@@ -4,14 +4,20 @@ A 6-node DAG with explicit edges drawn between live streaming agent cards. The e
 
 ```
   research_web_X ──┐                          ┌──▶ compare_axis_1 ──┐
-  (WebSource)      │                          │                     │
+  (web app)        │                          │                     │
                    ├──────────────────────────┼──▶ compare_axis_2 ──┼──▶ synthesize
   research_corp_Y ─┘                          │                     │
-  (CorpusSource)                              └──▶ compare_axis_3 ──┘
+  (corpus app)                                └──▶ compare_axis_3 ──┘
 
        roots                       fan-in / fan-out                  sink
    (parallel, no deps)          (3 siblings sharing deps)
 ```
+
+The two research lanes pull their `Source` instances from the HDK 3.0 App
+registry — `@lloyal-labs/web-app` and `@lloyal-labs/corpus-app` are
+enabled at boot, each contributing its tools to the shared pool. The DAG
+is otherwise framework-only; the App contract just owns source
+provisioning.
 
 Why this DAG matters pedagogically:
 
@@ -86,7 +92,7 @@ npm run examples:compare -- --x "…" --y "…" --corpus … --reranker … <mod
 ## Reading the code
 
 - `harness.ts` — DAG declaration + custom orchestrator (`dagWithEvents`) that mirrors `dag()` from `packages/agents/src/orchestrators.ts:209` but emits per-node lifecycle events. ~190 LOC.
-- `main.ts` — CLI args, model load, source build, TUI mount or non-TTY fallback. ~210 LOC.
+- `main.ts` — CLI args, model load, App registry wiring (`createAppRegistry` + `createWebApp` + `createCorpusApp`), TUI mount or non-TTY fallback. ~210 LOC.
 - `tui/` — self-contained Ink TUI:
   - `DagCanvas.tsx` — topo sort into layers, layout cards, draw `EdgeRow` between layers
   - `EdgeRow.tsx` + `edge-router.ts` — pure orthogonal box-drawing router (drop · bus · drop)

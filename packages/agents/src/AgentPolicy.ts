@@ -30,18 +30,20 @@ function tokenBudgetAsWords(budgetTokens: number): number {
  *
  * `tools` selects which tool calls this guard sees: a `string[]` matches
  * by exact name; the literal `'*'` matches every call (used by the
- * framework-injected scope-guard from RFC §5.3c — guards that need to
+ * framework-injected authGuard from RFC §5.3c — guards that need to
  * inspect *every* call regardless of tool name).
  *
  * `reject` returns `true` to reject the call with `message`. It receives
  * the parsed args, the full agent lineage's tool history, the agent
- * itself (whose `allowedTools` / `assignedApp` carry per-spawn scope),
- * and `toolName` (so `tools: '*'` guards know which tool they're
- * gating).
+ * itself, `toolName` (so `tools: '*'` guards know which tool they're
+ * gating), and the pool-level `config` (so guards can consult
+ * pool-resolved state such as the protected-tool set and the session's
+ * grants — see {@link PolicyConfig}). Guards that don't need `config`
+ * simply omit the parameter.
  *
  * `name` is the optional guard identifier surfaced via
  * `ProduceAction.nudge.guard` so the pool can emit per-guard trace
- * events (e.g., `tool:scopeReject` for `name: 'scope_reject'`). Omit it
+ * events (e.g., `tool:authReject` for `name: 'auth_reject'`). Omit it
  * for guards whose only observable footprint is the resulting
  * `pool:agentNudge` event.
  *
@@ -56,6 +58,7 @@ export interface ToolGuard {
     lineageHistory: ToolHistoryEntry[],
     agent: Agent,
     toolName: string,
+    config: PolicyConfig,
   ) => boolean;
   /** Error message sent back to the agent as a tool result. */
   message: string;
@@ -69,23 +72,25 @@ function parseHistoryArgs(argsStr: string): Record<string, unknown> {
 }
 
 export const defaultToolGuards: ToolGuard[] = [
-  // Framework-injected scope-guard (RFC §3.2 M2, §5.3c). Runs FIRST so
-  // out-of-scope tool calls reject before any dedup guard fires — the
-  // pool emits a structured `tool:scopeReject` event keyed off
-  // `ProduceAction.nudge.guard === 'scope_reject'` for security
-  // observability. No-op when `agent.allowedTools` is null (the spawn
-  // declared no scope; legacy behavior preserved).
+  // Framework-injected authGuard (RFC §3.2 M2, §5.3c). Runs FIRST so a
+  // protected-tool rejection fires before any dedup guard — the pool
+  // emits a structured `tool:authReject` event keyed off
+  // `ProduceAction.nudge.guard === 'auth_reject'` for security
+  // observability. Reads/gather tools are OPEN: the guard only fires for
+  // a `protected` tool (in `config.protectedTools`) the session has not
+  // been granted (`config.grants`). When no tools are protected — the
+  // common case — this is a no-op.
   {
-    name: 'scope_reject',
+    name: 'auth_reject',
     tools: '*',
-    reject: (_args, _history, agent, toolName) => {
-      const allowed = agent.allowedTools; // resolved live at dispatch (RFC §5.3c)
-      if (!allowed) return false;
-      return !allowed.includes(toolName);
+    reject: (_args, _history, _agent, toolName, config) => {
+      if (!config.protectedTools?.has(toolName)) return false; // open by default
+      return !config.grants?.has(toolName); // protected → deny unless granted
     },
     message:
-      'Tool not in scope for this spawn. Use only the tools listed for ' +
-      'the assigned contract (or the harness-provided tool list).',
+      'This action is protected and requires authorization that has not been ' +
+      'granted for this session. Use the available read tools to gather what ' +
+      'you can, and report what blocks completion.',
   },
   {
     tools: ['fetch_page'],
@@ -134,7 +139,7 @@ export type ProduceAction =
   | { type: 'tool_call'; tc: ParsedToolCall }
   | { type: 'return'; result: string }
   /** `guard` carries the identifier of the rejecting `ToolGuard` (RFC §5.3c
-   *  uses this to route `scope_reject` rejections to the `tool:scopeReject`
+   *  uses this to route `auth_reject` rejections to the `tool:authReject`
    *  trace event). Absent for nudges not produced by a guard. */
   | { type: 'nudge'; message: string; guard?: string }
   | { type: 'idle'; reason: IdleReason }
@@ -269,6 +274,20 @@ export interface PolicyConfig {
   maxTurns: number;
   terminalToolName?: string;
   hasNonTerminalTools: boolean;
+  /**
+   * Tool names this pool declares `protected` (gathered from each
+   * {@link Tool.protected} flag). The authGuard gates only these; every
+   * other tool is open. Resolved once at pool setup. Undefined/empty when
+   * no tool in the pool is protected (the common case).
+   */
+  protectedTools?: ReadonlySet<string>;
+  /**
+   * Protected tool names the session currently holds a grant for — read
+   * from {@link GrantStoreCtx} at pool setup. The authGuard allows a
+   * protected tool iff its name is in this set. Undefined/empty = no
+   * grants (fail-closed: every protected tool denied).
+   */
+  grants?: ReadonlySet<string>;
 }
 
 // ── Default policy ──────────────────────────────────────────
@@ -401,7 +420,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
     // guard — stuck agents (same query repeated past maxTurns) saw only
     // turn-limit nudges instead of the dedup message that named the
     // actual problem (see trace-1776819196054 agent 65539).
-    const guardRejection = this._checkGuards(tc, agent);
+    const guardRejection = this._checkGuards(tc, agent, config);
     if (guardRejection) return guardRejection;
     if (this._isOverBudget(agent, tc, pressure, config)) return this._handleOverBudget(agent, tc, pressure, config);
     // Normal tool call
@@ -473,14 +492,14 @@ export class DefaultAgentPolicy implements AgentPolicy {
     return { type: 'idle', reason: agent.turns >= config.maxTurns ? 'max_turns' : 'pressure_softcut' };
   }
 
-  private _checkGuards(tc: ParsedToolCall, agent: Agent): ProduceAction | null {
+  private _checkGuards(tc: ParsedToolCall, agent: Agent, config: PolicyConfig): ProduceAction | null {
     const lineageHistory = agent.walkAncestors(a => a.toolHistory);
     let toolArgs: Record<string, unknown>;
     try { toolArgs = JSON.parse(tc.arguments); } catch { toolArgs = {}; }
     for (const guard of this._guards) {
       const applies = guard.tools === '*' || guard.tools.includes(tc.name);
       if (!applies) continue;
-      if (guard.reject(toolArgs, lineageHistory, agent, tc.name)) {
+      if (guard.reject(toolArgs, lineageHistory, agent, tc.name, config)) {
         return { type: 'nudge', message: guard.message, guard: guard.name };
       }
     }

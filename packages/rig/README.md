@@ -44,38 +44,49 @@ An agent that greps with a narrow pattern and gets 0 matches will broaden the pa
 
 Depth scales with `maxTurns`. At 2 turns, agents do single-shot retrieval. At 6 turns, agents do 3–4 rounds of iterative refinement. At 20 turns, agents go deep — following citation chains, cross-referencing claims, building evidence maps. The quality difference is in the later tool call inputs.
 
-## Sources
+## Sources via the HDK 3.0 App protocol
 
-`@lloyal-labs/rig` provides two `Source` implementations (extending the base class from `lloyal-agents`):
+`@lloyal-labs/rig` is the framework layer; concrete `Source` implementations
+ship as separate **apps** under the HDK 3.0 App protocol (RFC §5):
 
-**`CorpusSource`** — local files with grep, semantic search, read_file, and recursive delegation. Agents investigate a knowledge base by pattern matching, reading sections in context, and spawning sub-agents for deeper investigation.
+**`@lloyal-labs/corpus-app`** — local files with grep, semantic search,
+read_file, and recursive delegation. Agents investigate a knowledge base by
+pattern matching, reading sections in context, and spawning sub-agents for
+deeper investigation.
 
-**`WebSource`** — web search via [Tavily](https://tavily.com), page fetching with attention-based content extraction, and recursive delegation. `BufferingFetchPage` wraps fetch results — full content goes to the agent for reasoning, while a parallel buffer stores content for post-research reranking. Content extraction uses an ephemeral fork to attend over the fetched page and extract summary + links via grammar-constrained generation, then prunes the fork — zero net KV cost per extraction.
+**`@lloyal-labs/web-app`** — web search via [Tavily](https://tavily.com) (or
+keyless DuckDuckGo fallback), page fetching with attention-based content
+extraction, and recursive delegation. `BufferingFetchPage` wraps fetch
+results — full content goes to the agent for reasoning, while a parallel
+buffer stores content for post-research reranking. Content extraction uses
+an ephemeral fork to attend over the fetched page and extract summary +
+links via grammar-constrained generation, then prunes the fork — zero net
+KV cost per extraction.
 
-Sources are composable. A pipeline can use one source, both, or custom implementations:
+Apps are composable through the registry:
 
 ```typescript
 import {
-  CorpusSource,
-  WebSource,
-  TavilyProvider,
+  createAppRegistry,
+  createInMemoryConfigStore,
 } from "@lloyal-labs/rig";
-import { loadResources, chunkResources } from "@lloyal-labs/rig/node";
+import { RerankerCtx } from "@lloyal-labs/lloyal-agents";
+import { createWebApp } from "@lloyal-labs/web-app";
+import { createCorpusApp } from "@lloyal-labs/corpus-app";
 
-const sources = [];
+yield* RerankerCtx.set(reranker);
+const configStore = createInMemoryConfigStore();
+if (tavilyKey) yield* configStore.set("web", { tavilyKey });
+if (corpusDir) yield* configStore.set("corpus", { corpusPath: corpusDir });
+const registry = yield* createAppRegistry({ configStore });
 
-if (corpusDir) {
-  const resources = loadResources(corpusDir);
-  const chunks = chunkResources(resources);
-  sources.push(new CorpusSource(resources, chunks));
-}
-
-if (process.env.TAVILY_API_KEY) {
-  sources.push(new WebSource(new TavilyProvider()));
-}
+if (corpusDir) yield* registry.enable(createCorpusApp);
+yield* registry.enable(createWebApp);  // keyless fallback if no tavilyKey
 ```
 
-When multiple sources are used, they run sequentially — each source gets the full KV budget. After source N completes, its inner branches are pruned and KV is freed for source N+1.
+When multiple apps are enabled, their sources run sequentially — each gets
+the full KV budget. After source N completes, its inner branches are pruned
+and KV is freed for source N+1.
 
 ### Cross-encoder reranker — four scoring roles
 
@@ -84,7 +95,7 @@ The reranker (a small cross-encoder GGUF — Qwen3-Reranker-0.6B is the recommen
 - **`scoreEntailmentBatch`** — texts vs. the original query. Boundary entailment for retrieved content.
 - **`scoreRelevanceBatch`** — dual-score `min(toolQueryScore, originalQueryScore)`. Used in exploit mode when KV pressure tightens focus.
 - **`scoreSimilarityBatch`** — texts vs. an arbitrary reference. Powers echo detection at delegation boundaries (the agent's own task as reference).
-- **`shouldProceed`** — floor gate. Default `_entailmentFloor = 0.25`.
+- **`shouldProceed`** — floor gate. Default `_entailmentFloor = 0` (logit-diff space: `≥ 0` ⇒ model prefers "yes" over "no"; subclasses may tighten or loosen).
 
 One model, four roles. The reranker is RIG infrastructure, not a fetch optimization.
 

@@ -1,7 +1,7 @@
 /**
  * Tests for {@link cancellableFetch} — RFC §5.8.
  *
- * Three contracts verified:
+ * Three behaviors verified:
  *
  * 1. Happy path — successful fetch returns the `Response`; the fetch
  *    receives a non-null `AbortSignal` from the Effection scope.

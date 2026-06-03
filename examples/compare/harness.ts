@@ -7,10 +7,10 @@
  * depends on all three siblings.
  *
  *      research_web_X ──┐                   ┌──▶ compare_axis_1 ──┐
- *      (WebSource)      │                   │                     │
+ *      (web app)        │                   │                     │
  *                       ├───────────────────┼──▶ compare_axis_2 ──┼──▶ synthesize
  *      research_corp_Y ─┘                   │                     │
- *      (CorpusSource)                       └──▶ compare_axis_3 ──┘
+ *      (corpus app)                         └──▶ compare_axis_3 ──┘
  *
  * The orchestrator lazily spawns each node when its dependencies clear.
  * Each node's `userContent` is prefilled onto the shared root via
@@ -94,7 +94,7 @@ function getCorpusToc(sources: Source<SourceContext, Chunk>[]): string {
   );
   if (!corpus) {
     throw new Error(
-      "compare: requires a CorpusSource (one of the two research lanes is corpus-backed)",
+      "compare: requires the corpus app (one of the two research lanes is corpus-backed)",
     );
   }
   return (corpus as unknown as { promptData: () => { toc: string } })

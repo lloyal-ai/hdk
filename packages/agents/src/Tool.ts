@@ -50,6 +50,29 @@ export abstract class Tool<TArgs = Record<string, unknown>> {
   abstract readonly parameters: JsonSchema;
 
   /**
+   * Whether invoking this tool requires authorization (RFC §3.2 M2, §5.3c).
+   *
+   * **Open by default** (`false`/unset): any agent may call the tool. This
+   * is the right setting for read/gather tools — search, fetch, grep — where
+   * agents discover an app's coverage by *trying*, the frontier-agentic
+   * pattern. The spine loads every app's tools for KV amortization; an open
+   * tool is callable regardless of which app a spawn nominally belongs to.
+   *
+   * **Protected** (`true`): the tool mutates state or takes a consequential
+   * action (transfer funds, file a ticket, send a message). The framework's
+   * authGuard denies the call unless the session holds a **grant** for it
+   * (held in {@link GrantStoreCtx}, acquired via consent — the model never
+   * sees the credential). A denied attempt rejects at dispatch time and
+   * emits `tool:authReject`.
+   *
+   * Trust changes *which grants a session holds*, never tool behaviour:
+   * execution is identical for trusted and untrusted apps. An app MAY mark
+   * an exfiltration-capable "read" (one that fetches arbitrary URLs) as
+   * protected — the binary flag delegates that judgment to the app.
+   */
+  readonly protected?: boolean;
+
+  /**
    * Execute the tool with parsed arguments
    *
    * Called by the agent pool when the model emits a tool call matching

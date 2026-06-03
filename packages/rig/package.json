@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/rig",
-  "version": "2.1.0",
+  "version": "3.0.0",
   "description": "Retrieval-Interleaved Generation for lloyal-agents",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -34,23 +34,25 @@
     "agents",
     "tools"
   ],
-  "license": "Apache-2.0",
+  "license": "SEE LICENSE IN LICENSE",
   "type": "commonjs",
   "scripts": {
     "build": "tsc -b"
   },
   "dependencies": {
-    "@lloyal-labs/lloyal-agents": "^2.1.0",
-    "@lloyal-labs/sdk": "^2.1.0",
+    "@lloyal-labs/lloyal-agents": "^3.0.0",
+    "@lloyal-labs/sdk": "^3.0.0",
     "@mozilla/readability": "^0.6.0",
     "effection": "^4.0.2",
     "ignore": "^7.0.5",
     "linkedom": "^0.18.12"
   },
   "peerDependencies": {
-    "@lloyal-labs/lloyal.node": "^2.1.0"
+    "@lloyal-labs/lloyal.node": "^3.0.0"
   },
   "files": [
-    "dist/"
+    "dist/",
+    "LICENSE",
+    "LICENSE-FAQ.md"
   ]
 }

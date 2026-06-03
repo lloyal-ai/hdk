@@ -278,3 +278,99 @@ describe('Rerank.score cancellation', () => {
     },
   );
 });
+
+// ── Score formula contract (TICK-002) ───────────────────────────
+//
+// The score returned by `Rerank.score` / `Rerank.scoreBatch` is the
+// **logit-diff** `logit(yes) − logit(no)`, NOT a softmax probability.
+//
+// Range: unbounded. Sign: positive ⇒ model prefers "yes" (relevant);
+// negative ⇒ prefers "no" (irrelevant); magnitude ⇒ confidence.
+//
+// These tests pin the formula so a regression to softmax/saturation gets
+// caught at the unit layer. Calibration assertions against the actual
+// reranker model are behavioral and live in
+// `reasoning.run/scripts/inspect-rerank.mjs`.
+
+/** Ctx variant that lets each call dictate per-document (yes, no) logits. */
+class LogitInjectCtx extends MockSessionContext {
+  readonly YES_TOKEN = 200;
+  readonly NO_TOKEN = 201;
+  /** Per-(call, doc) [yesLogit, noLogit] pairs. Pop from front per dispatch. */
+  logitQueue: Array<Array<[number, number]>> = [];
+
+  override async tokenize(text: string, addSpecial?: boolean): Promise<number[]> {
+    if (text === 'yes') return [this.YES_TOKEN];
+    if (text === 'no') return [this.NO_TOKEN];
+    return super.tokenize(text, addSpecial);
+  }
+  override tokenizeSync(text: string, addSpecial?: boolean): number[] {
+    if (text === 'yes') return [this.YES_TOKEN];
+    if (text === 'no') return [this.NO_TOKEN];
+    return super.tokenizeSync(text, addSpecial);
+  }
+  override async _scoreGroup(tokenArrays: number[][]): Promise<Float32Array[]> {
+    const perDoc = this.logitQueue.shift();
+    if (!perDoc) throw new Error('logitQueue empty — test misconfigured');
+    return tokenArrays.map((_, i) => {
+      const [yesL, noL] = perDoc[i] ?? [0, 0];
+      const arr = new Float32Array(this.vocabSize);
+      arr[this.YES_TOKEN] = yesL;
+      arr[this.NO_TOKEN] = noL;
+      return arr;
+    });
+  }
+}
+
+describe('Rerank score formula (logit-diff, TICK-002)', () => {
+  it('positive when yes > no, negative when no > yes, zero when equal', async () => {
+    const ctx = new LogitInjectCtx({ nCtx: 4096 });
+    ctx.logitQueue = [[[5, 1], [1, 5], [3, 3]]]; // 1 dispatch, 3 docs
+    const rerank = await Rerank.create(ctx, { nSeqMax: 4, nCtx: 4096 });
+
+    const scores = await rerank.scoreBatch('q', ['doc-yes', 'doc-no', 'doc-tie']);
+
+    expect(scores[0]).toBeCloseTo(4, 5);   // 5 - 1
+    expect(scores[1]).toBeCloseTo(-4, 5);  // 1 - 5
+    expect(scores[2]).toBeCloseTo(0, 5);   // 3 - 3
+  });
+
+  it('range is unbounded (no softmax saturation)', async () => {
+    const ctx = new LogitInjectCtx({ nCtx: 4096 });
+    // With softmax(yes, no), a logit gap of 100 collapses to ~1.0; with
+    // logit-diff the score IS 100. The test pins the unbounded shape.
+    ctx.logitQueue = [[[100, 0], [0, 100], [50, 0]]];
+    const rerank = await Rerank.create(ctx, { nSeqMax: 4, nCtx: 4096 });
+
+    const scores = await rerank.scoreBatch('q', ['huge-yes', 'huge-no', 'medium-yes']);
+
+    expect(scores[0]).toBeCloseTo(100, 5);
+    expect(scores[1]).toBeCloseTo(-100, 5);
+    expect(scores[2]).toBeCloseTo(50, 5);
+    // Critically: a gap of 50 and a gap of 100 are DISTINGUISHABLE. Under
+    // softmax both would round to ~1.0 — exactly the saturation failure
+    // TICK-002 was about.
+    expect(Math.abs(scores[0] - scores[2])).toBeGreaterThan(10);
+  });
+
+  it('preserves relative ordering (top-K rank stays meaningful)', async () => {
+    const ctx = new LogitInjectCtx({ nCtx: 4096 });
+    // 5 docs, decreasing yes-ness. Reverse insertion order to confirm
+    // ranking happens regardless of input order.
+    ctx.logitQueue = [[[1, 4], [2, 4], [3, 4], [4, 4], [5, 4]]];
+    const rerank = await Rerank.create(ctx, { nSeqMax: 8, nCtx: 4096 });
+
+    let results: { score: number; index: number }[] = [];
+    for await (const p of rerank.score('q', [[1], [2], [3], [4], [5]])) {
+      results = p.results;
+    }
+    // Top result should be index 4 (yes=5, score=1), bottom should be
+    // index 0 (yes=1, score=-3).
+    expect(results[0].index).toBe(4);
+    expect(results[results.length - 1].index).toBe(0);
+    // Scores should span ≥ 4 logit units (5-1 = 4), not be saturated.
+    const top = results[0].score;
+    const bot = results[results.length - 1].score;
+    expect(top - bot).toBeCloseTo(4, 5);
+  });
+});

@@ -67,6 +67,7 @@ export class TavilyProvider implements SearchProvider {
  */
 export class WebSearchTool extends Tool<{ query: string }> {
   readonly name = "web_search";
+  readonly protected = false;
   readonly description =
     "Search the web. Returns results with titles, snippets, and URLs.";
   readonly parameters: JsonSchema = {

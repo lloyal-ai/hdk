@@ -1,7 +1,7 @@
 /**
  * Tests for {@link verifyBundle} and {@link loadBundle} — RFC §5.7, §8.
  *
- * Contracts verified:
+ * Protocols verified:
  *
  * 1. **verifyBundle happy path** — a freshly generated keypair signs
  *    a payload; `verifyBundle` returns `true`.
@@ -70,7 +70,7 @@ async function signBytes(key: CryptoKey, bytes: Uint8Array): Promise<string> {
  * generator factory returning an `App`-shaped object. Encoded as
  * UTF-8 bytes so signing covers the actual import source.
  */
-function makeBundleSource(appName: string, contractName: string): Uint8Array {
+function makeBundleSource(appName: string, protocolName: string): Uint8Array {
   const src = `
 export default function* () {
   return {
@@ -79,9 +79,9 @@ export default function* () {
     manifest: {
       name: ${JSON.stringify(appName)},
       version: '1.0.0',
-      modelContractVersion: '3.0',
-      contract: {
-        name: ${JSON.stringify(contractName)},
+      appProtocolVersion: '3.0',
+      protocol: {
+        name: ${JSON.stringify(protocolName)},
         useWhen: 'test bundle',
         tools: ['x'],
       },
@@ -239,7 +239,7 @@ describe('loadBundle', () => {
     });
 
     expect(app.name).toBe('happy');
-    expect(app.manifest.contract.name).toBe('happy_research');
+    expect(app.manifest.protocol.name).toBe('happy_research');
   });
 
   it('rejects when default export is not a function', async () => {
