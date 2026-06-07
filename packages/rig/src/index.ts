@@ -47,6 +47,8 @@ export {
   VALIDATED_MODELS_3_0,
   APP_PROTOCOL_VERSION,
   SUPPORTED_APP_PROTOCOL_VERSIONS,
+  CHANNEL_CATALOG_URL,
+  CHANNEL_TRUST_ROOTS,
 } from './protocol';
 export { defineApp } from './define-app';
 export { cancellableFetch, FetchTimeoutError } from './cancellable-fetch';
@@ -54,7 +56,12 @@ export { createInMemoryConfigStore } from './config-store';
 export { createGrantStore } from './grant-store';
 export { createAppRegistry } from './registry';
 export type { CreateAppRegistryOpts } from './registry';
-export { verifyBundle, loadBundle, BundleVerificationError } from './bundle';
-export type { AppBundleManifest, LoadBundleOptions } from './bundle';
+export {
+  verifyBundle,
+  resolveAppEntry,
+  BundleVerificationError,
+  AppNotFoundError,
+} from './bundle';
+export type { AppBundleManifest, CatalogEntry, CatalogVersion, SignedCatalog } from './bundle';
 export { renderSpine, renderAgentPreamble } from './spine-render';
 export type { RenderSpineOptions } from './spine-render';

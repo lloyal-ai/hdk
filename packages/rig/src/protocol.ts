@@ -152,3 +152,70 @@ export const APP_PROTOCOL_VERSION = '3.0';
  * version line.
  */
 export const SUPPORTED_APP_PROTOCOL_VERSIONS: readonly string[] = ['3.0'];
+
+// ── Distribution channel (RFC §8) ─────────────────────────────────
+
+/**
+ * Canonical channel endpoint — `apps.lloyal.ai/v1/catalog.json`.
+ * Framework-vendored compile-time constant; the harness cannot override.
+ *
+ * The `harness.dev install` CLI uses {@link resolveAppEntry} to look up
+ * a name + semver range against this catalog, verifies the catalog's
+ * Ed25519 signature against {@link CHANNEL_TRUST_ROOTS}, then fetches +
+ * verifies the resolved manifest and tarball bytes before shelling out
+ * to `npm install <tarballUrl>`. The CLI never supplies a URL.
+ *
+ * To use a different channel, fork `@lloyal-labs/rig`, edit this constant
+ * (and {@link CHANNEL_TRUST_ROOTS}), and republish under a different name.
+ * The fork is a maintained source divergence; apps signed by the canonical
+ * trust roots will not load in the fork, and apps signed by the fork's
+ * trust roots will not load in unmodified upstream rig.
+ *
+ * Per RFC §8.5.
+ */
+export const CHANNEL_CATALOG_URL =
+  'https://apps.lloyal.ai/v1/catalog.json';
+
+/**
+ * Canonical channel's `lloyal-platform-2026-q2` Ed25519 public key
+ * (raw 32 bytes). Used to verify the apps.lloyal.ai catalog signature
+ * and, transitively (via cross-checked `publisherKeyId`), bundle
+ * signatures from lloyal-internal publishers.
+ *
+ * Generation: 2026-06-03, Node webcrypto Ed25519, private half stored
+ * offline (1Password).
+ * SHA-256 fingerprint: 9e0df3d25b8968a8b2ae9b86cb17a6922368c7cff9674a84b4a2527dd6457ec1
+ * Base64: bUz2SCkISzbzD4/WftUw4Nou2bJixs6OYh/5lomQylI=
+ *
+ * Tests override {@link CHANNEL_TRUST_ROOTS} via `setTestTrustRoot()` in
+ * `bundle.ts`, so this constant is inert under `NODE_ENV=test`.
+ *
+ * @internal
+ */
+const LLOYAL_PLATFORM_KEY_2026_Q2: Uint8Array = new Uint8Array([
+  109, 76, 246, 72, 41, 8, 75, 54, 243, 15, 143, 214, 126, 213, 48, 224,
+  218, 46, 217, 178, 98, 198, 206, 142, 98, 31, 249, 150, 137, 144, 202, 82,
+]);
+
+/**
+ * Framework-vendored trust roots — map from `publisherKeyId` (e.g.,
+ * `'lloyal-platform-2026-q2'`) to the corresponding Ed25519 raw public key
+ * bytes (32 bytes). The harness does NOT configure trust roots;
+ * {@link verifyBundle} consumers (notably the `harness.dev install` CLI)
+ * read this constant directly.
+ *
+ * Multi-entry from day 1 to support key rotation: a new key is added in a
+ * rig minor release while the previous key remains valid for N quarters,
+ * then is removed in a future major. Apps signed during the overlap window
+ * verify under either key.
+ *
+ * To use a different set, fork `@lloyal-labs/rig`, edit this constant (and
+ * {@link CHANNEL_CATALOG_URL}), and republish under a different name.
+ *
+ * Per RFC §8.4.
+ */
+export const CHANNEL_TRUST_ROOTS: ReadonlyMap<string, Uint8Array> = Object.freeze(
+  new Map<string, Uint8Array>([
+    ['lloyal-platform-2026-q2', LLOYAL_PLATFORM_KEY_2026_Q2],
+  ]),
+);

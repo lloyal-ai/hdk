@@ -263,8 +263,11 @@ export interface App {
  * `function* () { return defineApp(...) }`. There are no
  * `install`/`uninstall`/`enable`/`disable` hooks (RFC §6).
  *
- * Both build-time-included and signed-bundle apps produce a factory of
- * this exact shape; `loadBundle` returns one, and `createXxxApp` is one.
+ * Apps installed via `harness.dev install` (signed npm tarballs from
+ * the canonical channel) export a factory of this exact shape from
+ * their package entry point — the harness imports it with a plain
+ * `import { createXxxApp } from '@lloyal-labs/<name>-app'` and passes
+ * it to `createAppRegistry({ apps: [...] })`.
  */
 export type AppFactory = () => Operation<App>;
 

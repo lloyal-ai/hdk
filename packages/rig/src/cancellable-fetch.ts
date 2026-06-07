@@ -23,9 +23,10 @@
  * - `@lloyal-labs/web-app/src/tools/keyless-search.ts` (post-migration
  *   — replaces the private `fetchWithTimeout` from which this primitive
  *   was lifted; zero behavior change, just consolidation).
- * - `@lloyal-labs/rig/src/bundle.ts` (`loadBundle`) — new in 3.0, uses
- *   `cancellableFetch` from the start so a halted scope during bundle
- *   download tears down cleanly.
+ * - `@lloyal-labs/rig/src/bundle.ts` (`resolveAppEntry`) — fetches the
+ *   signed catalog via `cancellableFetch` so a halted scope during
+ *   resolution tears down cleanly. Used by `harness.dev install` to
+ *   resolve names against the canonical channel.
  *
  * Third-party apps SHOULD use `cancellableFetch` for any HTTP they do
  * under structured concurrency, rather than reinventing the
@@ -95,6 +96,19 @@ const DEFAULT_TIMEOUT_MS = 30_000;
  *   resolution failure, TLS error, socket reset). When the abort signal
  *   fires, `fetch` throws a `DOMException` with `name === 'AbortError'` —
  *   distinguishable from real network errors by that name.
+ *
+ * **Body buffering.** The returned `Response`'s body is **fully buffered
+ * in memory** before the function returns; the caller may safely call
+ * `.text()` / `.json()` / `.arrayBuffer()` on it without further async
+ * coordination. This is load-bearing: the underlying `useAbortSignal()`
+ * aborts when the http leg's scope unwinds (after `race` resolves),
+ * which would otherwise cause the caller's body-read to throw
+ * `AbortError` mid-flight (the body is still bound to the request's
+ * signal in undici). Pre-consuming inside the http leg, before the
+ * signal aborts, sidesteps that interaction. Cost: streaming is not
+ * supported — all responses are fully resident before return. Acceptable
+ * for the consumers we have (catalog JSON, manifest JSON, signed
+ * bundles up to a few hundred KB).
  */
 export function* cancellableFetch(
   url: string,
@@ -111,7 +125,18 @@ export function* cancellableFetch(
     // confuses the cancellation chain.
     const { signal: _ignored, ...restInit } = init ?? {};
     const res = yield* call(() => fetchImpl(url, { ...restInit, signal }));
-    return res;
+    // Pre-consume the body while the signal is still live. After `race`
+    // returns, this http leg's scope unwinds and the signal aborts —
+    // reading the original Response's body at that point throws
+    // AbortError from undici's consumeBody. Wrapping the buffered bytes
+    // in a fresh Response (which has no associated signal) lets the
+    // caller read the body on their own schedule.
+    const bytes = yield* call(() => res.arrayBuffer());
+    return new Response(bytes, {
+      status: res.status,
+      statusText: res.statusText,
+      headers: res.headers,
+    });
   };
 
   const timeoutLeg = function* (): Operation<Response> {

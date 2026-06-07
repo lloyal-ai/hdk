@@ -45,10 +45,11 @@
     "@mozilla/readability": "^0.6.0",
     "effection": "^4.0.2",
     "ignore": "^7.0.5",
-    "linkedom": "^0.18.12"
+    "linkedom": "^0.18.12",
+    "semver": "^7.8.1"
   },
   "peerDependencies": {
-    "@lloyal-labs/lloyal.node": "^3.0.0"
+    "@lloyal-labs/lloyal.node": "^2.1.0"
   },
   "files": [
     "dist/",

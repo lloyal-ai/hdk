@@ -34,6 +34,8 @@ function printHelp(): void {
       'Usage:',
       '  npx harness.dev <name>            Scaffold a new harness',
       '  npx harness.dev app <name>        Scaffold a new app',
+      '  npx harness.dev install <name>    Install a signed app from apps.lloyal.ai',
+      '  npx harness.dev publish           Submit an app for review + signing',
       '',
       'After `npm i -g harness.dev`, drop the `npx ` prefix.',
       '',

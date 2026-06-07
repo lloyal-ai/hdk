@@ -23,12 +23,10 @@
   "scripts": {
     "build": "tsc -b"
   },
-  "dependencies": {
+  "peerDependencies": {
     "@lloyal-labs/lloyal-agents": "^3.0.0",
+    "@lloyal-labs/lloyal.node": "^2.1.0",
     "@lloyal-labs/rig": "^3.0.0",
     "effection": "^4.0.2"
-  },
-  "peerDependencies": {
-    "@lloyal-labs/lloyal.node": "^3.0.0"
   }
 }

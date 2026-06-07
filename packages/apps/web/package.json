@@ -24,10 +24,12 @@
     "build": "tsc -b"
   },
   "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "linkedom": "^0.18.12"
+  },
+  "peerDependencies": {
     "@lloyal-labs/lloyal-agents": "^3.0.0",
     "@lloyal-labs/rig": "^3.0.0",
-    "@mozilla/readability": "^0.6.0",
-    "effection": "^4.0.2",
-    "linkedom": "^0.18.12"
+    "effection": "^4.0.2"
   }
 }

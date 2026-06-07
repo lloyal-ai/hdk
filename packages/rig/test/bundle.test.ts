@@ -1,38 +1,44 @@
 /**
- * Tests for {@link verifyBundle} and {@link loadBundle} — RFC §5.7, §8.
+ * Tests for {@link verifyBundle} and {@link resolveAppEntry} — the
+ * verify primitives that back the `harness.dev install` CLI.
  *
- * Protocols verified:
+ * Behaviors verified:
  *
- * 1. **verifyBundle happy path** — a freshly generated keypair signs
- *    a payload; `verifyBundle` returns `true`.
- * 2. **verifyBundle rejects a tampered payload** — flipping one byte
- *    flips the result to `false`.
- * 3. **verifyBundle rejects a malformed signature** — wrong-length
- *    signature bytes, invalid base64.
- * 4. **loadBundle rejects unknown publisherKeyId** — manifest's
- *    `publisherKeyId` not in `trustRoots` raises
- *    {@link BundleVerificationError} before any fetch happens.
- * 5. **loadBundle rejects size mismatch** — manifest declares one
- *    size, fetch returns another.
- * 6. **loadBundle rejects bad signature** — fetched bytes don't
- *    match the manifest's signature.
- * 7. **loadBundle happy path** — fetch + verify + dynamic import +
- *    factory invocation produces an `App`.
- * 8. **loadBundle rejects bundles without a default-exported
- *    function** — module loads but the export shape is wrong.
+ * 1. **verifyBundle happy path / tamper / malformed input** — Ed25519
+ *    verification primitive.
+ * 2. **Catalog signature pass / fail** — the catalog must be signed by a
+ *    key in `CHANNEL_TRUST_ROOTS`; tampered bytes flip the result.
+ * 3. **Semver resolution** — highest matching version wins; no match →
+ *    {@link AppNotFoundError}; unknown name → `AppNotFoundError`.
+ * 4. **MITM detection** — a mutated catalog (entries swapped) fails
+ *    signature before the resolver looks at any name.
+ * 5. **Pre-flight cache** — two `resolveAppEntry` calls within the same
+ *    scope fetch the catalog exactly once.
+ * 6. **Non-200 catalog fetch** — propagates as `BundleVerificationError`.
+ *
+ * Runtime-load tests for the rejected `loadBundle` model have been
+ * removed; install is now the `harness.dev install` CLI shelling out to
+ * `npm install <tarballUrl>` after Ed25519 verification, exercised by
+ * harness-cli's own test suite.
  *
  * @category Testing
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { run } from 'effection';
-import type { Operation } from 'effection';
-import type { App, AppFactory } from '@lloyal-labs/lloyal-agents';
 import {
   verifyBundle,
-  loadBundle,
+  resolveAppEntry,
   BundleVerificationError,
+  AppNotFoundError,
+  setTestTrustRoot,
+  setTestCatalogUrl,
+  clearTestOverrides,
+  clearCatalogCache,
   type AppBundleManifest,
+  type CatalogEntry,
+  type CatalogVersion,
+  type SignedCatalog,
 } from '../src/bundle';
 
 // ── Helpers: keypair + signing ───────────────────────────────────
@@ -63,13 +69,31 @@ async function signBytes(key: CryptoKey, bytes: Uint8Array): Promise<string> {
   return btoa(s);
 }
 
+// Mirror of the internal helper in bundle.ts — test must produce
+// identical bytes to what loadBundle's verifier consumes.
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  );
+  return `{${entries
+    .map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`)
+    .join(',')}}`;
+}
+
+function catalogSignedBytes(
+  signedAt: string,
+  entries: readonly CatalogEntry[],
+  publisherKeyId: string,
+): Uint8Array {
+  return new TextEncoder().encode(
+    canonicalJson({ signedAt, entries, publisherKeyId }),
+  );
+}
+
 // ── Bundle source authoring ─────────────────────────────────────
 
-/**
- * Build an ESM module body whose default export is a zero-arg
- * generator factory returning an `App`-shaped object. Encoded as
- * UTF-8 bytes so signing covers the actual import source.
- */
 function makeBundleSource(appName: string, protocolName: string): Uint8Array {
   const src = `
 export default function* () {
@@ -88,12 +112,139 @@ export default function* () {
     },
     source: { name: ${JSON.stringify(appName)} },
     tools: [],
-    agent: 'test agent template',
+    skill: 'test skill template',
   };
 }
 `;
   return new TextEncoder().encode(src);
 }
+
+// ── Channel fixture builder ─────────────────────────────────────
+
+interface AppFixture {
+  name: string;
+  version: string;
+  tarballBytes: Uint8Array;
+  manifestUrl: string;
+  tarballUrl: string;
+  manifest: AppBundleManifest;
+}
+
+const CATALOG_URL = 'https://test.example.com/v1/catalog.json';
+
+async function sha512IntegrityOf(bytes: Uint8Array): Promise<string> {
+  const buf = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buf).set(bytes);
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-512', buf));
+  let s = '';
+  for (let i = 0; i < digest.length; i++) s += String.fromCharCode(digest[i]);
+  return `sha512-${btoa(s)}`;
+}
+
+/**
+ * Build one app fixture: a stand-in tarball signed under `signKey`,
+ * plus its manifest. Caller is responsible for assembling these into a
+ * catalog and signing the catalog. Tests don't need a real npm tarball
+ * for the verify-primitive surface — any byte sequence whose Ed25519
+ * signature matches works.
+ */
+async function buildAppFixture(
+  signKey: CryptoKey,
+  publisherKeyId: string,
+  name: string,
+  version: string,
+): Promise<AppFixture> {
+  const tarballBytes = makeBundleSource(name, `${name}_research`);
+  const signature = await signBytes(signKey, tarballBytes);
+  const integrity = await sha512IntegrityOf(tarballBytes);
+  const manifestUrl = `https://test.example.com/v1/bundles/${name}-${version}.manifest.json`;
+  const tarballUrl = `https://test.example.com/v1/bundles/${name}-${version}.tgz`;
+  const manifest: AppBundleManifest = {
+    name,
+    version,
+    entry: `${name}-${version}.tgz`,
+    signature,
+    integrity,
+    publisherKeyId,
+    sizeBytes: tarballBytes.byteLength,
+  };
+  return { name, version, tarballBytes, manifestUrl, tarballUrl, manifest };
+}
+
+/**
+ * Sign a catalog containing the given fixtures and return the
+ * SignedCatalog object that the channel would serve.
+ */
+async function buildSignedCatalog(
+  signKey: CryptoKey,
+  publisherKeyId: string,
+  fixtures: AppFixture[],
+  signedAt = '2026-06-03T00:00:00.000Z',
+): Promise<SignedCatalog> {
+  const byName = new Map<string, CatalogVersion[]>();
+  for (const f of fixtures) {
+    const arr = byName.get(f.name) ?? [];
+    arr.push({
+      version: f.version,
+      manifestUrl: f.manifestUrl,
+      tarballUrl: f.tarballUrl,
+      appProtocolVersion: '3.0',
+      sizeBytes: f.tarballBytes.byteLength,
+    });
+    byName.set(f.name, arr);
+  }
+  const entries: CatalogEntry[] = [...byName.entries()].map(([name, versions]) => ({
+    name,
+    versions,
+  }));
+  const bytes = catalogSignedBytes(signedAt, entries, publisherKeyId);
+  const signature = await signBytes(signKey, bytes);
+  return { signedAt, entries, publisherKeyId, signature };
+}
+
+/**
+ * Install a global fetch stub that serves the given catalog + fixtures
+ * by URL. Returns the stub for assertion (e.g., call count).
+ */
+function installFetchStub(
+  catalog: SignedCatalog,
+  fixtures: AppFixture[],
+): ReturnType<typeof vi.fn> {
+  const catalogBody = JSON.stringify(catalog);
+  const manifestByUrl = new Map<string, string>();
+  const tarballByUrl = new Map<string, Uint8Array>();
+  for (const f of fixtures) {
+    manifestByUrl.set(f.manifestUrl, JSON.stringify(f.manifest));
+    tarballByUrl.set(f.tarballUrl, f.tarballBytes);
+  }
+  const stub = vi.fn(async (url: string) => {
+    if (url === CATALOG_URL) return new Response(catalogBody, { status: 200 });
+    const m = manifestByUrl.get(url);
+    if (m !== undefined) return new Response(m, { status: 200 });
+    const t = tarballByUrl.get(url);
+    if (t !== undefined) {
+      const buf = new ArrayBuffer(t.byteLength);
+      new Uint8Array(buf).set(t);
+      return new Response(buf, { status: 200 });
+    }
+    return new Response('not found', { status: 404 });
+  });
+  vi.stubGlobal('fetch', stub);
+  return stub;
+}
+
+// ── Test lifecycle ──────────────────────────────────────────────
+
+beforeEach(() => {
+  setTestCatalogUrl(CATALOG_URL);
+  clearCatalogCache();
+});
+
+afterEach(() => {
+  clearTestOverrides();
+  clearCatalogCache();
+  vi.unstubAllGlobals();
+});
 
 // ── verifyBundle ────────────────────────────────────────────────
 
@@ -135,155 +286,153 @@ describe('verifyBundle', () => {
   });
 });
 
-// ── loadBundle ──────────────────────────────────────────────────
+// ── resolveAppEntry ─────────────────────────────────────────────
 
-function makeFetchReturning(bytes: Uint8Array, status = 200): typeof fetch {
-  const buf = new ArrayBuffer(bytes.byteLength);
-  new Uint8Array(buf).set(bytes);
-  return vi.fn(async () => new Response(buf, { status })) as unknown as typeof fetch;
-}
+describe('resolveAppEntry', () => {
+  it('returns the highest-matching version for a semver range', async () => {
+    const { publicKey, signKey } = await generateKeypair();
+    setTestTrustRoot('test-pub', publicKey);
+    const v1 = await buildAppFixture(signKey, 'test-pub', 'multi', '1.0.0');
+    const v2 = await buildAppFixture(signKey, 'test-pub', 'multi', '1.2.0');
+    const v3 = await buildAppFixture(signKey, 'test-pub', 'multi', '2.0.0');
+    const catalog = await buildSignedCatalog(signKey, 'test-pub', [v1, v2, v3]);
+    installFetchStub(catalog, [v1, v2, v3]);
 
-describe('loadBundle', () => {
-  it('rejects when publisherKeyId is not in trustRoots', async () => {
-    const manifest: AppBundleManifest = {
-      name: 'orphan',
-      version: '1.0.0',
-      entry: 'orphan@1.0.0.mjs',
-      signature: btoa('x'.repeat(64)),
-      publisherKeyId: 'unknown-pub',
-      sizeBytes: 0,
-    };
-    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const picked = await run(function* () {
+      return yield* resolveAppEntry('multi', { semver: '^1.0.0' });
+    });
+    expect(picked.version).toBe('1.2.0');
+
+    clearCatalogCache();
+    const picked2 = await run(function* () {
+      return yield* resolveAppEntry('multi', { semver: '*' });
+    });
+    expect(picked2.version).toBe('2.0.0');
+  });
+
+  it('returns highest version when no semver range is given', async () => {
+    const { publicKey, signKey } = await generateKeypair();
+    setTestTrustRoot('test-pub', publicKey);
+    const v1 = await buildAppFixture(signKey, 'test-pub', 'plain', '1.0.0');
+    const v2 = await buildAppFixture(signKey, 'test-pub', 'plain', '1.5.0');
+    const catalog = await buildSignedCatalog(signKey, 'test-pub', [v1, v2]);
+    installFetchStub(catalog, [v1, v2]);
+
+    const picked = await run(function* () {
+      return yield* resolveAppEntry('plain');
+    });
+    expect(picked.version).toBe('1.5.0');
+  });
+
+  it('throws AppNotFoundError for unknown name', async () => {
+    const { publicKey, signKey } = await generateKeypair();
+    setTestTrustRoot('test-pub', publicKey);
+    const v1 = await buildAppFixture(signKey, 'test-pub', 'web', '1.0.0');
+    const catalog = await buildSignedCatalog(signKey, 'test-pub', [v1]);
+    installFetchStub(catalog, [v1]);
 
     await expect(
       run(function* () {
-        return yield* loadBundle('https://example.com/orphan.mjs', manifest, {
-          trustRoots: new Map(),
-          fetchImpl,
-        });
+        return yield* resolveAppEntry('jira');
+      }),
+    ).rejects.toBeInstanceOf(AppNotFoundError);
+  });
+
+  it('throws AppNotFoundError when no version matches the range', async () => {
+    const { publicKey, signKey } = await generateKeypair();
+    setTestTrustRoot('test-pub', publicKey);
+    const v1 = await buildAppFixture(signKey, 'test-pub', 'app', '1.0.0');
+    const catalog = await buildSignedCatalog(signKey, 'test-pub', [v1]);
+    installFetchStub(catalog, [v1]);
+
+    await expect(
+      run(function* () {
+        return yield* resolveAppEntry('app', { semver: '^2.0.0' });
+      }),
+    ).rejects.toBeInstanceOf(AppNotFoundError);
+  });
+
+  it('rejects a tampered catalog (MITM detection) before resolving any name', async () => {
+    const { publicKey, signKey } = await generateKeypair();
+    setTestTrustRoot('test-pub', publicKey);
+    const v1 = await buildAppFixture(signKey, 'test-pub', 'web', '1.0.0');
+    const catalog = await buildSignedCatalog(signKey, 'test-pub', [v1]);
+
+    // Tamper the catalog: swap in an attacker-controlled tarballUrl while
+    // keeping the original signature. The verifier must reject.
+    const tampered: SignedCatalog = {
+      ...catalog,
+      entries: [
+        {
+          name: 'web',
+          versions: [
+            { ...catalog.entries[0].versions[0], tarballUrl: 'https://attacker.example/evil.tgz' },
+          ],
+        },
+      ],
+    };
+    installFetchStub(tampered, [v1]);
+
+    await expect(
+      run(function* () {
+        return yield* resolveAppEntry('web');
       }),
     ).rejects.toBeInstanceOf(BundleVerificationError);
-    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('rejects when fetched size does not match manifest.sizeBytes', async () => {
-    const { publicKey, signKey } = await generateKeypair();
-    const realBytes = makeBundleSource('size_mismatch', 'size_mismatch_research');
-    const realSig = await signBytes(signKey, realBytes);
-    const manifest: AppBundleManifest = {
-      name: 'size_mismatch',
-      version: '1.0.0',
-      entry: 'size_mismatch.mjs',
-      signature: realSig,
-      publisherKeyId: 'pub',
-      sizeBytes: realBytes.byteLength + 999, // wrong
-    };
+  it('rejects a catalog signed by a key not in trust roots', async () => {
+    const { publicKey: trustedPub } = await generateKeypair();
+    const { signKey: attackerKey } = await generateKeypair();
+    setTestTrustRoot('test-pub', trustedPub); // trusted
+
+    const v1 = await buildAppFixture(attackerKey, 'test-pub', 'web', '1.0.0');
+    // Catalog claims publisherKeyId='unknown-pub' (not in trust roots).
+    const catalog = await buildSignedCatalog(attackerKey, 'unknown-pub', [v1]);
+    installFetchStub(catalog, [v1]);
 
     await expect(
       run(function* () {
-        return yield* loadBundle('https://example.com/x.mjs', manifest, {
-          trustRoots: new Map([['pub', publicKey]]),
-          fetchImpl: makeFetchReturning(realBytes),
-        });
+        return yield* resolveAppEntry('web');
       }),
-    ).rejects.toThrow(/Bundle size mismatch/);
+    ).rejects.toThrow(/not in CHANNEL_TRUST_ROOTS/);
   });
 
-  it('rejects when signature does not match fetched bytes', async () => {
+  it('caches the verified catalog within a scope (one fetch for two resolves)', async () => {
     const { publicKey, signKey } = await generateKeypair();
-    const realBytes = makeBundleSource('bad_sig', 'bad_sig_research');
-    const wrongSig = await signBytes(
-      signKey,
-      new TextEncoder().encode('some other payload'),
-    );
-    const manifest: AppBundleManifest = {
-      name: 'bad_sig',
-      version: '1.0.0',
-      entry: 'bad_sig.mjs',
-      signature: wrongSig,
-      publisherKeyId: 'pub',
-      sizeBytes: realBytes.byteLength,
-    };
+    setTestTrustRoot('test-pub', publicKey);
+    const v1 = await buildAppFixture(signKey, 'test-pub', 'a', '1.0.0');
+    const v2 = await buildAppFixture(signKey, 'test-pub', 'b', '1.0.0');
+    const catalog = await buildSignedCatalog(signKey, 'test-pub', [v1, v2]);
+    const stub = installFetchStub(catalog, [v1, v2]);
 
-    await expect(
-      run(function* () {
-        return yield* loadBundle('https://example.com/x.mjs', manifest, {
-          trustRoots: new Map([['pub', publicKey]]),
-          fetchImpl: makeFetchReturning(realBytes),
-        });
-      }),
-    ).rejects.toThrow(/signature verification failed/);
-  });
-
-  it('loads, verifies, and invokes a valid bundle', async () => {
-    const { publicKey, signKey } = await generateKeypair();
-    const bytes = makeBundleSource('happy', 'happy_research');
-    const sig = await signBytes(signKey, bytes);
-    const manifest: AppBundleManifest = {
-      name: 'happy',
-      version: '1.0.0',
-      entry: 'happy.mjs',
-      signature: sig,
-      publisherKeyId: 'pub',
-      sizeBytes: bytes.byteLength,
-    };
-
-    // loadBundle returns the factory; invoking it (as the registry would)
-    // produces the App.
-    const app: App = await run(function* () {
-      const factory = yield* loadBundle('https://example.com/happy.mjs', manifest, {
-        trustRoots: new Map([['pub', publicKey]]),
-        fetchImpl: makeFetchReturning(bytes),
-      });
-      return yield* factory();
+    await run(function* () {
+      yield* resolveAppEntry('a');
+      yield* resolveAppEntry('b');
     });
 
-    expect(app.name).toBe('happy');
-    expect(app.manifest.protocol.name).toBe('happy_research');
+    const catalogCalls = (stub.mock.calls as Array<[string, ...unknown[]]>).filter(
+      ([url]) => url === CATALOG_URL,
+    );
+    expect(catalogCalls.length).toBe(1);
   });
 
-  it('rejects when default export is not a function', async () => {
-    const { publicKey, signKey } = await generateKeypair();
-    const bytes = new TextEncoder().encode('export default 42;\n');
-    const sig = await signBytes(signKey, bytes);
-    const manifest: AppBundleManifest = {
-      name: 'not_fn',
-      version: '1.0.0',
-      entry: 'not_fn.mjs',
-      signature: sig,
-      publisherKeyId: 'pub',
-      sizeBytes: bytes.byteLength,
-    };
-
-    await expect(
-      run(function* (): Operation<App> {
-        return yield* loadBundle('https://example.com/x.mjs', manifest, {
-          trustRoots: new Map([['pub', publicKey]]),
-          fetchImpl: makeFetchReturning(bytes),
-        });
-      }),
-    ).rejects.toThrow(/no default export.*not a function/);
-  });
-
-  it('rejects non-200 HTTP responses', async () => {
+  it('rejects non-200 catalog fetch as BundleVerificationError', async () => {
     const { publicKey } = await generateKeypair();
-    const bytes = new Uint8Array([1, 2, 3]);
-    const manifest: AppBundleManifest = {
-      name: 'http_fail',
-      version: '1.0.0',
-      entry: 'http_fail.mjs',
-      signature: btoa('x'.repeat(64)),
-      publisherKeyId: 'pub',
-      sizeBytes: 0,
-    };
+    setTestTrustRoot('test-pub', publicKey);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('forbidden', { status: 403 })),
+    );
 
     await expect(
       run(function* () {
-        return yield* loadBundle('https://example.com/missing.mjs', manifest, {
-          trustRoots: new Map([['pub', publicKey]]),
-          fetchImpl: makeFetchReturning(bytes, 404),
-        });
+        return yield* resolveAppEntry('anything');
       }),
-    ).rejects.toThrow(/HTTP 404/);
+    ).rejects.toThrow(/Catalog fetch.*HTTP 403/);
   });
 });
+
+// Removed: describe('loadBundle', ...) and its 9 cases. The runtime
+// `loadBundle` model was replaced with `harness.dev install` shelling
+// out to `npm install <tarballUrl>` after Ed25519 verification, which
+// is exercised by harness-cli's own test suite.

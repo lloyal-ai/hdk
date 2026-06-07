@@ -21,9 +21,10 @@
  * @category Testing
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { run, createScope, suspend } from 'effection';
 import type { Operation } from 'effection';
+import { createServer, type Server } from 'node:http';
 import { cancellableFetch, FetchTimeoutError } from '../src/cancellable-fetch';
 
 // ── Fetch recorder ───────────────────────────────────────────────
@@ -182,6 +183,76 @@ describe('cancellableFetch timeout', () => {
     // the test, but we can assert the call completed (default didn't
     // crash, didn't fire on a fast response).
     expect(result.status).toBe(200);
+  });
+});
+
+// ── Live-server body consumption (scope-signal-abort regression) ──
+//
+// Reproduces the bug observed against apps.lloyal.ai/v1/catalog.json:
+// after cancellableFetch resolved, the caller's response.text() threw
+// AbortError mid-flight because the http leg's useAbortSignal()-bound
+// signal aborted on scope unwind, and undici's consumeBody() rejects
+// signal-bound bodies whose signal is already aborted. Synthetic
+// `new Response('hello')` mocks DO NOT repro this — they have no
+// associated signal — which is why the pre-fix code passed every unit
+// test while failing in production.
+
+describe('cancellableFetch live-server body consumption', () => {
+  let server: Server;
+  let url: string;
+
+  beforeEach(async () => {
+    server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ hello: 'from live server' }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const addr = server.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+    url = `http://127.0.0.1:${port}/`;
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve, reject) =>
+      server.close((err) => (err ? reject(err) : resolve())),
+    );
+  });
+
+  it('regression: response.text() works after cancellableFetch returns', async () => {
+    const text = await run(function* () {
+      const res = yield* cancellableFetch(url);
+      // The pre-fix code threw AbortError here.
+      return yield* call(() => res.text());
+    });
+    expect(text).toBe('{"hello":"from live server"}');
+  });
+
+  it('regression: response.json() works after cancellableFetch returns', async () => {
+    const body = await run(function* () {
+      const res = yield* cancellableFetch(url);
+      return yield* call(() => res.json() as Promise<{ hello: string }>);
+    });
+    expect(body).toEqual({ hello: 'from live server' });
+  });
+
+  it('regression: response.arrayBuffer() works after cancellableFetch returns', async () => {
+    const bytes = await run(function* () {
+      const res = yield* cancellableFetch(url);
+      return yield* call(async () => new Uint8Array(await res.arrayBuffer()));
+    });
+    expect(new TextDecoder().decode(bytes)).toBe('{"hello":"from live server"}');
+  });
+
+  it('preserves response status + headers on the buffered Response', async () => {
+    const probe = await run(function* () {
+      const res = yield* cancellableFetch(url);
+      return {
+        status: res.status,
+        contentType: res.headers.get('content-type'),
+      };
+    });
+    expect(probe.status).toBe(200);
+    expect(probe.contentType).toMatch(/^application\/json/);
   });
 });
 

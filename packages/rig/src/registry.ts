@@ -70,9 +70,10 @@ export interface CreateAppRegistryOpts {
   /**
    * App factories to enable at construction (the boot set). Each runs in
    * its own detached scope and is torn down on registry scope exit. The
-   * harness assembles this list — build-time imports plus factories from
-   * `loadBundle(...)` for channel apps. **Set `RerankerCtx` before
-   * calling** if any factory reads the shared reranker.
+   * harness assembles this list from static imports of installed apps
+   * (`import { createXxxApp } from '@lloyal-labs/<name>-app'`).
+   * **Set `RerankerCtx` before calling** if any factory reads the
+   * shared reranker.
    */
   apps?: readonly AppFactory[];
 }
@@ -93,14 +94,14 @@ interface RegistryEntry {
  *
  * @example
  * ```ts
+ * import { createWebApp } from '@lloyal-labs/web-app';
+ * import { createCorpusApp } from '@lloyal-labs/corpus-app';
+ * import { createJiraApp } from '@lloyal-labs/jira-app';
+ *
  * yield* RerankerCtx.set(reranker);          // before, if factories read it
  * const registry = yield* createAppRegistry({
  *   configStore,
- *   apps: [
- *     createWebApp,                           // build-time factory
- *     createCorpusApp,
- *     yield* loadBundle(url, manifest, { trustRoots }),  // channel factory
- *   ],
+ *   apps: [createWebApp, createCorpusApp, createJiraApp],
  * });
  * // ... pool dispatch ...
  * // registry scope exit tears down every app (factory ensures fire)
