@@ -1,0 +1,9 @@
+{
+  "name": "wikipedia",
+  "appProtocolVersion": "3.0",
+  "protocol": {
+    "name": "wikipedia_research",
+    "useWhen": "answering questions about established facts, historical events, biographies, scientific concepts, geography, or other general-knowledge topics covered by Wikipedia's encyclopedic content.",
+    "tools": ["wikipedia_search", "wikipedia_fetch"]
+  }
+}

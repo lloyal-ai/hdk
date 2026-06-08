@@ -36,6 +36,7 @@
   },
   "files": [
     "dist/**/*.js",
+    "templates/**/*",
     "LICENSE"
   ]
 }

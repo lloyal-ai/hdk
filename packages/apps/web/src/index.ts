@@ -1,7 +1,7 @@
 /**
  * `@lloyal-labs/web-app` — HDK reference app: web research.
  *
- * Zero-arg factory (RFC §4.5): reads config from `AppConfigStoreCtx` and
+ * Zero-arg factory: reads config from `AppConfigStoreCtx` and
  * the shared reranker from `RerankerCtx`, constructs the {@link WebSource}
  * already-bound (no `source.bind`), and returns a validated {@link App}.
  *

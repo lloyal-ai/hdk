@@ -1,7 +1,7 @@
 /**
  * `@lloyal-labs/corpus-app` — HDK reference app: local-corpus research.
  *
- * Zero-arg factory (RFC §4.5): requires a reranker (its `search` tool scores
+ * Zero-arg factory: requires a reranker (its `search` tool scores
  * chunks), loads + tokenizes the corpus at construction, and returns a
  * validated {@link App} whose {@link CorpusSource} is already-bound.
  *

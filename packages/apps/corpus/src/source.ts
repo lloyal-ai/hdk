@@ -22,7 +22,7 @@ export interface CorpusSourceOpts {
  * Corpus-backed data source: semantic `search` (reranker-scored), `read_file`,
  * and `grep` over a local document corpus.
  *
- * Constructed already-bound (RFC §6.3 — no `bind()`): the app factory loads +
+ * Constructed already-bound (no separate `bind()` step): the app factory loads +
  * tokenizes the chunks through the reranker, then hands them here. Because
  * `search` needs the reranker, a reranker is required at construction.
  */
