@@ -159,6 +159,21 @@ export const installCommand: Command = {
     // (`<publisher>/<short>`) are flat-encoded for the cache filename
     // (`<publisher>__<short>`), matching the channel's R2 path convention.
     const expectedIntegrity = await sha512Integrity(tarball);
+
+    // 5a. Cross-check the signed manifest's `integrity` field against the
+    // sha512 we just computed over the actually-received bytes. The Ed25519
+    // signature is the real trust gate; this guards against a signing-pipeline
+    // bug emitting an integrity that doesn't match what was signed. Loud
+    // failure here points the operator at the Worker, not the consumer.
+    if (manifest.integrity !== expectedIntegrity) {
+      process.stderr.write(
+        `harness.dev install: manifest integrity ${manifest.integrity} does not match ` +
+          `sha512 of received tarball bytes ${expectedIntegrity}. ` +
+          `This indicates a signing-pipeline bug — file an issue at https://github.com/lloyal-ai/hdk.\n`,
+      );
+      return 1;
+    }
+
     const cacheDir = join(xdgCacheHome(), 'lloyal', 'apps');
     const cachePath = join(
       cacheDir,
@@ -189,26 +204,62 @@ export const installCommand: Command = {
       return npmExit;
     }
 
-    // 7. Audit lockfile integrity. The npm package name comes from the
-    // catalog entry's `importName` — that's the symbol the consumer
-    // `import`s from once installed, and the lockfile key npm writes.
+    // 7. Audit lockfile + package.json. The npm package name comes from the
+    // catalog entry's `importName` — the symbol the consumer `import`s from
+    // once installed, and the lockfile key npm writes. Every audit failure
+    // rolls back via `npm uninstall` and exits non-zero. The PR's
+    // CI-reproducibility promise depends on these invariants holding; we
+    // refuse to leave a half-good install in place.
     const npmPackageName = entry.importName;
-    let actualIntegrity: string | null;
+    let audit: LockfileAudit | null;
     try {
-      actualIntegrity = await readLockfileIntegrity(npmPackageName);
+      audit = await auditLockfile(npmPackageName);
     } catch (err) {
       process.stderr.write(
-        `harness.dev install: warning — could not audit lockfile: ${asMessage(err)}\n`,
+        `harness.dev install: audit failed — ${asMessage(err)}. Rolling back.\n`,
       );
-      actualIntegrity = null;
+      await runNpm(['uninstall', npmPackageName]);
+      return 1;
     }
 
-    if (actualIntegrity && actualIntegrity !== expectedIntegrity) {
+    if (audit === null) {
+      process.stderr.write(
+        `harness.dev install: package-lock.json is required for a reproducible install but ` +
+          `is absent. Run \`npm config set package-lock true\` (or drop \`--no-package-lock\`) ` +
+          `and re-run. Rolling back.\n`,
+      );
+      await runNpm(['uninstall', npmPackageName]);
+      return 1;
+    }
+
+    if (audit.integrity !== expectedIntegrity) {
       process.stderr.write(
         `harness.dev install: integrity mismatch — npm-installed bytes did not match ` +
           `our pre-verified bytes. Rolling back.\n` +
           `  expected: ${expectedIntegrity}\n` +
-          `  actual:   ${actualIntegrity}\n`,
+          `  actual:   ${audit.integrity}\n`,
+      );
+      await runNpm(['uninstall', npmPackageName]);
+      return 1;
+    }
+
+    if (audit.resolved !== entry.tarballUrl) {
+      process.stderr.write(
+        `harness.dev install: lockfile resolved URL does not match the canonical channel URL. ` +
+          `CI cannot reproduce this install. Rolling back.\n` +
+          `  expected: ${entry.tarballUrl}\n` +
+          `  actual:   ${audit.resolved}\n`,
+      );
+      await runNpm(['uninstall', npmPackageName]);
+      return 1;
+    }
+
+    if (audit.savedDepSpec !== entry.tarballUrl) {
+      process.stderr.write(
+        `harness.dev install: package.json dependencies.${npmPackageName} does not equal the ` +
+          `canonical channel URL. CI cannot reproduce this install. Rolling back.\n` +
+          `  expected: ${entry.tarballUrl}\n` +
+          `  actual:   ${audit.savedDepSpec}\n`,
       );
       await runNpm(['uninstall', npmPackageName]);
       return 1;
@@ -264,35 +315,97 @@ function runNpm(args: readonly string[]): Promise<number> {
 }
 
 /**
- * Read the `integrity` field for `npmPackageName` from
- * `<cwd>/package-lock.json`. Supports the npm v3 lockfile shape (the only
- * one npm 7+ writes). Returns null if the lockfile is absent (e.g., dry
- * run) — the caller treats this as "audit skipped."
+ * Result of auditing `<cwd>/package-lock.json` + `<cwd>/package.json` for an
+ * install of `npmPackageName`. Carries every invariant the install path
+ * promises: the integrity (matches what npm computed against the tarball it
+ * fetched), the lockfile's `resolved` URL (matches the canonical channel
+ * URL), and the dep spec saved into `package.json` (also the canonical URL).
+ * All three must hold for CI to reproduce the install with plain `npm ci`.
  */
-async function readLockfileIntegrity(npmPackageName: string): Promise<string | null> {
+export interface LockfileAudit {
+  /** sha512 integrity npm recorded for `node_modules/<npmPackageName>`. */
+  integrity: string;
+  /** `resolved` field from the lockfile entry — should equal the catalog `tarballUrl`. */
+  resolved: string;
+  /** Saved dep spec in package.json's dependencies — also should equal `tarballUrl`. */
+  savedDepSpec: string;
+}
+
+/**
+ * Audit `<cwd>/package-lock.json` + `<cwd>/package.json` for `npmPackageName`.
+ *
+ * Returns `null` if the lockfile is genuinely absent (ENOENT). The caller
+ * treats `null` as "lockfile required by this install" and fails loud +
+ * rolls back — the PR's CI-reproducibility promise depends on a lockfile
+ * being present.
+ *
+ * Any other shape error (lockfile malformed JSON, missing
+ * `node_modules/<npmPackageName>` entry, missing `integrity` or `resolved`
+ * field, package.json missing or missing the dep spec) throws with a clear
+ * message. The caller catches + rolls back.
+ */
+async function auditLockfile(npmPackageName: string): Promise<LockfileAudit | null> {
   const lockfilePath = join(process.cwd(), 'package-lock.json');
-  let raw: string;
+  let lockRaw: string;
   try {
-    raw = await readFile(lockfilePath, 'utf-8');
+    lockRaw = await readFile(lockfilePath, 'utf-8');
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw err;
   }
-  const lockfile = JSON.parse(raw) as {
+  let lockfile: {
     packages?: Record<string, { integrity?: string; resolved?: string }>;
   };
-  const entry = lockfile.packages?.[`node_modules/${npmPackageName}`];
-  if (!entry) {
+  try {
+    lockfile = JSON.parse(lockRaw);
+  } catch (err) {
+    throw new Error(`package-lock.json is not valid JSON: ${(err as Error).message}`);
+  }
+  const lockEntry = lockfile.packages?.[`node_modules/${npmPackageName}`];
+  if (!lockEntry) {
     throw new Error(
       `lockfile entry node_modules/${npmPackageName} not found — npm install may not have written the lockfile as expected`,
     );
   }
-  if (!entry.integrity) {
+  if (!lockEntry.integrity) {
     throw new Error(
       `lockfile entry node_modules/${npmPackageName} has no integrity field`,
     );
   }
-  return entry.integrity;
+  if (!lockEntry.resolved) {
+    throw new Error(
+      `lockfile entry node_modules/${npmPackageName} has no resolved field`,
+    );
+  }
+
+  // package.json side. ENOENT here is a hard error: npm install --save
+  // either wrote it or the cwd was wrong; either way the install contract
+  // failed.
+  const pkgPath = join(process.cwd(), 'package.json');
+  let pkgRaw: string;
+  try {
+    pkgRaw = await readFile(pkgPath, 'utf-8');
+  } catch (err) {
+    throw new Error(`could not read package.json: ${(err as Error).message}`);
+  }
+  let pkg: { dependencies?: Record<string, string> };
+  try {
+    pkg = JSON.parse(pkgRaw);
+  } catch (err) {
+    throw new Error(`package.json is not valid JSON: ${(err as Error).message}`);
+  }
+  const savedDepSpec = pkg.dependencies?.[npmPackageName];
+  if (!savedDepSpec) {
+    throw new Error(
+      `package.json dependencies.${npmPackageName} is missing — npm install --save did not record the dep`,
+    );
+  }
+
+  return {
+    integrity: lockEntry.integrity,
+    resolved: lockEntry.resolved,
+    savedDepSpec,
+  };
 }
 
 function asMessage(err: unknown): string {

@@ -7,6 +7,33 @@ import { ensureFreshToken } from '../cf-access-oauth';
 const API_BASE = 'https://api.lloyal.ai';
 const REVIEW_BASE = `${API_BASE}/v1/review`;
 
+/**
+ * Submission identifiers are server-issued UUIDs. Validate the shape
+ * client-side before any network call so typos fail fast without leaking
+ * arbitrary positional input into URL paths. Pattern matches the loose
+ * shape used by `harness.dev publish status` for cross-subcommand parity.
+ */
+const SUBMISSION_ID_PATTERN = /^[0-9a-f-]+$/i;
+
+/**
+ * Hosts the channel uses to serve tarball bytes for inspection. The
+ * inspect endpoint returns a `tarballInspectUrl` pointing into the
+ * public R2 channel; the bearer token used to call the review API
+ * must never leave that API's origin, so this allowlist gates which
+ * hosts the inspect download leg may target.
+ */
+const ALLOWED_TARBALL_HOSTS: ReadonlySet<string> = new Set(['apps.lloyal.ai']);
+
+function assertSubmissionIdFormat(submissionId: string, label: string): number {
+  if (!SUBMISSION_ID_PATTERN.test(submissionId)) {
+    process.stderr.write(
+      `harness.dev ${label}: invalid submissionId "${submissionId}"\n`,
+    );
+    return 1;
+  }
+  return 0;
+}
+
 const USAGE = [
   'harness.dev review — Lloyal-internal review surface for pending app submissions',
   '',
@@ -140,6 +167,8 @@ async function runInspect(argv: readonly string[]): Promise<number> {
     return 1;
   }
   const submissionId = positionals[0];
+  const fmt = assertSubmissionIdFormat(submissionId, 'review inspect');
+  if (fmt !== 0) return fmt;
 
   const res = await authedGet(`${REVIEW_BASE}/inspect/${submissionId}`);
   if (!res.ok) return errorOut('review inspect', res);
@@ -172,7 +201,32 @@ async function runInspect(argv: readonly string[]): Promise<number> {
       (body.submission?.version ?? '0.0.0') +
       '.tgz';
     const outPath = join(outDir, flatName);
-    const tgz = await authedGet(body.tarballInspectUrl);
+
+    // The inspect URL is server-returned. Constrain its host to the
+    // channel allowlist so the API bearer token can never be sent to an
+    // attacker-controlled origin (defence in depth — the URL is signed
+    // by the server, but server compromise should not implicate the
+    // reviewer's credentials). The fetch below carries no Authorization
+    // header for the same reason; R2 presigned URLs authenticate via
+    // signed query parameters.
+    let inspectUrl: URL;
+    try {
+      inspectUrl = new URL(body.tarballInspectUrl);
+    } catch {
+      process.stderr.write(
+        `harness.dev review inspect: server returned a malformed tarballInspectUrl\n`,
+      );
+      return 1;
+    }
+    if (!ALLOWED_TARBALL_HOSTS.has(inspectUrl.host)) {
+      process.stderr.write(
+        `harness.dev review inspect: refused to fetch tarballInspectUrl from "${inspectUrl.host}" ` +
+          `(not in allowlist: ${[...ALLOWED_TARBALL_HOSTS].join(', ')})\n`,
+      );
+      return 1;
+    }
+
+    const tgz = await fetch(inspectUrl);
     if (!tgz.ok) return errorOut('review inspect (tarball download)', tgz);
     const buf = new Uint8Array(await tgz.arrayBuffer());
     await writeFile(outPath, buf);
@@ -201,6 +255,8 @@ async function runApprove(argv: readonly string[]): Promise<number> {
     return 1;
   }
   const submissionId = positionals[0];
+  const fmt = assertSubmissionIdFormat(submissionId, 'review approve');
+  if (fmt !== 0) return fmt;
 
   const res = await authedFetch(`${REVIEW_BASE}/approve/${submissionId}`, {
     method: 'POST',
@@ -251,6 +307,8 @@ async function runReject(argv: readonly string[]): Promise<number> {
     return 1;
   }
   const submissionId = positionals[0];
+  const fmt = assertSubmissionIdFormat(submissionId, 'review reject');
+  if (fmt !== 0) return fmt;
 
   const res = await authedFetch(`${REVIEW_BASE}/reject/${submissionId}`, {
     method: 'POST',
