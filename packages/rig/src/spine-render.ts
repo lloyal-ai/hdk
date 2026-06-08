@@ -1,18 +1,18 @@
 /**
- * Spine + per-spawn preamble assembly — RFC §5.3 / §5.3b.
+ * Spine + per-spawn preamble assembly.
  *
  * Two pure render functions. Both pull bytes from `protocol.ts`
  * constants rather than inlining literals — the codified protocol
- * (RFC §1.1–§1.4) has exactly one source of truth.
+ * has exactly one source of truth.
  *
  * ## `renderSpine`
  *
  * Assembles the Level-1 shared-prefix system prompt. **Carries no
  * free-form prose surface**: framework-owned literal strings +
  * grammar-sanitized app catalog metadata. No `supplementaryContent`
- * parameter, no per-app prose argument (RFC §3.2 M1, §5.3).
+ * parameter, no per-app prose argument.
  *
- * Output structure (RFC §5.3):
+ * Output structure:
  *
  * ```
  * <FRAMEWORK_INTRO>
@@ -25,15 +25,15 @@
  * ```
  *
  * App `examples.eta` content goes through `renderAgentPreamble` into
- * per-spawn preambles, never into this output (RFC §3.2 M1).
+ * per-spawn preambles, never into this output.
  *
  * ## `renderAgentPreamble`
  *
- * The *only* place the framework emits the boundary marker (RFC §1.1).
+ * The *only* place the framework emits the boundary marker.
  * Called once per spawn with the assigned app's templates only — no
  * other app's `skill.eta` / `examples.eta` enters this rendering, which
  * is what makes per-spawn isolation a framework invariant rather than
- * a convention (RFC §3.2 M1).
+ * a convention.
  *
  * @packageDocumentation
  * @category Protocol
@@ -73,13 +73,12 @@ export interface RenderSpineOptions {
  *
  * The output has a fixed shape across pool sizes and pool composition
  * — the only variability is the per-app catalog block, sourced from
- * each app's `manifest.protocol`. No app prose; no harness prose
- * (RFC §3.2 M1, §5.3).
+ * each app's `manifest.protocol`. No app prose; no harness prose.
  *
  * The returned string is intended for `SpineOptions.systemPrompt` in
  * `withSpine(...)`; tool schemas pass through `SpineOptions.tools =
  * apps.flatMap(a => a.tools)` separately and are decoded into KV at
- * spine prefill (RFC §2.1, §5.3 closing paragraph).
+ * spine prefill.
  */
 export function renderSpine(opts: RenderSpineOptions): string {
   const catalogBlocks = opts.apps
@@ -105,9 +104,9 @@ export function renderSpine(opts: RenderSpineOptions): string {
  * Render the per-spawn preamble for a single agent assigned to
  * `app`. The framework calls this when constructing a spawn's
  * user-role message; the output is the *only* place the boundary
- * marker bytes (RFC §1.1) appear at runtime.
+ * marker bytes appear at runtime.
  *
- * Output (RFC §5.3b):
+ * Output:
  *
  * ```
  * <BOUNDARY_MARKER(app.manifest.protocol.name)>
@@ -117,7 +116,7 @@ export function renderSpine(opts: RenderSpineOptions): string {
  * ```
  *
  * `app.manifest.protocol.name` is grammar-restricted at `defineApp`
- * time (RFC §3.2 M3): matches `[a-z][a-z0-9_-]{1,63}`, so it cannot
+ * time: matches `[a-z][a-z0-9_-]{1,63}`, so it cannot
  * break the markdown bold or inject newlines into the marker bytes.
  *
  * `app.examples` (if present) receives an extended render context

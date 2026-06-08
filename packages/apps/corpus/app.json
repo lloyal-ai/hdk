@@ -1,6 +1,5 @@
 {
   "name": "corpus",
-  "version": "1.0.0",
   "appProtocolVersion": "3.0",
   "protocol": {
     "name": "corpus_research",

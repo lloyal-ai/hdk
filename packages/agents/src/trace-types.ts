@@ -198,7 +198,7 @@ export type TraceEvent =
     }
   | TraceEventBase & { type: 'tool:error'; agentId: number; tool: string; error: string }
   // Protected tool call rejected at DISPATCH time by the framework-
-  // injected authGuard (RFC §3.2 M2, §5.3c): the session held no grant
+  // injected authGuard: the session held no grant
   // for a `protected` tool. Emitted alongside the ordinary
   // `pool:agentNudge` so security tooling can detect attempted privileged
   // actions by `assignedApp` × `attemptedTool` correlation without
@@ -213,7 +213,7 @@ export type TraceEvent =
       /**
        * Flattened tool history across the rejecting agent's lineage
        * (self → caller → …) — the forensic correlation key for prompt
-       * injection (RFC §5.3c). Cheap to carry: `tool:authReject` is
+       * injection. Cheap to carry: `tool:authReject` is
        * rare-by-design (it fires only on an ungranted protected attempt).
        */
       lineageHistory: readonly ToolHistoryEntry[];

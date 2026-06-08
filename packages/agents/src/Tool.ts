@@ -50,7 +50,7 @@ export abstract class Tool<TArgs = Record<string, unknown>> {
   abstract readonly parameters: JsonSchema;
 
   /**
-   * Whether invoking this tool requires authorization (RFC §3.2 M2, §5.3c).
+   * Whether invoking this tool requires authorization.
    *
    * **Open by default** (`false`/unset): any agent may call the tool. This
    * is the right setting for read/gather tools — search, fetch, grep — where

@@ -34,10 +34,10 @@ import type { JsonSchema } from './types';
 /**
  * The model-facing identity of an app — three fields under
  * `manifest.protocol` in `app.json`. The framework renders these into
- * the boundary marker (RFC §1.1), the spine catalog entry (RFC §1.2),
- * and the auth-guard allowed-tools set (RFC §5.3c).
+ * the boundary marker, the spine catalog entry,
+ * and the auth-guard allowed-tools set.
  *
- * Constraints (enforced synchronously by `defineApp` per RFC §3.2 M3):
+ * Constraints (enforced synchronously by `defineApp`):
  * - `name` matches `[a-z][a-z0-9_-]{1,63}`.
  * - `tools` is a non-empty array of tool-name strings, each matching the
  *   same regex as `name`. Must cover exactly the keys of the app's
@@ -58,7 +58,7 @@ export interface AppProtocol {
 /**
  * Optional UX/marketplace metadata. Not part of the model-facing surface;
  * surfaced to harness UI, marketplace listings, and capability disclosure
- * at install time (RFC §3.2 M4).
+ * at install time.
  */
 export interface AppHints {
   /** Short display name for chips/tabs (e.g., `"web"`, `"jira"`). */
@@ -84,24 +84,22 @@ export interface AppHints {
 export interface AppManifest {
   /** App identifier used for routing, config storage, and registry lookup. */
   readonly name: string;
-  /** Semver version of the app package. */
-  readonly version?: string;
   /**
    * Which codified App protocol version this app targets. The framework
    * refuses to register apps whose declared version is not in
-   * `SUPPORTED_APP_PROTOCOL_VERSIONS` (currently `['3.0']`). Per RFC §1.6.
+   * `SUPPORTED_APP_PROTOCOL_VERSIONS` (currently `['3.0']`).
    */
   readonly appProtocolVersion?: string;
   /** The model-facing identity. */
   readonly protocol: AppProtocol;
-  /** Optional UX/marketplace metadata (RFC §4.2 / §3.2 M4). */
+  /** Optional UX/marketplace metadata. */
   readonly hints?: AppHints;
   /**
    * JSON Schema declaring what config the app needs. The framework
    * validates the app's stored config against it at enable time (when the
    * factory's constructed manifest is available). The `x-secret: true`
    * field annotation signals sensitive values (harness UX masks them, may
-   * prefer secure storage backend). Per RFC §7.1.
+   * prefer secure storage backend).
    */
   readonly configSchema?: JsonSchema;
 }
@@ -152,14 +150,14 @@ export interface ExamplesRenderCtx extends AgentRenderCtx {
  * `examples.eta`. The function MUST NOT return content containing the
  * literal `Apply the **` substring (the framework prepends it and
  * `defineApp` cannot statically validate function outputs — the first-render
- * check on canonical apps catches it, per RFC §4.7).
+ * check on canonical apps catches it).
  */
 export type SkillTemplateFn = (params: AgentRenderCtx) => string;
 
 /**
  * Function alternative to a string `examples.eta` template.
  *
- * Per-spawn only (per RFC §3.2 M1) — examples are rendered into the
+ * Per-spawn only — examples are rendered into the
  * preamble of agents assigned to *this* app, never into the shared spine.
  */
 export type ExamplesTemplateFn = (params: ExamplesRenderCtx) => string;
@@ -179,7 +177,7 @@ export type ExamplesTemplateFn = (params: ExamplesRenderCtx) => string;
  * `callbackValidator` (if provided) → harness calls `complete` → app
  * returns the full config object → framework validates against
  * `manifest.configSchema` → harness writes the whole-replace config to
- * `AppConfigStore`. Per RFC §7.2.
+ * `AppConfigStore`.
  *
  * Both steps run inside the harness's Effection scope; if a flow needs
  * to read existing config it does `yield* AppConfigStoreCtx.expect()`
@@ -207,13 +205,11 @@ export interface ConfigFlow {
  * (typically `createWebApp`, `createJiraApp`, etc.) that read config
  * from `AppConfigStoreCtx` and the shared reranker from `RerankerCtx`.
  * Both npm-distributed apps and signed-bundle apps use the identical
- * factory signature (RFC §4.5).
+ * factory signature.
  */
 export interface App {
   /** Same as `manifest.name` — routing key. */
   readonly name: string;
-  /** Same as `manifest.version`. */
-  readonly version?: string;
   /** The declarative manifest. */
   readonly manifest: AppManifest;
   /** The app's Source (provides per-domain chunking + tools). */
@@ -234,7 +230,7 @@ export interface App {
   /**
    * Optional discipline content (GOOD/BAD examples, anti-patterns)
    * rendered into the per-spawn preamble of agents assigned to this
-   * app. Per RFC §4.4. Not surfaced in the shared spine.
+   * app. Not surfaced in the shared spine.
    */
   readonly examples?: string | ExamplesTemplateFn;
   /** Optional config schema (same as `manifest.configSchema`). */
@@ -261,7 +257,7 @@ export interface App {
  * app's detached scope is torn down (`registry.disable(name)`, or registry
  * scope exit). Apps with no external resources are a plain
  * `function* () { return defineApp(...) }`. There are no
- * `install`/`uninstall`/`enable`/`disable` hooks (RFC §6).
+ * `install`/`uninstall`/`enable`/`disable` hooks.
  *
  * Apps installed via `harness.dev install` (signed npm tarballs from
  * the canonical channel) export a factory of this exact shape from
@@ -276,7 +272,7 @@ export type AppFactory = () => Operation<App>;
  * factory has run and it sits in the registry, `'disabled'` otherwise.
  * Binary by design — richer states (configured, authenticated, ready) are
  * harness UX rollups or app-internal runtime concerns, not framework
- * state (RFC §6).
+ * state.
  */
 export type AppState = 'enabled' | 'disabled';
 
@@ -284,7 +280,7 @@ export type AppState = 'enabled' | 'disabled';
 
 /**
  * The harness-owned registry of enabled apps. Lives behind
- * `AppRegistryCtx`; the auth-guard (RFC §5.3c) consults it at
+ * `AppRegistryCtx`; the auth-guard consults it at
  * tool-dispatch time to resolve the allowed-tools set for an
  * App-assigned spawn (`SpawnSpec.assignedApp`). The concrete factory
  * `createAppRegistry(...)` lives in `@lloyal-labs/rig`; dynamic
@@ -295,7 +291,7 @@ export type AppState = 'enabled' | 'disabled';
  * via `createAppRegistry({ apps })`; each app runs in its own detached
  * Effection scope. `disable` (or registry scope-exit) tears that scope
  * down, firing the app factory's `ensure(...)` teardown. There are no
- * install/uninstall hooks (RFC §6).
+ * install/uninstall hooks.
  */
 export interface AppRegistry {
   /**
@@ -306,13 +302,13 @@ export interface AppRegistry {
   byName(name: string): App | undefined;
   /**
    * Snapshot of currently-enabled apps in registration order. The
-   * spine renderer (RFC §1.2) walks this list to compose the catalog;
+   * spine renderer walks this list to compose the catalog;
    * order is observable to the model.
    */
   enabled(): readonly App[];
   /**
    * Binary state of an app: `'enabled'` if it's in the registry,
-   * `'disabled'` otherwise (RFC §6). Convenience over `byName(name) !==
+   * `'disabled'` otherwise. Convenience over `byName(name) !==
    * undefined` for harness UX.
    */
   stateOf(name: string): AppState;

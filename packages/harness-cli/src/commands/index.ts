@@ -3,6 +3,8 @@ import { createCommand } from './create';
 import { appCommand } from './app';
 import { installCommand } from './install';
 import { publishCommand } from './publish';
+import { publishersCommand } from './publishers';
+import { reviewCommand } from './review';
 
 /**
  * The default command — runs when no recognized subcommand is given
@@ -12,7 +14,13 @@ import { publishCommand } from './publish';
 export const DEFAULT_COMMAND = createCommand;
 
 /** Named subcommands, in help-listing order. */
-export const SUBCOMMANDS: readonly Command[] = [appCommand, installCommand, publishCommand];
+export const SUBCOMMANDS: readonly Command[] = [
+  appCommand,
+  installCommand,
+  publishCommand,
+  publishersCommand,
+  reviewCommand,
+];
 
 /** Resolve a typed token to a subcommand (or the explicit `create` verb). */
 export function findCommand(name: string): Command | undefined {

@@ -30,7 +30,7 @@ function tokenBudgetAsWords(budgetTokens: number): number {
  *
  * `tools` selects which tool calls this guard sees: a `string[]` matches
  * by exact name; the literal `'*'` matches every call (used by the
- * framework-injected authGuard from RFC §5.3c — guards that need to
+ * framework-injected authGuard — guards that need to
  * inspect *every* call regardless of tool name).
  *
  * `reject` returns `true` to reject the call with `message`. It receives
@@ -72,7 +72,7 @@ function parseHistoryArgs(argsStr: string): Record<string, unknown> {
 }
 
 export const defaultToolGuards: ToolGuard[] = [
-  // Framework-injected authGuard (RFC §3.2 M2, §5.3c). Runs FIRST so a
+  // Framework-injected authGuard. Runs FIRST so a
   // protected-tool rejection fires before any dedup guard — the pool
   // emits a structured `tool:authReject` event keyed off
   // `ProduceAction.nudge.guard === 'auth_reject'` for security
@@ -138,9 +138,9 @@ export type IdleReason =
 export type ProduceAction =
   | { type: 'tool_call'; tc: ParsedToolCall }
   | { type: 'return'; result: string }
-  /** `guard` carries the identifier of the rejecting `ToolGuard` (RFC §5.3c
-   *  uses this to route `auth_reject` rejections to the `tool:authReject`
-   *  trace event). Absent for nudges not produced by a guard. */
+  /** `guard` carries the identifier of the rejecting `ToolGuard` — used to
+   *  route `auth_reject` rejections to the `tool:authReject` trace event.
+   *  Absent for nudges not produced by a guard. */
   | { type: 'nudge'; message: string; guard?: string }
   | { type: 'idle'; reason: IdleReason }
   | { type: 'free_text_return'; content: string };

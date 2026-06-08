@@ -9,9 +9,9 @@
  *   `[a-z][a-z0-9_-]{1,63}`; `protocol.tools` is a non-empty unique array
  *   of names matching the same regex; `protocol.useWhen` is a single
  *   bounded sentence with no chat-role markers, code fences, or newlines
- *   (RFC §3.2 M3 metadata sanitization).
+ *   (metadata sanitization).
  * - **App protocol version.** `manifest.appProtocolVersion` is in
- *   `SUPPORTED_APP_PROTOCOL_VERSIONS` (RFC §1.6). Absence is permitted
+ *   `SUPPORTED_APP_PROTOCOL_VERSIONS`. Absence is permitted
  *   (treated as `"3.0"`).
  * - **Tool map coverage.** The keys of the supplied `tools` object equal
  *   `manifest.protocol.tools[]` as a set — every declared tool has an
@@ -19,7 +19,7 @@
  * - **Boundary-marker double-emission.** `skill` (when string-typed) MUST
  *   NOT contain the literal `Apply the **` substring — the framework
  *   prepends the marker via `BOUNDARY_MARKER`, so an `skill.eta` that
- *   includes the line would emit it twice (RFC §1.1).
+ *   includes the line would emit it twice.
  *
  * Validation errors throw synchronously with a clear message naming the
  * failing field and the violated rule. App factories should call
@@ -46,8 +46,7 @@ import { SUPPORTED_APP_PROTOCOL_VERSIONS } from './protocol';
 /**
  * Argument to {@link defineApp}. The fields that survive into the
  * returned {@link App} are surfaced here with the same names. There are
- * no lifecycle hooks — setup is the factory body, teardown is `ensure(...)`
- * (RFC §6.6).
+ * no lifecycle hooks — setup is the factory body, teardown is `ensure(...)`.
  */
 export interface DefineAppSpec {
   /** The declarative app manifest, imported from `app.json`. */
@@ -73,13 +72,12 @@ export interface DefineAppSpec {
   skill: string | SkillTemplateFn;
   /**
    * Optional discipline content rendered into the per-spawn preamble of
-   * agents assigned to this app. Per RFC §4.4 — never enters the shared
-   * spine.
+   * agents assigned to this app. Never enters the shared spine.
    */
   examples?: string | ExamplesTemplateFn;
   /** Optional UX/marketplace hints (overrides `manifest.hints` if both present). */
   hints?: AppHints;
-  /** Optional interactive config flow (RFC §7.2). */
+  /** Optional interactive config flow. */
   configFlow?: ConfigFlow;
 }
 
@@ -98,7 +96,7 @@ const ID_RE = /^[a-z][a-z0-9_-]{1,63}$/;
 /**
  * Maximum length of `protocol.useWhen`. Bounded so the rendered catalog
  * stays compact and to limit the residual semantic-injection surface
- * available within the grammar's allowed character set (RFC §3.3 row 2).
+ * available within the grammar's allowed character set.
  */
 const USE_WHEN_MAX_LEN = 280;
 
@@ -106,7 +104,7 @@ const USE_WHEN_MAX_LEN = 280;
  * Patterns forbidden anywhere in `protocol.useWhen` — chat-role markers
  * (would confuse the model into treating the catalog text as a fake
  * conversation) and markdown code fences (would let an attacker break
- * out of the catalog block into structured content). RFC §3.2 M3.
+ * out of the catalog block into structured content).
  */
 const USE_WHEN_FORBIDDEN: readonly RegExp[] = [
   /\bSYSTEM:/i,
@@ -152,7 +150,7 @@ function assertUseWhen(value: string): void {
       throw new Error(
         `defineApp: manifest.protocol.useWhen contains forbidden pattern ${pattern.toString()}. ` +
           `useWhen renders into the shared spine catalog; chat-role markers, code fences, and ` +
-          `line breaks are excluded to prevent injection at the catalog-text layer (RFC §3.2 M3).`,
+          `line breaks are excluded to prevent injection at the catalog-text layer.`,
       );
     }
   }
@@ -237,7 +235,7 @@ function assertToolMapCoverage(
 function assertSkillTemplate(skill: string | SkillTemplateFn): void {
   if (typeof skill === 'function') {
     // Function-typed templates can't be statically validated here. The
-    // framework's first-render check (RFC §4.7) catches double-emission
+    // framework's first-render check catches double-emission
     // at the first preamble render, not at defineApp time.
     return;
   }
@@ -249,8 +247,7 @@ function assertSkillTemplate(skill: string | SkillTemplateFn): void {
       `defineApp: skill template contains the literal ${JSON.stringify(BOUNDARY_MARKER_PREFIX)} substring. ` +
         `The framework prepends \`Apply the **<name>** protocol.\\n\\n\` via BOUNDARY_MARKER at ` +
         `render time; including it in the template would emit it twice. Strip the ` +
-        `\`Apply the **...** protocol.\` line (and its trailing blank line) from skill.eta — ` +
-        `see RFC §1.1 / §4.3.`,
+        `\`Apply the **...** protocol.\` line (and its trailing blank line) from skill.eta.`,
     );
   }
 }
@@ -310,7 +307,6 @@ export function defineApp(spec: DefineAppSpec): App {
 
   return {
     name: spec.manifest.name,
-    version: spec.manifest.version,
     manifest: spec.manifest,
     source: spec.source,
     tools,

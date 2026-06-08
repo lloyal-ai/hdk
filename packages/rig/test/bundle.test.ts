@@ -190,6 +190,7 @@ async function buildSignedCatalog(
       tarballUrl: f.tarballUrl,
       appProtocolVersion: '3.0',
       sizeBytes: f.tarballBytes.byteLength,
+      importName: `@lloyal-labs/${f.name}-app`,
     });
     byName.set(f.name, arr);
   }

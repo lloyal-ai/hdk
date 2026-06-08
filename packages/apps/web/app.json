@@ -1,6 +1,5 @@
 {
   "name": "web",
-  "version": "1.0.0",
   "appProtocolVersion": "3.0",
   "protocol": {
     "name": "web_research",

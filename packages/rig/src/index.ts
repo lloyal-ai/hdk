@@ -38,7 +38,7 @@ export type { FetchedPage } from './sources/chunking';
 // Resource types (pure TS — RN-safe)
 export type { Resource, Chunk } from './resources/types';
 
-// HDK 3.0 App Protocol surfaces (RFC §5)
+// HDK 3.0 App Protocol surfaces
 export {
   BOUNDARY_MARKER,
   FRAMEWORK_INTRO,

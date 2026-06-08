@@ -53,7 +53,6 @@ function loadRealApp(name: 'web' | 'corpus'): App {
   const skill = readFileSync(join(dir, 'skill.eta'), 'utf8');
   return {
     name: manifest.name,
-    version: manifest.version ?? '1.0.0',
     manifest,
     source: { name: manifest.name } as App['source'],
     tools: [],

@@ -1,5 +1,5 @@
 /**
- * In-memory implementation of {@link AppConfigStore} — RFC §5.6.
+ * In-memory implementation of {@link AppConfigStore}.
  *
  * The `AppConfigStore` interface itself lives in
  * `@lloyal-labs/lloyal-agents` (so the framework context

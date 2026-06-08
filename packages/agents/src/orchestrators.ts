@@ -20,7 +20,7 @@ export interface SpawnSpec {
   parent?: Branch;
   /**
    * Non-enforcing label naming the App this spawn nominally belongs to
-   * (RFC §3.2 M2). Carried for trace attribution (`tool:authReject`) and
+   * Carried for trace attribution (`tool:authReject`) and
    * harness UI only — tool access is gated by {@link Tool.protected} +
    * session grants (the authGuard), not by app membership.
    */

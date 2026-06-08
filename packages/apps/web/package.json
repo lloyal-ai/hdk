@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/web-app",
-  "version": "3.0.0",
+  "version": "1.0.0",
   "private": true,
   "description": "HDK reference app \u2014 web research (Source + tools + contract). Distributed via the signed-bundle channel, never public npm.",
   "license": "SEE LICENSE IN LICENSE",

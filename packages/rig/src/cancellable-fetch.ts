@@ -1,6 +1,6 @@
 /**
  * `cancellableFetch(url, init, opts)` — Effection-native HTTP with
- * scope-linked cancellation and a deadline timeout — RFC §5.8.
+ * scope-linked cancellation and a deadline timeout.
  *
  * Wraps the global `fetch` so:
  *

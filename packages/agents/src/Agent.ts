@@ -120,7 +120,7 @@ export class Agent {
    * Optional non-enforcing label naming the App a spawn nominally belongs
    * to (`SpawnSpec.assignedApp`), or `null` for harness-internal spawns.
    * Purely informational since the authGuard moved the security boundary
-   * into the tool (RFC §3.2 M2): tool access is gated by {@link Tool.protected}
+   * into the tool: tool access is gated by {@link Tool.protected}
    * + session grants, not by app membership. Carried so trace events
    * (`tool:authReject`) and harness UI can attribute work to an app.
    */

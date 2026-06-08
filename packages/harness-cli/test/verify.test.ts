@@ -128,6 +128,7 @@ describe('resolveAppVersion', () => {
         tarballUrl: `https://apps.lloyal.ai/v1/bundles/web-${version}.tgz`,
         appProtocolVersion: '3.0',
         sizeBytes: 1024,
+        importName: '@lloyal-labs/web-app',
       };
     }
   }
@@ -164,7 +165,7 @@ describe('resolveAppVersion', () => {
         {
           name: 'foo',
           versions: [
-            { version: '0.1.0-alpha.1', manifestUrl: 'x', tarballUrl: 'y', appProtocolVersion: '3.0', sizeBytes: 1 },
+            { version: '0.1.0-alpha.1', manifestUrl: 'x', tarballUrl: 'y', appProtocolVersion: '3.0', sizeBytes: 1, importName: '@lloyal-labs/foo' },
           ],
         },
       ],

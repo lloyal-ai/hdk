@@ -1,6 +1,5 @@
 /**
- * `GrantStore` — pluggable runtime store for protected-tool grants
- * (RFC §3.2 M2, §5.3c, §7.2).
+ * `GrantStore` — pluggable runtime store for protected-tool grants.
  *
  * A **grant** authorizes the current session to invoke a `protected` tool
  * (see {@link Tool.protected}). The framework's authGuard denies any

@@ -22,7 +22,7 @@ export interface PlanToolOpts {
   /** Sampling temperature for plan generation. @default 0.3 */
   temperature?: number;
   /**
-   * Apps available to route research tasks to (RFC §5.3c). When provided
+   * Apps available to route research tasks to. When provided
    * and non-empty, the plan grammar constrains each task's `app` field to
    * an enum of these apps' `manifest.protocol.name` values — the names
    * the planner sees in the spine catalog — so the planner must assign
@@ -162,7 +162,7 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
     const t = performance.now();
 
     // When apps are available, force the planner to route every task to
-    // one of their protocol names via a grammar enum (RFC §5.3c). With no
+    // one of their protocol names via a grammar enum. With no
     // apps the task carries only a description.
     const hasApps = this._appProtocolNames.length > 0;
     const taskProperties: Record<string, JsonSchema> = {

@@ -82,7 +82,6 @@ describe('defineApp happy path', () => {
   it('returns an App with manifest, source, tools, agent fields set', () => {
     const app = defineApp(baseSpec());
     expect(app.name).toBe('jira');
-    expect(app.version).toBe('1.0.0');
     expect(app.manifest).toBe(baseSpec().manifest);
     expect(app.source).toBeInstanceOf(FakeSource);
     expect(app.tools).toHaveLength(2);

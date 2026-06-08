@@ -118,7 +118,7 @@ export const SpineFmt = createContext<FormatConfig | null>('lloyal.spineFmt', nu
  *
  * Replaces the per-source `source.bind({reranker})` pattern — chunks
  * tokenized by one reranker can't be re-bound to another without
- * re-tokenization (RFC §6.3, §6.8), so one cross-encoder per harness
+ * re-tokenization, so one cross-encoder per harness
  * is the invariant.
  *
  * @category Contract
@@ -129,7 +129,7 @@ export const RerankerCtx = createContext<Reranker>('lloyal.reranker');
  * Effection context holding the {@link AppRegistry}.
  *
  * Set by `createAppRegistry(...)` (lives in `@lloyal-labs/rig`). The
- * scope-guard (RFC §5.3c) reads this at tool-dispatch time to resolve
+ * scope-guard reads this at tool-dispatch time to resolve
  * the allowed-tools set for an App-assigned spawn — looking up
  * `registry.byName(spawn.assignedApp)` and matching the dispatched
  * `toolName` against `manifest.protocol.tools`.
@@ -152,7 +152,7 @@ export const AppRegistryCtx = createContext<AppRegistry>('lloyal.appRegistry');
  * `app.manifest.configSchema` when the app is enabled.
  *
  * Whole-replace semantics on `set`; last-write-wins on concurrent
- * writes (RFC §5.6).
+ * writes.
  *
  * @category Contract
  */
@@ -162,7 +162,7 @@ export const AppConfigStoreCtx = createContext<AppConfigStore>('lloyal.appConfig
  * Effection context holding the session's {@link GrantStore}.
  *
  * Seeded by `createAppRegistry({ grantStore })` (lives in `@lloyal-labs/rig`)
- * alongside {@link AppConfigStoreCtx}. The authGuard (RFC §3.2 M2, §5.3c)
+ * alongside {@link AppConfigStoreCtx}. The authGuard
  * reads it once per pool to resolve which `protected` tools the session is
  * authorized to call — `protected` tools without a grant reject at dispatch
  * time (`tool:authReject`). The store holds the consent decision; the

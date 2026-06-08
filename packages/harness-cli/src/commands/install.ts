@@ -17,7 +17,12 @@ const USAGE = [
   'harness.dev install — install a signed HDK app from apps.lloyal.ai into the current project',
   '',
   'Usage:',
-  '  npx harness.dev install [--allow-scripts] <name>[@<semver>]',
+  '  npx harness.dev install [--allow-scripts] <publisher>/<name>[@<semver>]',
+  '',
+  'Examples:',
+  '  harness.dev install lloyal/web',
+  '  harness.dev install lloyal/corpus@^1.0.0',
+  '  harness.dev install acme/jira@1.2.3',
   '',
   'Options:',
   '  --allow-scripts   Permit the installed package\'s preinstall/postinstall hooks to run.',
@@ -30,20 +35,32 @@ const USAGE = [
   'Flow:',
   '  1. Fetch the signed catalog at apps.lloyal.ai/v1/catalog.json; Ed25519-verify',
   '     against the framework-vendored trust roots.',
-  '  2. Resolve <name>[@<semver>] to a specific version entry.',
+  '  2. Resolve <publisher>/<name>[@<semver>] to a specific catalog version entry. The',
+  '     entry carries the npm package name (`importName`, e.g. `@acme/jira-app`) — the',
+  '     symbol the harness `import`s from once the tarball is installed.',
   '  3. Fetch the manifest; cross-check name/version/sizeBytes against the catalog.',
   '  4. Fetch the tarball; Ed25519-verify against the manifest\'s signature.',
   '  5. Compute sha512 integrity locally; cache the verified tarball at',
-  '     $XDG_CACHE_HOME/lloyal/apps/<name>-<version>.tgz.',
+  '     $XDG_CACHE_HOME/lloyal/apps/<publisher>__<name>-<version>.tgz.',
   '  6. Shell out to `npm install [--ignore-scripts] <canonical-tarball-URL>` in cwd',
-  '     so the package lands at node_modules/@lloyal-labs/<name>-app/, package.json',
-  '     records the canonical channel URL, and package-lock.json records the sha512',
-  '     integrity. CI thereafter installs the package with plain `npm ci` against the',
-  '     committed lockfile — no harness.dev required in CI.',
+  '     so the package lands at node_modules/<importName>/, package.json records the',
+  '     canonical channel URL, and package-lock.json records the sha512 integrity. CI',
+  '     thereafter installs the package with plain `npm ci` against the committed',
+  '     lockfile — no harness.dev required in CI.',
   '  7. Audit: re-read the lockfile and confirm npm\'s recorded integrity matches what we',
   '     computed pre-install. If they diverge (R2 served different bytes between our',
   '     verify-fetch and npm\'s install-fetch), uninstall and error.',
 ].join('\n');
+
+/**
+ * Spec grammar: `<publisher>/<name>[@<semver>]` (post-W) or back-compat
+ * `<name>[@<semver>]` (lloyal-internal pre-W entries, which never reached
+ * external publish). Both segments of the scoped form match the app/handle
+ * grammar `[a-z][a-z0-9_-]{1,63}`.
+ */
+const SCOPED_NAME_PATTERN =
+  /^[a-z][a-z0-9_-]{1,63}\/[a-z][a-z0-9_-]{1,63}$/;
+const UNSCOPED_NAME_PATTERN = /^[a-z][a-z0-9_-]{1,63}$/;
 
 export const installCommand: Command = {
   name: 'install',
@@ -77,9 +94,10 @@ export const installCommand: Command = {
     }
 
     const { name, semver } = parseSpec(positionals[0]);
-    if (!/^[a-z][a-z0-9_-]{1,63}$/.test(name)) {
+    if (!SCOPED_NAME_PATTERN.test(name) && !UNSCOPED_NAME_PATTERN.test(name)) {
       process.stderr.write(
-        `harness.dev install: invalid app name "${name}" (expected [a-z][a-z0-9_-]{1,63})\n`,
+        `harness.dev install: invalid app name "${name}" — expected ` +
+          '`<publisher>/<short-name>` (e.g., `lloyal/web`, `acme/jira`).\n',
       );
       return 1;
     }
@@ -137,10 +155,15 @@ export const installCommand: Command = {
       return 1;
     }
 
-    // 5. Compute integrity + cache verified bytes.
+    // 5. Compute integrity + cache verified bytes. Scoped catalog names
+    // (`<publisher>/<short>`) are flat-encoded for the cache filename
+    // (`<publisher>__<short>`), matching the channel's R2 path convention.
     const expectedIntegrity = await sha512Integrity(tarball);
     const cacheDir = join(xdgCacheHome(), 'lloyal', 'apps');
-    const cachePath = join(cacheDir, `${name}-${manifest.version}.tgz`);
+    const cachePath = join(
+      cacheDir,
+      `${flatEncodeScopedName(name)}-${manifest.version}.tgz`,
+    );
     try {
       await mkdir(cacheDir, { recursive: true });
       await writeFile(cachePath, tarball);
@@ -166,8 +189,10 @@ export const installCommand: Command = {
       return npmExit;
     }
 
-    // 7. Audit lockfile integrity.
-    const npmPackageName = `@lloyal-labs/${name}-app`;
+    // 7. Audit lockfile integrity. The npm package name comes from the
+    // catalog entry's `importName` — that's the symbol the consumer
+    // `import`s from once installed, and the lockfile key npm writes.
+    const npmPackageName = entry.importName;
     let actualIntegrity: string | null;
     try {
       actualIntegrity = await readLockfileIntegrity(npmPackageName);
@@ -199,14 +224,27 @@ export const installCommand: Command = {
 };
 
 /**
- * Parse `<name>` or `<name>@<semver>` into its parts. The `<name>` is
- * the catalog's short name (e.g., `web`), not the npm package name
- * (`@lloyal-labs/web-app`).
+ * Parse `<scoped-name>` or `<scoped-name>@<semver>` into its parts. The
+ * `<scoped-name>` is the catalog identifier (e.g., `lloyal/web`,
+ * `acme/jira`), not the npm package name — the catalog entry's
+ * `importName` field carries that.
+ *
+ * Scoped names contain `/` but never `@`, so the first `@` (if any) is
+ * unambiguously the semver delimiter.
  */
 function parseSpec(spec: string): { name: string; semver: string | undefined } {
   const atIdx = spec.indexOf('@');
   if (atIdx === -1) return { name: spec, semver: undefined };
   return { name: spec.slice(0, atIdx), semver: spec.slice(atIdx + 1) };
+}
+
+/**
+ * Flatten a scoped catalog name like `lloyal/web` to `lloyal__web` for
+ * use in a filesystem cache path. Mirrors the R2 channel encoding the
+ * Worker writes on approval.
+ */
+function flatEncodeScopedName(name: string): string {
+  return name.replace('/', '__');
 }
 
 function xdgCacheHome(): string {

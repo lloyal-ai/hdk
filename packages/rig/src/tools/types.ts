@@ -2,7 +2,7 @@
  * Rig-resident tool adapter types.
  *
  * The reranker abstraction (`Reranker`, `ScoredResult`, `ScoredChunk`)
- * moved to `@lloyal-labs/lloyal-agents` in RFC §6.3 alongside `Chunk`
+ * moved to `@lloyal-labs/lloyal-agents` alongside `Chunk`
  * and `Resource` — abstract types live in agents, concrete factories
  * (`createReranker`) and chunking utilities (`chunkResources`,
  * `chunkHtml`, `chunkFetchedPages`) stay in rig. Re-exported here for

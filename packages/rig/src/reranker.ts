@@ -7,7 +7,7 @@ import type { Chunk, Reranker, ScoredResult } from "@lloyal-labs/lloyal-agents";
 
 /**
  * Create a {@link Reranker} backed by a dedicated reranking model context,
- * as an Effection `resource()` (RFC §6.1).
+ * as an Effection `resource()`.
  *
  * Loads a separate model (typically a cross-encoder) into its own KV cache
  * and exposes `score`, `scoreBatch`, `tokenizeChunks`, and `dispose`. The
@@ -18,7 +18,7 @@ import type { Chunk, Reranker, ScoredResult } from "@lloyal-labs/lloyal-agents";
  * and disposes them transitively when the yielding scope exits (success,
  * error, or halt). The harness yields it once per process lifecycle and
  * publishes it on `RerankerCtx` so App factories can read it via
- * `RerankerCtx.expect()` (RFC §6.3). `dispose()` remains on the interface
+ * `RerankerCtx.expect()`. `dispose()` remains on the interface
  * for callers that manage teardown explicitly; it is idempotent so the
  * resource finally and an explicit call don't double-free.
  *

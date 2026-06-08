@@ -1,12 +1,12 @@
 /**
  * `createAppRegistry` — harness-wide app registry with a **declarative**
- * app set and structured, **isolated** per-app lifecycle (RFC §5.4, §6).
+ * app set and structured, **isolated** per-app lifecycle.
  *
  * The harness declares its apps as factories; the registry owns the rest:
  *
  * - `createAppRegistry({ configStore, apps })` runs each factory in its own
  *   **detached** Effection scope, seeded with the app-facing framework
- *   contexts (`AppConfigStoreCtx`, `RerankerCtx` — RFC §6.3) so the factory
+ *   contexts (`AppConfigStoreCtx`, `RerankerCtx`) so the factory
  *   reads config + reranker. The factory body is setup; a `resource()`
  *   factory's `ensure(...)` is teardown. The registry tears the scopes
  *   down on its own scope exit, reverse register-order, **best-effort** —
@@ -59,7 +59,7 @@ export interface CreateAppRegistryOpts {
    */
   configStore: AppConfigStore;
   /**
-   * The session's protected-tool grant store (RFC §3.2 M2, §5.3c). The
+   * The session's protected-tool grant store. The
    * registry seeds it on `GrantStoreCtx` so the agent pool's authGuard can
    * resolve which `protected` tools the session is authorized to call.
    * Optional — omit it when no app exposes protected tools (the authGuard
@@ -126,7 +126,7 @@ export function* createAppRegistry(
     },
     *enable(factory: AppFactory): Operation<App> {
       // Read the app-facing framework contexts to seed into the app's
-      // detached scope (RFC §6.3: factories read config + reranker).
+      // detached scope (factories read config + reranker).
       let reranker: Reranker | undefined;
       try {
         reranker = yield* RerankerCtx.expect();
@@ -220,7 +220,7 @@ export function* createAppRegistry(
 
   yield* AppRegistryCtx.set(registry);
   yield* AppConfigStoreCtx.set(configStore);
-  // Seed the grant store so the agent pool's authGuard (RFC §3.2 M2) can
+  // Seed the grant store so the agent pool's authGuard can
   // read the session's protected-tool grants. Absent = fail-closed.
   if (grantStore) yield* GrantStoreCtx.set(grantStore);
 

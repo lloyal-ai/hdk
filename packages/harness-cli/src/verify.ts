@@ -79,6 +79,14 @@ export interface CatalogVersion {
   tarballUrl: string;
   appProtocolVersion: string;
   sizeBytes: number;
+  /**
+   * npm package name as declared in the tarball's `package.json`. The
+   * catalog `name` (e.g., `lloyal/web`) is the scoped Lloyal identifier;
+   * `importName` (e.g., `@lloyal-labs/web-app`) is the actual npm package
+   * `harness.dev install` invokes `npm install` against, and the symbol the
+   * harness `import`s from once the package is on disk.
+   */
+  importName: string;
 }
 
 export interface CatalogEntry {

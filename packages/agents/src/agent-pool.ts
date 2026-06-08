@@ -385,7 +385,7 @@ function* setupAgent(
   let callingAgent: Agent | null = null;
   try { const a = yield* CallingAgent.get(); if (a) callingAgent = a; } catch { /* top-level — no caller */ }
 
-  // The spawn's app membership is now a non-enforcing label (RFC §3.2 M2):
+  // The spawn's app membership is now a non-enforcing label:
   // the authGuard gates tools by `Tool.protected` + session grants at the
   // pool level, not by app-scoped allow-lists. The label is carried for
   // trace attribution (`tool:authReject`) and harness UI only.
@@ -536,7 +536,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       );
     }
 
-    // authGuard inputs (RFC §3.2 M2, §5.3c), resolved once per pool:
+    // authGuard inputs, resolved once per pool:
     //   • protectedTools — names this pool's registry flags `Tool.protected`.
     //   • grants — protected names the session is authorized to call, read
     //     from GrantStoreCtx. Absent store = fail-closed (no grants).
@@ -1050,7 +1050,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
               yield* handleIdleDrop(a, action.reason, poolChannel, tw, poolScope.traceId);
               continue;
             case 'nudge':
-              // authGuard rejection (RFC §3.2 M2): emit the structured
+              // authGuard rejection: emit the structured
               // tool:authReject event BEFORE the generic agentNudge so a
               // single trace pass captures attribution + rejection context.
               if (action.guard === 'auth_reject') {

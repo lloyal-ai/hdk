@@ -1,5 +1,5 @@
 /**
- * In-memory implementation of {@link GrantStore} — RFC §3.2 M2, §7.2.
+ * In-memory implementation of {@link GrantStore}.
  *
  * The `GrantStore` interface itself lives in `@lloyal-labs/lloyal-agents`
  * (so the framework context `GrantStoreCtx` and app/harness code share it

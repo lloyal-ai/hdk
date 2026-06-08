@@ -106,6 +106,15 @@ export interface CatalogVersion {
   appProtocolVersion: string;
   /** Tarball size in bytes (sanity check vs. download). */
   sizeBytes: number;
+  /**
+   * npm package name as declared in the tarball's `package.json` (e.g.,
+   * `@lloyal-labs/web-app`). The catalog `name` is the scoped Lloyal
+   * identifier (`lloyal/web`); `importName` is what consumers actually
+   * `import { … } from '<importName>'` once npm has installed the tarball.
+   * Validated server-side at submission time against the tarball's
+   * embedded `package.json`.
+   */
+  importName: string;
 }
 
 /**
