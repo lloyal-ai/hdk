@@ -55,34 +55,11 @@ npm i @lloyal-labs/lloyal-agents @lloyal-labs/lloyal.node @lloyal-labs/rig
 npm i -g harness.dev
 ```
 
-## What you ship
+## Build a harness
 
-**App or Harness.** An App is a capability — code + skills — that any HDK harness can install. A Harness is the product you ship to users: it composes Apps + agents into an experience. Most third parties build one of the two.
+A **harness** is your application with embedded HDK agents — the runnable product you ship to a user. It owns model boot, App registration via `createAppRegistry`, orchestrator topology (`parallel` / `chain` / `fanout` / `dag`), and event handling. Every developer using HDK ships a harness: a CLI like [`reasoning.run`](https://www.npmjs.com/package/reasoning.run), a desktop app's research mode, a serverless function, your existing Node app's AI feature.
 
-### Apps — capability bundles
-
-An **App** is a Source + Tools + per-spawn skill template + manifest, validated by `defineApp`, distributed as signed npm tarballs through [`apps.lloyal.ai`](https://apps.lloyal.ai), installed with `harness.dev install <publisher>/<name>`. Build an App when you want a capability — web search, browser automation, payment connectors, your company's data — that any HDK harness can install and use.
-
-Two reference Apps ship first-party: `lloyal/web` (web search + page fetch) and `lloyal/corpus` (local-doc grep + read + semantic search). A third, `lloyal/wikipedia`, is the auth-free demo backend the scaffolders use.
-
-```bash
-npx harness.dev app jira --publisher acme   # scaffold
-npx harness.dev publish                     # ship through the signed channel
-```
-
-### Harnesses — composition into a product
-
-A **Harness** is how you compose Apps + agents into a runnable product. The harness owns model boot, App registration via `createAppRegistry`, orchestrator topology (`parallel` / `chain` / `fanout` / `dag`), and event handling. Build a Harness when you're shipping the feature: a CLI like [`reasoning.run`](https://www.npmjs.com/package/reasoning.run), a desktop app's research mode, a serverless function, anywhere that exposes AI capabilities to a user.
-
-```bash
-npx harness.dev my-harness                  # scaffold; runs against lloyal/wikipedia out of the box
-```
-
-The harness is yours — no further `harness.dev` involvement unless you also want to publish capabilities back to the channel.
-
-## Quickstart
-
-### Scaffold a harness (recommended)
+### Scaffold (recommended)
 
 ```bash
 npx harness.dev my-harness
@@ -92,7 +69,7 @@ npm run dev "Who founded Brasília?"
 
 The scaffold ships preinstalled with the `lloyal/wikipedia` App (no auth, runs against Wikipedia's public REST) so `npm run dev` works on first command. Edit `src/main.ts` to add real Apps via `harness.dev install <publisher>/<name>`.
 
-### Embed the runtime yourself
+### Embed in an existing project
 
 ```bash
 npm i @lloyal-labs/lloyal-agents @lloyal-labs/lloyal.node @lloyal-labs/rig
@@ -140,6 +117,22 @@ main(function* () {
 ```
 
 For multi-app harnesses, swap `parallel` / `chain` / `fanout` / `dag` orchestrators around an `agentPool` to reshape execution without changing the call.
+
+## Extend your harness
+
+Capabilities — web search, browser automation, payment connectors, your company's data — live in **Apps**: signed, reviewed bundles installed from the channel at [`apps.lloyal.ai`](https://apps.lloyal.ai). An App wraps a Source + Tools + per-spawn skill template + manifest, validated by `defineApp`. Three reference Apps ship first-party: `lloyal/web` (web search + page fetch), `lloyal/corpus` (local-doc grep + read + semantic search), and `lloyal/wikipedia` (the auth-free demo backend the scaffolder uses).
+
+```bash
+npx harness.dev install lloyal/web         # install a reviewed capability
+npx harness.dev install lloyal/corpus
+```
+
+Shipping a capability of your own — a vertical API, your company's internal data, a browser-automation runtime — means publishing an App through the channel for other harnesses to install:
+
+```bash
+npx harness.dev app jira --publisher acme  # scaffold an App
+npx harness.dev publish                    # ship through the signed channel
+```
 
 ## Stack vs. imports
 
