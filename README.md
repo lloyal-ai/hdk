@@ -7,13 +7,15 @@
 [![License](https://img.shields.io/badge/license-FSL--1.1--Apache--2.0-blue.svg)](LICENSE)
 [![Commercial Use](https://img.shields.io/badge/commercial%20use-unrestricted-brightgreen.svg)](#why-fsl-instead-of-mit)
 
-**Full-stack agentic AI for llama.cpp. One Node process — no inference server, no Docker, no vector DB, no glue code.**
+**In-app intelligence — AI as a feature of your application, not an API call.**
+
+*Full-stack agentic AI framework for [llama.cpp](https://github.com/ggml-org/llama.cpp).*
+
+HDK agents are branches of a live llama.cpp KV cache running inside your Node process — same process, same memory, same data structures as the rest of your code. Tools prefill results directly into the model's attention state under structured concurrency. No inference server, no vector DB, no embedding pipeline, no permission proxy, no context assembler. The agent is already where the context lives.
+
+Forking a sub-agent inherits the parent's full attention state at zero tensor copy: **4.4× fewer tokens processed** than prompt-rebuilding approaches, **O(1) spawns**, agent lifetimes bound to your application's scopes. Embed it in a desktop app, bundle in a CLI, deploy to a serverless function — anywhere Node runs.
 
 Free to use, embed, ship, and sell — commercial, private, internal, all of it. The one carve-out — forking the runtime to compete — is the [trust boundary](#why-fsl-instead-of-mit) that keeps capability-bearing apps installable safely. Converts to Apache 2.0 on a rolling two-year schedule.
-
-Most agent stacks are infrastructure: an inference server, an agent runtime, a vector store, embedding pipelines, glue code — wired together over HTTP and shipped as a Docker compose. HDK collapses that into a single Node process you can embed in a desktop app, bundle in a CLI, deploy to a serverless function, or anywhere Node runs.
-
-Agents are branches of a live llama.cpp KV cache, scheduled under structured concurrency, with tools that prefill results directly into the model's attention state — same process, same memory, same data structures as the rest of your code.
 
 <p>
   <img src="assets/demo-readme.gif" alt="Deep Research: 5 agents researching concurrently inside a shared 32K-token context window, plan → research with tool calls → synthesize" width="100%">
@@ -22,19 +24,6 @@ Agents are branches of a live llama.cpp KV cache, scheduled under structured con
 </p>
 
 > The demo above is [**reasoning.run**](https://www.npmjs.com/package/reasoning.run), a deep-research CLI built with HDK. Try it in 30 seconds: `npx reasoning.run`.
-
-## Stack vs. imports
-
-The honest comparison is full stack against full stack. Each row of the right column is a service to install, configure, version, secure, and orchestrate. Each row of the left column is an import.
-
-| Typical agent stack                                             | HDK                                   |
-| --------------------------------------------------------------- | ------------------------------------- |
-| Inference server (vLLM / Ollama / llama-server)                 | `@lloyal-labs/lloyal.node`            |
-| Agent runtime (LangChain / LangGraph / AutoGen / CrewAI)        | `@lloyal-labs/lloyal-agents`          |
-| Vector DB (Pinecone / Weaviate / pgvector) + embedding pipeline | Apps (`@lloyal-labs/web-app`, `@lloyal-labs/corpus-app`, your own) |
-| Retrieval orchestration (Haystack / LlamaIndex)                 | `@lloyal-labs/rig`                    |
-| Process orchestrator (Docker compose / Kubernetes / Airflow)    | TypeScript scopes (Effection)         |
-| Glue code                                                       | `npm i`                               |
 
 ## What you get
 
@@ -68,23 +57,30 @@ npm i @lloyal-labs/lloyal-agents @lloyal-labs/lloyal.node @lloyal-labs/rig
 npm i -g harness.dev
 ```
 
-## Apps — the unit of capability
+## What you ship
 
-In HDK 3.0 a capability is shipped as an **App**: a Source + Tools + per-spawn skill template + manifest, validated by `defineApp` and registered into the runtime by `createAppRegistry`. Apps are distributed as signed npm tarballs through `apps.lloyal.ai`, installed with `harness.dev install <publisher>/<name>`, and imported the standard way.
+**App or Harness.** An App is a capability — code + skills — that any HDK harness can install. A Harness is the product you ship to users: it composes Apps + agents into an experience. Most third parties build one of the two.
 
-Two reference Apps ship first-party — `lloyal/web` (web search + page fetch) and `lloyal/corpus` (local-doc grep + read + semantic search). A third, `lloyal/wikipedia`, is the auth-free demo backend the scaffolders use.
+### Apps — capability bundles
 
-Build your own:
+An **App** is a Source + Tools + per-spawn skill template + manifest, validated by `defineApp`, distributed as signed npm tarballs through [`apps.lloyal.ai`](https://apps.lloyal.ai), installed with `harness.dev install <publisher>/<name>`. Build an App when you want a capability — web search, browser automation, payment connectors, your company's data — that any HDK harness can install and use.
 
-```bash
-npx harness.dev app jira --publisher acme
-```
-
-The scaffold ships with a working source + two tools calling Wikipedia's REST API as the demo backend. Swap the bodies for your real backend, then publish:
+Two reference Apps ship first-party: `lloyal/web` (web search + page fetch) and `lloyal/corpus` (local-doc grep + read + semantic search). A third, `lloyal/wikipedia`, is the auth-free demo backend the scaffolders use.
 
 ```bash
-npx harness.dev publish
+npx harness.dev app jira --publisher acme   # scaffold
+npx harness.dev publish                     # ship through the signed channel
 ```
+
+### Harnesses — composition into a product
+
+A **Harness** is how you compose Apps + agents into a runnable product. The harness owns model boot, App registration via `createAppRegistry`, orchestrator topology (`parallel` / `chain` / `fanout` / `dag`), and event handling. Build a Harness when you're shipping the feature: a CLI like [`reasoning.run`](https://www.npmjs.com/package/reasoning.run), a desktop app's research mode, a serverless function, anywhere that exposes AI capabilities to a user.
+
+```bash
+npx harness.dev my-harness                  # scaffold; runs against lloyal/wikipedia out of the box
+```
+
+The harness is yours — no further `harness.dev` involvement unless you also want to publish capabilities back to the channel.
 
 ## Quickstart
 
@@ -146,6 +142,19 @@ main(function* () {
 ```
 
 For multi-app harnesses, swap `parallel` / `chain` / `fanout` / `dag` orchestrators around an `agentPool` to reshape execution without changing the call.
+
+## Stack vs. imports
+
+The honest comparison is full stack against full stack. Each row of the right column is a service to install, configure, version, secure, and orchestrate. Each row of the left column is an import.
+
+| Typical agent stack                                             | HDK                                   |
+| --------------------------------------------------------------- | ------------------------------------- |
+| Inference server (vLLM / Ollama / llama-server)                 | `@lloyal-labs/lloyal.node`            |
+| Agent runtime (LangChain / LangGraph / AutoGen / CrewAI)        | `@lloyal-labs/lloyal-agents`          |
+| Vector DB (Pinecone / Weaviate / pgvector) + embedding pipeline | Apps (`@lloyal-labs/web-app`, `@lloyal-labs/corpus-app`, your own) |
+| Retrieval orchestration (Haystack / LlamaIndex)                 | `@lloyal-labs/rig`                    |
+| Process orchestrator (Docker compose / Kubernetes / Airflow)    | TypeScript scopes (Effection)         |
+| Glue code                                                       | `npm i`                               |
 
 ## Public API
 
