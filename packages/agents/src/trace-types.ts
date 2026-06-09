@@ -56,13 +56,13 @@ export type TraceEvent =
       branchHandle: number;
       parentHandle: number | null;
       position: number;
-      role: 'root' | 'spine' | 'agentFork' | 'scratchpad' | 'divergeAttempt';
+      role: 'root' | 'spine' | 'agentFork' | 'divergeAttempt';
     }
   | TraceEventBase & {
       type: 'branch:prefill';
       branchHandle: number;
       tokenCount: number;
-      role: 'spineHeader' | 'agentSuffix' | 'toolResult' | 'warmDelta' | 'scratchpad' | 'probe' | 'recovery';
+      role: 'spineHeader' | 'agentSuffix' | 'toolResult' | 'warmDelta' | 'probe' | 'recovery';
       probeText?: string;
     }
   | TraceEventBase & { type: 'branch:prune'; branchHandle: number; position: number }

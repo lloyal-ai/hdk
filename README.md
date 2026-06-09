@@ -53,25 +53,50 @@ Mechanics, receipts, and the case for the architecture at [hdk.lloyal.ai](https:
 npm i @lloyal-labs/lloyal-agents @lloyal-labs/lloyal.node @lloyal-labs/rig
 ```
 
-| Package         | Role                                                                                                                               |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `lloyal-agents` | Agent runtime — tick loop, orchestrators, policy, tools                                                                            |
-| `lloyal.node`   | Native binding for llama.cpp ([liblloyal](https://github.com/lloyal-ai/liblloyal)); prebuilt for 13 platform/GPU combinations      |
-| `rig`           | Retrieval-Interleaved Generation — `WebSource`, `CorpusSource`, `reportTool`, `DelegateTool`. Optional if you write your own tools |
+| Package         | Role                                                                                                                          |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `lloyal-agents` | Agent runtime — tick loop, orchestrators, policy, App protocol primitives                                                     |
+| `lloyal.node`   | Native binding for llama.cpp ([liblloyal](https://github.com/lloyal-ai/liblloyal)); prebuilt for 13 platform/GPU combinations |
+| `rig`           | App protocol helpers + retrieval providers — `defineApp`, `createAppRegistry`, `PlanTool`, `DelegateTool`, `reportTool`       |
+
+`harness.dev` (the CLI for scaffolding harnesses + Apps, and for publishing / installing signed Apps) is a separate Apache-licensed package — install only when you need it:
+
+```bash
+npm i -g harness.dev
+```
+
+## Apps — the unit of capability
+
+In HDK 3.0 a capability is shipped as an **App**: a Source + Tools + per-spawn skill template + manifest, validated by `defineApp` and registered into the runtime by `createAppRegistry`. Apps are distributed as signed npm tarballs through `apps.lloyal.ai`, installed with `harness.dev install <publisher>/<name>`, and imported the standard way.
+
+Two reference Apps ship first-party — `lloyal/web` (web search + page fetch) and `lloyal/corpus` (local-doc grep + read + semantic search). A third, `lloyal/wikipedia`, is the auth-free demo backend the scaffolders use.
+
+Build your own:
+
+```bash
+npx harness.dev app jira --publisher acme
+```
+
+The scaffold ships with a working source + two tools calling Wikipedia's REST API as the demo backend. Swap the bodies for your real backend, then publish:
+
+```bash
+npx harness.dev publish
+```
 
 ## Quickstart
+
+Embed the runtime + run a one-shot research agent against an installed App. No vector DB to provision, no retrieval orchestration — `lloyal/wikipedia` ships preinstalled with the harness scaffold and resolves with no auth.
 
 ```typescript
 import { main, call } from "effection";
 import { createContext } from "@lloyal-labs/lloyal.node";
+import { initAgents, useAgent } from "@lloyal-labs/lloyal-agents";
 import {
-  initAgents,
-  useAgent,
-  agentPool,
-  parallel,
-  withSpine,
-} from "@lloyal-labs/lloyal-agents";
-import { reportTool } from "@lloyal-labs/rig";
+  createAppRegistry,
+  createInMemoryConfigStore,
+  reportTool,
+} from "@lloyal-labs/rig";
+import { createWikipediaApp } from "@lloyal-labs/wikipedia-app";
 
 main(function* () {
   const ctx = yield* call(() =>
@@ -85,43 +110,29 @@ main(function* () {
   );
   yield* initAgents(ctx);
 
-  // Single agent
+  // Enable an App — its Tools, Source, and skill template get
+  // auto-wired into the agent runtime through the registry.
+  const configStore = createInMemoryConfigStore();
+  const registry = yield* createAppRegistry({ configStore });
+  const wikipedia = yield* registry.enable(createWikipediaApp);
+
   const a = yield* useAgent({
     systemPrompt: "You are a research assistant.",
-    task: "Summarize this corpus.",
-    tools: [...corpusTools, reportTool],
+    task: "Who founded the city of Brasília, and when?",
+    tools: [...wikipedia.tools, reportTool],
     terminalToolName: "report",
   });
 
-  // Multiple agents on shared KV
-  const tasks = [
-    {
-      content: "What datasets does the corpus index?",
-      systemPrompt: WORKER_PROMPT,
-    },
-    {
-      content: "What's the most-cited reference inside?",
-      systemPrompt: WORKER_PROMPT,
-    },
-    { content: "Summarize the main thesis.", systemPrompt: WORKER_PROMPT },
-  ];
-  const tools = [...corpusTools, reportTool];
-  yield* withSpine({ systemPrompt: playbooks, tools }, function* (spine) {
-    return yield* agentPool({
-      orchestrate: parallel(tasks), // or chain(...), fanout(...), dag(...)
-      tools,
-      parent: spine,
-      terminalToolName: "report",
-    });
-  });
+  console.log(a.result);
 });
 ```
 
-Swap the orchestrator (`parallel` / `chain` / `fanout` / `dag`) to reshape the harness without changing the call.
+For multi-app harnesses, swap `parallel` / `chain` / `fanout` / `dag` orchestrators around an `agentPool` to reshape execution without changing the call. The `examples/` directory has runnable patterns; for a full TUI harness, run `npx harness.dev <name>`.
 
 ## Public API
 
 ```typescript
+// Agent runtime
 import {
   initAgents,
   useAgent,
@@ -135,14 +146,34 @@ import {
   dag,
   reduce,
   withSpine,
-  createToolkit,
   Tool,
   Source,
   DefaultAgentPolicy,
   Ctx,
   Store,
   Events,
+  AppRegistryCtx,
+  AppConfigStoreCtx,
+  GrantStoreCtx,
+  RerankerCtx,
 } from "@lloyal-labs/lloyal-agents";
+
+// App protocol + framework tools
+import {
+  defineApp,
+  createAppRegistry,
+  createInMemoryConfigStore,
+  createGrantStore,
+  renderSpine,
+  renderAgentPreamble,
+  reportTool,
+  PlanTool,
+  DelegateTool,
+  TavilyProvider,
+  createKeylessSearchProvider,
+  verifyBundle,
+  CHANNEL_TRUST_ROOTS,
+} from "@lloyal-labs/rig";
 ```
 
 That is essentially the framework.
@@ -151,9 +182,14 @@ That is essentially the framework.
 
 ```
 packages/
-  agents/   @lloyal-labs/lloyal-agents — agent runtime (the public framework)
-  sdk/      @lloyal-labs/sdk           — inference primitives (Branch, Session, Rerank)
-  rig/      @lloyal-labs/rig           — sources, reranker, delegation
+  agents/        @lloyal-labs/lloyal-agents — agent runtime + App protocol primitives
+  sdk/           @lloyal-labs/sdk           — inference primitives (Branch, Session, Rerank)
+  rig/           @lloyal-labs/rig           — App protocol helpers + retrieval providers + framework tools
+  apps/
+    web/         @lloyal-labs/web-app       — first-party web research App
+    corpus/      @lloyal-labs/corpus-app    — first-party local-corpus research App
+    wikipedia/   @lloyal-labs/wikipedia-app — first-party Wikipedia demo App
+  harness-cli/   harness.dev                — scaffolding + publish + install + review CLI
 
 examples/
   react-agent/   Single agent with corpus tools — `useAgent` baseline

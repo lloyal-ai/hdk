@@ -2,7 +2,7 @@ import { call } from "effection";
 import type { Operation } from "effection";
 import { Branch } from "@lloyal-labs/sdk";
 import type { SessionContext } from "@lloyal-labs/sdk";
-import { Ctx, Trace, TraceParent, ScratchpadParent, SpineFmt } from "./context";
+import { Ctx, Trace, TraceParent, SpineFmt } from "./context";
 import { traceScope } from "./trace-scope";
 import { createToolkit } from "./toolkit";
 import type { Tool } from "./Tool";
@@ -17,12 +17,6 @@ import type { FormatConfig } from "./Agent";
 export interface SpineOptions {
   /** Sampling parameters for the spine branch */
   params?: SamplingParams;
-  /**
-   * Set ScratchpadParent context so tools can fork from the spine
-   * for scratchpad extraction (fork-attend-extract-prune pattern).
-   * @default false
-   */
-  enableScratchpad?: boolean;
   /**
    * Fork the spine from this branch instead of creating at position 0.
    *
@@ -216,7 +210,6 @@ export function* withSpine<T>(
   }
 
   try {
-    if (opts.enableScratchpad) yield* ScratchpadParent.set(spine);
     if (spineFmt) yield* SpineFmt.set(spineFmt);
     return yield* body(spine, prefillTokens.length);
   } finally {

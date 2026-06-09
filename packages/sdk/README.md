@@ -162,4 +162,4 @@ export type { SessionContext, SamplingParams, Produced, ContextOptions, ... };
 
 ## License
 
-Apache-2.0
+See [LICENSE](./LICENSE) (Functional Source License 1.1 — Apache 2.0 Future License) and the [licensing FAQ](./LICENSE-FAQ.md).

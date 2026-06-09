@@ -137,32 +137,38 @@ Agents that get cut by context pressure (their tool results exceeded KV headroom
 
 Full architectural walkthrough: [RIG Pipeline reference](https://docs.lloyal.ai/reference/rig/pipeline).
 
-## Tools
+## Framework tools
 
-### Corpus tools
+| Tool           | Description                                                                  |
+| -------------- | ---------------------------------------------------------------------------- |
+| `ReportTool`   | Terminal tool — agents call this to submit findings                          |
+| `PlanTool`     | Grammar-constrained query decomposition with intent classification           |
+| `DelegateTool` | Generic recursive-delegation tool — agent calls it to spawn a sub-agent pool |
 
-| Tool           | Description                                                             |
-| -------------- | ----------------------------------------------------------------------- |
-| `SearchTool`   | Semantic search over corpus chunks via reranker scoring                 |
-| `GrepTool`     | Exhaustive regex pattern matching across all files                      |
-| `ReadFileTool` | Read file content at specified line ranges, tracks per-agent read state |
-| `ReportTool`   | Terminal tool — agents call this to submit findings                     |
+App-scoped tools (`web_search`, `fetch_page`, `search`, `read_file`,
+`grep`) live in their owning app — `@lloyal-labs/web-app`,
+`@lloyal-labs/corpus-app`, and so on — installed via
+`harness.dev install lloyal/<name>`. Build your own app with
+`harness.dev app <name>`.
 
-### Web tools
+## Search providers
 
-| Tool            | Description                                                     |
-| --------------- | --------------------------------------------------------------- |
-| `WebSearchTool` | Web search via configurable provider (`TavilyProvider` included) |
-| `FetchPageTool` | Fetch URL, extract article text via Readability                 |
+The `lloyal/web` app ships with two interchangeable `SearchProvider`
+implementations exposed from rig so apps can swap providers without
+vendoring an API client:
 
-### Pipeline tools
+| Provider                           | Description                                                       |
+| ---------------------------------- | ----------------------------------------------------------------- |
+| `TavilyProvider`                   | Tavily-backed web search (key from constructor or env)            |
+| `createKeylessSearchProvider()`    | Keyless DuckDuckGo fallback with built-in pacer + circuit breaker |
 
-| Tool                   | Description                                                                  |
-| ---------------------- | ---------------------------------------------------------------------------- |
-| `PlanTool`             | Grammar-constrained query decomposition with intent classification           |
-| `DelegateTool`         | Generic recursive-delegation tool — agent calls it to spawn a sub-agent pool |
-| `createTools(opts)`    | Build corpus toolkit from resources, chunks, and reranker                    |
-| `createReranker(path)` | (`/node` subpath) Semantic reranker for chunk scoring and passage selection  |
+## Node-only surface (`@lloyal-labs/rig/node`)
+
+| Symbol                 | Description                                                                |
+| ---------------------- | -------------------------------------------------------------------------- |
+| `createReranker(path)` | Semantic reranker — runs the cross-encoder GGUF against text batches       |
+| `loadResources(dir)`   | Walk a directory into `Resource[]` for corpus apps                         |
+| `chunkResources(rs)`   | Split resources into `Chunk[]` for tokenization + reranker scoring         |
 
 ### `DelegateTool`
 
@@ -185,43 +191,32 @@ const delegate = new DelegateTool({
 
 The agent sees `web_research` (or whatever `name` you give it) as a callable tool. Calling it spawns parallel sub-agents that recurse into the corpus or web. The deeper an investigation goes, the richer the attention state at depth — and the cost of inheritance is zero.
 
-## Custom Sources
+## Building your own App
 
-Extend `Source` from `lloyal-agents` to create custom sources:
+Apps are the HDK 3.0 unit of distribution. An App bundles a
+`Source` + `Tool[]` + `skill.eta` + `app.json` manifest and gets
+shipped to consumers via the signed channel at `apps.lloyal.ai`.
 
-```typescript
-import { Source } from "@lloyal-labs/lloyal-agents";
-import type { Tool } from "@lloyal-labs/lloyal-agents";
+Scaffold one with:
 
-class DatabaseSource extends Source<DatabaseContext, Row> {
-  readonly name = "database";
-
-  get tools(): Tool[] {
-    return this._tools;
-  }
-
-  *bind(ctx: DatabaseContext) {
-    // Set up tools, reranker, scorer state
-    this._tools = [
-      new QueryTool(/* ... */),
-      new SchemaInspectTool(/* ... */),
-    ];
-  }
-
-  getChunks(): Row[] {
-    return this._results; // buffered for post-research reranking
-  }
-}
+```bash
+npx harness.dev app my-app
 ```
 
-The `bind()` lifecycle receives a context with reranker and scorer plumbing. Your tools call `agentPool` or `useAgent` internally for recursive patterns — same primitives the built-in sources use.
+The scaffold ships with a working source + two tools calling
+Wikipedia's REST API as a runnable demo backend. Replace the tool
+bodies with your real backend, keep the schemas, and you're a
+`harness.dev publish` away from being installable in any HDK
+harness.
 
-See [custom sources](https://docs.lloyal.ai/reference/rig/custom-sources) for the full contract.
+See [docs.lloyal.ai/build-an-app](https://docs.lloyal.ai/build-an-app)
+for the full App protocol contract.
 
 ## Documentation
 
-Full positioning, source contract, reranker mechanics, and pipeline patterns at [docs.lloyal.ai](https://docs.lloyal.ai).
+Full positioning, App protocol, reranker mechanics, and pipeline
+patterns at [docs.lloyal.ai](https://docs.lloyal.ai).
 
 ## License
 
-Apache-2.0
+See [LICENSE](./LICENSE) (Functional Source License 1.1 — Apache 2.0 Future License).

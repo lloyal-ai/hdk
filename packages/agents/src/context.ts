@@ -64,18 +64,6 @@ export const Trace = createContext<TraceWriter>('lloyal.trace');
 export const TraceParent = createContext<TraceId>('lloyal.traceParent');
 
 /**
- * Effection context holding the scratchpad fork parent branch
- *
- * Set by {@link withSpine} to the current spine branch. Tools that
- * need scratchpad extraction (e.g. BufferingFetchPage, BufferingWebSearch)
- * read this via `yield* ScratchpadParent.expect()` to fork from the
- * innermost active spine — never a stale reference from a prior scope.
- *
- * @category Agents
- */
-export const ScratchpadParent = createContext<Branch>('lloyal.scratchpadParent');
-
-/**
  * Effection context holding the calling agent during DISPATCH
  *
  * Set by the pool before each tool execution in `scoped()`. Tools and

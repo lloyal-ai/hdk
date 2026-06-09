@@ -4,7 +4,6 @@ export {
   Events,
   Trace,
   TraceParent,
-  ScratchpadParent,
   RerankerCtx,
   AppRegistryCtx,
   AppConfigStoreCtx,

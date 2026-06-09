@@ -11,10 +11,12 @@
  * @category Rig
  */
 
-// Tools (pure TS + Effection + linkedom — platform-agnostic)
+// Framework tools (consumed by harnesses) + search providers (consumed by
+// apps' Source implementations). App-scoped Tool classes live in their
+// owning app (`@lloyal-labs/{web,corpus,wikipedia}-app`).
 export {
-  createTools, reportTool, ReportTool,
-  WebSearchTool, TavilyProvider, createKeylessSearchProvider, FetchPageTool,
+  reportTool, ReportTool,
+  TavilyProvider, createKeylessSearchProvider,
   DelegateTool,
   PlanTool, taskToContent,
 } from './tools';

@@ -9,7 +9,7 @@ import type { TraceToken } from './types';
  * Agent status — domain language for where the agent is in its lifecycle.
  *
  * - `idle`: created but not yet generating, OR finished but branch still
- *    alive (extraction window for scratchpad)
+ *    alive (extraction window for recovery)
  * - `active`: generating tokens (between PRODUCE start and stop token)
  * - `awaiting_tool`: tool call parsed, waiting for result in SETTLE
  * - `disposed`: branch pruned, agent no longer usable
@@ -26,7 +26,7 @@ export type AgentStatus = 'idle' | 'active' | 'awaiting_tool' | 'disposed';
 export type ResultSource =
   | 'voluntary_return' // agent voluntarily returned via the terminal tool
   | 'free_text'        // agent emitted prose without tool call
-  | 'scratchpad'       // extracted post-idle via fork+generate (recovery)
+  | 'recovery'         // extracted post-idle via the recovery path (recoverInline)
   | 'nudge'            // agent returned after nudge injection
   | 'tool_error';      // tool threw, error captured as findings
 

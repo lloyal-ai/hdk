@@ -264,9 +264,9 @@ export interface AgentPoolOptions {
   /** Prune agent branches immediately when they voluntarily return via the
    *  terminal tool. Frees KV for remaining agents mid-pool. Only agents
    *  that voluntarily returned are pruned — hard-cut agents keep their
-   *  branches for scratchpad recovery. @default false */
+   *  branches for recovery extraction. @default false */
   pruneOnReturn?: boolean;
-  /** Custom agent policy. Configure recovery (scratchpad extraction),
+  /** Custom agent policy. Configure recovery (recovery-prompt extraction),
    *  time limits, explore/exploit threshold, and tool guards via
    *  {@link DefaultAgentPolicyOpts}. @default DefaultAgentPolicy with default opts */
   policy?: AgentPolicy;

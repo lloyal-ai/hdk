@@ -238,7 +238,7 @@ function* recoverInline(
       try {
         const parsed = JSON.parse(output) as { result: string };
         if (parsed?.result) {
-          agent.setResult(parsed.result, 'scratchpad');
+          agent.setResult(parsed.result, 'recovery');
           yield* events.send({ type: 'agent:recovered', agentId: agent.id, result: agent.result! });
           reported = true;
           tw.write({

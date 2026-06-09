@@ -1305,7 +1305,7 @@ describe('tool probe lifecycle hook', () => {
 //
 // Both paths still fire `agent:done` for lifecycle. Both populate
 // `agent.result`. `ResultSource` distinguishes provenance:
-// `'voluntary_return'` vs `'scratchpad'`.
+// `'voluntary_return'` vs `'recovery'`.
 
 describe('SPLIT-SEMANTICS GATE: voluntary vs recovery emission', () => {
   it('voluntary completion (handleReturn path) emits agent:return only', async () => {
