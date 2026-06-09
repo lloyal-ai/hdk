@@ -5,8 +5,11 @@
 [![npm agents](https://img.shields.io/npm/v/@lloyal-labs/lloyal-agents.svg?label=lloyal-agents)](https://www.npmjs.com/package/@lloyal-labs/lloyal-agents)
 [![npm sdk](https://img.shields.io/npm/v/@lloyal-labs/sdk.svg?label=sdk)](https://www.npmjs.com/package/@lloyal-labs/sdk)
 [![License](https://img.shields.io/badge/license-FSL--1.1--Apache--2.0-blue.svg)](LICENSE)
+[![Commercial Use](https://img.shields.io/badge/commercial%20use-unrestricted-brightgreen.svg)](#why-fsl-instead-of-mit)
 
 **Full-stack agentic AI for llama.cpp. One Node process — no inference server, no Docker, no vector DB, no glue code.**
+
+Free to use, embed, ship, and sell — commercial, private, internal, all of it. The one carve-out — forking the runtime to compete — is the [trust boundary](#why-fsl-instead-of-mit) that keeps capability-bearing apps installable safely. Converts to Apache 2.0 on a rolling two-year schedule.
 
 Most agent stacks are infrastructure: an inference server, an agent runtime, a vector store, embedding pipelines, glue code — wired together over HTTP and shipped as a Docker compose. HDK collapses that into a single Node process you can embed in a desktop app, bundle in a CLI, deploy to a serverless function, or anywhere Node runs.
 
@@ -28,7 +31,7 @@ The honest comparison is full stack against full stack. Each row of the right co
 | --------------------------------------------------------------- | ------------------------------------- |
 | Inference server (vLLM / Ollama / llama-server)                 | `@lloyal-labs/lloyal.node`            |
 | Agent runtime (LangChain / LangGraph / AutoGen / CrewAI)        | `@lloyal-labs/lloyal-agents`          |
-| Vector DB (Pinecone / Weaviate / pgvector) + embedding pipeline | `Source` contract — sources are tools |
+| Vector DB (Pinecone / Weaviate / pgvector) + embedding pipeline | Apps (`@lloyal-labs/web-app`, `@lloyal-labs/corpus-app`, your own) |
 | Retrieval orchestration (Haystack / LlamaIndex)                 | `@lloyal-labs/rig`                    |
 | Process orchestrator (Docker compose / Kubernetes / Airflow)    | TypeScript scopes (Effection)         |
 | Glue code                                                       | `npm i`                               |
@@ -85,7 +88,22 @@ npx harness.dev publish
 
 ## Quickstart
 
-Embed the runtime + run a one-shot research agent against an installed App. No vector DB to provision, no retrieval orchestration — `lloyal/wikipedia` ships preinstalled with the harness scaffold and resolves with no auth.
+### Scaffold a harness (recommended)
+
+```bash
+npx harness.dev my-harness
+cd my-harness && npm install
+npm run dev "Who founded Brasília?"
+```
+
+The scaffold ships preinstalled with the `lloyal/wikipedia` App (no auth, runs against Wikipedia's public REST) so `npm run dev` works on first command. Edit `src/main.ts` to add real Apps via `harness.dev install <publisher>/<name>`.
+
+### Embed the runtime yourself
+
+```bash
+npm i @lloyal-labs/lloyal-agents @lloyal-labs/lloyal.node @lloyal-labs/rig
+npx harness.dev install lloyal/wikipedia   # or lloyal/web, lloyal/corpus, acme/...
+```
 
 ```typescript
 import { main, call } from "effection";
@@ -110,8 +128,8 @@ main(function* () {
   );
   yield* initAgents(ctx);
 
-  // Enable an App — its Tools, Source, and skill template get
-  // auto-wired into the agent runtime through the registry.
+  // Enable an App — its Tools, Source, and skill template
+  // wire into the runtime through the registry.
   const configStore = createInMemoryConfigStore();
   const registry = yield* createAppRegistry({ configStore });
   const wikipedia = yield* registry.enable(createWikipediaApp);
@@ -127,7 +145,7 @@ main(function* () {
 });
 ```
 
-For multi-app harnesses, swap `parallel` / `chain` / `fanout` / `dag` orchestrators around an `agentPool` to reshape execution without changing the call. The `examples/` directory has runnable patterns; for a full TUI harness, run `npx harness.dev <name>`.
+For multi-app harnesses, swap `parallel` / `chain` / `fanout` / `dag` orchestrators around an `agentPool` to reshape execution without changing the call.
 
 ## Public API
 
@@ -171,8 +189,6 @@ import {
   DelegateTool,
   TavilyProvider,
   createKeylessSearchProvider,
-  verifyBundle,
-  CHANNEL_TRUST_ROOTS,
 } from "@lloyal-labs/rig";
 ```
 
@@ -192,12 +208,12 @@ packages/
   harness-cli/   harness.dev                — scaffolding + publish + install + review CLI
 
 examples/
-  react-agent/   Single agent with corpus tools — `useAgent` baseline
-  reflection/    Research → draft → critique → revise via `diverge`
-  compare/       DAG primer: parallel research → compare → synthesize
+  compare/       DAG primer (App-protocol-shaped): parallel research → compare → synthesize
+  react-agent/   Pre-App-protocol `useAgent` baseline (mechanism demo, not a 3.0 reference)
+  reflection/    Pre-App-protocol `diverge` primer (research → draft → critique → revise)
 ```
 
-The native binding [`@lloyal-labs/lloyal.node`](https://github.com/lloyal-ai/lloyal.node) lives in a separate repo and is pulled in as a dependency.
+`reasoning.run` is the production-grade 3.0 reference harness — `npx reasoning.run` and read its source. The native binding [`@lloyal-labs/lloyal.node`](https://github.com/lloyal-ai/lloyal.node) lives in a separate repo and is pulled in as a dependency.
 
 ## Compatibility
 
@@ -238,24 +254,16 @@ Every PR runs build, typecheck, and unit tests on CI, plus a cross-repo GPU inte
 - **Learn, reference, guides** → [docs.lloyal.ai](https://docs.lloyal.ai)
 - **API reference** — TypeDoc-generated from source
 
+## Why FSL instead of MIT?
+
+HDK apps are **capability-bearing** — arbitrary code (browser automation, file access, payment connectors) bundled with skill instructions, running in shared inference context. OS sandboxing protects the machine; it does nothing about what an app's content reaches the model's attention. Cloud agent platforms can yank misbehaving extensions with a kill switch; HDK runs on user machines and can't.
+
+Safety has to be **upstream and structural**: the canonical channel at [apps.lloyal.ai](https://apps.lloyal.ai) reviews and Ed25519-signs every App; the runtime verifies that signature against an embedded trust root at install. MIT doesn't preserve that — a fork could strip the trust root and ship to an unreviewed channel. FSL restricts one thing — that fork — to keep the trust root enforceable. It can't stop a determined bad actor; it keeps channel-switching from being the easy path.
+
 ## License
 
-You can build and sell commercial products using HDK.
+**Commercial use is unrestricted** — build and sell products with HDK, embed it in proprietary software, run it in production. The FSL restriction is narrow: you cannot ship a competing HDK runtime, managed HDK service, or alternative HDK App distribution channel.
 
-HDK 3.0 runtime packages (`@lloyal-labs/lloyal-agents`, `@lloyal-labs/sdk`,
-`@lloyal-labs/rig`, `@lloyal-labs/corpus-app`, `@lloyal-labs/web-app`) are
-source-available under FSL-1.1-Apache-2.0 and convert to Apache 2.0 two
-years after each release. The restriction is narrow: you cannot offer a
-competing HDK runtime, managed HDK service, or alternative HDK App
-distribution channel. The canonical App distribution channel is
-`apps.lloyal.ai` — every listed App is reviewed by Lloyal Labs for
-tool-safety and manifest conformance, so consumers get a single AI-safety
-boundary across every HDK harness and the App protocol does not fragment
-into incompatible sub-catalogs.
+HDK 3.0 runtime packages (`@lloyal-labs/lloyal-agents`, `@lloyal-labs/sdk`, `@lloyal-labs/rig`, `@lloyal-labs/web-app`, `@lloyal-labs/corpus-app`, `@lloyal-labs/wikipedia-app`) are source-available under FSL-1.1-Apache-2.0 and convert to Apache 2.0 two years after each release. `packages/harness-cli` (the `harness.dev` CLI) is Apache 2.0 from day one — see its own `LICENSE` file.
 
-`packages/harness-cli` (the `harness.dev` CLI) is licensed separately under
-Apache 2.0 — see its own `LICENSE` file.
-
-See [`LICENSE-FAQ.md`](./LICENSE-FAQ.md) for concrete examples of what's
-permitted and what's restricted. See [`LICENSE`](./LICENSE) for the legal
-text and [`NOTICE`](./NOTICE) for attribution.
+See [`LICENSE-FAQ.md`](./LICENSE-FAQ.md) for concrete examples of what's permitted and what's restricted, [`LICENSE`](./LICENSE) for the legal text, and [`NOTICE`](./NOTICE) for attribution.
