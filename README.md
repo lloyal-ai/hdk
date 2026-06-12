@@ -26,7 +26,8 @@ Free to use, embed, ship, and sell — commercial, private, internal, all of it.
 ## What you get
 
 - **Structured Concurrency.** Agents bind to parent scopes via [Effection](https://frontside.com/effection); cancellation propagates, teardown runs in reverse. The model that powers Kotlin coroutines, Swift Tasks, Java Project Loom, and C++26 — applied to GPU-native agents.
-- **Continuous-Context Agents.** Agents share GPU state, not strings. Forks are O(1), zero tensor copy — sub-agents inherit the parent's full attention state instead of re-encoding lossy summaries. **4.4× fewer tokens processed** than a prompt-rebuilding approach.
+- **Continuous-Context Agents.** The runtime schedules memory, not strings: shared context is *inherited, not re-sent* — forks are O(1), zero tensor copy, sub-agents attend over the parent's full state instead of re-encoding lossy summaries. **4.4× fewer tokens processed** than a prompt-rebuilding approach.
+- **Deep agents, native.** Elsewhere a sub-agent is a fresh conversation handed a task brief. Here it's a fork of the parent's live attention — full inheritance for free, or a clean-spine fork when you *want* quarantine. Delegation nests to any depth; every subtree is a scope that unwinds cleanly.
 - **Retrieval-Interleaved Generation.** Agents assemble context _during_ generation — searching, reading, and reranking across your app's own data. One `Source` shape for files, SQL, the web, or user records. A cross-encoder focal lens admits only verbatim top-K chunks — never summarized.
 
 Mechanics, receipts, and the case for the architecture at [hdk.lloyal.ai](https://hdk.lloyal.ai).
