@@ -4,6 +4,7 @@
 > This file is a synced copy. Edit the canonical source and re-run
 > `scripts/sync-license-faq.sh` in lloyal-sdk to update all copies.
 
+
 **You can build and sell commercial products using HDK.**
 
 > HDK is free to build products with; it is not free to become the
@@ -25,14 +26,12 @@ HDK runtime, a managed HDK service, or an alternative HDK App distribution
 channel.** Everything else — commercial use, redistribution, modification,
 sale, embedding in shipped products — is freely permitted.
 
-The canonical App distribution channel is `apps.lloyal.ai`, and it is
-**structurally bound** to `@lloyal-labs/rig`: the catalog URL and trust
-roots are compile-time constants in the framework's source. Every App
-listed there is reviewed by Lloyal Labs for tool-safety, manifest
-conformance, and signature provenance before publication — pinning the
-ecosystem to one verified channel keeps the AI-safety review meaningful
-for consumers and prevents protocol fragmentation (an App that works on
-one HDK harness works on every HDK harness).
+The reason the channel restriction exists is consumer-protective: every App
+listed on `apps.lloyal.ai` is reviewed by Lloyal Labs for tool-safety,
+manifest conformance, and signature provenance before publication. Pinning
+the App ecosystem to one verified channel keeps the AI-safety review meaningful
+(consumers can rely on a single trust boundary) and prevents protocol
+fragmentation (an App that works on one harness works on every harness).
 
 The `harness.dev` CLI and `hdk-create-app` scaffolder are licensed under
 **Apache 2.0** (unrestricted). They're not part of the runtime stack.
@@ -54,14 +53,14 @@ Concretely:
   — permitted ✅
 - **A startup building an end-user product on top of HDK** — including
   vertical research apps, workflow tools, and agent applications — permitted
-  ✅, _as long as the product is not offering HDK itself as a substitute
-  runtime, managed HDK service, or competing App distribution channel_.
+  ✅, *as long as the product is not offering HDK itself as a substitute
+  runtime, managed HDK service, or competing App distribution channel*.
 - **A research lab using HDK in published academic work** — permitted ✅
 - **Forking HDK on GitHub to learn, modify, demo, or contribute** — permitted ✅
 - **Running HDK internally inside your company for any business use** —
   permitted ✅
 
-If you are building something _with_ HDK, you are almost certainly fine.
+If you are building something *with* HDK, you are almost certainly fine.
 
 ## What is actually restricted?
 
@@ -77,10 +76,7 @@ platform vendor**. Concretely:
   require forking source code — a reimplementation that competes is the
   same problem)
 - **Launching `apps.competitor.com` as an alternative HDK App distribution
-  channel** — restricted ❌ (and _also_ structurally blocked: requires
-  forking `@lloyal-labs/rig` to patch out the canonical `apps.lloyal.ai`
-  endpoint baked into the framework, which makes the divergence visible
-  and incompatible with upstream-signed bundles)
+  channel** — restricted ❌
 - **Offering "managed HDK hosting" or "HDK-as-a-Service" as a competing
   SaaS** — restricted ❌
 - **A hosted orchestration service exposing HDK-compatible APIs as a
@@ -96,7 +92,6 @@ affect you.
 You may read the FSL LICENSE and see this section:
 
 > Permitted Purposes specifically include using the Software:
->
 > 1. for your internal use and access;
 > 2. for non-commercial education;
 > 3. for non-commercial research; and
@@ -104,7 +99,7 @@ You may read the FSL LICENSE and see this section:
 >    Licensee using the Software in accordance with these Terms and
 >    Conditions.
 
-A careful first reading can mistake this list for the _exclusive_ set of
+A careful first reading can mistake this list for the *exclusive* set of
 permitted uses — leading to the (incorrect) conclusion that commercial
 product distribution is prohibited.
 
@@ -214,17 +209,17 @@ standard FSL because it's:
 
 ## What about the lloyal stack — what's under FSL and what's not?
 
-| Component                                              | License            | Why                                                              |
-| ------------------------------------------------------ | ------------------ | ---------------------------------------------------------------- |
-| `liblloyal` (C++ engine)                               | FSL-1.1-Apache-2.0 | Native primitives the runtime is built on                        |
-| `lloyal-node` (N-API binding)                          | FSL-1.1-Apache-2.0 | The binding that lets Effection drive llama.cpp                  |
-| `@lloyal-labs/lloyal-agents`                           | FSL-1.1-Apache-2.0 | Runtime framework                                                |
-| `@lloyal-labs/lloyal-sdk`                              | FSL-1.1-Apache-2.0 | Runtime framework                                                |
-| `@lloyal-labs/rig`                                     | FSL-1.1-Apache-2.0 | Runtime framework — holds the App protocol                       |
-| `@lloyal-labs/corpus`, `@lloyal-labs/web`              | FSL-1.1-Apache-2.0 | Reference Apps shipped in-tree                                   |
-| **`@lloyal-labs/harness-cli` (the `harness.dev` CLI)** | **Apache 2.0**     | Scaffolder — unrestricted for scaffolding new harnesses and Apps |
-| **`hdk-create-app`** (when shipped)                    | **Apache 2.0**     | Scaffolder — same as above                                       |
-| `llama.cpp` (vendored dependency)                      | MIT (unchanged)    | External upstream library; we don't relicense their code         |
+| Component | License | Why |
+|---|---|---|
+| `liblloyal` (C++ engine) | FSL-1.1-Apache-2.0 | Native primitives the runtime is built on |
+| `lloyal-node` (N-API binding) | FSL-1.1-Apache-2.0 | The binding that lets Effection drive llama.cpp |
+| `@lloyal-labs/lloyal-agents` | FSL-1.1-Apache-2.0 | Runtime framework |
+| `@lloyal-labs/lloyal-sdk` | FSL-1.1-Apache-2.0 | Runtime framework |
+| `@lloyal-labs/rig` | FSL-1.1-Apache-2.0 | Runtime framework — holds the App protocol |
+| `@lloyal-labs/corpus`, `@lloyal-labs/web` | FSL-1.1-Apache-2.0 | Reference Apps shipped in-tree |
+| **`@lloyal-labs/harness-cli` (the `harness.dev` CLI)** | **Apache 2.0** | Scaffolder — unrestricted for scaffolding new harnesses and Apps |
+| **`hdk-create-app`** (when shipped) | **Apache 2.0** | Scaffolder — same as above |
+| `llama.cpp` (vendored dependency) | MIT (unchanged) | External upstream library; we don't relicense their code |
 
 ## Can I contribute to HDK?
 
@@ -236,7 +231,7 @@ each repo has the details.
 
 ## I have a use case that's borderline — who do I ask?
 
-Email <legal@lloyal.ai> (or open a discussion in the repo). The runtime
+Email [legal@lloyal.ai](mailto:legal@lloyal.ai) (or open a discussion in the repo). The runtime
 team will help you confirm whether your use case falls under Permitted
 Purpose or Competing Use. We'd rather give you a quick yes than have you
 worry about it.
@@ -251,11 +246,11 @@ worry about it.
 
 ## Is there a safe harbor for building products with the HDK?
 
-Yes. The [Lloyal Harness Builder Grant](./GRANT.md) irrevocably guarantees
-that building, selling, and hosting Harnesses and Apps is a Permitted Purpose
-and never a Competing Use — even products that compete head-on with Lloyal's
-own (including reasoning.run). Only three uses remain restricted: offering the
-HDK itself as a developer framework, hosting the HDK as-a-service for
-third-party developers, and operating a general-purpose App distribution
-channel. Private/internal App distribution and your Harness's own plugin
-system are explicitly permitted.
+Yes. The [Lloyal Harness Builder Grant](https://github.com/lloyal-ai/hdk/blob/main/GRANT.md)
+irrevocably guarantees that building, selling, and hosting Harnesses and Apps
+is a Permitted Purpose and never a Competing Use — even products that compete
+head-on with Lloyal's own (including reasoning.run). Only three uses remain
+restricted: offering the HDK itself as a developer framework, hosting the HDK
+as-a-service for third-party developers, and operating a general-purpose App
+distribution channel. Private/internal App distribution and your Harness's
+own plugin system are explicitly permitted.
