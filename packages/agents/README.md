@@ -18,7 +18,7 @@ yield* withSpine({ systemPrompt: PLAYBOOKS, tools }, function* (spine) {
     ),
     tools: [...sourceTools, reportTool],
     parent: spine,
-    terminalTool: "report",
+    terminal: reportTool,
   });
 });
 ```
@@ -84,7 +84,7 @@ yield* withSpine(
       ),
       tools: [...sourceTools, reportTool],
       parent: spine,
-      terminalTool: "report",
+      terminal: reportTool,
     });
   },
 );
@@ -188,7 +188,7 @@ Tool result prefill in the SETTLE phase is budget-gated against a fresh pressure
 ```typescript
 yield* agentPool({
   orchestrate: parallel(tasks),
-  tools, terminalTool: "report",
+  tools, terminal: reportTool,
   policy: new DefaultAgentPolicy({
     budget: { context: { softLimit: 2048 } }, // reserve 2K for downstream
   }),
