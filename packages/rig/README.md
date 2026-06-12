@@ -1,12 +1,25 @@
 # @lloyal-labs/rig
 
-Retrieval-Interleaved Generation for the [lloyal HDK](https://github.com/lloyal-ai/hdk).
+**The App runtime for the [lloyal HDK](https://github.com/lloyal-ai/hdk).**
+
+An App packages a knowledge source, its tools, and a skill prompt into a signed, installable capability. `rig` is everything between a signed bundle and tools live in an agent's context: load, verify, register, configure, authorize, and compose Apps into the shared prompt spine — plus the framework toolset (`report`, `delegate`, `plan`) and the shared reranker every App scores against.
 
 ```bash
 npm i @lloyal-labs/rig @lloyal-labs/lloyal-agents @lloyal-labs/lloyal.node
 ```
 
-## RIG vs RAG
+```typescript
+import { createAppRegistry, loadBundle, renderSpine } from "@lloyal-labs/rig";
+
+const registry = yield* createAppRegistry();
+const factory = yield* loadBundle("lloyal/corpus");   // fetch + Ed25519-verify from the channel
+const app = yield* registry.enable(factory);
+const spinePrompt = renderSpine({ apps: registry.enabled() });
+```
+
+**[Docs →](https://docs.lloyal.ai)** · **[Build an App →](https://docs.lloyal.ai/build-an-app/what-is-an-app)** · **[harness.dev CLI →](https://www.npmjs.com/package/harness.dev)**
+
+## Why retrieval lives inside generation
 
 RAG retrieves first, then generates. A retrieval step runs upfront — query the vector DB, get top-k passages, inject them into the prompt, call the model once. The model sees static context. Retrieval and generation are separate phases.
 

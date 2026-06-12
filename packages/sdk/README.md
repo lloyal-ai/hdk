@@ -1,8 +1,8 @@
 # @lloyal-labs/sdk
 
-Backend-agnostic inference primitives for the [lloyal HDK](https://github.com/lloyal-ai/hdk).
+**Fork a language model's train of thought.**
 
-Composable inference primitives for forkable decode state, shared-prefix KV branching, and continuous tree batching. Branches share a KV prefix while keeping independent machinery — sampler chain, grammar, logits snapshot, perplexity tracker — for controlled divergence at decode time. `BranchStore` packs tokens from N branches (each at a different position, different seq_id, each needing independent logits captured) into a single `llama_batch` and dispatches once.
+`Branch` is decode state you can fork: each branch inherits the full KV prefix (free, via the attention cache) and diverges with its own sampler, grammar, and logits — explore N continuations of one context without re-decoding it. `BranchStore` then packs every branch's next token into a single `llama_batch`, so N branches advance in one GPU dispatch. These are the primitives the [lloyal HDK](https://github.com/lloyal-ai/hdk)'s agent runtime is built on — backend-agnostic, usable standalone.
 
 ```bash
 npm i @lloyal-labs/sdk

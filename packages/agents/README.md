@@ -1,48 +1,43 @@
 # @lloyal-labs/lloyal-agents
 
-Continuous Context agent runtime for the [lloyal HDK](https://github.com/lloyal-ai/hdk).
+**Run a team of agents on hardware that serves one.**
 
-`lloyal-agents` runs multi-agent inference inside the decode loop. Instead of N independent model calls rebuilding the prompt each step, all agents advance inside one continuous decode process — forked from shared KV cache state, driven through a single GPU forward pass per tick, spawning sub-agents from their own live branches at arbitrary depth.
-
-Built on [lloyal.node](https://github.com/lloyal-ai/lloyal.node), which provides forkable decode state and continuous tree batching over llama.cpp. `lloyal-agents` adds structured concurrency, tool dispatch, and a five-phase tick loop. Orchestration is not a layer above inference — it is inference.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/lloyal-ai/hdk/main/assets/continuous-context-dark.svg">
-  <img src="https://raw.githubusercontent.com/lloyal-ai/hdk/main/assets/continuous-context.svg" alt="Traditional Agents vs Continuous Context Agents — shared KV prefix, tool prefill, sub-agent spawning" width="100%">
-</picture>
+`lloyal-agents` schedules memory, not strings. An agent is a branch of the model's live attention state: shared context is **inherited, not re-sent** — a new agent attends over everything before its fork point without paying a token for it. Advancing the whole fleet costs one GPU forward pass per tick. The more your agents share, the cheaper they get — the inverse of the API-call model, where every agent re-reads the world on every step.
 
 ```bash
 npm i @lloyal-labs/lloyal-agents @lloyal-labs/lloyal.node
 ```
 
-`lloyal-agents` provides the agent runtime. [`lloyal.node`](https://github.com/lloyal-ai/lloyal.node) provides the native inference backend — prebuilt binaries for macOS (Metal, CPU), Linux (CPU, CUDA, Vulkan), and Windows (CPU, CUDA, Vulkan). Both are required. GPU selection at runtime.
-
-## Public API
-
 ```typescript
-import {
-  initAgents,        // bootstrap: session, store, event channel
-  useAgent, agent,   // single-agent helpers
-  agentPool,         // multi-agent pool with a swappable orchestrator
-  useAgentPool,      // lower-level Effection resource (advanced)
-  diverge,           // multi-branch perplexity selection
-  parallel, chain, fanout, dag, reduce,  // orchestrators / combinators
-  withSpine,         // scoped spine branch with guaranteed teardown
-  Tool, Source,
-  DefaultAgentPolicy,
-  Ctx, Store, Events,
-  // App protocol primitives — types + contexts the registry + agent pool
-  // pick up. Construction lives in `@lloyal-labs/rig` (`defineApp`,
-  // `createAppRegistry`).
-  AppRegistryCtx, AppConfigStoreCtx, GrantStoreCtx, RerankerCtx,
-} from "@lloyal-labs/lloyal-agents";
-
-import type {
-  App, AppManifest, AppProtocol, AppFactory, AppState,
-  AgentRenderCtx, SkillTemplateFn,
-  AppConfigStore, GrantStore,
-} from "@lloyal-labs/lloyal-agents";
+yield* withSpine({ systemPrompt: PLAYBOOKS, tools }, function* (spine) {
+  // spine is a prefilled branch — system prompt + tool schemas already in KV.
+  // Every agent forked from it shares that prefix physically.
+  return yield* agentPool({
+    orchestrate: parallel(
+      questions.map((q) => ({ content: q, systemPrompt: WORKER_PROMPT })),
+    ),
+    tools: [...sourceTools, reportTool],
+    parent: spine,
+    terminalTool: "report",
+  });
+});
 ```
+
+Three things this buys you that N separate model calls can't:
+
+- **Shared prefix, paid once.** Agents don't get told what their siblings know — they *attended over the same tokens*. Context sharing happens in the attention mechanism, not in prompt plumbing.
+- **True concurrency on one GPU.** Continuous tree batching packs every agent's next token into a single `llama_batch` — eight agents stream in lockstep on hardware that serves one.
+- **Agents are virtual processes over branches of the model's attention.** Structured concurrency gives each branch a real process lifecycle — spawn a sub-agent from a live thought mid-reasoning, halt a subtree and its KV is reclaimed, exit a scope and teardown is guaranteed. If an agent is cut under context pressure, recovery extracts its findings from the attention state it leaves behind.
+- **Deep agents are native, not orchestrated.** Elsewhere, a sub-agent is a fresh conversation handed a task brief — everything the parent knew gets squeezed through a prompt and re-paid for. Here a sub-agent is a fork of the parent's live attention: it inherits everything, instantly, for free — or forks from the clean shared spine when you *want* quarantine. Delegation nests to any depth; each subtree is a scope that unwinds cleanly.
+
+Local models, your hardware: prebuilt binaries for macOS (Metal), Linux and Windows (CPU, CUDA, Vulkan) via [`lloyal.node`](https://github.com/lloyal-ai/lloyal.node).
+
+**[Docs →](https://docs.lloyal.ai)** · **[The HDK →](https://github.com/lloyal-ai/hdk)** · built on this runtime: [`npx reasoning.run`](https://www.npmjs.com/package/reasoning.run)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/lloyal-ai/hdk/main/assets/continuous-context-dark.svg">
+  <img src="https://raw.githubusercontent.com/lloyal-ai/hdk/main/assets/continuous-context.svg" alt="Traditional Agents vs Continuous Context Agents — shared KV prefix, tool prefill, sub-agent spawning" width="100%">
+</picture>
 
 ## Bootstrap
 
@@ -252,6 +247,33 @@ Scaffold an App with `npx harness.dev app <name>`; install one with `npx harness
 ## Documentation
 
 Full positioning, mechanics, learn pages, and reference at [docs.lloyal.ai](https://docs.lloyal.ai).
+
+## Surface at a glance
+
+```typescript
+import {
+  initAgents,        // bootstrap: session, store, event channel
+  useAgent, agent,   // single-agent helpers
+  agentPool,         // multi-agent pool with a swappable orchestrator
+  useAgentPool,      // lower-level Effection resource (advanced)
+  diverge,           // multi-branch perplexity selection
+  parallel, chain, fanout, dag, reduce,  // orchestrators / combinators
+  withSpine,         // scoped spine branch with guaranteed teardown
+  Tool, Source,
+  DefaultAgentPolicy,
+  Ctx, Store, Events,
+  // App protocol primitives — types + contexts the registry + agent pool
+  // pick up. Construction lives in `@lloyal-labs/rig` (`defineApp`,
+  // `createAppRegistry`).
+  AppRegistryCtx, AppConfigStoreCtx, GrantStoreCtx, RerankerCtx,
+} from "@lloyal-labs/lloyal-agents";
+
+import type {
+  App, AppManifest, AppProtocol, AppFactory, AppState,
+  AgentRenderCtx, SkillTemplateFn,
+  AppConfigStore, GrantStore,
+} from "@lloyal-labs/lloyal-agents";
+```
 
 ## License
 
