@@ -43,7 +43,10 @@ export function createReranker(
   opts?: { nSeqMax?: number; nCtx?: number; nBatch?: number },
 ): Operation<Reranker> {
   return resource(function* (provide) {
-    const nSeqMax = opts?.nSeqMax ?? 8;
+    // Default bumped 8→10: warm-trunk + per-query branch consume 2 leases in
+    // the R3 Rerank composition, so leaves get N-2 slots; 10 keeps the leaf
+    // budget at the prior default of 8.
+    const nSeqMax = opts?.nSeqMax ?? 10;
     const nCtx = opts?.nCtx ?? 4096;
     const nBatch = opts?.nBatch ?? Math.floor(nCtx / nSeqMax);
     const ctx = yield* call(() => createContext({
@@ -103,9 +106,17 @@ export function createReranker(
       return rerank.scoreBatch(query, texts);
     },
 
+    tokenize(text: string): Promise<number[]> {
+      return rerank.tokenize(text);
+    },
+
     async tokenizeChunks(chunks: Chunk[]): Promise<void> {
-      for (const chunk of chunks) {
-        chunk.tokens = await rerank.tokenize(chunk.text);
+      // Tokenize in parallel — _tokenize is N-API AsyncWorker dispatch, so
+      // Promise.all overlaps work across threadpool slots. Serial for-await
+      // was a bottleneck on large corpora (1000+ chunks).
+      const toks = await Promise.all(chunks.map((c) => rerank.tokenize(c.text)));
+      for (let i = 0; i < chunks.length; i++) {
+        chunks[i].tokens = toks[i];
       }
     },
 

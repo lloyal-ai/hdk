@@ -1377,7 +1377,7 @@ export interface SessionContext {
   _branchCreate(position: number, params?: SamplingParams, nBatch?: number, grammar?: string): number;
 
   /** @internal */
-  _branchFork(handle: number): number;
+  _branchFork(handle: number, cloneLogits?: boolean): number;
 
   /** @internal */
   _branchPrefill(handle: number, tokens: number[]): Promise<void>;
@@ -1396,6 +1396,9 @@ export interface SessionContext {
 
   /** @internal */
   _branchGetLogits(handle: number): Float32Array;
+
+  /** @internal */
+  _branchLogitsAt(handle: number, indices: Int32Array): Float32Array;
 
   /** @internal */
   _branchSetLogits(handle: number, logits: Float32Array): void;

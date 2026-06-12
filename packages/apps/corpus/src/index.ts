@@ -21,6 +21,8 @@ import { CorpusSource } from "./source";
 
 export { CorpusSource } from "./source";
 export type { CorpusSourceOpts, CorpusPromptData } from "./source";
+export { BM25Index } from "./bm25";
+export type { Bm25Opts, Bm25Hit } from "./bm25";
 
 /**
  * Construct the corpus research app. Reads `corpusPath` from the app's stored

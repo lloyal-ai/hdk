@@ -2,6 +2,35 @@ import type { SessionContext, SamplingParams, Produced, GrammarTrigger } from '.
 import { GrammarTriggerType } from './types';
 
 /**
+ * Options for {@link Branch.fork} / {@link Branch.forkSync}.
+ */
+export interface ForkOpts {
+  /**
+   * When true (default), copy parent's captured logits snapshot to child
+   * (~600KB at 150k vocab). When false, skip the snapshot copy — useful for
+   * prefill-overwrite consumers (rerank leaves, embedding probes). Child has
+   * no logits until prefill()/step() runs; calling sample() before that
+   * throws {@link BranchSampleError}.
+   */
+  cloneLogits?: boolean;
+}
+
+/**
+ * Thrown when {@link Branch.sample} is called on a branch that cannot sample.
+ *
+ * The native kernel returns -1 as a sentinel value when either:
+ *   (1) no logits are captured (the branch hasn't been prefilled/stepped); or
+ *   (2) no sampler chain is configured.
+ *
+ * Without this guard the -1 would silently flow into consumer code as a token
+ * id, producing wrong continuations downstream. This typed error names both
+ * root causes so callers can fix at the right layer.
+ */
+export class BranchSampleError extends Error {
+  readonly name = 'BranchSampleError';
+}
+
+/**
  * Forkable inference handle for covalent generation
  *
  * A Branch owns everything needed for independent generation: a KV cache
@@ -88,8 +117,8 @@ export class Branch {
    *
    * @returns New forked Branch
    */
-  async fork(): Promise<Branch> {
-    return this.forkSync();
+  async fork(opts?: ForkOpts): Promise<Branch> {
+    return this.forkSync(opts);
   }
 
   /**
@@ -102,11 +131,19 @@ export class Branch {
    *
    * Call reseedSampler() on each child for stochastic diversity.
    *
+   * @param opts.cloneLogits - When true (default), copy parent's captured
+   *   logits snapshot so the child can sample the same distribution. When
+   *   false, skip the snapshot copy (~600KB at 150k vocab) — useful for
+   *   prefill-overwrite consumers (rerank leaves, embedding probes) that
+   *   fork → prefill → read → prune and never sample the parent's
+   *   distribution. The child has no logits until prefill()/step() runs,
+   *   so calling sample() before that throws BranchSampleError.
    * @returns New forked Branch
    */
-  forkSync(): Branch {
+  forkSync(opts?: ForkOpts): Branch {
     this._ensureNotDisposed();
-    const newHandle = this._ctx._branchFork(this._handle);
+    const cloneLogits = opts?.cloneLogits ?? true;
+    const newHandle = this._ctx._branchFork(this._handle, cloneLogits);
     return new Branch(this._ctx, newHandle);
   }
 
@@ -179,7 +216,15 @@ export class Branch {
    */
   sample(): number {
     this._ensureNotDisposed();
-    return this._ctx._branchSample(this._handle);
+    const token = this._ctx._branchSample(this._handle);
+    if (token === -1) {
+      throw new BranchSampleError(
+        `Branch.sample() returned -1 — possible causes: ` +
+          `(1) no logits captured (call prefill() or step() first); ` +
+          `(2) no sampler chain configured.`,
+      );
+    }
+    return token;
   }
 
   /**
