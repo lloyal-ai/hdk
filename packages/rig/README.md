@@ -196,7 +196,7 @@ const delegate = new DelegateTool({
   systemPrompt: RESEARCH_PROMPT,
   poolOpts: {
     tools: [...sourceTools, reportTool],
-    terminalTool: "report",
+    terminal: reportTool,
     scorer,
   },
 });
