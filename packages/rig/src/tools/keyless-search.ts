@@ -9,6 +9,7 @@ import {
   useScope,
 } from "effection";
 import type { Operation } from "effection";
+import { ToolRetryError } from "@lloyal-labs/lloyal-agents";
 import type { SearchProvider, SearchResult } from "./types";
 
 // ── Endpoints ───────────────────────────────────────────────────
@@ -392,7 +393,14 @@ export function createKeylessSearchProvider(
     });
     const breaker = createBreaker(breakerThreshold, breakerCooldownMs);
 
-    type PrimaryOutcome = SearchResult[] | "soft-fail" | "hard-fail";
+    /** Park duration handed to the pool when DDG rate-limits and the
+     *  fallback is empty. Tracks DDG's observed quota-refill cadence (~86s
+     *  bought one success in trace-2026-06-11T00-39); must exceed
+     *  breakerCooldownMs (default 15s) so the retry lands on a half-open
+     *  probe, not an open breaker. */
+    const RETRY_AFTER_MS = 90_000;
+
+    type PrimaryOutcome = SearchResult[] | "soft-fail" | "hard-fail" | "rate-limited";
 
   function* doDdg(query: string, max: number): Operation<PrimaryOutcome> {
     yield* pacer.acquire();
@@ -415,10 +423,21 @@ export function createKeylessSearchProvider(
     } catch {
       return "hard-fail";
     }
-    if (res.status === 403 || res.status === 429) return "hard-fail";
+    // 403/429 are rate-limit semantics, not generic failure. DDG's bot
+    // detection serves 202 + a challenge page (observed live 2026-06-11:
+    // status 202, 47 anomaly/challenge markers, zero result links) — it
+    // passes a naive 2xx check and parses to zero results, which the old
+    // soft-fail classification rendered indistinguishable from "no matches"
+    // and never tripped the breaker.
+    if (res.status === 403 || res.status === 429) return "rate-limited";
+    if (res.status === 202) return "rate-limited";
     if (res.status < 200 || res.status >= 300) return "hard-fail";
     const parsed = parseDdgHtml(res.text);
-    if (parsed.length === 0) return "soft-fail";
+    if (parsed.length === 0) {
+      return /anomaly|challenge|captcha|detected unusual/i.test(res.text)
+        ? "rate-limited"
+        : "soft-fail";
+    }
     return parsed.slice(0, max);
   }
 
@@ -460,7 +479,7 @@ export function createKeylessSearchProvider(
           let primary: PrimaryOutcome = "hard-fail";
           if (breaker.canProceed()) {
             primary = yield* doDdg(q, maxResults);
-            if (primary === "hard-fail") {
+            if (primary === "hard-fail" || primary === "rate-limited") {
               breaker.onHardFailure();
             } else if (Array.isArray(primary)) {
               breaker.onSuccess();
@@ -469,7 +488,18 @@ export function createKeylessSearchProvider(
           }
           if (Array.isArray(primary)) return postProcess(primary, maxResults);
           const fallback = yield* doMarginalia(q, maxResults);
-          return postProcess(fallback, maxResults);
+          const processed = postProcess(fallback, maxResults);
+          // Rate-limited primary + nothing from the fallback: throwing (vs
+          // returning []) is the difference between the model thrashing on
+          // "no results" and the pool parking the agent for one quiet retry
+          // (trace-2026-06-11T00-39: nine zero-result retries in 80s).
+          if (primary === "rate-limited" && processed.length === 0) {
+            throw new ToolRetryError(
+              "Search provider rate-limited and fallback returned no results.",
+              RETRY_AFTER_MS,
+            );
+          }
+          return processed;
         });
       },
     };

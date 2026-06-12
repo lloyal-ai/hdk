@@ -122,3 +122,27 @@ export abstract class Tool<TArgs = Record<string, unknown>> {
     };
   }
 }
+
+/**
+ * Thrown by a tool (or its backend provider) when the operation failed
+ * transiently and should be retried after a delay — rate limiting being the
+ * canonical case.
+ *
+ * The pool's DISPATCH phase catches this BEFORE the generic tool-error
+ * handler: instead of settling an error into the agent's KV, it parks the
+ * agent (`awaiting_tool` — skipped by PRODUCE at zero cost) and re-executes
+ * the same call after `retryAfterMs`. The model never sees transient
+ * infrastructure weather in its context; from its side the tool call just
+ * took longer. One retry is budgeted — a second ToolRetryError settles an
+ * honest "unavailable, use other sources" result, because at that point the
+ * outage is a fact the model needs in order to pivot.
+ *
+ * Observability: the pool emits `agent:tool_retry` (TUI) and `tool:retry`
+ * (trace) when parking, so a waiting agent is never mistaken for a hung one.
+ */
+export class ToolRetryError extends Error {
+  override readonly name = 'ToolRetryError';
+  constructor(message: string, readonly retryAfterMs: number) {
+    super(message);
+  }
+}

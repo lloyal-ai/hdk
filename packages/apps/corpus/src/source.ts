@@ -6,9 +6,9 @@ import { ReadFileTool } from "./tools/read-file";
 import { GrepTool } from "./tools/grep";
 
 /** Data for rendering the corpus-research per-spawn content. */
-export interface CorpusPromptData {
+export type CorpusPromptData = {
   toc: string;
-}
+};
 
 /** Configuration for {@link CorpusSource}. */
 export interface CorpusSourceOpts {
@@ -61,11 +61,11 @@ export class CorpusSource extends Source<{ reranker: Reranker }, Chunk> {
   }
 
   /**
-   * TOC (file → top-level headings) for the harness to render into the
-   * corpus research spawn's task content. Agents discover relevant content
-   * through their tools, not pre-scored prompt suggestions.
+   * TOC (file → top-level headings) for the harness to place — once, in
+   * shared KV (spine appendix), not per spawn. Agents discover relevant
+   * content through their tools; the TOC orients `read_file` targeting.
    */
-  promptData(): CorpusPromptData {
+  override promptData(): CorpusPromptData {
     return { toc: this._buildToc() };
   }
 

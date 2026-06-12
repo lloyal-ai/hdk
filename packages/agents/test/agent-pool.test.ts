@@ -46,6 +46,8 @@ async function runPool(opts: {
   maxTurns?: number;
   trace?: boolean;
   pruneOnReturn?: boolean;
+  /** Last-chance ctx mutation hook — runs after fork/sample wiring, before the pool. */
+  mutateCtx?: (ctx: MockSessionContext) => void;
 }): Promise<{
   result: AgentPoolResult;
   events: AgentEvent[];
@@ -83,6 +85,8 @@ async function runPool(opts: {
   if (opts.parseChatOutputFn) {
     ctx.parseChatOutput = opts.parseChatOutputFn;
   }
+
+  opts.mutateCtx?.(ctx);
 
   // ── Wire tokenToText for readable output ──────────────────
   // (default `t${token}` from MockSessionContext is fine for most tests)
@@ -147,6 +151,7 @@ function stubPolicy(overrides: Partial<AgentPolicy> & {
     shouldExplore: overrides.shouldExplore,
     shouldExit: overrides.shouldExit,
     onRecovery: overrides.onRecovery,
+    onToolRetry: overrides.onToolRetry,
     pressureThresholds: overrides.pressureThresholds,
     resetTick: overrides.resetTick,
   };
@@ -1432,5 +1437,253 @@ describe('SPLIT-SEMANTICS GATE: voluntary vs recovery emission', () => {
     // Recovery diagnostic trace event fires alongside (locks the literal).
     const recoveryDiagnostic = traceWriter.events.filter(e => e.type === 'pool:recoveryReturn');
     expect(recoveryDiagnostic.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ── Group 7: no-tool agent seams (synth rabbit-hole regression) ─
+// Locks the three framework fixes from the 2026-06-11 synth failure
+// (trace-2026-06-11T00-02): a research agent cut mid-tool-call left a
+// dangling <tool_call> fragment in its captured result; injected into the
+// tool-less synth agent's findings it primed tool-call mimicry, the lazy
+// tool-call grammar forced syntactic completion, and the dispatcher's
+// generic "Unknown tool" error invited retries until maxTurns.
+
+describe('no-tool agent seams', () => {
+  const freeTextPolicy = () => stubPolicy({
+    shouldExit: () => false,
+    onProduced: (_a, parsed) => {
+      if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
+      if (parsed.content) return { type: 'free_text_return', content: parsed.content };
+      return { type: 'idle', reason: 'free_text_stop' };
+    },
+    onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+  });
+
+  it('7a: dangling <tool_call> fragment stripped from free-text result capture', async () => {
+    const dirty =
+      'Findings summary.\n\n</think>\n\n<tool_call>\n<function=read_file>\n<parameter=filename>\nfoo.md';
+    const { result } = await runPool({
+      forkTokenQueues: [[1, STOP]],
+      parseChatOutputFn: () => ({ content: dirty, reasoningContent: '', toolCalls: [] }),
+      policy: freeTextPolicy(),
+    });
+
+    expect(result.agents[0].result).toBe('Findings summary.\n\n</think>');
+    expect(result.agents[0].result).not.toContain('<tool_call>');
+  });
+
+  it('7b: complete <tool_call>…</tool_call> blocks in results are preserved', async () => {
+    const quoted = 'The agent ran <tool_call>\n<function=x>\n</tool_call> and got results.';
+    const { result } = await runPool({
+      forkTokenQueues: [[1, STOP]],
+      parseChatOutputFn: () => ({ content: quoted, reasoningContent: '', toolCalls: [] }),
+      policy: freeTextPolicy(),
+    });
+
+    expect(result.agents[0].result).toBe(quoted);
+  });
+
+  it('7c: unknown tool with EMPTY toolkit → directive error, not generic Unknown tool', async () => {
+    const { events } = await runPool({
+      forkTokenQueues: [[1, STOP]],
+      // First turn emits a hallucinated tool call; second turn (queue
+      // exhausted, raw='') parses to nothing and idles.
+      parseChatOutputFn: (raw) => raw.includes('t1')
+        ? { content: '', reasoningContent: '', toolCalls: [{ name: 'web_search', arguments: '{"query":"x"}', id: 'c1' }] }
+        : { content: '', reasoningContent: '', toolCalls: [] },
+      policy: freeTextPolicy(),
+      // tools omitted → empty Map
+    });
+
+    const toolResults = events.filter(e => e.type === 'agent:tool_result');
+    expect(toolResults.length).toBeGreaterThanOrEqual(1);
+    const resultStr = (toolResults[0] as { type: 'agent:tool_result'; result: string }).result;
+    expect(resultStr).toContain('No tools are available to this agent');
+    expect(resultStr).not.toContain('Unknown tool');
+  });
+
+  it('7d: unknown tool with NON-empty toolkit keeps the Unknown tool error', async () => {
+    const tools = new Map<string, Tool>();
+    const spy = new SpyTool('real_tool');
+    tools.set(spy.name, spy);
+
+    const { events } = await runPool({
+      forkTokenQueues: [[1, STOP]],
+      parseChatOutputFn: (raw) => raw.includes('t1')
+        ? { content: '', reasoningContent: '', toolCalls: [{ name: 'nonexistent', arguments: '{}', id: 'c1' }] }
+        : { content: '', reasoningContent: '', toolCalls: [] },
+      policy: freeTextPolicy(),
+      tools,
+    });
+
+    const toolResults = events.filter(e => e.type === 'agent:tool_result');
+    expect(toolResults.length).toBeGreaterThanOrEqual(1);
+    const resultStr = (toolResults[0] as { type: 'agent:tool_result'; result: string }).result;
+    expect(resultStr).toContain('Unknown tool: nonexistent');
+  });
+
+  it('7e: empty toolkit → lazy tool-call grammar NOT installed; non-empty → installed', async () => {
+    // The Qwen3.5 template emits a lazy tool-call grammar even with no
+    // tools. Installing it on a no-tool agent forces syntactic completion
+    // of any accidentally-sampled <tool_call>; the pool must skip it.
+    const grammarFmt = (ctx: MockSessionContext) => {
+      const orig = ctx.formatChatSync.bind(ctx);
+      ctx.formatChatSync = (msgs, fmtOpts) => ({
+        ...orig(msgs, fmtOpts),
+        grammar: 'root ::= toolcall',
+        grammarLazy: true,
+        grammarTriggers: [{ type: 1, value: '<tool_call>' }],
+      });
+    };
+
+    let lazyCallsEmpty = 0;
+    await runPool({
+      forkTokenQueues: [[STOP]],
+      parseChatOutputFn: () => ({ content: '', reasoningContent: '', toolCalls: [] }),
+      policy: freeTextPolicy(),
+      mutateCtx: (ctx) => {
+        grammarFmt(ctx);
+        ctx._branchSetGrammarLazy = () => { lazyCallsEmpty++; };
+      },
+    });
+    expect(lazyCallsEmpty).toBe(0);
+
+    const tools = new Map<string, Tool>();
+    const spy = new SpyTool('web_search');
+    tools.set(spy.name, spy);
+
+    let lazyCallsTools = 0;
+    await runPool({
+      forkTokenQueues: [[STOP]],
+      parseChatOutputFn: () => ({ content: '', reasoningContent: '', toolCalls: [] }),
+      policy: freeTextPolicy(),
+      tools,
+      mutateCtx: (ctx) => {
+        grammarFmt(ctx);
+        ctx._branchSetGrammarLazy = () => { lazyCallsTools++; };
+      },
+    });
+    expect(lazyCallsTools).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ── Group 8: transient tool failure — park + retry (ToolRetryError) ──
+// A tool throwing ToolRetryError parks its agent (awaiting_tool, skipped by
+// PRODUCE — no turns/tokens/KV) and re-executes after the delay. Strategy
+// (retry count, delay override, fail message) is the policy's via
+// onToolRetry; the pool is pure mechanism. Observability: agent:tool_retry
+// event + tool:retry trace, so a waiting agent never reads as hung.
+
+import { ToolRetryError } from '../src/Tool';
+
+class FlakyTool extends Tool<{ query: string }> {
+  readonly name = 'flaky';
+  readonly description = 'transiently failing tool';
+  readonly parameters = { type: 'object' as const, properties: { query: { type: 'string' as const } } };
+  calls = 0;
+  constructor(private failures: number, private retryAfterMs = 30) { super(); }
+  *execute(): Operation<unknown> {
+    this.calls++;
+    if (this.calls <= this.failures) throw new ToolRetryError('rate limited', this.retryAfterMs);
+    return { results: ['ok'] };
+  }
+}
+
+describe('transient tool failure (park + retry)', () => {
+  const toolCallPolicy = (overrides?: Partial<AgentPolicy>) => stubPolicy({
+    shouldExit: () => false,
+    onProduced: (_a, parsed) => {
+      if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
+      return { type: 'idle', reason: 'free_text_stop' };
+    },
+    onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+    ...overrides,
+  });
+  const callOnFirstTurn = (raw: string) => raw.includes('t1')
+    ? { content: '', reasoningContent: '', toolCalls: [{ name: 'flaky', arguments: '{"query":"x"}', id: 'c1' }] }
+    : { content: '', reasoningContent: '', toolCalls: [] };
+
+  it('8a: one transient failure → park, retry succeeds, model never sees the failure', async () => {
+    const flaky = new FlakyTool(1);
+    const tools = new Map<string, Tool>([[flaky.name, flaky]]);
+    const { events, trace, result } = await runPool({
+      forkTokenQueues: [[1, STOP]],
+      parseChatOutputFn: callOnFirstTurn,
+      policy: toolCallPolicy(),
+      tools,
+      trace: true,
+    });
+
+    expect(flaky.calls).toBe(2); // original + 1 retry
+    const retries = events.filter(e => e.type === 'agent:tool_retry');
+    expect(retries).toHaveLength(1);
+    expect((retries[0] as { retryAfterMs: number; attempt: number }).retryAfterMs).toBe(30);
+    expect((retries[0] as { attempt: number }).attempt).toBe(1);
+    // The eventual result is the SUCCESS — no failure text ever settled
+    const toolResults = events.filter(e => e.type === 'agent:tool_result');
+    expect(toolResults).toHaveLength(1);
+    expect((toolResults[0] as { result: string }).result).toContain('ok');
+    // Trace observability
+    expect(trace.ofType('tool:retry')).toHaveLength(1);
+    // Retry did not double-count the call
+    expect(result.totalToolCalls).toBe(1);
+  });
+
+  it('8b: budget exhausted (default 1 retry) → directive failure settles, agent continues', async () => {
+    const flaky = new FlakyTool(99); // always throws
+    const tools = new Map<string, Tool>([[flaky.name, flaky]]);
+    const { events } = await runPool({
+      forkTokenQueues: [[1, STOP]],
+      parseChatOutputFn: callOnFirstTurn,
+      policy: toolCallPolicy(),
+      tools,
+    });
+
+    expect(flaky.calls).toBe(2); // original + 1 retry, then fail
+    const retries = events.filter(e => e.type === 'agent:tool_retry');
+    expect(retries).toHaveLength(1);
+    const toolResults = events.filter(e => e.type === 'agent:tool_result');
+    expect(toolResults).toHaveLength(1);
+    const resultStr = (toolResults[0] as { result: string }).result;
+    expect(resultStr).toContain('currently unavailable');
+    expect(resultStr).toContain('use other sources');
+    // Agent survived (not killed via tool_error path)
+    expect(events.some(e => e.type === 'agent:done')).toBe(true);
+  });
+
+  it('8c: policy fail-fast → no park, custom message settles immediately', async () => {
+    const flaky = new FlakyTool(99);
+    const tools = new Map<string, Tool>([[flaky.name, flaky]]);
+    const { events } = await runPool({
+      forkTokenQueues: [[1, STOP]],
+      parseChatOutputFn: callOnFirstTurn,
+      policy: toolCallPolicy({
+        onToolRetry: () => ({ type: 'fail', message: 'no time to wait — pivot now' }),
+      }),
+      tools,
+    });
+
+    expect(flaky.calls).toBe(1); // no retry
+    expect(events.filter(e => e.type === 'agent:tool_retry')).toHaveLength(0);
+    const toolResults = events.filter(e => e.type === 'agent:tool_result');
+    expect((toolResults[0] as { result: string }).result).toContain('no time to wait');
+  });
+
+  it('8d: policy overrides the tool\'s delay estimate', async () => {
+    const flaky = new FlakyTool(1, 5000); // tool asks for 5s
+    const tools = new Map<string, Tool>([[flaky.name, flaky]]);
+    const { events } = await runPool({
+      forkTokenQueues: [[1, STOP]],
+      parseChatOutputFn: callOnFirstTurn,
+      policy: toolCallPolicy({
+        onToolRetry: (_a, _t, _e, attempt) =>
+          attempt <= 1 ? { type: 'retry', afterMs: 20 } : { type: 'fail' },
+      }),
+      tools,
+    });
+
+    expect(flaky.calls).toBe(2);
+    const retries = events.filter(e => e.type === 'agent:tool_retry');
+    expect((retries[0] as { retryAfterMs: number }).retryAfterMs).toBe(20); // policy's 20ms, not the tool's 5s
   });
 });

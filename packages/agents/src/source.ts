@@ -136,4 +136,21 @@ export abstract class Source<TCtx = unknown, TChunk = unknown> {
 
   /** Post-use chunks for reranking. Called after agents have used the tools. */
   getChunks(): TChunk[] { return []; }
+
+  /**
+   * App-level prompt data (e.g. a corpus TOC) for the HARNESS to place.
+   *
+   * Identical for every agent in a pool, so it belongs in shared KV —
+   * rendered ONCE, not duplicated per spawn (six 4.8k-token TOC-bearing
+   * suffixes overran a 32k context before this contract existed).
+   *
+   * Placement is a TRUST decision, which is why the framework does not
+   * place it automatically: this is free prose derived from source
+   * content, and the shared spine prefix is read by every agent in the
+   * pool. A harness may append it to its spine prompt for apps it trusts
+   * (first-party corpora); it must not blanket-append data from untrusted
+   * third-party apps — `renderSpine` itself stays prose-free for exactly
+   * this reason.
+   */
+  promptData(): Record<string, unknown> { return {}; }
 }

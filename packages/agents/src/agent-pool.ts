@@ -8,11 +8,11 @@ import type { FormatConfig } from './Agent';
 import { buildToolResultDelta, buildTurnDelta } from '@lloyal-labs/sdk';
 import { traceScope } from './trace-scope';
 import type { TraceWriter } from './trace-writer';
-import type { AgentPolicy, IdleReason } from './AgentPolicy';
+import type { AgentPolicy, IdleReason, ToolRetryAction } from './AgentPolicy';
 import { Agent } from './Agent';
 import { DefaultAgentPolicy } from './AgentPolicy';
 import type { PolicyConfig } from './AgentPolicy';
-import { Tool } from './Tool';
+import { Tool, ToolRetryError } from './Tool';
 import type {
   PressureThresholds,
   AgentTaskSpec,
@@ -238,7 +238,7 @@ function* recoverInline(
       try {
         const parsed = JSON.parse(output) as { result: string };
         if (parsed?.result) {
-          agent.setResult(parsed.result, 'recovery');
+          agent.setResult(stripDanglingToolCall(parsed.result), 'recovery');
           yield* events.send({ type: 'agent:recovered', agentId: agent.id, result: agent.result! });
           reported = true;
           tw.write({
@@ -281,10 +281,28 @@ function* recoverInline(
 // Each handler encapsulates state transitions, events, and trace for one
 // policy action outcome. The PRODUCE switch dispatches to these.
 
+/**
+ * Strip a trailing UNCLOSED `<tool_call>` fragment from text captured as an
+ * agent result. When generation is cut mid-tool-call-emission (produce
+ * budget, pressure, maxTurns), the parser finds no complete call and the
+ * raw tail — `…</think>\n<tool_call><function=read_file>…` with no closing
+ * tags — rides into `a.result` verbatim. Any downstream consumer that
+ * injects results into another agent's prompt (synth findings, delegation
+ * returns) then carries a literal in-context demonstration of emitting tool
+ * calls, priming no-tool agents to imitate it (observed:
+ * trace-2026-06-11T00-02, agent 65539 → synth rabbit hole).
+ *
+ * Complete `<tool_call>…</tool_call>` blocks are left alone — they are
+ * either parsed before reaching a capture path or deliberate quoting.
+ */
+function stripDanglingToolCall(text: string): string {
+  return text.replace(/<tool_call>(?:(?!<\/tool_call>)[\s\S])*$/, '').trimEnd();
+}
+
 function* handleFreeTextReturn(
   a: Agent, content: string, events: EventSender,
 ): Operation<void> {
-  a.setResult(content, 'free_text');
+  a.setResult(stripDanglingToolCall(content), 'free_text');
   a.transition('idle');
   yield* events.send({ type: 'agent:return', agentId: a.id, result: a.result! });
   yield* events.send({ type: 'agent:done', agentId: a.id });
@@ -321,7 +339,7 @@ function* handleReturn(
   a: Agent, result: string, tc: ParsedToolCall, terminalToolName: string,
   pruneOnReturn: boolean, events: EventSender,
 ): Operation<void> {
-  a.setResult(result, 'voluntary_return');
+  a.setResult(stripDanglingToolCall(result), 'voluntary_return');
   a.transition('idle');
   a.incrementToolCalls();
   yield* events.send({ type: 'agent:tool_call', agentId: a.id, tool: terminalToolName, args: tc.arguments });
@@ -612,7 +630,14 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       // and skip the (no-tools-anyway) lazy trigger.
       if (eagerGrammar) {
         a.branch.setGrammar(eagerGrammar);
-      } else if (a.fmt.grammar && a.fmt.grammarLazy && a.fmt.grammarTriggers.length > 0) {
+      } else if (tools.size > 0 && a.fmt.grammar && a.fmt.grammarLazy && a.fmt.grammarTriggers.length > 0) {
+        // tools.size guard: with an empty toolkit there is nothing to
+        // dispatch, but the template still emits a tool-call grammar (see
+        // above). Installing it would not BLOCK the `<tool_call>` trigger —
+        // lazy grammars activate on the trigger, they don't prevent it —
+        // but once triggered it FORCES syntactic completion of a full call
+        // the model may have sampled into by accident. A no-tool agent
+        // (synth, eval) must be free to wander back to prose instead.
         const triggers = a.fmt.grammarTriggers.map(t => {
           if (t.type === GrammarTriggerType.WORD) {
             const nlIdx = t.value.indexOf('\n');
@@ -655,7 +680,15 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         const { agent, suffixTokens, formattedPrompt } = yield* setupAgent(parent, task, ctx, enableThinking);
 
         const pressure = new ContextPressure(ctx, pressureOpts);
-        if (!pressure.canFit(suffixTokens.length)) {
+        // Reserve for batch-mates: spawns/extends admitted earlier this tick
+        // haven't prefilled yet, so raw pressure doesn't see them. Without
+        // the reservation, N individually-valid spawns cram N suffixes into
+        // one SPAWN-phase prefill and every agent dies pressure_softcut on
+        // turn 0 (trace-2026-06-11T06-21: 6 × 4,819-token suffixes vs 32k).
+        const reserved =
+          pendingSpawns.reduce((acc, ps) => acc + ps.suffixTokens.length, 0) +
+          pendingExtends.reduce((acc, pe) => acc + (pe.discarded ? 0 : pe.tokens.length), 0);
+        if (!pressure.canFit(reserved + suffixTokens.length)) {
           agent.branch.pruneSync();
           agent.dispose();
           tw.write({
@@ -823,20 +856,36 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       return deferred;
     }
 
+    /** Transient-failure parking: a ToolRetryError'd call waits here with its
+     *  agent in `awaiting_tool` (PRODUCE skips it — no turns, no tokens, no
+     *  KV) until `notBefore`, then re-enters DISPATCH. Whether to park and
+     *  for how long is the POLICY's call (`onToolRetry`); this queue is
+     *  pure mechanism, like SETTLE's deferral. Keep retry delays above the
+     *  provider's own breaker cooldown or the retry lands on an open
+     *  breaker. */
+    const pendingRetries: {
+      agent: Agent; tc: ParsedToolCall; callId: string;
+      notBefore: number; attempt: number;
+    }[] = [];
+
     /** DISPATCH: execute tool calls sequentially, return settled items for next tick */
-    function* dispatch(calls: { agent: Agent; tc: ParsedToolCall }[]): Operation<SettledTool[]> {
+    function* dispatch(calls: { agent: Agent; tc: ParsedToolCall; retryAttempt?: number; retryCallId?: string }[]): Operation<SettledTool[]> {
       const results: SettledTool[] = [];
 
-      for (const { agent, tc } of calls) {
+      for (const { agent, tc, retryAttempt, retryCallId } of calls) {
         let toolArgs: Record<string, unknown>;
         try { toolArgs = JSON.parse(tc.arguments); } catch { toolArgs = {}; }
-        const callId = tc.id || `call_${agent.toolCallCount}`;
+        const callId = retryCallId ?? (tc.id || `call_${agent.toolCallCount}`);
 
-        agent.incrementToolCalls();
-        totalToolCalls++;
-        agent.incrementTurns();
+        // Retries re-execute the SAME call — turn/tool-call counters and the
+        // agent:tool_call event belong to the original attempt only.
+        if (retryAttempt === undefined) {
+          agent.incrementToolCalls();
+          totalToolCalls++;
+          agent.incrementTurns();
 
-        yield* poolChannel.send({ type: 'agent:tool_call', agentId: agent.id, tool: tc.name, args: tc.arguments });
+          yield* poolChannel.send({ type: 'agent:tool_call', agentId: agent.id, tool: tc.name, args: tc.arguments });
+        }
 
         const tool = tools.get(tc.name);
         const dispatchPressure = new ContextPressure(ctx, pressureOpts);
@@ -868,9 +917,20 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           yield* TraceParent.set(dispatchTraceId);
           yield* CallingAgent.set(agent);
 
+          // Unknown-tool messaging branches on toolkit emptiness: a no-tool
+          // agent emitting tool calls is imitating markup from its context
+          // (inherited spine KV or contaminated findings) — a generic
+          // "Unknown tool" error reads as transient and invites rephrased
+          // retries until maxTurns (observed: trace-2026-06-11T00-02 synth,
+          // 10 turns of mimicry). The directive form names the actual
+          // situation so the model can recover in one turn.
           const result: unknown = yield* scoped(function*() {
             return yield* call(() =>
-              tool ? tool.execute(toolArgs, toolContext) : Promise.resolve({ error: `Unknown tool: ${tc.name}` })
+              tool ? tool.execute(toolArgs, toolContext) : Promise.resolve({
+                error: tools.size === 0
+                  ? 'No tools are available to this agent. Do not emit tool calls — write your answer directly as plain text.'
+                  : `Unknown tool: ${tc.name}`,
+              })
             );
           });
 
@@ -899,6 +959,51 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             result, prefillTokenCount: prefillTokens.length,
             durationMs: performance.now() - toolT0 });
         } catch (err) {
+          if (err instanceof ToolRetryError) {
+            const attempt = (retryAttempt ?? 0) + 1;
+            // Strategy is the policy's: park-and-retry (optionally overriding
+            // the tool's delay estimate) or fail the call so the model can
+            // pivot. Hook absent → one retry at the tool's estimate.
+            const retryAction: ToolRetryAction =
+              policy.onToolRetry?.(agent, tc.name, err, attempt)
+                ?? (attempt <= 1 ? { type: 'retry' } : { type: 'fail' });
+            if (retryAction.type === 'retry') {
+              // Park: no SettledTool, nothing prefilled — the agent's KV
+              // never sees transient infrastructure weather. Surfaced to
+              // the TUI + trace so a waiting agent reads as waiting, not hung.
+              const afterMs = retryAction.afterMs ?? err.retryAfterMs;
+              pendingRetries.push({
+                agent, tc, callId,
+                notBefore: performance.now() + afterMs,
+                attempt,
+              });
+              yield* poolChannel.send({
+                type: 'agent:tool_retry', agentId: agent.id, tool: tc.name,
+                retryAfterMs: afterMs, attempt,
+              });
+              tw.write({ traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
+                type: 'tool:retry', agentId: agent.id, tool: tc.name,
+                callId, retryAfterMs: afterMs, attempt });
+              continue;
+            }
+            // Policy chose fail — the outage is now a fact the model needs.
+            // Settle an honest, directive result through the normal path
+            // (NOT the tool_error path, which kills the agent's run).
+            const exhausted = {
+              error: retryAction.message
+                ?? `${tc.name} is currently unavailable (rate-limited; retry failed). ` +
+                  `Do not call ${tc.name} again — use other sources or proceed with your current findings.`,
+            };
+            const resultStr = JSON.stringify(exhausted);
+            yield* poolChannel.send({ type: 'agent:tool_result', agentId: agent.id, tool: tc.name, result: resultStr });
+            const prefillTokens = buildToolResultDelta(ctx, resultStr, callId, { enableThinking: agent.fmt.enableThinking });
+            results.push({ agentId: agent.id, prefillTokens, toolName: tc.name, callId, args: tc.arguments, probe: undefined });
+            tw.write({ traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
+              type: 'tool:result', agentId: agent.id, tool: tc.name,
+              result: exhausted, prefillTokenCount: prefillTokens.length,
+              durationMs: performance.now() - toolT0 });
+            continue;
+          }
           agent.transition('idle');
           agent.setResult(`Tool error: ${(err as Error).message}`, 'tool_error');
           tw.write({ traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
@@ -1176,7 +1281,18 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       }
 
       // -- Phase 4: DISPATCH
-      const dispatched = yield* dispatch(toolCalls);
+      // Due retries re-enter first — their agents have been parked since the
+      // ToolRetryError and re-execute the same call (same callId, no counter
+      // increments).
+      const nowTs = performance.now();
+      const dueRetries: typeof pendingRetries = [];
+      for (let i = pendingRetries.length - 1; i >= 0; i--) {
+        if (pendingRetries[i].notBefore <= nowTs) dueRetries.unshift(...pendingRetries.splice(i, 1));
+      }
+      const dispatched = yield* dispatch([
+        ...dueRetries.map(r => ({ agent: r.agent, tc: r.tc, retryAttempt: r.attempt, retryCallId: r.callId })),
+        ...toolCalls,
+      ]);
 
       // Deferred + new dispatch results → next tick's SETTLE
       pendingSettled = [...deferred, ...dispatched];
@@ -1201,6 +1317,23 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       if (allIdle && !orchestratorDone) {
         // All current agents done but orchestrator may spawn more.
         yield* sleep(1);
+      }
+
+      // All-parked: nothing active, nothing to settle — only future retries.
+      // Without this the loop busy-spins until the earliest notBefore (parked
+      // agents are awaiting_tool, so the allIdle sleep above never fires).
+      // Cap the nap at 50ms so orchestrator spawns/extends are picked up
+      // promptly.
+      if (
+        pendingRetries.length > 0
+        && pendingSettled.length === 0
+        && pendingSpawns.length === 0
+        && pendingExtends.length === 0
+        && !agents.some(a => a.status === 'active')
+      ) {
+        const nextDue = Math.min(...pendingRetries.map(r => r.notBefore));
+        const nap = Math.max(1, Math.min(50, nextDue - performance.now()));
+        yield* sleep(nap);
       }
     }
 

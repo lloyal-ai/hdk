@@ -185,6 +185,24 @@ export function* withSpine<T>(
     }
     const formatted = ctx.formatChatSync(messages, fmtOpts);
     const headerTokens = ctx.tokenizeSync(formatted.prompt, false);
+    // Spine-seed emission for trace replay (`extractSpineSeed`). Captures
+    // the rendered chat prompt verbatim so a later `reconstructBranch`
+    // can rebuild this exact KV state in a fresh context. The token-count
+    // `branch:prefill` below is informational; the spine seed is the
+    // prompt text on this event.
+    tw.write({
+      traceId: tw.nextId(),
+      parentTraceId: scope.traceId,
+      ts: performance.now(),
+      type: "prompt:format",
+      promptText: formatted.prompt,
+      tokenCount: headerTokens.length,
+      messages,
+      tools: opts.tools && opts.tools.length > 0
+        ? createToolkit(opts.tools).toolsJson
+        : undefined,
+      role: "spine",
+    });
     if (headerTokens.length > 0) {
       yield* call(() => spine.prefill(headerTokens));
       tw.write({

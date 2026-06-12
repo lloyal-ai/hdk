@@ -1,4 +1,5 @@
 import type { Agent, ToolHistoryEntry } from './Agent';
+import type { ToolRetryError } from './Tool';
 import { ContextPressure } from './agent-pool';
 import type { ParsedToolCall } from '@lloyal-labs/sdk';
 import type { PressureThresholds } from './types';
@@ -162,6 +163,22 @@ export type RecoveryAction =
   | { type: 'extract'; prompt: { system: string; user: string } }
   | { type: 'skip' };
 
+/**
+ * Action returned by policy.onToolRetry — what to do when a tool throws
+ * {@link ToolRetryError} (transient failure, e.g. provider rate-limited).
+ *
+ * `retry` parks the agent (`awaiting_tool`, skipped by PRODUCE at zero
+ * cost — no turns, no tokens, no KV) and re-executes the same call after
+ * `afterMs` (defaults to the error's own `retryAfterMs` estimate).
+ * `fail` settles `message` (or the pool's directive default) as the tool
+ * result so the model can pivot.
+ *
+ * @category Agents
+ */
+export type ToolRetryAction =
+  | { type: 'retry'; afterMs?: number }
+  | { type: 'fail'; message?: string };
+
 // ── Policy interface ────────────────────────────────────────
 
 /**
@@ -264,6 +281,19 @@ export interface AgentPolicy {
    * Optional — defaults to skip when absent.
    */
   onRecovery?(agent: Agent, pressure: ContextPressure): RecoveryAction;
+
+  /**
+   * Transient tool failure (the tool threw {@link ToolRetryError}).
+   * Decide whether to park-and-retry or settle a failure result. The tool
+   * supplies a `retryAfterMs` estimate on the error; the policy may override
+   * it (`afterMs`) or refuse to wait at all — e.g. when the time budget
+   * can't afford a park.
+   *
+   * Absent → pool default: one retry at the error's own delay, then fail.
+   *
+   * @param attempt - 1 on the first failure of a call, 2 after one retry, …
+   */
+  onToolRetry?(agent: Agent, tool: string, error: ToolRetryError, attempt: number): ToolRetryAction;
 }
 
 /**
@@ -351,6 +381,9 @@ export interface DefaultAgentPolicyOpts {
    *  protected from shouldExit — the hard limit is deferred until the tool
    *  call completes naturally or KV pressure forces a kill. */
   terminalToolName?: string;
+  /** Max park-and-retry attempts per tool call on {@link ToolRetryError}
+   *  before failing the call with a directive result. @default 1 */
+  maxToolRetries?: number;
 }
 
 export class DefaultAgentPolicy implements AgentPolicy {
@@ -362,6 +395,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
   private _recovery: DefaultAgentPolicyOpts['recovery'] | null;
   private _budget: DefaultAgentPolicyOpts['budget'] | null;
   private _terminalToolName: string | null;
+  private _maxToolRetries: number;
   private _startTime: number;
 
   constructor(opts?: DefaultAgentPolicyOpts) {
@@ -375,7 +409,12 @@ export class DefaultAgentPolicy implements AgentPolicy {
     this._recovery = opts?.recovery ?? null;
     this._budget = opts?.budget ?? null;
     this._terminalToolName = opts?.terminalToolName ?? null;
+    this._maxToolRetries = opts?.maxToolRetries ?? 1;
     this._startTime = performance.now();
+  }
+
+  onToolRetry(_agent: Agent, _tool: string, _error: ToolRetryError, attempt: number): ToolRetryAction {
+    return attempt <= this._maxToolRetries ? { type: 'retry' } : { type: 'fail' };
   }
 
   /**

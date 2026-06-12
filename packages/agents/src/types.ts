@@ -470,6 +470,7 @@ export type AgentEvent =
   | { type: 'agent:tool_call'; agentId: number; tool: string; args: string }
   | { type: 'agent:tool_result'; agentId: number; tool: string; result: string; contextAvailablePercent?: number }
   | { type: 'agent:tool_progress'; agentId: number; tool: string; filled: number; total: number }
+  | { type: 'agent:tool_retry'; agentId: number; tool: string; retryAfterMs: number; attempt: number }
   | { type: 'agent:return'; agentId: number; result: string }
   | { type: 'agent:recovered'; agentId: number; result: string }
   | { type: 'agent:done'; agentId: number }

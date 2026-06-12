@@ -590,3 +590,97 @@ describe("createKeylessSearchProvider — pacer", () => {
     expect(clock.size()).toBe(0);
   });
 });
+
+// ─── Rate-limit classification → ToolRetryError ────────────────────
+// DDG bot detection serves 202 + a challenge page (observed live
+// 2026-06-11: status 202, 47 anomaly markers, zero result links). The old
+// soft-fail classification made it indistinguishable from "no matches":
+// silent [] → the model rephrase-thrashed to maxTurns
+// (trace-2026-06-11T00-39). Now: classified rate-limited, trips the
+// breaker, and — when the fallback is also empty — throws ToolRetryError
+// so the pool parks the agent instead of feeding it emptiness.
+
+const CHALLENGE_HTML = `<html><body>${"".padEnd(220, " ")}
+  <div class="anomaly-modal">Our systems have detected unusual traffic.
+  Please complete the challenge below to continue.</div>
+</body></html>`;
+
+describe("createKeylessSearchProvider — rate-limit classification", () => {
+  it("202 challenge page + empty fallback → throws ToolRetryError with retryAfterMs", async () => {
+    const fetcher = makeFetch((url) => {
+      if (url.startsWith("https://html.duckduckgo.com")) {
+        return htmlResponse(202, CHALLENGE_HTML);
+      }
+      return jsonResponse(200, { results: [] }); // Marginalia empty
+    });
+    await withProvider(defaults({ fetchImpl: fetcher.impl }), async (p) => {
+      await expect(p.search("anything", 8)).rejects.toMatchObject({
+        name: "ToolRetryError",
+        retryAfterMs: 90_000,
+      });
+    });
+  });
+
+  it("200 + challenge markers (zero parses) → rate-limited, not soft-fail", async () => {
+    const fetcher = makeFetch((url) => {
+      if (url.startsWith("https://html.duckduckgo.com")) {
+        return htmlResponse(200, CHALLENGE_HTML);
+      }
+      return jsonResponse(200, { results: [] });
+    });
+    await withProvider(defaults({ fetchImpl: fetcher.impl }), async (p) => {
+      await expect(p.search("anything", 8)).rejects.toMatchObject({
+        name: "ToolRetryError",
+      });
+    });
+  });
+
+  it("429 → rate-limited; falls back to Marginalia and returns its results without throwing", async () => {
+    const fetcher = makeFetch((url) => {
+      if (url.startsWith("https://html.duckduckgo.com")) {
+        return htmlResponse(429, "slow down");
+      }
+      return jsonResponse(200, SAMPLE_MARGINALIA);
+    });
+    await withProvider(defaults({ fetchImpl: fetcher.impl }), async (p) => {
+      const r = await p.search("anything", 8);
+      expect(r.length).toBeGreaterThan(0); // good fallback = results, no error
+    });
+  });
+
+  it("rate-limited responses trip the breaker (threshold 2 → DDG skipped on 3rd call)", async () => {
+    const fetcher = makeFetch((url) => {
+      if (url.startsWith("https://html.duckduckgo.com")) {
+        return htmlResponse(202, CHALLENGE_HTML);
+      }
+      return jsonResponse(200, SAMPLE_MARGINALIA); // non-empty → no throw
+    });
+    await withProvider(defaults({ fetchImpl: fetcher.impl }), async (p) => {
+      await p.search("one", 8);
+      await p.search("two", 8);
+      await p.search("three", 8); // breaker open → DDG skipped
+      const ddgCalls = fetcher.calls.filter((c) =>
+        c.url.startsWith("https://html.duckduckgo.com"),
+      );
+      expect(ddgCalls).toHaveLength(2);
+    });
+  });
+
+  it("genuinely empty SERP (no challenge markers) stays soft-fail — no throw, breaker untouched", async () => {
+    const fetcher = makeFetch((url) => {
+      if (url.startsWith("https://html.duckduckgo.com")) {
+        return htmlResponse(200, `<html><body>${"".padEnd(220, " ")}no results for this query</body></html>`);
+      }
+      return jsonResponse(200, { results: [] });
+    });
+    await withProvider(defaults({ fetchImpl: fetcher.impl }), async (p) => {
+      const r1 = await p.search("rare-term", 8);
+      expect(r1).toEqual([]); // honest empty, not an error
+      await p.search("rare-term-2", 8);
+      const ddgCalls = fetcher.calls.filter((c) =>
+        c.url.startsWith("https://html.duckduckgo.com"),
+      );
+      expect(ddgCalls).toHaveLength(2); // breaker never opened
+    });
+  });
+});

@@ -1,6 +1,6 @@
 import { call } from "effection";
 import type { Operation } from "effection";
-import { Tool, Trace } from "@lloyal-labs/lloyal-agents";
+import { Tool, ToolRetryError, Trace } from "@lloyal-labs/lloyal-agents";
 import type { JsonSchema, ToolContext } from "@lloyal-labs/lloyal-agents";
 import type { SearchProvider, SearchResult } from "@lloyal-labs/rig";
 
@@ -108,6 +108,10 @@ export class WebSearchTool extends Tool<{ query: string }> {
     try {
       results = yield* call(() => provider.search(query, topN));
     } catch (err) {
+      // Transient provider failures (rate limiting) propagate to the pool's
+      // DISPATCH retry handling — the tool stays provider-agnostic and never
+      // interprets backend responses itself.
+      if (err instanceof ToolRetryError) throw err;
       return { error: `Search failed: ${(err as Error).message}` };
     }
 
@@ -129,9 +133,14 @@ export class WebSearchTool extends Tool<{ query: string }> {
       );
 
       // Combine: min(provider score, entailment) when provider score
-      // is available; entailment-only as fallback for providers without scores
+      // is available; entailment-only as fallback for providers without
+      // scores. Provider scores (Tavily) are probabilities in [0,1];
+      // entailment scores are log-odds — convert via sigmoid so the min()
+      // compares like units. (Keyless results carry no provider score, so
+      // the entailment-only branch keeps raw log-odds for pure ranking.)
+      const sigmoid = (x: number) => 1 / (1 + Math.exp(-x));
       const combined = results.map((r, i) =>
-        r.score != null ? Math.min(r.score, entailment[i]) : entailment[i],
+        r.score != null ? Math.min(r.score, sigmoid(entailment[i])) : entailment[i],
       );
 
       let tw;

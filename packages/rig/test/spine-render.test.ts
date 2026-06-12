@@ -345,12 +345,17 @@ describe('§10.2 reference-app preamble rendering', () => {
     expect(out.startsWith(BOUNDARY_MARKER('corpus_research'))).toBe(true);
   });
 
-  it('corpus preamble substitutes app-specific toc into the skill body', () => {
+  it('corpus preamble does NOT embed the TOC — app-level data is identical for every spawn and belongs in shared KV (spine appendix), not duplicated per suffix', () => {
+    // Six TOC-bearing 4.8k-token suffixes overran a 32k context
+    // (trace-2026-06-11T06-21). The TOC now reaches the model via the
+    // harness's spine appendix from Source.promptData(); the per-spawn
+    // skill body stays lean even when a toc key is passed.
     const out = renderAgentPreamble(corpus, {
       ...RENDER_PARAMS,
       toc: 'doc-a.md\ndoc-b.md',
     });
-    expect(out).toContain('Available files:\ndoc-a.md\ndoc-b.md');
+    expect(out).not.toContain('Available files:');
+    expect(out).not.toContain('doc-a.md');
   });
 
   it('agentCount=1 path renders without the sibling-task block', () => {

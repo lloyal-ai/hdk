@@ -197,6 +197,17 @@ export type TraceEvent =
       durationMs: number;
     }
   | TraceEventBase & { type: 'tool:error'; agentId: number; tool: string; error: string }
+  // Transient tool failure (ToolRetryError — e.g. provider rate-limited).
+  // The agent is parked (awaiting_tool) and the call re-executes after
+  // retryAfterMs; nothing is settled into the agent's KV for this attempt.
+  | TraceEventBase & {
+      type: 'tool:retry';
+      agentId: number;
+      tool: string;
+      callId: string;
+      retryAfterMs: number;
+      attempt: number;
+    }
   // Protected tool call rejected at DISPATCH time by the framework-
   // injected authGuard: the session held no grant
   // for a `protected` tool. Emitted alongside the ordinary
@@ -227,6 +238,20 @@ export type TraceEvent =
       ppls: number[];
       outputs: string[];
       totalTokens: number;
+    }
+
+  // ── BM25 first-stage events (corpus app) ─────
+  | TraceEventBase & {
+      type: 'bm25:start';
+      query: string;
+      candidateCount: number;
+      firstStageK: number;
+    }
+  | TraceEventBase & {
+      type: 'bm25:end';
+      candidateCount: number;
+      keptCount: number;
+      durationMs: number;
     }
 
   // ── Reranker events (rig package) ───────────

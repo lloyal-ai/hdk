@@ -98,10 +98,25 @@ export interface ScoredResult {
 export interface Reranker {
   /** Score chunks against a query, streaming progressive results. */
   score(query: string, chunks: Chunk[]): AsyncIterable<ScoredResult>;
-  /** Score raw text strings against a query in one batch. Returns scores (0–1) in input order. */
+  /**
+   * Score raw text strings against a query in one batch.
+   *
+   * Returns logit-diff scores (`logit("yes") - logit("no")`, unbounded) in
+   * input order. This is the log-odds of the reranker's ABSOLUTE yes/no
+   * relevance judgment — `P(yes) = sigmoid(score)`, so 0 ≡ P 0.5 — the
+   * monotone equivalent of the official Qwen3-Reranker two-token softmax.
+   * Scores are thresholdable and comparable across queries to the extent of
+   * the model's calibration (quantization adds noise at the extremes).
+   */
   scoreBatch(query: string, texts: string[]): Promise<number[]>;
   /** Pre-tokenize chunks for subsequent scoring calls. */
   tokenizeChunks(chunks: Chunk[]): Promise<void>;
+  /**
+   * Tokenize an arbitrary text string through the reranker's tokenizer.
+   * Use when consumers need to operate on tokens from the same vocabulary
+   * as the chunks (e.g. BM25 first-stage scoring at query time).
+   */
+  tokenize(text: string): Promise<number[]>;
   /** Release reranker resources. */
   dispose(): void;
 }
