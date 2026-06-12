@@ -21,7 +21,7 @@
     "examples:reflect": "npx tsx examples/reflection/main.ts"
   },
   "devDependencies": {
-    "@lloyal-labs/lloyal.node": "^2.1.0",
+    "@lloyal-labs/lloyal.node": "^3.0.0",
     "@types/node": "^25.3.0",
     "@types/react": "^18.3.28",
     "@types/semver": "^7.7.1",
