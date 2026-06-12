@@ -1,4 +1,5 @@
 import type { Agent, ToolHistoryEntry } from './Agent';
+import type { ToolRetryError } from './Tool';
 import { ContextPressure } from './agent-pool';
 import type { ParsedToolCall } from '@lloyal-labs/sdk';
 import type { PressureThresholds } from './types';
@@ -25,18 +26,45 @@ function tokenBudgetAsWords(budgetTokens: number): number {
 // ── Declarative tool guards ─────────────────────────────
 
 /**
- * A declarative guard that rejects tool calls based on agent lineage.
+ * A declarative guard that rejects tool calls based on agent state.
  * Guards are checked in order before any tool is dispatched.
+ *
+ * `tools` selects which tool calls this guard sees: a `string[]` matches
+ * by exact name; the literal `'*'` matches every call (used by the
+ * framework-injected authGuard — guards that need to
+ * inspect *every* call regardless of tool name).
+ *
+ * `reject` returns `true` to reject the call with `message`. It receives
+ * the parsed args, the full agent lineage's tool history, the agent
+ * itself, `toolName` (so `tools: '*'` guards know which tool they're
+ * gating), and the pool-level `config` (so guards can consult
+ * pool-resolved state such as the protected-tool set and the session's
+ * grants — see {@link PolicyConfig}). Guards that don't need `config`
+ * simply omit the parameter.
+ *
+ * `name` is the optional guard identifier surfaced via
+ * `ProduceAction.nudge.guard` so the pool can emit per-guard trace
+ * events (e.g., `tool:authReject` for `name: 'auth_reject'`). Omit it
+ * for guards whose only observable footprint is the resulting
+ * `pool:agentNudge` event.
  *
  * @category Agents
  */
 export interface ToolGuard {
-  /** Tool names this guard applies to */
-  tools: string[];
-  /** Return true to reject the call. Receives parsed args, full lineage history, and the agent itself. */
-  reject: (args: Record<string, unknown>, lineageHistory: ToolHistoryEntry[], agent: Agent) => boolean;
-  /** Error message sent back to the agent as a tool result */
+  /** Tool names this guard applies to; `'*'` matches every call. */
+  tools: string[] | '*';
+  /** Return true to reject the call. */
+  reject: (
+    args: Record<string, unknown>,
+    lineageHistory: ToolHistoryEntry[],
+    agent: Agent,
+    toolName: string,
+    config: PolicyConfig,
+  ) => boolean;
+  /** Error message sent back to the agent as a tool result. */
   message: string;
+  /** Optional identifier surfaced via `ProduceAction.nudge.guard`. */
+  name?: string;
 }
 
 /** Default guards for deduplication and recursion discipline */
@@ -45,6 +73,26 @@ function parseHistoryArgs(argsStr: string): Record<string, unknown> {
 }
 
 export const defaultToolGuards: ToolGuard[] = [
+  // Framework-injected authGuard. Runs FIRST so a
+  // protected-tool rejection fires before any dedup guard — the pool
+  // emits a structured `tool:authReject` event keyed off
+  // `ProduceAction.nudge.guard === 'auth_reject'` for security
+  // observability. Reads/gather tools are OPEN: the guard only fires for
+  // a `protected` tool (in `config.protectedTools`) the session has not
+  // been granted (`config.grants`). When no tools are protected — the
+  // common case — this is a no-op.
+  {
+    name: 'auth_reject',
+    tools: '*',
+    reject: (_args, _history, _agent, toolName, config) => {
+      if (!config.protectedTools?.has(toolName)) return false; // open by default
+      return !config.grants?.has(toolName); // protected → deny unless granted
+    },
+    message:
+      'This action is protected and requires authorization that has not been ' +
+      'granted for this session. Use the available read tools to gather what ' +
+      'you can, and report what blocks completion.',
+  },
   {
     tools: ['fetch_page'],
     reject: (args, history) => {
@@ -91,7 +139,10 @@ export type IdleReason =
 export type ProduceAction =
   | { type: 'tool_call'; tc: ParsedToolCall }
   | { type: 'return'; result: string }
-  | { type: 'nudge'; message: string }
+  /** `guard` carries the identifier of the rejecting `ToolGuard` — used to
+   *  route `auth_reject` rejections to the `tool:authReject` trace event.
+   *  Absent for nudges not produced by a guard. */
+  | { type: 'nudge'; message: string; guard?: string }
   | { type: 'idle'; reason: IdleReason }
   | { type: 'free_text_return'; content: string };
 
@@ -111,6 +162,22 @@ export type SettleAction =
 export type RecoveryAction =
   | { type: 'extract'; prompt: { system: string; user: string } }
   | { type: 'skip' };
+
+/**
+ * Action returned by policy.onToolRetry — what to do when a tool throws
+ * {@link ToolRetryError} (transient failure, e.g. provider rate-limited).
+ *
+ * `retry` parks the agent (`awaiting_tool`, skipped by PRODUCE at zero
+ * cost — no turns, no tokens, no KV) and re-executes the same call after
+ * `afterMs` (defaults to the error's own `retryAfterMs` estimate).
+ * `fail` settles `message` (or the pool's directive default) as the tool
+ * result so the model can pivot.
+ *
+ * @category Agents
+ */
+export type ToolRetryAction =
+  | { type: 'retry'; afterMs?: number }
+  | { type: 'fail'; message?: string };
 
 // ── Policy interface ────────────────────────────────────────
 
@@ -214,6 +281,19 @@ export interface AgentPolicy {
    * Optional — defaults to skip when absent.
    */
   onRecovery?(agent: Agent, pressure: ContextPressure): RecoveryAction;
+
+  /**
+   * Transient tool failure (the tool threw {@link ToolRetryError}).
+   * Decide whether to park-and-retry or settle a failure result. The tool
+   * supplies a `retryAfterMs` estimate on the error; the policy may override
+   * it (`afterMs`) or refuse to wait at all — e.g. when the time budget
+   * can't afford a park.
+   *
+   * Absent → pool default: one retry at the error's own delay, then fail.
+   *
+   * @param attempt - 1 on the first failure of a call, 2 after one retry, …
+   */
+  onToolRetry?(agent: Agent, tool: string, error: ToolRetryError, attempt: number): ToolRetryAction;
 }
 
 /**
@@ -224,6 +304,20 @@ export interface PolicyConfig {
   maxTurns: number;
   terminalToolName?: string;
   hasNonTerminalTools: boolean;
+  /**
+   * Tool names this pool declares `protected` (gathered from each
+   * {@link Tool.protected} flag). The authGuard gates only these; every
+   * other tool is open. Resolved once at pool setup. Undefined/empty when
+   * no tool in the pool is protected (the common case).
+   */
+  protectedTools?: ReadonlySet<string>;
+  /**
+   * Protected tool names the session currently holds a grant for — read
+   * from {@link GrantStoreCtx} at pool setup. The authGuard allows a
+   * protected tool iff its name is in this set. Undefined/empty = no
+   * grants (fail-closed: every protected tool denied).
+   */
+  grants?: ReadonlySet<string>;
 }
 
 // ── Default policy ──────────────────────────────────────────
@@ -287,6 +381,9 @@ export interface DefaultAgentPolicyOpts {
    *  protected from shouldExit — the hard limit is deferred until the tool
    *  call completes naturally or KV pressure forces a kill. */
   terminalToolName?: string;
+  /** Max park-and-retry attempts per tool call on {@link ToolRetryError}
+   *  before failing the call with a directive result. @default 1 */
+  maxToolRetries?: number;
 }
 
 export class DefaultAgentPolicy implements AgentPolicy {
@@ -298,6 +395,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
   private _recovery: DefaultAgentPolicyOpts['recovery'] | null;
   private _budget: DefaultAgentPolicyOpts['budget'] | null;
   private _terminalToolName: string | null;
+  private _maxToolRetries: number;
   private _startTime: number;
 
   constructor(opts?: DefaultAgentPolicyOpts) {
@@ -311,7 +409,12 @@ export class DefaultAgentPolicy implements AgentPolicy {
     this._recovery = opts?.recovery ?? null;
     this._budget = opts?.budget ?? null;
     this._terminalToolName = opts?.terminalToolName ?? null;
+    this._maxToolRetries = opts?.maxToolRetries ?? 1;
     this._startTime = performance.now();
+  }
+
+  onToolRetry(_agent: Agent, _tool: string, _error: ToolRetryError, attempt: number): ToolRetryAction {
+    return attempt <= this._maxToolRetries ? { type: 'retry' } : { type: 'fail' };
   }
 
   /**
@@ -356,7 +459,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
     // guard — stuck agents (same query repeated past maxTurns) saw only
     // turn-limit nudges instead of the dedup message that named the
     // actual problem (see trace-1776819196054 agent 65539).
-    const guardRejection = this._checkGuards(tc, agent);
+    const guardRejection = this._checkGuards(tc, agent, config);
     if (guardRejection) return guardRejection;
     if (this._isOverBudget(agent, tc, pressure, config)) return this._handleOverBudget(agent, tc, pressure, config);
     // Normal tool call
@@ -428,13 +531,15 @@ export class DefaultAgentPolicy implements AgentPolicy {
     return { type: 'idle', reason: agent.turns >= config.maxTurns ? 'max_turns' : 'pressure_softcut' };
   }
 
-  private _checkGuards(tc: ParsedToolCall, agent: Agent): ProduceAction | null {
+  private _checkGuards(tc: ParsedToolCall, agent: Agent, config: PolicyConfig): ProduceAction | null {
     const lineageHistory = agent.walkAncestors(a => a.toolHistory);
     let toolArgs: Record<string, unknown>;
     try { toolArgs = JSON.parse(tc.arguments); } catch { toolArgs = {}; }
     for (const guard of this._guards) {
-      if (guard.tools.includes(tc.name) && guard.reject(toolArgs, lineageHistory, agent)) {
-        return { type: 'nudge', message: guard.message };
+      const applies = guard.tools === '*' || guard.tools.includes(tc.name);
+      if (!applies) continue;
+      if (guard.reject(toolArgs, lineageHistory, agent, tc.name, config)) {
+        return { type: 'nudge', message: guard.message, guard: guard.name };
       }
     }
     return null;

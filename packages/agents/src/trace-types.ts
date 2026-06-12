@@ -1,3 +1,5 @@
+import type { ToolHistoryEntry } from './Agent';
+
 /**
  * Monotonically increasing trace ID
  *
@@ -54,13 +56,13 @@ export type TraceEvent =
       branchHandle: number;
       parentHandle: number | null;
       position: number;
-      role: 'root' | 'spine' | 'agentFork' | 'scratchpad' | 'divergeAttempt';
+      role: 'root' | 'spine' | 'agentFork' | 'divergeAttempt';
     }
   | TraceEventBase & {
       type: 'branch:prefill';
       branchHandle: number;
       tokenCount: number;
-      role: 'spineHeader' | 'agentSuffix' | 'toolResult' | 'warmDelta' | 'scratchpad' | 'probe' | 'recovery';
+      role: 'spineHeader' | 'agentSuffix' | 'toolResult' | 'warmDelta' | 'probe' | 'recovery';
       probeText?: string;
     }
   | TraceEventBase & { type: 'branch:prune'; branchHandle: number; position: number }
@@ -195,6 +197,38 @@ export type TraceEvent =
       durationMs: number;
     }
   | TraceEventBase & { type: 'tool:error'; agentId: number; tool: string; error: string }
+  // Transient tool failure (ToolRetryError — e.g. provider rate-limited).
+  // The agent is parked (awaiting_tool) and the call re-executes after
+  // retryAfterMs; nothing is settled into the agent's KV for this attempt.
+  | TraceEventBase & {
+      type: 'tool:retry';
+      agentId: number;
+      tool: string;
+      callId: string;
+      retryAfterMs: number;
+      attempt: number;
+    }
+  // Protected tool call rejected at DISPATCH time by the framework-
+  // injected authGuard: the session held no grant
+  // for a `protected` tool. Emitted alongside the ordinary
+  // `pool:agentNudge` so security tooling can detect attempted privileged
+  // actions by `assignedApp` × `attemptedTool` correlation without
+  // scanning nudge-message free text.
+  | TraceEventBase & {
+      type: 'tool:authReject';
+      agentId: number;
+      /** Non-enforcing app label (`SpawnSpec.assignedApp`); null for harness-internal spawns. */
+      assignedApp: string | null;
+      /** The protected tool the model attempted to call without a grant. */
+      attemptedTool: string;
+      /**
+       * Flattened tool history across the rejecting agent's lineage
+       * (self → caller → …) — the forensic correlation key for prompt
+       * injection. Cheap to carry: `tool:authReject` is
+       * rare-by-design (it fires only on an ungranted protected attempt).
+       */
+      lineageHistory: readonly ToolHistoryEntry[];
+    }
 
   // ── Diverge events ──────────────────────────
   | TraceEventBase & { type: 'diverge:start'; attempts: number; prefixLength: number }
@@ -204,6 +238,20 @@ export type TraceEvent =
       ppls: number[];
       outputs: string[];
       totalTokens: number;
+    }
+
+  // ── BM25 first-stage events (corpus app) ─────
+  | TraceEventBase & {
+      type: 'bm25:start';
+      query: string;
+      candidateCount: number;
+      firstStageK: number;
+    }
+  | TraceEventBase & {
+      type: 'bm25:end';
+      candidateCount: number;
+      keptCount: number;
+      durationMs: number;
     }
 
   // ── Reranker events (rig package) ───────────

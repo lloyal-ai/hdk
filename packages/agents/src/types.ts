@@ -139,6 +139,14 @@ export interface AgentTaskSpec {
   seed?: number;
   /** Parent branch to fork from (required by {@link useAgentPool}) */
   parent?: Branch;
+  /**
+   * Non-enforcing label naming the App this spawn nominally belongs to
+   * Carried for trace attribution (`tool:authReject`) and
+   * harness UI only — tool access is gated by {@link Tool.protected} +
+   * session grants (the authGuard), not by app membership. Unset for
+   * harness-internal spawns.
+   */
+  assignedApp?: string;
 }
 
 /**
@@ -256,9 +264,9 @@ export interface AgentPoolOptions {
   /** Prune agent branches immediately when they voluntarily return via the
    *  terminal tool. Frees KV for remaining agents mid-pool. Only agents
    *  that voluntarily returned are pruned — hard-cut agents keep their
-   *  branches for scratchpad recovery. @default false */
+   *  branches for recovery extraction. @default false */
   pruneOnReturn?: boolean;
-  /** Custom agent policy. Configure recovery (scratchpad extraction),
+  /** Custom agent policy. Configure recovery (recovery-prompt extraction),
    *  time limits, explore/exploit threshold, and tool guards via
    *  {@link DefaultAgentPolicyOpts}. @default DefaultAgentPolicy with default opts */
   policy?: AgentPolicy;
@@ -279,6 +287,17 @@ export interface AgentPoolOptions {
   /** Entailment scorer for semantic coherence across recursive depths.
    *  Passed to every tool via {@link ToolContext.scorer}. */
   scorer?: EntailmentScorer;
+  /**
+   * Eager GBNF grammar applied to every spawned agent's generating branch —
+   * constrains generation from the first sampled token (no trigger). Used for
+   * schema-constrained single-shot agents (e.g. the planner via
+   * {@link useAgent} with a `schema`). Applied at the same point as lazy tool
+   * grammar — in `applyLazyGrammar`, AFTER the suffix prefill — so it
+   * constrains generated tokens only, never the prompt. Unlike a lazy grammar
+   * (gated on tool triggers), this is unconditional; agents with tool grammars
+   * use the lazy path instead. @default undefined (unconstrained)
+   */
+  eagerGrammar?: string;
 }
 
 /**
@@ -451,6 +470,7 @@ export type AgentEvent =
   | { type: 'agent:tool_call'; agentId: number; tool: string; args: string }
   | { type: 'agent:tool_result'; agentId: number; tool: string; result: string; contextAvailablePercent?: number }
   | { type: 'agent:tool_progress'; agentId: number; tool: string; filled: number; total: number }
+  | { type: 'agent:tool_retry'; agentId: number; tool: string; retryAfterMs: number; attempt: number }
   | { type: 'agent:return'; agentId: number; result: string }
   | { type: 'agent:recovered'; agentId: number; result: string }
   | { type: 'agent:done'; agentId: number }

@@ -43,7 +43,7 @@ jobs:
       - name: Publish packages
         if: success() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.skip_publish))
         run: |
-          for pkg in packages/sdk packages/agents packages/rig; do
+          for pkg in packages/sdk packages/agents packages/rig packages/harness-cli; do
             name=$(node -p "require('./$pkg/package.json').name")
             version=$(node -p "require('./$pkg/package.json').version")
             if npm view "$name@$version" version >/dev/null 2>&1; then

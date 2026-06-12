@@ -1,0 +1,33 @@
+lloyal-sdk
+Copyright 2026 Lloyal Labs
+
+This product includes software developed by Lloyal Labs and licensed
+under the Functional Source License, Version 1.1, Apache 2.0 Future
+License (FSL-1.1-Apache-2.0). See LICENSE for terms.
+
+This monorepo contains multiple packages with different licenses:
+
+---
+
+FSL-1.1-Apache-2.0 packages (the HDK 3.0 runtime stack):
+
+  - @lloyal-labs/lloyal-agents       (packages/agents)
+  - @lloyal-labs/sdk                  (packages/sdk)
+  - @lloyal-labs/rig                  (packages/rig)
+  - @lloyal-labs/corpus-app           (packages/apps/corpus)
+  - @lloyal-labs/web-app              (packages/apps/web)
+
+Apache 2.0 packages (scaffolders / adoption surfaces):
+
+  - harness.dev CLI                   (packages/harness-cli)
+
+Each package ships its own LICENSE file. The runtime-stack packages also
+ship NOTICE files crediting transitive native-stack dependencies
+(liblloyal, llama.cpp).
+
+---
+
+For a plain-English explanation of what FSL-1.1-Apache-2.0 means in
+practice — including what commercial uses are permitted and what is
+specifically restricted — see LICENSE-FAQ.md in this repository or the
+canonical version at https://docs.lloyal.ai/licensing/faq.

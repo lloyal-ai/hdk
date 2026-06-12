@@ -1,43 +1,68 @@
 import { createContext } from "@lloyal-labs/lloyal.node";
 import { Rerank } from "@lloyal-labs/sdk";
 import type { SessionContext } from "@lloyal-labs/sdk";
-import type { Chunk } from "./resources/types";
-import type { Reranker, ScoredResult } from "./tools/types";
+import { resource, call } from "effection";
+import type { Operation } from "effection";
+import type { Chunk, Reranker, ScoredResult } from "@lloyal-labs/lloyal-agents";
 
 /**
- * Create a {@link Reranker} backed by a dedicated reranking model context
+ * Create a {@link Reranker} backed by a dedicated reranking model context,
+ * as an Effection `resource()`.
  *
  * Loads a separate model (typically a cross-encoder) into its own KV cache
- * and exposes `score`, `tokenizeChunks`, and `dispose` methods. The returned
- * `score` method yields {@link ScoredResult} batches as an async iterable,
- * mapping raw indices back to the original {@link Chunk} metadata.
+ * and exposes `score`, `scoreBatch`, `tokenizeChunks`, and `dispose`. The
+ * returned `score` method yields {@link ScoredResult} batches as an async
+ * iterable, mapping raw indices back to the original {@link Chunk} metadata.
+ *
+ * **Lifecycle.** The reranker owns its underlying `SessionContext` + `Rerank`
+ * and disposes them transitively when the yielding scope exits (success,
+ * error, or halt). The harness yields it once per process lifecycle and
+ * publishes it on `RerankerCtx` so App factories can read it via
+ * `RerankerCtx.expect()`. `dispose()` remains on the interface
+ * for callers that manage teardown explicitly; it is idempotent so the
+ * resource finally and an explicit call don't double-free.
  *
  * @param modelPath - Absolute path to the reranking model file (GGUF)
  * @param opts - Optional context sizing overrides
  * @param opts.nSeqMax - Maximum parallel scoring sequences (default 8)
  * @param opts.nCtx - Context window size for the reranker model (default 4096)
- * @returns A ready-to-use reranker instance; call `dispose()` when finished
+ * @returns An Effection resource yielding a ready-to-use reranker
+ *
+ * @example
+ * ```ts
+ * const reranker = yield* createReranker(rerankerPath, { nSeqMax: 8, nCtx: 4096 });
+ * yield* RerankerCtx.set(reranker);
+ * // ... pool work ...
+ * // reranker disposes automatically on scope exit
+ * ```
  *
  * @category Rig
  */
-export async function createReranker(
+export function createReranker(
   modelPath: string,
   opts?: { nSeqMax?: number; nCtx?: number; nBatch?: number },
-): Promise<Reranker> {
-  const nSeqMax = opts?.nSeqMax ?? 8;
-  const nCtx = opts?.nCtx ?? 4096;
-  const nBatch = opts?.nBatch ?? Math.floor(nCtx / nSeqMax);
-  const ctx = await createContext({
-    modelPath,
-    nCtx,
-    nSeqMax,
-    nBatch,
-    typeK: 'q4_0',
-    typeV: 'q4_0',
-  });
-  const rerank = await Rerank.create(ctx as unknown as SessionContext, { nSeqMax, nCtx });
+): Operation<Reranker> {
+  return resource(function* (provide) {
+    // Default bumped 8→10: warm-trunk + per-query branch consume 2 leases in
+    // the R3 Rerank composition, so leaves get N-2 slots; 10 keeps the leaf
+    // budget at the prior default of 8.
+    const nSeqMax = opts?.nSeqMax ?? 10;
+    const nCtx = opts?.nCtx ?? 4096;
+    const nBatch = opts?.nBatch ?? Math.floor(nCtx / nSeqMax);
+    const ctx = yield* call(() => createContext({
+      modelPath,
+      nCtx,
+      nSeqMax,
+      nBatch,
+      typeK: 'q4_0',
+      typeV: 'q4_0',
+    }));
+    const rerank = yield* call(() =>
+      Rerank.create(ctx as unknown as SessionContext, { nSeqMax, nCtx }),
+    );
 
-  return {
+    let disposed = false;
+    const reranker: Reranker = {
     score(query: string, chunks: Chunk[]): AsyncIterable<ScoredResult> {
       const inner = rerank.score(
         query,
@@ -81,14 +106,31 @@ export async function createReranker(
       return rerank.scoreBatch(query, texts);
     },
 
+    tokenize(text: string): Promise<number[]> {
+      return rerank.tokenize(text);
+    },
+
     async tokenizeChunks(chunks: Chunk[]): Promise<void> {
-      for (const chunk of chunks) {
-        chunk.tokens = await rerank.tokenize(chunk.text);
+      // Tokenize in parallel — _tokenize is N-API AsyncWorker dispatch, so
+      // Promise.all overlaps work across threadpool slots. Serial for-await
+      // was a bottleneck on large corpora (1000+ chunks).
+      const toks = await Promise.all(chunks.map((c) => rerank.tokenize(c.text)));
+      for (let i = 0; i < chunks.length; i++) {
+        chunks[i].tokens = toks[i];
       }
     },
 
     dispose() {
+      if (disposed) return;
+      disposed = true;
       rerank.dispose();
     },
-  };
+    };
+
+    try {
+      yield* provide(reranker);
+    } finally {
+      reranker.dispose();
+    }
+  });
 }

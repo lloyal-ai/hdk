@@ -18,6 +18,13 @@ export interface SpawnSpec {
   seed?: number;
   /** Parent branch to fork from. Falls back to ctx.spine. */
   parent?: Branch;
+  /**
+   * Non-enforcing label naming the App this spawn nominally belongs to
+   * Carried for trace attribution (`tool:authReject`) and
+   * harness UI only — tool access is gated by {@link Tool.protected} +
+   * session grants (the authGuard), not by app membership.
+   */
+  assignedApp?: string;
 }
 
 /**

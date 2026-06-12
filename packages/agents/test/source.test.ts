@@ -88,24 +88,28 @@ describe('Source.createScorer', () => {
 });
 
 describe('shouldProceed', () => {
-  it('returns true at default floor (0.25)', async () => {
+  // Default floor is 0 in logit-diff space (model prefers "yes" over "no").
+  // See `_entailmentFloor` doc in source.ts for the calibration rationale.
+  it('returns true at default floor (0)', async () => {
     const source = new TestSource();
     (source as any)._reranker = createMockReranker();
     const scorer = source.createScorer('q');
 
-    expect(scorer.shouldProceed(0.25)).toBe(true);
-    expect(scorer.shouldProceed(0.26)).toBe(true);
-    expect(scorer.shouldProceed(0.24)).toBe(false);
+    expect(scorer.shouldProceed(0)).toBe(true);
+    expect(scorer.shouldProceed(0.01)).toBe(true);
+    expect(scorer.shouldProceed(2.5)).toBe(true);
+    expect(scorer.shouldProceed(-0.01)).toBe(false);
+    expect(scorer.shouldProceed(-2.5)).toBe(false);
   });
 
   it('respects custom floor', async () => {
     const source = new TestSource();
-    source.setFloor(0.5);
+    source.setFloor(2.0); // tighter: "confident yes"
     (source as any)._reranker = createMockReranker();
     const scorer = source.createScorer('q');
 
-    expect(scorer.shouldProceed(0.5)).toBe(true);
-    expect(scorer.shouldProceed(0.49)).toBe(false);
+    expect(scorer.shouldProceed(2.0)).toBe(true);
+    expect(scorer.shouldProceed(1.99)).toBe(false);
   });
 });
 

@@ -1,0 +1,37 @@
+{
+  "name": "@__PUBLISHER__/__NAME__-app",
+  "version": "1.0.0",
+  "description": "HDK app — __NAME__ research.",
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "app.json",
+    "skill.eta",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test --import tsx test/"
+  },
+  "peerDependencies": {
+    "@lloyal-labs/lloyal-agents": "^3.0.0",
+    "@lloyal-labs/rig": "^3.0.0",
+    "effection": "^4.0.2"
+  },
+  "devDependencies": {
+    "@lloyal-labs/lloyal-agents": "^3.0.0",
+    "@lloyal-labs/rig": "^3.0.0",
+    "effection": "^4.0.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

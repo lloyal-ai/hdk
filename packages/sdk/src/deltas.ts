@@ -63,6 +63,42 @@ export function buildUserDelta(
 }
 
 /**
+ * Build a token delta for an assistant turn
+ *
+ * Composes `getTurnSeparator()` + `formatChatSync()` + `tokenizeSync()` into a
+ * single token array suitable for `branch.prefill()`. The assistant-side
+ * counterpart of {@link buildUserDelta}: writes only an assistant turn into
+ * the conversation, no user message, no generation prompt suffix.
+ *
+ * Used when a half-turn pattern is needed — e.g. the consumer prefilled a
+ * user turn earlier (so the planner could attend over it via KV), and now
+ * needs to close the pair with the assistant's response without re-emitting
+ * the user side.
+ *
+ * @param ctx - Active session context
+ * @param content - Assistant message content
+ * @param opts - Optional thinking flag; see {@link DeltaOpts}
+ * @returns Token array ready for `branch.prefill()`
+ *
+ * @category Agents
+ */
+export function buildAssistantDelta(
+  ctx: SessionContext,
+  content: string,
+  opts: DeltaOpts = {}
+): number[] {
+  const sep = ctx.getTurnSeparator();
+  const fmtOpts: Record<string, unknown> = {};
+  if (opts.enableThinking !== undefined) fmtOpts.enableThinking = opts.enableThinking;
+  const { prompt } = ctx.formatChatSync(
+    JSON.stringify([{ role: 'system', content: '' }, { role: 'assistant', content }]),
+    fmtOpts
+  );
+  const delta = ctx.tokenizeSync(prompt, false);
+  return [...sep, ...delta];
+}
+
+/**
  * Build a token delta for a complete user+assistant conversation turn
  *
  * Composes `getTurnSeparator()` + `formatChatSync()` + `tokenizeSync()` into a

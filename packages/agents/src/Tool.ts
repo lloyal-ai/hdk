@@ -50,6 +50,29 @@ export abstract class Tool<TArgs = Record<string, unknown>> {
   abstract readonly parameters: JsonSchema;
 
   /**
+   * Whether invoking this tool requires authorization.
+   *
+   * **Open by default** (`false`/unset): any agent may call the tool. This
+   * is the right setting for read/gather tools — search, fetch, grep — where
+   * agents discover an app's coverage by *trying*, the frontier-agentic
+   * pattern. The spine loads every app's tools for KV amortization; an open
+   * tool is callable regardless of which app a spawn nominally belongs to.
+   *
+   * **Protected** (`true`): the tool mutates state or takes a consequential
+   * action (transfer funds, file a ticket, send a message). The framework's
+   * authGuard denies the call unless the session holds a **grant** for it
+   * (held in {@link GrantStoreCtx}, acquired via consent — the model never
+   * sees the credential). A denied attempt rejects at dispatch time and
+   * emits `tool:authReject`.
+   *
+   * Trust changes *which grants a session holds*, never tool behaviour:
+   * execution is identical for trusted and untrusted apps. An app MAY mark
+   * an exfiltration-capable "read" (one that fetches arbitrary URLs) as
+   * protected — the binary flag delegates that judgment to the app.
+   */
+  readonly protected?: boolean;
+
+  /**
    * Execute the tool with parsed arguments
    *
    * Called by the agent pool when the model emits a tool call matching
@@ -97,5 +120,29 @@ export abstract class Tool<TArgs = Record<string, unknown>> {
         parameters: this.parameters,
       },
     };
+  }
+}
+
+/**
+ * Thrown by a tool (or its backend provider) when the operation failed
+ * transiently and should be retried after a delay — rate limiting being the
+ * canonical case.
+ *
+ * The pool's DISPATCH phase catches this BEFORE the generic tool-error
+ * handler: instead of settling an error into the agent's KV, it parks the
+ * agent (`awaiting_tool` — skipped by PRODUCE at zero cost) and re-executes
+ * the same call after `retryAfterMs`. The model never sees transient
+ * infrastructure weather in its context; from its side the tool call just
+ * took longer. One retry is budgeted — a second ToolRetryError settles an
+ * honest "unavailable, use other sources" result, because at that point the
+ * outage is a fact the model needs in order to pivot.
+ *
+ * Observability: the pool emits `agent:tool_retry` (TUI) and `tool:retry`
+ * (trace) when parking, so a waiting agent is never mistaken for a hung one.
+ */
+export class ToolRetryError extends Error {
+  override readonly name = 'ToolRetryError';
+  constructor(message: string, readonly retryAfterMs: number) {
+    super(message);
   }
 }

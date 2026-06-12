@@ -31,6 +31,16 @@ import {
   Tool, Source,
   DefaultAgentPolicy,
   Ctx, Store, Events,
+  // App protocol primitives — types + contexts the registry + agent pool
+  // pick up. Construction lives in `@lloyal-labs/rig` (`defineApp`,
+  // `createAppRegistry`).
+  AppRegistryCtx, AppConfigStoreCtx, GrantStoreCtx, RerankerCtx,
+} from "@lloyal-labs/lloyal-agents";
+
+import type {
+  App, AppManifest, AppProtocol, AppFactory, AppState,
+  AgentRenderCtx, SkillTemplateFn,
+  AppConfigStore, GrantStore,
 } from "@lloyal-labs/lloyal-agents";
 ```
 
@@ -233,10 +243,16 @@ The runtime emits structured events for TUI, logging, or telemetry:
 | `agent:recovered`     | `agentId`, `result` — recovery extracted findings from killed agent |
 | `agent:done`          | `agentId`                                                 |
 
+## App protocol
+
+`lloyal-agents` ships the App protocol primitives — types ({@link App}, {@link AppManifest}, {@link AppProtocol}, {@link AppRegistry}), contexts (`AppRegistryCtx`, `AppConfigStoreCtx`, `GrantStoreCtx`, `RerankerCtx`), and the `Tool.protected` flag + authGuard hook in the agent policy. Construction primitives — `defineApp`, `createAppRegistry`, `createInMemoryConfigStore`, `createGrantStore`, `renderSpine`, `renderAgentPreamble` — live in [`@lloyal-labs/rig`](../rig). Reference Apps (`@lloyal-labs/web-app`, `@lloyal-labs/corpus-app`, `@lloyal-labs/wikipedia-app`) consume both.
+
+Scaffold an App with `npx harness.dev app <name>`; install one with `npx harness.dev install <publisher>/<name>`.
+
 ## Documentation
 
 Full positioning, mechanics, learn pages, and reference at [docs.lloyal.ai](https://docs.lloyal.ai).
 
 ## License
 
-Apache-2.0
+See [LICENSE](./LICENSE) (Functional Source License 1.1 — Apache 2.0 Future License) and the [licensing FAQ](./LICENSE-FAQ.md).

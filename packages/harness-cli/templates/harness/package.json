@@ -1,0 +1,38 @@
+{
+  "name": "__NAME__",
+  "version": "0.1.0",
+  "private": true,
+  "description": "An HDK harness scaffolded by `harness.dev`.",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "main": "dist/main.js",
+  "bin": {
+    "__NAME__": "bin/run.js"
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "prompts/",
+    "harness.json",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/main.ts",
+    "start": "node bin/run.js"
+  },
+  "dependencies": {
+    "@lloyal-labs/lloyal-agents": "^3.0.0",
+    "@lloyal-labs/lloyal.node": "^2.1.0",
+    "@lloyal-labs/rig": "^3.0.0",
+    "@lloyal-labs/sdk": "^3.0.0",
+    "@lloyal-labs/wikipedia-app": "https://apps.lloyal.ai/v1/bundles/lloyal__wikipedia-1.0.0.tgz",
+    "effection": "^4.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

@@ -9,7 +9,7 @@ import type { TraceToken } from './types';
  * Agent status — domain language for where the agent is in its lifecycle.
  *
  * - `idle`: created but not yet generating, OR finished but branch still
- *    alive (extraction window for scratchpad)
+ *    alive (extraction window for recovery)
  * - `active`: generating tokens (between PRODUCE start and stop token)
  * - `awaiting_tool`: tool call parsed, waiting for result in SETTLE
  * - `disposed`: branch pruned, agent no longer usable
@@ -26,7 +26,7 @@ export type AgentStatus = 'idle' | 'active' | 'awaiting_tool' | 'disposed';
 export type ResultSource =
   | 'voluntary_return' // agent voluntarily returned via the terminal tool
   | 'free_text'        // agent emitted prose without tool call
-  | 'scratchpad'       // extracted post-idle via fork+generate (recovery)
+  | 'recovery'         // extracted post-idle via the recovery path (recoverInline)
   | 'nudge'            // agent returned after nudge injection
   | 'tool_error';      // tool threw, error captured as findings
 
@@ -116,6 +116,16 @@ export class Agent {
   /** The task text this agent was assigned — used by echo detection guard */
   readonly task: string;
 
+  /**
+   * Optional non-enforcing label naming the App a spawn nominally belongs
+   * to (`SpawnSpec.assignedApp`), or `null` for harness-internal spawns.
+   * Purely informational since the authGuard moved the security boundary
+   * into the tool: tool access is gated by {@link Tool.protected}
+   * + session grants, not by app membership. Carried so trace events
+   * (`tool:authReject`) and harness UI can attribute work to an app.
+   */
+  readonly assignedApp: string | null;
+
   // ── Mutable state ───────────────────────────────────────
 
   private _status: AgentStatus = 'idle';
@@ -146,6 +156,8 @@ export class Agent {
     fmt: FormatConfig;
     parent?: Agent | null;
     task?: string;
+    /** Optional non-enforcing app label — see {@link assignedApp}. */
+    assignedApp?: string | null;
   }) {
     this.id = opts.id;
     this.parentId = opts.parentId;
@@ -153,6 +165,7 @@ export class Agent {
     this.fmt = opts.fmt;
     this.task = opts.task ?? '';
     this.parent = opts.parent ?? null;
+    this.assignedApp = opts.assignedApp ?? null;
   }
 
   // ── Status ──────────────────────────────────────────────

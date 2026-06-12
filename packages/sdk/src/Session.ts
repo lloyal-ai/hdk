@@ -1,7 +1,7 @@
 import { Branch } from './Branch';
 import type { BranchStore } from './BranchStore';
 import type { SessionContext } from './types';
-import { buildUserDelta, buildToolResultDelta, buildTurnDelta } from './deltas';
+import { buildUserDelta, buildAssistantDelta, buildToolResultDelta, buildTurnDelta } from './deltas';
 
 /**
  * Session - Trunk lifecycle + conversation delta helpers
@@ -83,6 +83,26 @@ export class Session {
    */
   async prefillUser(content: string, opts: { tools?: string } = {}): Promise<void> {
     const tokens = buildUserDelta(this._ctx, content, opts);
+    await this._trunk!.prefill(tokens);
+  }
+
+  /**
+   * Prefill an assistant turn into trunk
+   *
+   * The assistant-side counterpart of {@link prefillUser}. Used to close a
+   * dangling user turn — e.g. a consumer that earlier called `prefillUser`
+   * to expose a message to a forked agent's KV (planner, research) and now
+   * needs to commit the assistant response side without re-emitting the
+   * user message.
+   *
+   * Requires a warm trunk; throws via `_trunk!` if trunk is null. For cold
+   * bootstrap with both sides, use {@link commitTurn}.
+   *
+   * @param content - Assistant message content
+   * @param opts - Optional thinking flag
+   */
+  async prefillAssistant(content: string, opts: { enableThinking?: boolean } = {}): Promise<void> {
+    const tokens = buildAssistantDelta(this._ctx, content, opts);
     await this._trunk!.prefill(tokens);
   }
 

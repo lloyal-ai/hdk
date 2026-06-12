@@ -1,7 +1,11 @@
 {
   "private": true,
   "workspaces": [
-    "packages/*"
+    "packages/agents",
+    "packages/sdk",
+    "packages/rig",
+    "packages/harness-cli",
+    "packages/apps/*"
   ],
   "scripts": {
     "build": "npm run build --workspaces",
@@ -10,7 +14,7 @@
     "test": "npm run build && npx tsx test/sdk.ts && npx tsx test/agents.ts",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
-    "smoke": "npx tsx examples/shared/tui-ink/__bus-smoke.ts && npx tsx examples/shared/tui-ink/__reducer-smoke.ts && npx tsx examples/shared/tui-ink/__config-smoke.ts && npx tsx examples/compare/tui/__reducer-smoke.ts",
+    "smoke": "npx tsx examples/shared/tui-ink/__bus-smoke.ts && npx tsx examples/shared/tui-ink/__reducer-smoke.ts && npx tsx examples/shared/tui-ink/__config-smoke.ts && npx tsx examples/compare/tui/__reducer-smoke.ts && npx tsx examples/compare/__compare-smoke.ts",
     "smoke:visual": "npx tsx examples/shared/tui-ink/__visual-smoke.tsx",
     "examples:compare": "npx tsx examples/compare/main.ts",
     "examples:react": "npx tsx examples/react-agent/main.ts",
@@ -20,6 +24,7 @@
     "@lloyal-labs/lloyal.node": "^2.1.0",
     "@types/node": "^25.3.0",
     "@types/react": "^18.3.28",
+    "@types/semver": "^7.7.1",
     "fast-check": "^4.7.0",
     "ink": "^4.4.1",
     "react": "^18.3.1",

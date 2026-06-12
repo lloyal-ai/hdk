@@ -1,9 +1,19 @@
-export { Ctx, Store, Events, Trace, TraceParent, ScratchpadParent } from './context';
-export { Tool } from './Tool';
+export {
+  Ctx,
+  Store,
+  Events,
+  Trace,
+  TraceParent,
+  RerankerCtx,
+  AppRegistryCtx,
+  AppConfigStoreCtx,
+  GrantStoreCtx,
+} from './context';
+export { Tool, ToolRetryError } from './Tool';
 export { Agent } from './Agent';
 export type { AgentStatus, ResultSource, FormatConfig, ToolHistoryEntry } from './Agent';
 export { DefaultAgentPolicy } from './AgentPolicy';
-export type { AgentPolicy, ProduceAction, SettleAction, RecoveryAction, IdleReason, PolicyConfig, ToolGuard, DefaultAgentPolicyOpts } from './AgentPolicy';
+export type { AgentPolicy, ProduceAction, SettleAction, RecoveryAction, ToolRetryAction, IdleReason, PolicyConfig, ToolGuard, DefaultAgentPolicyOpts } from './AgentPolicy';
 export { defaultToolGuards } from './AgentPolicy';
 export { CallingAgent } from './context';
 export { Source, NULL_SCORER } from './source';
@@ -49,3 +59,22 @@ export type {
   DivergeResult,
   AgentEvent,
 } from './types';
+
+export type {
+  App,
+  AppManifest,
+  AppProtocol,
+  AppHints,
+  AppRegistry,
+  AppFactory,
+  AppState,
+  AgentRenderCtx,
+  ExamplesRenderCtx,
+  SkillTemplateFn,
+  ExamplesTemplateFn,
+  ConfigFlow,
+} from './app-types';
+
+export type { AppConfigStore } from './app-config';
+export type { GrantStore } from './grant-store';
+export type { Resource, Chunk, ScoredChunk, ScoredResult, Reranker } from './chunk';

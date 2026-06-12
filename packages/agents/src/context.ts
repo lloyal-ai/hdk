@@ -6,6 +6,10 @@ import type { AgentEvent } from './types';
 import type { TraceWriter } from './trace-writer';
 import type { TraceId } from './trace-types';
 import type { Agent, FormatConfig } from './Agent';
+import type { Reranker } from './chunk';
+import type { AppRegistry } from './app-types';
+import type { AppConfigStore } from './app-config';
+import type { GrantStore } from './grant-store';
 
 /**
  * Effection context holding the active {@link SessionContext}
@@ -60,18 +64,6 @@ export const Trace = createContext<TraceWriter>('lloyal.trace');
 export const TraceParent = createContext<TraceId>('lloyal.traceParent');
 
 /**
- * Effection context holding the scratchpad fork parent branch
- *
- * Set by {@link withSpine} to the current spine branch. Tools that
- * need scratchpad extraction (e.g. BufferingFetchPage, BufferingWebSearch)
- * read this via `yield* ScratchpadParent.expect()` to fork from the
- * innermost active spine — never a stale reference from a prior scope.
- *
- * @category Agents
- */
-export const ScratchpadParent = createContext<Branch>('lloyal.scratchpadParent');
-
-/**
  * Effection context holding the calling agent during DISPATCH
  *
  * Set by the pool before each tool execution in `scoped()`. Tools and
@@ -103,3 +95,70 @@ export const CallingAgent = createContext<Agent>('lloyal.callingAgent');
  * @category Agents
  */
 export const SpineFmt = createContext<FormatConfig | null>('lloyal.spineFmt', null);
+
+/**
+ * Effection context holding the harness-wide {@link Reranker}.
+ *
+ * Set by the harness once via `RerankerCtx.set(reranker)` after
+ * `createReranker(...)`. App factories (`createWebApp`, `createCorpusApp`,
+ * third-party apps) read this via `yield* RerankerCtx.expect()` at
+ * construction time and pass it to their `Source` / search tools.
+ *
+ * Replaces the per-source `source.bind({reranker})` pattern — chunks
+ * tokenized by one reranker can't be re-bound to another without
+ * re-tokenization, so one cross-encoder per harness
+ * is the invariant.
+ *
+ * @category Contract
+ */
+export const RerankerCtx = createContext<Reranker>('lloyal.reranker');
+
+/**
+ * Effection context holding the {@link AppRegistry}.
+ *
+ * Set by `createAppRegistry(...)` (lives in `@lloyal-labs/rig`). The
+ * scope-guard reads this at tool-dispatch time to resolve
+ * the allowed-tools set for an App-assigned spawn — looking up
+ * `registry.byName(spawn.assignedApp)` and matching the dispatched
+ * `toolName` against `manifest.protocol.tools`.
+ *
+ * The spine renderer also reads this to compose the catalog in
+ * registration order.
+ *
+ * @category Contract
+ */
+export const AppRegistryCtx = createContext<AppRegistry>('lloyal.appRegistry');
+
+/**
+ * Effection context holding the harness's {@link AppConfigStore}.
+ *
+ * Set by `createAppRegistry({ configStore })` from its `configStore`
+ * option, and seeded into each app's detached scope so factories can
+ * read it. App factories read their own config via
+ * `(yield* AppConfigStoreCtx.expect()).get(manifest.name)` at
+ * construction time. The framework validates the stored config against
+ * `app.manifest.configSchema` when the app is enabled.
+ *
+ * Whole-replace semantics on `set`; last-write-wins on concurrent
+ * writes.
+ *
+ * @category Contract
+ */
+export const AppConfigStoreCtx = createContext<AppConfigStore>('lloyal.appConfigStore');
+
+/**
+ * Effection context holding the session's {@link GrantStore}.
+ *
+ * Seeded by `createAppRegistry({ grantStore })` (lives in `@lloyal-labs/rig`)
+ * alongside {@link AppConfigStoreCtx}. The authGuard
+ * reads it once per pool to resolve which `protected` tools the session is
+ * authorized to call — `protected` tools without a grant reject at dispatch
+ * time (`tool:authReject`). The store holds the consent decision; the
+ * **credential never enters the model's context**.
+ *
+ * Absent context = fail-closed: no grants, every protected tool denied.
+ * Open (non-protected) tools never consult it.
+ *
+ * @category Contract
+ */
+export const GrantStoreCtx = createContext<GrantStore>('lloyal.grantStore');

@@ -2,7 +2,7 @@ import { call } from "effection";
 import type { Operation } from "effection";
 import { Branch } from "@lloyal-labs/sdk";
 import type { SessionContext } from "@lloyal-labs/sdk";
-import { Ctx, Trace, TraceParent, ScratchpadParent, SpineFmt } from "./context";
+import { Ctx, Trace, TraceParent, SpineFmt } from "./context";
 import { traceScope } from "./trace-scope";
 import { createToolkit } from "./toolkit";
 import type { Tool } from "./Tool";
@@ -17,12 +17,6 @@ import type { FormatConfig } from "./Agent";
 export interface SpineOptions {
   /** Sampling parameters for the spine branch */
   params?: SamplingParams;
-  /**
-   * Set ScratchpadParent context so tools can fork from the spine
-   * for scratchpad extraction (fork-attend-extract-prune pattern).
-   * @default false
-   */
-  enableScratchpad?: boolean;
   /**
    * Fork the spine from this branch instead of creating at position 0.
    *
@@ -191,6 +185,24 @@ export function* withSpine<T>(
     }
     const formatted = ctx.formatChatSync(messages, fmtOpts);
     const headerTokens = ctx.tokenizeSync(formatted.prompt, false);
+    // Spine-seed emission for trace replay (`extractSpineSeed`). Captures
+    // the rendered chat prompt verbatim so a later `reconstructBranch`
+    // can rebuild this exact KV state in a fresh context. The token-count
+    // `branch:prefill` below is informational; the spine seed is the
+    // prompt text on this event.
+    tw.write({
+      traceId: tw.nextId(),
+      parentTraceId: scope.traceId,
+      ts: performance.now(),
+      type: "prompt:format",
+      promptText: formatted.prompt,
+      tokenCount: headerTokens.length,
+      messages,
+      tools: opts.tools && opts.tools.length > 0
+        ? createToolkit(opts.tools).toolsJson
+        : undefined,
+      role: "spine",
+    });
     if (headerTokens.length > 0) {
       yield* call(() => spine.prefill(headerTokens));
       tw.write({
@@ -216,7 +228,6 @@ export function* withSpine<T>(
   }
 
   try {
-    if (opts.enableScratchpad) yield* ScratchpadParent.set(spine);
     if (spineFmt) yield* SpineFmt.set(spineFmt);
     return yield* body(spine, prefillTokens.length);
   } finally {

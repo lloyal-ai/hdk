@@ -44,38 +44,49 @@ An agent that greps with a narrow pattern and gets 0 matches will broaden the pa
 
 Depth scales with `maxTurns`. At 2 turns, agents do single-shot retrieval. At 6 turns, agents do 3–4 rounds of iterative refinement. At 20 turns, agents go deep — following citation chains, cross-referencing claims, building evidence maps. The quality difference is in the later tool call inputs.
 
-## Sources
+## Sources via the HDK 3.0 App protocol
 
-`@lloyal-labs/rig` provides two `Source` implementations (extending the base class from `lloyal-agents`):
+`@lloyal-labs/rig` is the framework layer; concrete `Source` implementations
+ship as separate **apps** under the HDK 3.0 App protocol (RFC §5):
 
-**`CorpusSource`** — local files with grep, semantic search, read_file, and recursive delegation. Agents investigate a knowledge base by pattern matching, reading sections in context, and spawning sub-agents for deeper investigation.
+**`@lloyal-labs/corpus-app`** — local files with grep, semantic search,
+read_file, and recursive delegation. Agents investigate a knowledge base by
+pattern matching, reading sections in context, and spawning sub-agents for
+deeper investigation.
 
-**`WebSource`** — web search via [Tavily](https://tavily.com), page fetching with attention-based content extraction, and recursive delegation. `BufferingFetchPage` wraps fetch results — full content goes to the agent for reasoning, while a parallel buffer stores content for post-research reranking. Content extraction uses an ephemeral fork to attend over the fetched page and extract summary + links via grammar-constrained generation, then prunes the fork — zero net KV cost per extraction.
+**`@lloyal-labs/web-app`** — web search via [Tavily](https://tavily.com) (or
+keyless DuckDuckGo fallback), page fetching with attention-based content
+extraction, and recursive delegation. `BufferingFetchPage` wraps fetch
+results — full content goes to the agent for reasoning, while a parallel
+buffer stores content for post-research reranking. Content extraction uses
+an ephemeral fork to attend over the fetched page and extract summary +
+links via grammar-constrained generation, then prunes the fork — zero net
+KV cost per extraction.
 
-Sources are composable. A pipeline can use one source, both, or custom implementations:
+Apps are composable through the registry:
 
 ```typescript
 import {
-  CorpusSource,
-  WebSource,
-  TavilyProvider,
+  createAppRegistry,
+  createInMemoryConfigStore,
 } from "@lloyal-labs/rig";
-import { loadResources, chunkResources } from "@lloyal-labs/rig/node";
+import { RerankerCtx } from "@lloyal-labs/lloyal-agents";
+import { createWebApp } from "@lloyal-labs/web-app";
+import { createCorpusApp } from "@lloyal-labs/corpus-app";
 
-const sources = [];
+yield* RerankerCtx.set(reranker);
+const configStore = createInMemoryConfigStore();
+if (tavilyKey) yield* configStore.set("web", { tavilyKey });
+if (corpusDir) yield* configStore.set("corpus", { corpusPath: corpusDir });
+const registry = yield* createAppRegistry({ configStore });
 
-if (corpusDir) {
-  const resources = loadResources(corpusDir);
-  const chunks = chunkResources(resources);
-  sources.push(new CorpusSource(resources, chunks));
-}
-
-if (process.env.TAVILY_API_KEY) {
-  sources.push(new WebSource(new TavilyProvider()));
-}
+if (corpusDir) yield* registry.enable(createCorpusApp);
+yield* registry.enable(createWebApp);  // keyless fallback if no tavilyKey
 ```
 
-When multiple sources are used, they run sequentially — each source gets the full KV budget. After source N completes, its inner branches are pruned and KV is freed for source N+1.
+When multiple apps are enabled, their sources run sequentially — each gets
+the full KV budget. After source N completes, its inner branches are pruned
+and KV is freed for source N+1.
 
 ### Cross-encoder reranker — four scoring roles
 
@@ -84,7 +95,7 @@ The reranker (a small cross-encoder GGUF — Qwen3-Reranker-0.6B is the recommen
 - **`scoreEntailmentBatch`** — texts vs. the original query. Boundary entailment for retrieved content.
 - **`scoreRelevanceBatch`** — dual-score `min(toolQueryScore, originalQueryScore)`. Used in exploit mode when KV pressure tightens focus.
 - **`scoreSimilarityBatch`** — texts vs. an arbitrary reference. Powers echo detection at delegation boundaries (the agent's own task as reference).
-- **`shouldProceed`** — floor gate. Default `_entailmentFloor = 0.25`.
+- **`shouldProceed`** — floor gate. Default `_entailmentFloor = 0` (logit-diff space: `≥ 0` ⇒ model prefers "yes" over "no"; subclasses may tighten or loosen).
 
 One model, four roles. The reranker is RIG infrastructure, not a fetch optimization.
 
@@ -126,32 +137,38 @@ Agents that get cut by context pressure (their tool results exceeded KV headroom
 
 Full architectural walkthrough: [RIG Pipeline reference](https://docs.lloyal.ai/reference/rig/pipeline).
 
-## Tools
+## Framework tools
 
-### Corpus tools
+| Tool           | Description                                                                  |
+| -------------- | ---------------------------------------------------------------------------- |
+| `ReportTool`   | Terminal tool — agents call this to submit findings                          |
+| `PlanTool`     | Grammar-constrained query decomposition with intent classification           |
+| `DelegateTool` | Generic recursive-delegation tool — agent calls it to spawn a sub-agent pool |
 
-| Tool           | Description                                                             |
-| -------------- | ----------------------------------------------------------------------- |
-| `SearchTool`   | Semantic search over corpus chunks via reranker scoring                 |
-| `GrepTool`     | Exhaustive regex pattern matching across all files                      |
-| `ReadFileTool` | Read file content at specified line ranges, tracks per-agent read state |
-| `ReportTool`   | Terminal tool — agents call this to submit findings                     |
+App-scoped tools (`web_search`, `fetch_page`, `search`, `read_file`,
+`grep`) live in their owning app — `@lloyal-labs/web-app`,
+`@lloyal-labs/corpus-app`, and so on — installed via
+`harness.dev install lloyal/<name>`. Build your own app with
+`harness.dev app <name>`.
 
-### Web tools
+## Search providers
 
-| Tool            | Description                                                     |
-| --------------- | --------------------------------------------------------------- |
-| `WebSearchTool` | Web search via configurable provider (`TavilyProvider` included) |
-| `FetchPageTool` | Fetch URL, extract article text via Readability                 |
+The `lloyal/web` app ships with two interchangeable `SearchProvider`
+implementations exposed from rig so apps can swap providers without
+vendoring an API client:
 
-### Pipeline tools
+| Provider                           | Description                                                       |
+| ---------------------------------- | ----------------------------------------------------------------- |
+| `TavilyProvider`                   | Tavily-backed web search (key from constructor or env)            |
+| `createKeylessSearchProvider()`    | Keyless DuckDuckGo fallback with built-in pacer + circuit breaker |
 
-| Tool                   | Description                                                                  |
-| ---------------------- | ---------------------------------------------------------------------------- |
-| `PlanTool`             | Grammar-constrained query decomposition with intent classification           |
-| `DelegateTool`         | Generic recursive-delegation tool — agent calls it to spawn a sub-agent pool |
-| `createTools(opts)`    | Build corpus toolkit from resources, chunks, and reranker                    |
-| `createReranker(path)` | (`/node` subpath) Semantic reranker for chunk scoring and passage selection  |
+## Node-only surface (`@lloyal-labs/rig/node`)
+
+| Symbol                 | Description                                                                |
+| ---------------------- | -------------------------------------------------------------------------- |
+| `createReranker(path)` | Semantic reranker — runs the cross-encoder GGUF against text batches       |
+| `loadResources(dir)`   | Walk a directory into `Resource[]` for corpus apps                         |
+| `chunkResources(rs)`   | Split resources into `Chunk[]` for tokenization + reranker scoring         |
 
 ### `DelegateTool`
 
@@ -174,43 +191,32 @@ const delegate = new DelegateTool({
 
 The agent sees `web_research` (or whatever `name` you give it) as a callable tool. Calling it spawns parallel sub-agents that recurse into the corpus or web. The deeper an investigation goes, the richer the attention state at depth — and the cost of inheritance is zero.
 
-## Custom Sources
+## Building your own App
 
-Extend `Source` from `lloyal-agents` to create custom sources:
+Apps are the HDK 3.0 unit of distribution. An App bundles a
+`Source` + `Tool[]` + `skill.eta` + `app.json` manifest and gets
+shipped to consumers via the signed channel at `apps.lloyal.ai`.
 
-```typescript
-import { Source } from "@lloyal-labs/lloyal-agents";
-import type { Tool } from "@lloyal-labs/lloyal-agents";
+Scaffold one with:
 
-class DatabaseSource extends Source<DatabaseContext, Row> {
-  readonly name = "database";
-
-  get tools(): Tool[] {
-    return this._tools;
-  }
-
-  *bind(ctx: DatabaseContext) {
-    // Set up tools, reranker, scorer state
-    this._tools = [
-      new QueryTool(/* ... */),
-      new SchemaInspectTool(/* ... */),
-    ];
-  }
-
-  getChunks(): Row[] {
-    return this._results; // buffered for post-research reranking
-  }
-}
+```bash
+npx harness.dev app my-app
 ```
 
-The `bind()` lifecycle receives a context with reranker and scorer plumbing. Your tools call `agentPool` or `useAgent` internally for recursive patterns — same primitives the built-in sources use.
+The scaffold ships with a working source + two tools calling
+Wikipedia's REST API as a runnable demo backend. Replace the tool
+bodies with your real backend, keep the schemas, and you're a
+`harness.dev publish` away from being installable in any HDK
+harness.
 
-See [custom sources](https://docs.lloyal.ai/reference/rig/custom-sources) for the full contract.
+See [docs.lloyal.ai/build-an-app](https://docs.lloyal.ai/build-an-app)
+for the full App protocol contract.
 
 ## Documentation
 
-Full positioning, source contract, reranker mechanics, and pipeline patterns at [docs.lloyal.ai](https://docs.lloyal.ai).
+Full positioning, App protocol, reranker mechanics, and pipeline
+patterns at [docs.lloyal.ai](https://docs.lloyal.ai).
 
 ## License
 
-Apache-2.0
+See [LICENSE](./LICENSE) (Functional Source License 1.1 — Apache 2.0 Future License).

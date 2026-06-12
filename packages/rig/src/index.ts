@@ -11,31 +11,59 @@
  * @category Rig
  */
 
-// Tools (pure TS + Effection + linkedom — platform-agnostic)
+// Framework tools (consumed by harnesses) + search providers (consumed by
+// apps' Source implementations). App-scoped Tool classes live in their
+// owning app (`@lloyal-labs/{web,corpus,wikipedia}-app`).
 export {
-  createTools, reportTool, ReportTool,
-  WebSearchTool, TavilyProvider, FetchPageTool,
+  reportTool, ReportTool,
+  TavilyProvider, createKeylessSearchProvider,
   DelegateTool,
   PlanTool, taskToContent,
 } from './tools';
 export type {
   DelegateToolOpts,
+  KeylessSearchOptions,
   PlanToolOpts,
   PlanResult, PlanIntent, ResearchTask,
   SearchProvider, SearchResult,
   Reranker, ScoredChunk, ScoredResult,
 } from './tools';
 
-// Sources (platform-agnostic — no node:fs)
-export { WebSource } from './sources/web';
-export type { WebSourceOpts } from './sources/web';
-export { CorpusSource } from './sources/corpus';
-export type { CorpusSourceOpts, CorpusPromptData } from './sources/corpus';
+// Cross-app Source type re-export (platform-agnostic)
 export type { SourceContext } from './sources/types';
 
-// Chunking (platform-agnostic — linkedom is pure JS)
+// Chunking helpers (platform-agnostic — linkedom is pure JS).
+// Shared by the web app's source and the rig-resident fetch_page tool.
 export { chunkFetchedPages, chunkHtml } from './sources/chunking';
 export type { FetchedPage } from './sources/chunking';
 
 // Resource types (pure TS — RN-safe)
 export type { Resource, Chunk } from './resources/types';
+
+// HDK 3.0 App Protocol surfaces
+export {
+  BOUNDARY_MARKER,
+  FRAMEWORK_INTRO,
+  TOOL_SELECTION_RULE,
+  CATALOG_ENTRY,
+  VALIDATED_MODELS_3_0,
+  APP_PROTOCOL_VERSION,
+  SUPPORTED_APP_PROTOCOL_VERSIONS,
+  CHANNEL_CATALOG_URL,
+  CHANNEL_TRUST_ROOTS,
+} from './protocol';
+export { defineApp } from './define-app';
+export { cancellableFetch, FetchTimeoutError } from './cancellable-fetch';
+export { createInMemoryConfigStore } from './config-store';
+export { createGrantStore } from './grant-store';
+export { createAppRegistry } from './registry';
+export type { CreateAppRegistryOpts } from './registry';
+export {
+  verifyBundle,
+  resolveAppEntry,
+  BundleVerificationError,
+  AppNotFoundError,
+} from './bundle';
+export type { AppBundleManifest, CatalogEntry, CatalogVersion, SignedCatalog } from './bundle';
+export { renderSpine, renderAgentPreamble } from './spine-render';
+export type { RenderSpineOptions } from './spine-render';

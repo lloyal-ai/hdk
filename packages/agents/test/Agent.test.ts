@@ -112,9 +112,9 @@ describe('Agent', () => {
     it('overwrites on second report', () => {
       const a = makeAgent();
       a.setResult('first', 'voluntary_return');
-      a.setResult('second', 'scratchpad');
+      a.setResult('second', 'recovery');
       expect(a.result).toBe('second');
-      expect(a.resultSource).toBe('scratchpad');
+      expect(a.resultSource).toBe('recovery');
     });
   });
 
