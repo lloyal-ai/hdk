@@ -1,39 +1,27 @@
 # harness.dev
 
-The Harness Development Kit CLI — scaffold [HDK](https://github.com/lloyal-ai/hdk) harnesses and apps.
+**Zero to a working agentic AI app in three commands.**
 
-> **Early preview (0.1.x).** The command surface is in place; the scaffolders
-> are landing in upcoming releases. Today the commands print their intended
-> behavior rather than generating files.
+`harness.dev` is the CLI for the [lloyal HDK](https://github.com/lloyal-ai/hdk): scaffold a harness (your application), scaffold an App (a capability it loads), and ship Apps through the signed channel.
 
 ```bash
-npx harness.dev --help
+npx harness.dev              # scaffold a new harness — a runnable HDK application
+npx harness.dev app          # scaffold an App — a Source + Tools + skill bundle
+npx harness.dev install lloyal/wikipedia    # install a signed App from the channel
 ```
 
-## Commands
+Every channel install is verified end-to-end: Ed25519-signed catalog and bundles, integrity-audited lockfile, install scripts disabled by default. What you install is what was reviewed.
 
+For publishers:
+
+```bash
+npx harness.dev publishers register   # claim your publisher handle
+npx harness.dev publish               # build, sign, and submit your App
+npx harness.dev review                # (reviewers) inspect + approve submissions
 ```
-npx harness.dev <name>        Scaffold a new harness   (the default action)
-npx harness.dev app <name>    Scaffold a new app
-```
 
-After a global install (`npm i -g harness.dev`) the same commands run as
-`harness.dev <name>` — the package and the binary share the name, so the
-invocation is identical either way.
-
-## Concepts
-
-- **Harness** — a runnable agentic product built on the HDK runtime.
-- **App** — an installable capability (a Source + tools + a per-spawn
-  contract) that a harness composes into its agent pool.
-
-`harness.dev` is the authoring CLI for both.
-
-## Requirements
-
-- Node.js >= 20 (uses the built-in `node:util` argument parser; no runtime
-  dependencies).
+**[Docs →](https://docs.lloyal.ai/cli)** · **[Build an App →](https://docs.lloyal.ai/build-an-app/what-is-an-app)** · **[The HDK →](https://github.com/lloyal-ai/hdk)**
 
 ## License
 
-Apache-2.0
+Apache-2.0 — the CLI is fully open. (The HDK runtime packages are FSL-1.1-Apache-2.0; see each package's LICENSE.)
