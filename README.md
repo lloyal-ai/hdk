@@ -265,6 +265,6 @@ Safety has to be **upstream and structural**: the canonical channel at [apps.llo
 
 **Commercial use is unrestricted** — build and sell products with HDK, embed it in proprietary software, run it in production. The FSL restriction is narrow: you cannot ship a competing HDK runtime, managed HDK service, or alternative HDK App distribution channel.
 
-HDK 3.0 runtime packages (`@lloyal-labs/lloyal-agents`, `@lloyal-labs/sdk`, `@lloyal-labs/rig`, `@lloyal-labs/web-app`, `@lloyal-labs/corpus-app`, `@lloyal-labs/wikipedia-app`) are source-available under FSL-1.1-Apache-2.0 and convert to Apache 2.0 two years after each release. `packages/harness-cli` (the `harness.dev` CLI) is Apache 2.0 from day one — see its own `LICENSE` file.
+HDK 3.0 runtime packages (`@lloyal-labs/lloyal-agents`, `@lloyal-labs/sdk`, `@lloyal-labs/rig`, `@lloyal-labs/web-app`, `@lloyal-labs/corpus-app`, `@lloyal-labs/wikipedia-app`) are Fair Source under FSL-1.1-Apache-2.0 and convert to Apache 2.0 two years after each release. `packages/harness-cli` (the `harness.dev` CLI) is Apache 2.0 from day one — see its own `LICENSE` file.
 
 See [`LICENSE-FAQ.md`](./LICENSE-FAQ.md) for concrete examples of what's permitted and what's restricted, [`LICENSE`](./LICENSE) for the legal text, and [`NOTICE`](./NOTICE) for attribution.
