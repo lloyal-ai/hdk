@@ -439,39 +439,53 @@ async function renderAttentionSurface(tarball: Uint8Array, name: string): Promis
     process.stdout.write(`\n  note: ${name}'s attention surface could not be parsed.\n`);
     return;
   }
-  const out = process.stdout;
-  out.write(`\nWhat ${name} adds to your model's context:\n`);
-  if (s.protocol?.name) out.write(`  protocol:  ${s.protocol.name}\n`);
-  if (s.protocol?.useWhen) out.write(`  use when:  ${s.protocol.useWhen}\n`);
+  process.stdout.write(formatAttentionSurface(s, name));
+}
 
-  const tools = Array.isArray(s.tools) ? s.tools : [];
-  out.write(`\n  Tools (${tools.length}):\n`);
+/**
+ * Build the human-readable attention-surface disclosure. PURE + TOTAL: the
+ * input is signed-for-authenticity but NOT shape-validated publisher JSON, so
+ * every field is coerced/guarded — a malformed `tools`/`skill`/`configSchema`
+ * degrades just that line, never throws. This is what keeps
+ * {@link renderAttentionSurface}'s "never blocks" promise honest. Exported for
+ * unit testing of the malformed-input paths.
+ */
+export function formatAttentionSurface(s: AttentionSurface, name: string): string {
+  const lines: string[] = [`\nWhat ${name} adds to your model's context:`];
+  if (typeof s.protocol?.name === 'string') lines.push(`  protocol:  ${s.protocol.name}`);
+  if (typeof s.protocol?.useWhen === 'string') lines.push(`  use when:  ${s.protocol.useWhen}`);
+
+  const tools = (Array.isArray(s.tools) ? s.tools : []).filter(
+    (t): t is NonNullable<typeof t> => !!t && typeof t === 'object',
+  );
+  lines.push(`\n  Tools (${tools.length}):`);
   for (const t of tools) {
-    const tag = t.protected ? '  [writes]' : '';
-    const desc = t.description ? ` — ${t.description}` : '';
-    out.write(`    • ${t.name}${desc}${tag}\n`);
+    const nm = typeof t.name === 'string' && t.name ? t.name : '(unnamed)';
+    const tag = t.protected === true ? '  [writes]' : '';
+    const desc = typeof t.description === 'string' && t.description ? ` — ${t.description}` : '';
+    lines.push(`    • ${nm}${desc}${tag}`);
   }
-  if (s.degraded) {
-    out.write('    (tool descriptions unavailable for this version)\n');
-  }
+  if (s.degraded) lines.push('    (tool descriptions unavailable for this version)');
 
-  const props = (s.configSchema as { properties?: Record<string, { type?: string; 'x-secret'?: boolean }> } | undefined)
-    ?.properties;
-  const keys = props ? Object.keys(props) : [];
+  const props = (s.configSchema as { properties?: Record<string, unknown> } | undefined)?.properties;
+  const keys = props && typeof props === 'object' ? Object.keys(props) : [];
   if (keys.length) {
-    out.write('\n  Config it reads:\n');
+    lines.push('\n  Config it reads:');
     for (const k of keys) {
-      const secret = props![k]?.['x-secret'] ? ', secret' : '';
-      out.write(`    • ${k} (${props![k]?.type ?? 'value'}${secret})\n`);
+      const p = props![k] as { type?: unknown; 'x-secret'?: unknown } | null | undefined;
+      const secret = p && typeof p === 'object' && p['x-secret'] ? ', secret' : '';
+      const ty = p && typeof p === 'object' && typeof p.type === 'string' ? p.type : 'value';
+      lines.push(`    • ${k} (${ty}${secret})`);
     }
   }
 
-  if (s.skill) {
-    const lines = s.skill.split('\n');
-    const shown = lines.slice(0, 10);
-    out.write('\n  System-prompt skill (per turn):\n');
-    for (const l of shown) out.write(`    | ${l}\n`);
-    if (lines.length > shown.length) out.write(`    | … (${lines.length - shown.length} more lines)\n`);
+  if (typeof s.skill === 'string' && s.skill) {
+    const all = s.skill.split('\n');
+    const shown = all.slice(0, 10);
+    lines.push('\n  System-prompt skill (per turn):');
+    for (const l of shown) lines.push(`    | ${l}`);
+    if (all.length > shown.length) lines.push(`    | … (${all.length - shown.length} more lines)`);
   }
-  out.write('\n');
+  lines.push('');
+  return `${lines.join('\n')}\n`;
 }

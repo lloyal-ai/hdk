@@ -67,6 +67,7 @@ const DESCRIBE_SCRIPT = `(async () => {
   const path = require('node:path');
   const os = require('node:os');
   const fs = require('node:fs');
+  const tmpDirs = [];
   try {
     const entry = process.env.HARNESS_DESCRIBE_ENTRY;
     const required = JSON.parse(process.env.HARNESS_DESCRIBE_REQUIRED || '[]');
@@ -80,6 +81,7 @@ const DESCRIBE_SCRIPT = `(async () => {
     for (const k of required) {
       if (/path|dir|file|root/i.test(k)) {
         const d = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-describe-'));
+        tmpDirs.push(d);
         // Seed a placeholder doc so resource-loading factories (e.g. corpus)
         // construct over a NON-empty dir instead of throwing "no files matched".
         try { fs.writeFileSync(path.join(d, '_describe.md'), '# describe placeholder'); } catch {}
@@ -109,11 +111,17 @@ const DESCRIBE_SCRIPT = `(async () => {
       protected: t.protected === true,
     }));
     process.stdout.write(JSON.stringify({ tools }));
-    process.exit(0);
   } catch (e) {
     process.stderr.write(String((e && e.stack) || e));
-    process.exit(3);
+    process.exitCode = 3;
+  } finally {
+    // Reap the synthetic config dirs created above — else every describe run
+    // (publish, tests) leaks a harness-describe-* dir per path-like config key.
+    for (const d of tmpDirs) {
+      try { fs.rmSync(d, { recursive: true, force: true }); } catch {}
+    }
   }
+  process.exit(process.exitCode || 0);
 })();`;
 
 function requiredConfigKeys(configSchema: DescribeAppJson['configSchema']): string[] {

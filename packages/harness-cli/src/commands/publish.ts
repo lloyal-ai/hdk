@@ -212,31 +212,35 @@ export const publishCommand: Command = {
     // Serialize the app's ATTENTION SURFACE (skill prose + full tool schemas +
     // useWhen + configSchema) into `attention-surface.json` in the app dir, so
     // `npm pack` includes it and it's covered by the signed tarball. Written
-    // before pack, deleted in `finally` regardless of outcome.
+    // before pack; removed on EVERY exit — the build-failure catch right here
+    // and the pack block's `finally` below.
     const surfacePath = join(appDir, 'attention-surface.json');
     try {
       const surface = await buildAttentionSurface(appDir, appJson, packageJson);
       await writeFile(surfacePath, `${JSON.stringify(surface, null, 2)}\n`);
     } catch (err) {
       process.stderr.write(`harness.dev publish: could not build attention surface: ${asMessage(err)}\n`);
+      await rm(surfacePath, { force: true }).catch(() => {});
       return 1;
     }
 
     // Build the tarball via `npm pack` shell-out, then assert the surface landed.
-    let tarballPath: string;
-    let packTmpDir: string;
+    // The tarball bytes are read fully into memory, so both transient artifacts —
+    // the source-tree `attention-surface.json` and the pack temp dir — are cleaned
+    // in `finally`, regardless of success or the early-return below. Nothing
+    // downstream reads either, so a failed pack can't leak a temp dir.
+    let packTmpDir: string | undefined;
     let tarball: Uint8Array;
     try {
       packTmpDir = await mkdtemp(join(tmpdir(), 'harness-dev-publish-'));
-      tarballPath = await npmPack(appDir, packTmpDir);
+      const tarballPath = await npmPack(appDir, packTmpDir);
       tarball = new Uint8Array(await readFile(tarballPath));
     } catch (err) {
       process.stderr.write(`harness.dev publish: npm pack failed: ${asMessage(err)}\n`);
-      await rm(surfacePath, { force: true }).catch(() => {});
       return 1;
     } finally {
-      // The packed copy is immutable; the source-tree artifact is transient.
       await rm(surfacePath, { force: true }).catch(() => {});
+      if (packTmpDir) await cleanupTmpDir(packTmpDir);
     }
 
     // GUARD: a missing `files` whitelist entry would silently ship a
@@ -246,7 +250,6 @@ export const publishCommand: Command = {
         'harness.dev publish: attention-surface.json was generated but did NOT land in the ' +
           'tarball. Add "attention-surface.json" to your package.json "files" array.\n',
       );
-      await cleanupTmpDir(packTmpDir);
       return 1;
     }
 
@@ -281,7 +284,6 @@ export const publishCommand: Command = {
     if (!res.ok) {
       const body = await res.text();
       process.stderr.write(`harness.dev publish: HTTP ${res.status} ${res.statusText}\n${body}\n`);
-      await cleanupTmpDir(packTmpDir);
       return 1;
     }
 
@@ -304,7 +306,6 @@ export const publishCommand: Command = {
     if (out.submittedAt) process.stdout.write(`  submitted:  ${out.submittedAt}\n`);
     if (out.statusUrl) process.stdout.write(`  poll:       harness.dev publish status ${out.submissionId ?? '<id>'}\n`);
 
-    await cleanupTmpDir(packTmpDir);
     return 0;
   },
 };
