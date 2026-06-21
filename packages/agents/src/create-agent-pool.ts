@@ -63,7 +63,7 @@ export interface CreateAgentPoolOpts {
   /**
    * Whether the chat template delimits `<think>` blocks for this pool's agents.
    * See {@link AgentPoolOptions.enableThinking}.
-   * @default false
+   * @default true
    */
   enableThinking?: boolean;
   /**

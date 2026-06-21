@@ -12,6 +12,8 @@ import {
   sha512Integrity,
   BundleVerificationError,
 } from '../verify';
+import { readTarEntry, isGzipReadable } from '../tar-read';
+import type { AttentionSurface } from '../describe';
 
 const USAGE = [
   'harness.dev install — install a signed HDK app from apps.lloyal.ai into the current project',
@@ -173,6 +175,11 @@ export const installCommand: Command = {
       );
       return 1;
     }
+
+    // 5b. Disclose what this app injects into the model's context, read from the
+    // ALREADY-VERIFIED tarball bytes (the attention surface rides inside the signed
+    // package). Absent for apps published before the feature — note + continue.
+    await renderAttentionSurface(tarball, name);
 
     const cacheDir = join(xdgCacheHome(), 'lloyal', 'apps');
     const cachePath = join(
@@ -410,4 +417,81 @@ async function auditLockfile(npmPackageName: string): Promise<LockfileAudit | nu
 
 function asMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Print the app's attention surface — exactly what it injects into the model's
+ * context — read from the Ed25519-verified tarball bytes. Best-effort disclosure:
+ * a parse failure or a pre-feature app degrades to a one-line note, never blocks.
+ */
+async function renderAttentionSurface(tarball: Uint8Array, name: string): Promise<void> {
+  const raw = await readTarEntry(tarball, 'package/attention-surface.json');
+  if (raw === null) {
+    // null = absent OR unreadable tarball. The bytes are Ed25519-verified, so
+    // corruption is near-impossible; the real residual case is a package whose
+    // decompressed size exceeds the inspect cap. Say which, honestly.
+    const note = isGzipReadable(tarball)
+      ? `${name} ships no attention-surface.json (published before context disclosure).`
+      : `${name}'s package could not be read to disclose its attention surface (it exceeds the inspect cap or is corrupt).`;
+    process.stdout.write(`\n  note: ${note}\n`);
+    return;
+  }
+  let s: AttentionSurface;
+  try {
+    s = JSON.parse(raw) as AttentionSurface;
+  } catch {
+    process.stdout.write(`\n  note: ${name}'s attention surface could not be parsed.\n`);
+    return;
+  }
+  process.stdout.write(formatAttentionSurface(s, name));
+}
+
+/**
+ * Build the human-readable attention-surface disclosure. PURE + TOTAL: the
+ * input is signed-for-authenticity but NOT shape-validated publisher JSON, so
+ * every field is coerced/guarded — a malformed `tools`/`skill`/`configSchema`
+ * degrades just that line, never throws. This is what keeps
+ * {@link renderAttentionSurface}'s "never blocks" promise honest. Exported for
+ * unit testing of the malformed-input paths.
+ */
+export function formatAttentionSurface(s: AttentionSurface, name: string): string {
+  const lines: string[] = [`\nWhat ${name} adds to your model's context:`];
+  if (typeof s.protocol?.name === 'string') lines.push(`  protocol:  ${s.protocol.name}`);
+  if (typeof s.protocol?.useWhen === 'string') lines.push(`  use when:  ${s.protocol.useWhen}`);
+
+  const tools = (Array.isArray(s.tools) ? s.tools : []).filter(
+    (t): t is NonNullable<typeof t> => !!t && typeof t === 'object',
+  );
+  lines.push(`\n  Tools (${tools.length}):`);
+  for (const t of tools) {
+    const nm = typeof t.name === 'string' && t.name ? t.name : '(unnamed)';
+    // `protected` means the tool requires a session grant (authGuard/GrantStore)
+    // to be callable — it is about consent, NOT about whether the tool mutates.
+    const tag = t.protected === true ? '  [needs grant]' : '';
+    const desc = typeof t.description === 'string' && t.description ? ` — ${t.description}` : '';
+    lines.push(`    • ${nm}${desc}${tag}`);
+  }
+  if (s.degraded) lines.push('    (tool descriptions unavailable for this version)');
+
+  const props = (s.configSchema as { properties?: Record<string, unknown> } | undefined)?.properties;
+  const keys = props && typeof props === 'object' ? Object.keys(props) : [];
+  if (keys.length) {
+    lines.push('\n  Config it reads:');
+    for (const k of keys) {
+      const p = props![k] as { type?: unknown; 'x-secret'?: unknown } | null | undefined;
+      const secret = p && typeof p === 'object' && p['x-secret'] ? ', secret' : '';
+      const ty = p && typeof p === 'object' && typeof p.type === 'string' ? p.type : 'value';
+      lines.push(`    • ${k} (${ty}${secret})`);
+    }
+  }
+
+  if (typeof s.skill === 'string' && s.skill) {
+    const all = s.skill.split('\n');
+    const shown = all.slice(0, 10);
+    lines.push('\n  System-prompt skill (per turn):');
+    for (const l of shown) lines.push(`    | ${l}`);
+    if (all.length > shown.length) lines.push(`    | … (${all.length - shown.length} more lines)`);
+  }
+  lines.push('');
+  return `${lines.join('\n')}\n`;
 }

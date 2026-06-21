@@ -1,10 +1,12 @@
 import { parseArgs } from 'node:util';
-import { readFile, mkdtemp, rm } from 'node:fs/promises';
+import { readFile, writeFile, mkdtemp, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import type { Command } from '../command';
 import { ensureFreshToken } from '../cf-access-oauth';
+import { buildAttentionSurface } from '../describe';
+import { readTarEntry, isGzipReadable } from '../tar-read';
 
 const API_BASE = 'https://api.lloyal.ai';
 const DEFAULT_PUBLISH_ENDPOINT = `${API_BASE}/v1/publish`;
@@ -56,6 +58,7 @@ interface AppJson {
 interface PackageJson {
   name: string;
   version: string;
+  main?: string;
   peerDependencies?: Record<string, string>;
 }
 
@@ -206,23 +209,88 @@ export const publishCommand: Command = {
       catalogName = `${publisherHandle}/${appJson.name}`;
     }
 
-    // Build the tarball via `npm pack` shell-out.
-    let tarballPath: string;
-    let packTmpDir: string;
+    // Serialize the app's ATTENTION SURFACE (skill prose + full tool schemas +
+    // useWhen + configSchema) into `attention-surface.json` in the app dir, so
+    // `npm pack` includes it and it's covered by the signed tarball.
+    //
+    // The file is a GENERATED artifact, but a publisher may already have one in
+    // their working tree (committed, stale from an interrupted run, or hand-
+    // authored). We must NOT clobber or delete it: capture any existing contents
+    // first, and `restoreSurface()` on EVERY exit (the build-failure catch here
+    // and the pack block's `finally`) — restore the original if one existed,
+    // otherwise remove only the file we created. (The PUBLISHED surface is
+    // always the freshly-generated one; we just never destroy the publisher's.)
+    const surfacePath = join(appDir, 'attention-surface.json');
+    let existingSurface: string | undefined;
     try {
-      packTmpDir = await mkdtemp(join(tmpdir(), 'harness-dev-publish-'));
-      tarballPath = await npmPack(appDir, packTmpDir);
+      existingSurface = await readFile(surfacePath, 'utf-8');
     } catch (err) {
-      process.stderr.write(`harness.dev publish: npm pack failed: ${asMessage(err)}\n`);
+      // ONLY ENOENT means "no pre-existing file" (the normal case). Any other
+      // error (EACCES, EISDIR, …) means something IS there that we can't read —
+      // treating it as absent would let restoreSurface() rm it, deleting the
+      // publisher's file. Fail loud BEFORE writing anything.
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        process.stderr.write(
+          `harness.dev publish: ${surfacePath} exists but could not be read (${asMessage(err)}). ` +
+            `Refusing to overwrite it — remove or fix that path and re-run.\n`,
+        );
+        return 1;
+      }
+      existingSurface = undefined;
+    }
+    const restoreSurface = async (): Promise<void> => {
+      if (existingSurface !== undefined) {
+        await writeFile(surfacePath, existingSurface).catch(() => {});
+      } else {
+        await rm(surfacePath, { force: true }).catch(() => {});
+      }
+    };
+    try {
+      const surface = await buildAttentionSurface(appDir, appJson, packageJson);
+      await writeFile(surfacePath, `${JSON.stringify(surface, null, 2)}\n`);
+    } catch (err) {
+      process.stderr.write(`harness.dev publish: could not build attention surface: ${asMessage(err)}\n`);
+      await restoreSurface();
       return 1;
     }
 
+    // Build the tarball via `npm pack` shell-out, then assert the surface landed.
+    // The tarball bytes are read fully into memory, so both transient artifacts —
+    // the source-tree `attention-surface.json` and the pack temp dir — are cleaned
+    // in `finally`, regardless of success or the early-return below. Nothing
+    // downstream reads either, so a failed pack can't leak a temp dir.
+    let packTmpDir: string | undefined;
     let tarball: Uint8Array;
     try {
+      packTmpDir = await mkdtemp(join(tmpdir(), 'harness-dev-publish-'));
+      const tarballPath = await npmPack(appDir, packTmpDir);
       tarball = new Uint8Array(await readFile(tarballPath));
     } catch (err) {
-      process.stderr.write(`harness.dev publish: cannot read packed tarball: ${asMessage(err)}\n`);
-      await cleanupTmpDir(packTmpDir);
+      process.stderr.write(`harness.dev publish: npm pack failed: ${asMessage(err)}\n`);
+      return 1;
+    } finally {
+      await restoreSurface();
+      if (packTmpDir) await cleanupTmpDir(packTmpDir);
+    }
+
+    // GUARD: a missing `files` whitelist entry would silently ship a
+    // surface-less tarball. Fail LOUD here on the publisher's machine.
+    if ((await readTarEntry(tarball, 'package/attention-surface.json')) === null) {
+      // `readTarEntry` → null means absent OR the tarball couldn't be read at
+      // all (corrupt / over the inspect cap). Distinguish so we don't tell the
+      // publisher to fix their `files` array when the real fault is the tarball.
+      if (!isGzipReadable(tarball)) {
+        process.stderr.write(
+          'harness.dev publish: the produced tarball could not be read (corrupt, or its ' +
+            'decompressed size exceeds the 64MB inspect cap) — cannot verify attention-surface.json ' +
+            'landed. This is unexpected for npm pack output; please file an issue.\n',
+        );
+      } else {
+        process.stderr.write(
+          'harness.dev publish: attention-surface.json was generated but did NOT land in the ' +
+            'tarball. Add "attention-surface.json" to your package.json "files" array.\n',
+        );
+      }
       return 1;
     }
 
@@ -257,7 +325,6 @@ export const publishCommand: Command = {
     if (!res.ok) {
       const body = await res.text();
       process.stderr.write(`harness.dev publish: HTTP ${res.status} ${res.statusText}\n${body}\n`);
-      await cleanupTmpDir(packTmpDir);
       return 1;
     }
 
@@ -280,7 +347,6 @@ export const publishCommand: Command = {
     if (out.submittedAt) process.stdout.write(`  submitted:  ${out.submittedAt}\n`);
     if (out.statusUrl) process.stdout.write(`  poll:       harness.dev publish status ${out.submissionId ?? '<id>'}\n`);
 
-    await cleanupTmpDir(packTmpDir);
     return 0;
   },
 };

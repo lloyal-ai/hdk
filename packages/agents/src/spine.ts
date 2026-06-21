@@ -72,7 +72,7 @@ export interface SpineOptions {
    * pool — divergent values produce inconsistent grammar between the
    * prefilled spine and per-agent suffixes.
    *
-   * @default false
+   * @default true
    */
   enableThinking?: boolean;
 }
@@ -171,7 +171,7 @@ export function* withSpine<T>(
   // tool schemas in each agent's suffix.
   let spineFmt: FormatConfig | null = null;
   if (opts.systemPrompt !== undefined) {
-    const enableThinking = opts.enableThinking ?? false;
+    const enableThinking = opts.enableThinking ?? true;
     const messages = JSON.stringify([{ role: "system", content: opts.systemPrompt }]);
     const fmtOpts: Record<string, unknown> = {
       enableThinking,

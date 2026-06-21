@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/rig",
-  "version": "3.0.2",
+  "version": "3.1.0",
   "description": "Retrieval-Interleaved Generation for lloyal-agents",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

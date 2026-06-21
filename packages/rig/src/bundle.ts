@@ -118,6 +118,28 @@ export interface CatalogVersion {
 }
 
 /**
+ * Optional signed display/disclosure block on a catalog entry. Produced by the
+ * publish worker and rendered by the storefront; the rig runtime does not read
+ * it. Typed here for parity with the worker's `CatalogEntry` so the one signed
+ * shape stays in sync. `schemaVersion` is `number` (not a literal) so a future
+ * bump is tolerated rather than a type error.
+ */
+export interface CatalogEntryMetadata {
+  /** Block schema revision; consumers ignore an unknown future version. */
+  schemaVersion: number;
+  /** Storefront display title. */
+  title: string;
+  /** One-line storefront description. */
+  shortDesc: string;
+  /** Display category (from the storefront taxonomy). */
+  category: string;
+  /** Optional content-addressed icon URL. */
+  iconUrl?: string;
+  /** Disclosure entitlement keys — display-only (no runtime enforcement). */
+  entitlements: readonly string[];
+}
+
+/**
  * One app's entry in the catalog.
  */
 export interface CatalogEntry {
@@ -125,6 +147,8 @@ export interface CatalogEntry {
   name: string;
   /** Published versions, unordered. */
   versions: readonly CatalogVersion[];
+  /** Optional signed display/disclosure block; absent until a publisher submits metadata. */
+  metadata?: CatalogEntryMetadata;
 }
 
 /**

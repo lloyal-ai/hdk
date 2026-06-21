@@ -89,9 +89,26 @@ export interface CatalogVersion {
   importName: string;
 }
 
+/**
+ * Optional signed display/disclosure block on a catalog entry. Produced by the
+ * publish worker, rendered by the storefront; the CLI does not read it. Typed
+ * here only for parity with the worker's `CatalogEntry` so the one signed shape
+ * stays in sync. `schemaVersion` is `number` (not a literal) so a future bump is
+ * tolerated, not a type error.
+ */
+export interface CatalogEntryMetadata {
+  schemaVersion: number;
+  title: string;
+  shortDesc: string;
+  category: string;
+  iconUrl?: string;
+  entitlements: readonly string[];
+}
+
 export interface CatalogEntry {
   name: string;
   versions: readonly CatalogVersion[];
+  metadata?: CatalogEntryMetadata;
 }
 
 export interface SignedCatalog {

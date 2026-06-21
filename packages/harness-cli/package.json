@@ -1,7 +1,7 @@
 {
   "name": "harness.dev",
-  "version": "0.4.1",
-  "description": "The Harness Development Kit CLI \u2014 scaffold HDK harnesses and apps.",
+  "version": "0.5.0",
+  "description": "The Harness Development Kit CLI — scaffold HDK harnesses and apps.",
   "bin": {
     "harness.dev": "dist/cli.js"
   },

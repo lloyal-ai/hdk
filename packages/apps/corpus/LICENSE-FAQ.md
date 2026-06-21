@@ -17,8 +17,8 @@ of this page is illustration.
 
 HDK 3.0 runtime packages — `liblloyal`, `lloyal-node`, and the lloyal-sdk
 packages (`agents`, `sdk`, `rig`, `apps/corpus`, `apps/web`) — are
-source-available under **FSL-1.1-Apache-2.0** (the Functional Source License,
-Apache 2.0 future grant). FSL is a [Fair Source](https://fair.io) license.
+**[Fair Source](https://fair.io)** under **FSL-1.1-Apache-2.0** (the Functional
+Source License, Apache 2.0 future grant).
 
 Each version converts to Apache 2.0 two years after its release. The
 restriction during those two years is narrow: **you cannot offer a competing

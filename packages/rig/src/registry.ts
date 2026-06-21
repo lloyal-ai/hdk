@@ -1,20 +1,21 @@
 /**
- * `createAppRegistry` — harness-wide app registry with a **declarative**
- * app set and structured, **isolated** per-app lifecycle.
+ * `createAppRegistry` — harness-wide app registry with structured,
+ * **isolated** per-app lifecycle.
  *
- * The harness declares its apps as factories; the registry owns the rest:
+ * `createAppRegistry({ configStore, grantStore? })` returns an **empty**
+ * registry; `registry.enable(factory)` is the single way to enable an app —
+ * creation is never enablement, so the two paths can't collide.
  *
- * - `createAppRegistry({ configStore, apps })` runs each factory in its own
- *   **detached** Effection scope, seeded with the app-facing framework
- *   contexts (`AppConfigStoreCtx`, `RerankerCtx`) so the factory
- *   reads config + reranker. The factory body is setup; a `resource()`
- *   factory's `ensure(...)` is teardown. The registry tears the scopes
- *   down on its own scope exit, reverse register-order, **best-effort** —
- *   a throwing teardown is logged but never strands a sibling, and never
+ * - `registry.enable(factory)` runs the factory in its own **detached**
+ *   Effection scope, seeded with the app-facing framework contexts
+ *   (`AppConfigStoreCtx`, `RerankerCtx`) so the factory reads config +
+ *   reranker. The factory body is setup; a `resource()` factory's
+ *   `ensure(...)` is teardown. Every enabled app's scope is torn down on the
+ *   registry's own scope exit, reverse enable-order, **best-effort** — a
+ *   throwing teardown is logged but never strands a sibling, and never
  *   crashes the harness. The harness does **not** call a per-app register
- *   verb at boot.
- * - `registry.enable(factory)` / `registry.disable(name)` handle the
- *   genuine dynamic case (mid-session enable/disable). `enable` →
+ *   verb at boot; it just calls `enable` for each boot app.
+ * - `registry.disable(name)` handles mid-session removal. `enable` →
  *   `'enabled'`, `disable` → `'disabled'` (matching {@link AppState}).
  *   `disable` swallows + logs a throwing teardown, so a mid-session
  *   uninstall can't crash the session — possible only because each app
@@ -67,15 +68,6 @@ export interface CreateAppRegistryOpts {
    * authGuard fails closed (every protected tool denied).
    */
   grantStore?: GrantStore;
-  /**
-   * App factories to enable at construction (the boot set). Each runs in
-   * its own detached scope and is torn down on registry scope exit. The
-   * harness assembles this list from static imports of installed apps
-   * (`import { createXxxApp } from '@lloyal-labs/<name>-app'`).
-   * **Set `RerankerCtx` before calling** if any factory reads the
-   * shared reranker.
-   */
-  apps?: readonly AppFactory[];
 }
 
 interface RegistryEntry {
@@ -88,21 +80,20 @@ interface RegistryEntry {
  * Create the harness-wide app registry.
  *
  * Sets `AppRegistryCtx` and `AppConfigStoreCtx` in the caller's scope (the
- * `initAgents` pattern), enables each factory in `opts.apps`, and tears
- * every enabled app's scope down on the caller's scope exit (reverse
- * order, best-effort).
+ * `initAgents` pattern). Returns an empty registry — enable the boot set with
+ * explicit `registry.enable(factory)` calls. Every enabled app's scope is torn
+ * down on the caller's scope exit (reverse order, best-effort). Creation is not
+ * enablement: there is one way to enable an app, so the two paths can't collide.
  *
  * @example
  * ```ts
  * import { createWebApp } from '@lloyal-labs/web-app';
  * import { createCorpusApp } from '@lloyal-labs/corpus-app';
- * import { createJiraApp } from '@lloyal-labs/jira-app';
  *
  * yield* RerankerCtx.set(reranker);          // before, if factories read it
- * const registry = yield* createAppRegistry({
- *   configStore,
- *   apps: [createWebApp, createCorpusApp, createJiraApp],
- * });
+ * const registry = yield* createAppRegistry({ configStore });
+ * yield* registry.enable(createWebApp);
+ * yield* registry.enable(createCorpusApp);
  * // ... pool dispatch ...
  * // registry scope exit tears down every app (factory ensures fire)
  * ```
@@ -110,7 +101,7 @@ interface RegistryEntry {
 export function* createAppRegistry(
   opts: CreateAppRegistryOpts,
 ): Operation<AppRegistry> {
-  const { configStore, grantStore, apps } = opts;
+  const { configStore, grantStore } = opts;
   const entries = new Map<string, RegistryEntry>();
   const order: string[] = [];
 
@@ -184,6 +175,39 @@ export function* createAppRegistry(
           );
         }
 
+        // Namespace-collision guard. The catalog scopes apps by handle
+        // (`acme/web` vs `lloyal/web`), but the runtime/model surface is
+        // UNSCOPED — `manifest.name` keys this registry, and `protocol.name` +
+        // each tool name address the app in the shared spine the model reads.
+        // Two same-short-named apps from different publishers therefore collide
+        // here. The `manifest.name` check above catches one face; this catches
+        // the model-facing faces (otherwise spine-render emits two CATALOG_ENTRY
+        // blocks with the same protocol/tool names — silent routing ambiguity +
+        // a collided BOUNDARY_MARKER). Fail loud, naming both apps, so the
+        // integrator knows it's a cross-publisher clash — not their bug.
+        const incomingProtocol = app.manifest.protocol.name;
+        const incomingTools = app.manifest.protocol.tools;
+        for (const { app: existing } of entries.values()) {
+          if (existing.manifest.protocol.name === incomingProtocol) {
+            throw new Error(
+              `Cannot enable "${app.manifest.name}": its protocol "${incomingProtocol}" ` +
+                `collides with already-enabled "${existing.manifest.name}". Two AgentApps ` +
+                `can't share a model-facing protocol name in one harness — disable one, or ` +
+                `use apps with distinct protocol names.`,
+            );
+          }
+          const clashTool = incomingTools.find((t) =>
+            existing.manifest.protocol.tools.includes(t),
+          );
+          if (clashTool !== undefined) {
+            throw new Error(
+              `Cannot enable "${app.manifest.name}": its tool "${clashTool}" collides with ` +
+                `already-enabled "${existing.manifest.name}". Two AgentApps can't share a ` +
+                `tool name in one harness — disable one, or use apps with distinct tool names.`,
+            );
+          }
+        }
+
         entries.set(app.manifest.name, { app, destroy });
         order.push(app.manifest.name);
         added = true;
@@ -245,12 +269,6 @@ export function* createAppRegistry(
     entries.clear();
     order.length = 0;
   });
-
-  if (apps) {
-    for (const factory of apps) {
-      yield* registry.enable(factory);
-    }
-  }
 
   return registry;
 }

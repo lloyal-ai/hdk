@@ -17,6 +17,7 @@
     "dist/",
     "app.json",
     "skill.eta",
+    "attention-surface.json",
     "LICENSE"
   ],
   "scripts": {

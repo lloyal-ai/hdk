@@ -10,8 +10,10 @@
  * and models had `<think>\n` prefilled on turns 1+ only (not turn 0).
  *
  * What this locks:
- *   - `agent.fmt.enableThinking` is `false` by default (existing behavior).
- *   - Callers can override to `true` via `useAgentPool({enableThinking})`.
+ *   - `agent.fmt.enableThinking` is `true` by default (correct for the
+ *     thinking models — Qwen3.5 — that are now the reference).
+ *   - Callers can override to `false` via `useAgentPool({enableThinking})`
+ *     for non-thinking models or agent-side suppression.
  *   - Whatever value is set at pool construction is stored on the agent
  *     and can be read from `run.result.agents[i].agent.fmt.enableThinking`.
  */
@@ -30,13 +32,13 @@ describe('scenario: enableThinking propagation (pool → agent.fmt)', () => {
     onRecovery: () => ({ type: 'skip' }),
   };
 
-  it('default (no enableThinking set) → agent.fmt.enableThinking = false', async () => {
+  it('default (no enableThinking set) → agent.fmt.enableThinking = true', async () => {
     const run = await runPool({
       scripts: [{ tokens: [1, STOP] }],
       policy: minimalPolicy,
     });
     expect(run.result.agents.length).toBe(1);
-    expect(run.result.agents[0].agent.fmt.enableThinking).toBe(false);
+    expect(run.result.agents[0].agent.fmt.enableThinking).toBe(true);
   });
 
   it('explicit enableThinking: true → agent.fmt.enableThinking = true', async () => {

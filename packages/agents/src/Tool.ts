@@ -41,7 +41,12 @@ import type { JsonSchema, ToolSchema, ToolContext } from './types';
  *
  * @category Agents
  */
-export abstract class Tool<TArgs = Record<string, unknown>> {
+// `TArgs` defaults to `any` (not `Record<string, unknown>`) so heterogeneous
+// `Tool` subclasses — each with its own `execute(args: TArgs)` shape — assign to
+// a uniform `Tool[]` / `Record<string, Tool>` without an `as unknown as Tool[]`
+// cast. `TArgs` sits in a contravariant (parameter) position; `any` is the
+// variance-neutral default. Authors still narrow `TArgs` per tool for safety.
+export abstract class Tool<TArgs = any> {
   /** Tool name — used as the function identifier in tool calls */
   abstract readonly name: string;
   /** Human-readable description shown to the model */
