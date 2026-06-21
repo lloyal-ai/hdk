@@ -511,7 +511,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       }
     });
     const tw = yield* Trace.expect();
-    const { spine, orchestrate, toolsJson, tools, maxTurns = 100, terminalToolName, trace = false, pruneOnReturn = false, enableThinking = false, eagerGrammar } = opts;
+    const { spine, orchestrate, toolsJson, tools, maxTurns = 100, terminalToolName, trace = false, pruneOnReturn = false, enableThinking = true, eagerGrammar } = opts;
 
     // Tool index map for trace — position in toolkit array
     const toolIndexMap = new Map([...tools.keys()].map((name, i) => [name, i]));

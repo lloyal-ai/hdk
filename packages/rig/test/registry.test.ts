@@ -2,9 +2,10 @@
  * Tests for `createAppRegistry` + `registry.enable` / `disable` —
  * RFC §5.4, §6 (declarative per-app scope model).
  *
- * The model: the harness declares its boot set via
- * `createAppRegistry({ apps })`; each factory runs in its own *detached*
- * Effection scope (`createScope()` — does NOT inherit context, so the
+ * The model: the harness enables its boot set via explicit
+ * `registry.enable(factory)` calls (creation is not enablement — there is one
+ * enable path, so the two can't collide); each factory runs in its own
+ * *detached* Effection scope (`createScope()` — does NOT inherit context, so the
  * registry seeds `AppConfigStoreCtx` / `AppRegistryCtx` / `RerankerCtx`
  * into it explicitly; the detachment is what isolates teardown errors so
  * `disable` can swallow them). `disable` / registry scope-exit tear that
@@ -13,7 +14,7 @@
  * standalone register verb.
  *
  * Protocols verified:
- * 1. **Boot set (`apps: []`) is enabled** — `byName`/`enabled`/`stateOf` reflect it.
+ * 1. **Boot set (explicit `enable()`) is enabled** — `byName`/`enabled`/`stateOf` reflect it.
  * 2. **Factory runs in a context-bearing scope** — a factory reading
  *    `AppConfigStoreCtx` works (the regression for the detached-scope bug).
  * 3. **Factory body is setup; runs during enable.**
@@ -42,12 +43,21 @@ function fakeApp(opts: {
   name: string;
   appProtocolVersion?: string;
   configSchema?: AppManifest['configSchema'];
+  /** Override the model-facing protocol name (defaults to `${name}_research`). */
+  protocolName?: string;
+  /** Override the tool names (default a single per-name tool, so distinct
+   *  apps don't trip the namespace-collision guard). */
+  tools?: string[];
 }): App {
   const manifest: AppManifest = {
     name: opts.name,
     version: '1.0.0',
     appProtocolVersion: opts.appProtocolVersion ?? '3.0',
-    protocol: { name: `${opts.name}_research`, useWhen: 'do things', tools: ['x'] },
+    protocol: {
+      name: opts.protocolName ?? `${opts.name}_research`,
+      useWhen: 'do things',
+      tools: opts.tools ?? [`${opts.name}_tool`],
+    },
     configSchema: opts.configSchema,
   };
   return {
@@ -86,12 +96,13 @@ function resourceFactory(
 // ── Tests ────────────────────────────────────────────────────────
 
 describe('createAppRegistry', () => {
-  it('enables the declarative boot set and exposes it via byName / enabled / stateOf', async () => {
+  it('enables the boot set via explicit enable() and exposes it via byName / enabled / stateOf', async () => {
     const result = await run(function* () {
       const registry = yield* createAppRegistry({
         configStore: createInMemoryConfigStore(),
-        apps: [plainFactory({ name: 'web' }), plainFactory({ name: 'corpus' })],
       });
+      yield* registry.enable(plainFactory({ name: 'web' }));
+      yield* registry.enable(plainFactory({ name: 'corpus' }));
       return {
         viaByName: registry.byName('web')?.manifest.name,
         enabledNames: registry.enabled().map((a) => a.manifest.name),
@@ -118,7 +129,8 @@ describe('createAppRegistry', () => {
         readConfig = yield* cs.get('ctxapp');
         return fakeApp({ name: 'ctxapp' });
       };
-      yield* createAppRegistry({ configStore, apps: [ctxFactory] });
+      const registry = yield* createAppRegistry({ configStore });
+      yield* registry.enable(ctxFactory);
       return readConfig;
     });
     expect(seen).toEqual({ key: 'value' });
@@ -169,14 +181,12 @@ describe('createAppRegistry', () => {
   it('fires ensure() teardown on registry scope exit, reverse register order', async () => {
     const order: string[] = [];
     await run(function* () {
-      yield* createAppRegistry({
+      const registry = yield* createAppRegistry({
         configStore: createInMemoryConfigStore(),
-        apps: [
-          resourceFactory({ name: 'a' }, { onTeardown: () => order.push('a') }),
-          resourceFactory({ name: 'b' }, { onTeardown: () => order.push('b') }),
-          resourceFactory({ name: 'c' }, { onTeardown: () => order.push('c') }),
-        ],
       });
+      yield* registry.enable(resourceFactory({ name: 'a' }, { onTeardown: () => order.push('a') }));
+      yield* registry.enable(resourceFactory({ name: 'b' }, { onTeardown: () => order.push('b') }));
+      yield* registry.enable(resourceFactory({ name: 'c' }, { onTeardown: () => order.push('c') }));
     });
     expect(order).toEqual(['c', 'b', 'a']);
   });
@@ -189,16 +199,14 @@ describe('createAppRegistry', () => {
     const seen: string[] = [];
     await expect(
       run(function* () {
-        yield* createAppRegistry({
+        const registry = yield* createAppRegistry({
           configStore: createInMemoryConfigStore(),
-          apps: [
-            resourceFactory({ name: 'good1' }, { onTeardown: () => seen.push('good1') }),
-            resourceFactory({ name: 'bad' }, {
-              onTeardown: () => { throw new Error('teardown failed'); },
-            }),
-            resourceFactory({ name: 'good2' }, { onTeardown: () => seen.push('good2') }),
-          ],
         });
+        yield* registry.enable(resourceFactory({ name: 'good1' }, { onTeardown: () => seen.push('good1') }));
+        yield* registry.enable(resourceFactory({ name: 'bad' }, {
+          onTeardown: () => { throw new Error('teardown failed'); },
+        }));
+        yield* registry.enable(resourceFactory({ name: 'good2' }, { onTeardown: () => seen.push('good2') }));
       }),
     ).resolves.not.toThrow();
     expect(seen).toEqual(['good2', 'good1']);
@@ -248,19 +256,17 @@ describe('createAppRegistry', () => {
       run(function* () {
         const configStore = createInMemoryConfigStore();
         yield* configStore.set('webcfg', { wrongField: 'oops' });
-        yield* createAppRegistry({
-          configStore,
-          apps: [
-            plainFactory({
-              name: 'webcfg',
-              configSchema: {
-                type: 'object',
-                required: ['tavilyKey'],
-                properties: { tavilyKey: { type: 'string' } },
-              },
-            }),
-          ],
-        });
+        const registry = yield* createAppRegistry({ configStore });
+        yield* registry.enable(
+          plainFactory({
+            name: 'webcfg',
+            configSchema: {
+              type: 'object',
+              required: ['tavilyKey'],
+              properties: { tavilyKey: { type: 'string' } },
+            },
+          }),
+        );
       }),
     ).rejects.toThrow('missing required key "tavilyKey"');
   });
@@ -270,19 +276,17 @@ describe('createAppRegistry', () => {
       run(function* () {
         const configStore = createInMemoryConfigStore();
         yield* configStore.set('typecheck', { port: 'not-a-number' });
-        yield* createAppRegistry({
-          configStore,
-          apps: [
-            plainFactory({
-              name: 'typecheck',
-              configSchema: {
-                type: 'object',
-                required: ['port'],
-                properties: { port: { type: 'number' } },
-              },
-            }),
-          ],
-        });
+        const registry = yield* createAppRegistry({ configStore });
+        yield* registry.enable(
+          plainFactory({
+            name: 'typecheck',
+            configSchema: {
+              type: 'object',
+              required: ['port'],
+              properties: { port: { type: 'number' } },
+            },
+          }),
+        );
       }),
     ).rejects.toThrow('declares "number"');
   });
@@ -306,6 +310,58 @@ describe('createAppRegistry', () => {
     expect(result.message).toContain('already enabled');
     expect(result.stillThere).toBe(true);
     expect(result.count).toBe(1);
+  });
+
+  it('throws on a colliding protocol name across two differently-named apps (cross-publisher clash)', async () => {
+    // `lloyal/web` and `acme/web` install as distinct catalog/npm entries but
+    // both carry the bare model-facing `protocol.name`. Enabling both in one
+    // harness must fail loud (otherwise the spine emits two same-named blocks).
+    const result = await run(function* () {
+      const registry = yield* createAppRegistry({ configStore: createInMemoryConfigStore() });
+      yield* registry.enable(
+        plainFactory({ name: 'web-lloyal', protocolName: 'web_research', tools: ['lloyal_search'] }),
+      );
+      try {
+        yield* registry.enable(
+          plainFactory({ name: 'web-acme', protocolName: 'web_research', tools: ['acme_search'] }),
+        );
+        return { message: undefined as string | undefined, enabled: registry.enabled().length };
+      } catch (err) {
+        return { message: (err as Error).message, enabled: registry.enabled().length };
+      }
+    });
+    expect(result.message).toContain('protocol "web_research"');
+    expect(result.message).toContain('web-lloyal');
+    expect(result.enabled).toBe(1);
+  });
+
+  it('throws on a colliding tool name across two differently-named apps', async () => {
+    const result = await run(function* () {
+      const registry = yield* createAppRegistry({ configStore: createInMemoryConfigStore() });
+      yield* registry.enable(
+        plainFactory({ name: 'docs-lloyal', protocolName: 'lloyal_docs', tools: ['search', 'read'] }),
+      );
+      try {
+        yield* registry.enable(
+          plainFactory({ name: 'docs-acme', protocolName: 'acme_docs', tools: ['search', 'write'] }),
+        );
+        return undefined as string | undefined;
+      } catch (err) {
+        return (err as Error).message;
+      }
+    });
+    expect(result).toContain('tool "search"');
+    expect(result).toContain('docs-lloyal');
+  });
+
+  it('coexists when protocol + tool names are distinct (the happy path)', async () => {
+    const names = await run(function* () {
+      const registry = yield* createAppRegistry({ configStore: createInMemoryConfigStore() });
+      yield* registry.enable(plainFactory({ name: 'web' }));
+      yield* registry.enable(plainFactory({ name: 'corpus' }));
+      return registry.enabled().map((a) => a.manifest.name);
+    });
+    expect(names).toEqual(['web', 'corpus']);
   });
 
   it('disable on an unknown name is a no-op', async () => {

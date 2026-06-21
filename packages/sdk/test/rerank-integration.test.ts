@@ -110,6 +110,11 @@ async function drain<T>(iter: AsyncIterable<T>): Promise<T> {
 }
 
 // Vitest 5+ syntax: skipIf at the describe level.
+// @TODO(rerank-ci): these margin/rank thresholds are QUANT-SPECIFIC — they pass
+// on q8_0 and fail on q4_k_m (margin 1.13 < 2, rank 4 ≥ 3). Because the suite
+// skips when no GGUF is present, CI never runs them and they gate nothing. Pin a
+// known quant + SHA and wire a tag-triggered rerank gate (see lloyal-sdk task
+// #453) so this stops being machine/quant-dependent. Until then: skips on CI.
 const describeWithModel = SKIP_REASON ? describe.skip : describe;
 
 describeWithModel(`Rerank integration (post-R3) — ${SKIP_REASON ?? path.basename(MODEL_PATH!)}`, () => {

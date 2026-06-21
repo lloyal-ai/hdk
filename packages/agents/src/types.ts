@@ -280,8 +280,10 @@ export interface AgentPoolOptions {
    * expect — thoughts are correctly delimited and `parseChatOutput`
    * extracts them into `reasoning_content`. Setting `false` omits think
    * tokens; if the model emits them anyway (as Qwen3.5 does) they leak
-   * into visible content.
-   * @default false
+   * into visible content — so leave this `true` (the default) for thinking
+   * models, and only set `false` for non-thinking `-Instruct` models or
+   * deliberate agent-side suppression (shared spine, session trunk, reranker).
+   * @default true
    */
   enableThinking?: boolean;
   /** Entailment scorer for semantic coherence across recursive depths.
