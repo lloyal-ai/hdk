@@ -62,7 +62,13 @@ function findEntry(tar: Uint8Array, wantedName: string): Uint8Array | null {
   return null;
 }
 
-/** Read one file's UTF-8 contents from a gzipped tarball, or null if absent. */
+/**
+ * Read one file's UTF-8 contents from a gzipped tarball. Returns null when the
+ * entry is ABSENT — but ALSO when the tarball is unreadable/corrupt or its
+ * decompressed size exceeds {@link MAX_DECOMPRESSED_BYTES} (gunzip throws), or
+ * when a header is malformed. Callers that need to distinguish "entry missing"
+ * from "tarball unreadable" should probe with {@link isGzipReadable}.
+ */
 export async function readTarEntry(
   gzippedTarball: Uint8Array,
   entryName: string,
@@ -75,4 +81,20 @@ export async function readTarEntry(
   }
   const bytes = findEntry(tar, entryName);
   return bytes ? new TextDecoder().decode(bytes) : null;
+}
+
+/**
+ * True if the gzip stream decompresses within the size cap. Lets callers tell
+ * an ABSENT entry apart from an UNREADABLE/over-cap tarball — both of which
+ * otherwise surface as {@link readTarEntry} → null — so they can print an
+ * honest diagnostic instead of mislabeling a corrupt/oversized package as
+ * "entry not present".
+ */
+export function isGzipReadable(gzippedTarball: Uint8Array): boolean {
+  try {
+    gunzip(gzippedTarball);
+    return true;
+  } catch {
+    return false;
+  }
 }

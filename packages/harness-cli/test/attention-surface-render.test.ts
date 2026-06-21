@@ -18,7 +18,10 @@ describe('formatAttentionSurface — malformed publisher input', () => {
     const out = formatAttentionSurface(
       surface({
         protocol: { name: 'web_research', useWhen: 'questions about the live web' },
-        tools: [{ name: 'web_search', description: 'search the web', protected: false }],
+        tools: [
+          { name: 'web_search', description: 'search the web', protected: false },
+          { name: 'send_email', description: 'send mail', protected: true },
+        ],
         configSchema: { properties: { apiKey: { type: 'string', 'x-secret': true } } },
         skill: 'line 1\nline 2',
       }),
@@ -27,7 +30,10 @@ describe('formatAttentionSurface — malformed publisher input', () => {
     expect(out).toContain('web_research');
     expect(out).toContain('• web_search — search the web');
     expect(out).toContain('apiKey (string, secret)');
-    expect(out).toContain('Tools (1)');
+    expect(out).toContain('Tools (2)');
+    // `protected` → "[needs grant]" (requires consent), NOT "[writes]".
+    expect(out).toContain('• send_email — send mail  [needs grant]');
+    expect(out).not.toContain('[writes]');
   });
 
   it('does not throw when tools contains null / non-object entries', () => {

@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import type { Command } from '../command';
 import { ensureFreshToken } from '../cf-access-oauth';
 import { buildAttentionSurface } from '../describe';
-import { readTarEntry } from '../tar-read';
+import { readTarEntry, isGzipReadable } from '../tar-read';
 
 const API_BASE = 'https://api.lloyal.ai';
 const DEFAULT_PUBLISH_ENDPOINT = `${API_BASE}/v1/publish`;
@@ -246,10 +246,21 @@ export const publishCommand: Command = {
     // GUARD: a missing `files` whitelist entry would silently ship a
     // surface-less tarball. Fail LOUD here on the publisher's machine.
     if ((await readTarEntry(tarball, 'package/attention-surface.json')) === null) {
-      process.stderr.write(
-        'harness.dev publish: attention-surface.json was generated but did NOT land in the ' +
-          'tarball. Add "attention-surface.json" to your package.json "files" array.\n',
-      );
+      // `readTarEntry` → null means absent OR the tarball couldn't be read at
+      // all (corrupt / over the inspect cap). Distinguish so we don't tell the
+      // publisher to fix their `files` array when the real fault is the tarball.
+      if (!isGzipReadable(tarball)) {
+        process.stderr.write(
+          'harness.dev publish: the produced tarball could not be read (corrupt, or its ' +
+            'decompressed size exceeds the 64MB inspect cap) — cannot verify attention-surface.json ' +
+            'landed. This is unexpected for npm pack output; please file an issue.\n',
+        );
+      } else {
+        process.stderr.write(
+          'harness.dev publish: attention-surface.json was generated but did NOT land in the ' +
+            'tarball. Add "attention-surface.json" to your package.json "files" array.\n',
+        );
+      }
       return 1;
     }
 

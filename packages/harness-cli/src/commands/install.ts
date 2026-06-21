@@ -12,7 +12,7 @@ import {
   sha512Integrity,
   BundleVerificationError,
 } from '../verify';
-import { readTarEntry } from '../tar-read';
+import { readTarEntry, isGzipReadable } from '../tar-read';
 import type { AttentionSurface } from '../describe';
 
 const USAGE = [
@@ -427,9 +427,13 @@ function asMessage(err: unknown): string {
 async function renderAttentionSurface(tarball: Uint8Array, name: string): Promise<void> {
   const raw = await readTarEntry(tarball, 'package/attention-surface.json');
   if (raw === null) {
-    process.stdout.write(
-      `\n  note: ${name} ships no attention-surface.json (published before context disclosure).\n`,
-    );
+    // null = absent OR unreadable tarball. The bytes are Ed25519-verified, so
+    // corruption is near-impossible; the real residual case is a package whose
+    // decompressed size exceeds the inspect cap. Say which, honestly.
+    const note = isGzipReadable(tarball)
+      ? `${name} ships no attention-surface.json (published before context disclosure).`
+      : `${name}'s package could not be read to disclose its attention surface (it exceeds the inspect cap or is corrupt).`;
+    process.stdout.write(`\n  note: ${note}\n`);
     return;
   }
   let s: AttentionSurface;
@@ -461,7 +465,9 @@ export function formatAttentionSurface(s: AttentionSurface, name: string): strin
   lines.push(`\n  Tools (${tools.length}):`);
   for (const t of tools) {
     const nm = typeof t.name === 'string' && t.name ? t.name : '(unnamed)';
-    const tag = t.protected === true ? '  [writes]' : '';
+    // `protected` means the tool requires a session grant (authGuard/GrantStore)
+    // to be callable — it is about consent, NOT about whether the tool mutates.
+    const tag = t.protected === true ? '  [needs grant]' : '';
     const desc = typeof t.description === 'string' && t.description ? ` — ${t.description}` : '';
     lines.push(`    • ${nm}${desc}${tag}`);
   }

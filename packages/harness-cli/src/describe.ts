@@ -181,8 +181,12 @@ function describeTools(
       resolvePromise(null);
     };
     proc.on('error', (e) => fallback(String((e as Error).message)));
-    proc.on('close', (code) => {
-      if (code !== 0) return fallback(err || `describe exited ${code}`);
+    proc.on('close', (code, signal) => {
+      // A signal kill (e.g. the `timeout` option firing SIGTERM) reports
+      // code===null + a non-null signal; surface the signal so a timeout reads
+      // as a kill, not the unhelpful "describe exited null".
+      if (code !== 0)
+        return fallback(err || (signal ? `describe killed by ${signal}` : `describe exited ${code}`));
       try {
         const parsed = JSON.parse(out) as { tools?: unknown };
         const tools = Array.isArray(parsed.tools)
