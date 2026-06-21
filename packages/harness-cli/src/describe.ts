@@ -121,7 +121,13 @@ const DESCRIBE_SCRIPT = `(async () => {
       try { fs.rmSync(d, { recursive: true, force: true }); } catch {}
     }
   }
-  process.exit(process.exitCode || 0);
+  // Do NOT call process.exit() here. The parent reads stdout as a PIPE, so the
+  // write is async — process.exit() can terminate before a large JSON payload
+  // finishes flushing, truncating it so the parent mis-reads a successful
+  // describe as "unparseable output" and degrades to names-only. Let Node exit
+  // naturally once the event loop drains (stdout/stderr flush first);
+  // process.exitCode (set to 3 on failure above) is honored. A genuine hang is
+  // bounded by the parent spawn's \`timeout\`.
 })();`;
 
 function requiredConfigKeys(configSchema: DescribeAppJson['configSchema']): string[] {
