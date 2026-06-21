@@ -211,16 +211,35 @@ export const publishCommand: Command = {
 
     // Serialize the app's ATTENTION SURFACE (skill prose + full tool schemas +
     // useWhen + configSchema) into `attention-surface.json` in the app dir, so
-    // `npm pack` includes it and it's covered by the signed tarball. Written
-    // before pack; removed on EVERY exit — the build-failure catch right here
-    // and the pack block's `finally` below.
+    // `npm pack` includes it and it's covered by the signed tarball.
+    //
+    // The file is a GENERATED artifact, but a publisher may already have one in
+    // their working tree (committed, stale from an interrupted run, or hand-
+    // authored). We must NOT clobber or delete it: capture any existing contents
+    // first, and `restoreSurface()` on EVERY exit (the build-failure catch here
+    // and the pack block's `finally`) — restore the original if one existed,
+    // otherwise remove only the file we created. (The PUBLISHED surface is
+    // always the freshly-generated one; we just never destroy the publisher's.)
     const surfacePath = join(appDir, 'attention-surface.json');
+    let existingSurface: string | undefined;
+    try {
+      existingSurface = await readFile(surfacePath, 'utf-8');
+    } catch {
+      existingSurface = undefined; // no pre-existing file — the normal case
+    }
+    const restoreSurface = async (): Promise<void> => {
+      if (existingSurface !== undefined) {
+        await writeFile(surfacePath, existingSurface).catch(() => {});
+      } else {
+        await rm(surfacePath, { force: true }).catch(() => {});
+      }
+    };
     try {
       const surface = await buildAttentionSurface(appDir, appJson, packageJson);
       await writeFile(surfacePath, `${JSON.stringify(surface, null, 2)}\n`);
     } catch (err) {
       process.stderr.write(`harness.dev publish: could not build attention surface: ${asMessage(err)}\n`);
-      await rm(surfacePath, { force: true }).catch(() => {});
+      await restoreSurface();
       return 1;
     }
 
@@ -239,7 +258,7 @@ export const publishCommand: Command = {
       process.stderr.write(`harness.dev publish: npm pack failed: ${asMessage(err)}\n`);
       return 1;
     } finally {
-      await rm(surfacePath, { force: true }).catch(() => {});
+      await restoreSurface();
       if (packTmpDir) await cleanupTmpDir(packTmpDir);
     }
 
