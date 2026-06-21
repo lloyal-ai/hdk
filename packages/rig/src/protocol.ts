@@ -135,9 +135,8 @@ export const VALIDATED_MODELS_3_0: readonly ValidatedModelFamily[] = [
 /**
  * The App protocol version this build of `@lloyal-labs/rig` ships.
  *
- * Apps declare `appProtocolVersion` in `app.json`; `defineApp` and the
- * registry (`createAppRegistry({ apps })` / `registry.enable`) refuse to
- * enable apps whose declared version is not in
+ * Apps declare `appProtocolVersion` in `app.json`; `defineApp` and
+ * `registry.enable` refuse to enable apps whose declared version is not in
  * {@link SUPPORTED_APP_PROTOCOL_VERSIONS}.
  */
 export const APP_PROTOCOL_VERSION = '3.0';

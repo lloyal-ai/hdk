@@ -1,20 +1,21 @@
 /**
- * `createAppRegistry` — harness-wide app registry with a **declarative**
- * app set and structured, **isolated** per-app lifecycle.
+ * `createAppRegistry` — harness-wide app registry with structured,
+ * **isolated** per-app lifecycle.
  *
- * The harness declares its apps as factories; the registry owns the rest:
+ * `createAppRegistry({ configStore, grantStore? })` returns an **empty**
+ * registry; `registry.enable(factory)` is the single way to enable an app —
+ * creation is never enablement, so the two paths can't collide.
  *
- * - `createAppRegistry({ configStore, apps })` runs each factory in its own
- *   **detached** Effection scope, seeded with the app-facing framework
- *   contexts (`AppConfigStoreCtx`, `RerankerCtx`) so the factory
- *   reads config + reranker. The factory body is setup; a `resource()`
- *   factory's `ensure(...)` is teardown. The registry tears the scopes
- *   down on its own scope exit, reverse register-order, **best-effort** —
- *   a throwing teardown is logged but never strands a sibling, and never
+ * - `registry.enable(factory)` runs the factory in its own **detached**
+ *   Effection scope, seeded with the app-facing framework contexts
+ *   (`AppConfigStoreCtx`, `RerankerCtx`) so the factory reads config +
+ *   reranker. The factory body is setup; a `resource()` factory's
+ *   `ensure(...)` is teardown. Every enabled app's scope is torn down on the
+ *   registry's own scope exit, reverse enable-order, **best-effort** — a
+ *   throwing teardown is logged but never strands a sibling, and never
  *   crashes the harness. The harness does **not** call a per-app register
- *   verb at boot.
- * - `registry.enable(factory)` / `registry.disable(name)` handle the
- *   genuine dynamic case (mid-session enable/disable). `enable` →
+ *   verb at boot; it just calls `enable` for each boot app.
+ * - `registry.disable(name)` handles mid-session removal. `enable` →
  *   `'enabled'`, `disable` → `'disabled'` (matching {@link AppState}).
  *   `disable` swallows + logs a throwing teardown, so a mid-session
  *   uninstall can't crash the session — possible only because each app
