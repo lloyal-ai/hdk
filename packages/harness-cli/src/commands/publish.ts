@@ -224,8 +224,19 @@ export const publishCommand: Command = {
     let existingSurface: string | undefined;
     try {
       existingSurface = await readFile(surfacePath, 'utf-8');
-    } catch {
-      existingSurface = undefined; // no pre-existing file — the normal case
+    } catch (err) {
+      // ONLY ENOENT means "no pre-existing file" (the normal case). Any other
+      // error (EACCES, EISDIR, …) means something IS there that we can't read —
+      // treating it as absent would let restoreSurface() rm it, deleting the
+      // publisher's file. Fail loud BEFORE writing anything.
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        process.stderr.write(
+          `harness.dev publish: ${surfacePath} exists but could not be read (${asMessage(err)}). ` +
+            `Refusing to overwrite it — remove or fix that path and re-run.\n`,
+        );
+        return 1;
+      }
+      existingSurface = undefined;
     }
     const restoreSurface = async (): Promise<void> => {
       if (existingSurface !== undefined) {
