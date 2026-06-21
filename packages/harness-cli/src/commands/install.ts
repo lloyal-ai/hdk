@@ -12,6 +12,8 @@ import {
   sha512Integrity,
   BundleVerificationError,
 } from '../verify';
+import { readTarEntry } from '../tar-read';
+import type { AttentionSurface } from '../describe';
 
 const USAGE = [
   'harness.dev install — install a signed HDK app from apps.lloyal.ai into the current project',
@@ -173,6 +175,11 @@ export const installCommand: Command = {
       );
       return 1;
     }
+
+    // 5b. Disclose what this app injects into the model's context, read from the
+    // ALREADY-VERIFIED tarball bytes (the attention surface rides inside the signed
+    // package). Absent for apps published before the feature — note + continue.
+    await renderAttentionSurface(tarball, name);
 
     const cacheDir = join(xdgCacheHome(), 'lloyal', 'apps');
     const cachePath = join(
@@ -410,4 +417,61 @@ async function auditLockfile(npmPackageName: string): Promise<LockfileAudit | nu
 
 function asMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Print the app's attention surface — exactly what it injects into the model's
+ * context — read from the Ed25519-verified tarball bytes. Best-effort disclosure:
+ * a parse failure or a pre-feature app degrades to a one-line note, never blocks.
+ */
+async function renderAttentionSurface(tarball: Uint8Array, name: string): Promise<void> {
+  const raw = await readTarEntry(tarball, 'package/attention-surface.json');
+  if (raw === null) {
+    process.stdout.write(
+      `\n  note: ${name} ships no attention-surface.json (published before context disclosure).\n`,
+    );
+    return;
+  }
+  let s: AttentionSurface;
+  try {
+    s = JSON.parse(raw) as AttentionSurface;
+  } catch {
+    process.stdout.write(`\n  note: ${name}'s attention surface could not be parsed.\n`);
+    return;
+  }
+  const out = process.stdout;
+  out.write(`\nWhat ${name} adds to your model's context:\n`);
+  if (s.protocol?.name) out.write(`  protocol:  ${s.protocol.name}\n`);
+  if (s.protocol?.useWhen) out.write(`  use when:  ${s.protocol.useWhen}\n`);
+
+  const tools = Array.isArray(s.tools) ? s.tools : [];
+  out.write(`\n  Tools (${tools.length}):\n`);
+  for (const t of tools) {
+    const tag = t.protected ? '  [writes]' : '';
+    const desc = t.description ? ` — ${t.description}` : '';
+    out.write(`    • ${t.name}${desc}${tag}\n`);
+  }
+  if (s.degraded) {
+    out.write('    (tool descriptions unavailable for this version)\n');
+  }
+
+  const props = (s.configSchema as { properties?: Record<string, { type?: string; 'x-secret'?: boolean }> } | undefined)
+    ?.properties;
+  const keys = props ? Object.keys(props) : [];
+  if (keys.length) {
+    out.write('\n  Config it reads:\n');
+    for (const k of keys) {
+      const secret = props![k]?.['x-secret'] ? ', secret' : '';
+      out.write(`    • ${k} (${props![k]?.type ?? 'value'}${secret})\n`);
+    }
+  }
+
+  if (s.skill) {
+    const lines = s.skill.split('\n');
+    const shown = lines.slice(0, 10);
+    out.write('\n  System-prompt skill (per turn):\n');
+    for (const l of shown) out.write(`    | ${l}\n`);
+    if (lines.length > shown.length) out.write(`    | … (${lines.length - shown.length} more lines)\n`);
+  }
+  out.write('\n');
 }
