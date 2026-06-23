@@ -4,6 +4,24 @@ import type { SessionContext } from './types';
 import { buildUserDelta, buildAssistantDelta, buildToolResultDelta, buildTurnDelta } from './deltas';
 
 /**
+ * Observer invoked after each trunk conversation prefill lands.
+ *
+ * Lets a consumer make the spine's accreting turns observable (e.g. the
+ * agents-layer tracer emits a `branch:prefill` event) WITHOUT coupling
+ * Session to any trace type — the callback is sdk-native. Pure
+ * observability: it runs after the prefill and never affects it. `content`
+ * is the verbatim turn text; `tokenCount` is the prefilled delta length.
+ *
+ * @category Branching
+ */
+export type TrunkPrefillObserver = (info: {
+  role: 'user' | 'assistant' | 'turn' | 'tool';
+  content: string;
+  tokenCount: number;
+  branchHandle: number;
+}) => void;
+
+/**
  * Session - Trunk lifecycle + conversation delta helpers
  *
  * Owns the current "trunk" branch and provides promote() to crown a winner,
@@ -38,11 +56,13 @@ export class Session {
   private _ctx: SessionContext;
   private _store: BranchStore;
   private _trunk: Branch | null;
+  private _onPrefill?: TrunkPrefillObserver;
 
-  constructor({ ctx, store }: { ctx: SessionContext; store: BranchStore }) {
+  constructor({ ctx, store, onPrefill }: { ctx: SessionContext; store: BranchStore; onPrefill?: TrunkPrefillObserver }) {
     this._ctx = ctx;
     this._store = store;
     this._trunk = null;
+    this._onPrefill = onPrefill;
   }
 
   /** Current trunk branch */
@@ -84,6 +104,7 @@ export class Session {
   async prefillUser(content: string, opts: { tools?: string } = {}): Promise<void> {
     const tokens = buildUserDelta(this._ctx, content, opts);
     await this._trunk!.prefill(tokens);
+    this._onPrefill?.({ role: 'user', content, tokenCount: tokens.length, branchHandle: this._trunk!.handle });
   }
 
   /**
@@ -104,6 +125,7 @@ export class Session {
   async prefillAssistant(content: string, opts: { enableThinking?: boolean } = {}): Promise<void> {
     const tokens = buildAssistantDelta(this._ctx, content, opts);
     await this._trunk!.prefill(tokens);
+    this._onPrefill?.({ role: 'assistant', content, tokenCount: tokens.length, branchHandle: this._trunk!.handle });
   }
 
   /**
@@ -115,6 +137,7 @@ export class Session {
   async prefillToolResult(resultStr: string, callId: string): Promise<void> {
     const tokens = buildToolResultDelta(this._ctx, resultStr, callId);
     await this._trunk!.prefill(tokens);
+    this._onPrefill?.({ role: 'tool', content: resultStr, tokenCount: tokens.length, branchHandle: this._trunk!.handle });
   }
 
   /**
@@ -132,7 +155,9 @@ export class Session {
       // Warm path: append turn delta (with separator) to existing trunk.
       // Explicit enableThinking:false — session trunk serializes completed
       // conversations; no thinking blocks should be embedded.
-      await this._trunk.prefill(buildTurnDelta(this._ctx, query, response, { enableThinking: false }));
+      const tokens = buildTurnDelta(this._ctx, query, response, { enableThinking: false });
+      await this._trunk.prefill(tokens);
+      this._onPrefill?.({ role: 'turn', content: `${query}\n\n${response}`, tokenCount: tokens.length, branchHandle: this._trunk.handle });
     } else {
       // Cold path: create trunk at position 0, prefill without separator
       // (fresh branch — no prior turn to separate from), then promote.
@@ -147,6 +172,7 @@ export class Session {
       const trunk = Branch.create(this._ctx, 0, {});
       await trunk.prefill(tokens);
       await this.promote(trunk);
+      this._onPrefill?.({ role: 'turn', content: `${query}\n\n${response}`, tokenCount: tokens.length, branchHandle: trunk.handle });
     }
   }
 

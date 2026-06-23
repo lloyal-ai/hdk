@@ -35,6 +35,18 @@ export interface UseAgentOpts {
   maxTurns?: number;
   /** JSON Schema for eager grammar constraint (deferred: Zod support). */
   schema?: JsonSchema;
+  /**
+   * Chat-template thinking control, forwarded to the pool and on through
+   * `formatChatSync` → liblloyal `chat_in`. `true` emits the `<think>\n`
+   * generation prompt for thinking models (Qwen3-family); `false` omits it.
+   * Omit to inherit the pool default (currently `true`).
+   *
+   * Set `false` for grammar-constrained / structured-output single agents
+   * (e.g. a JSON-`schema` planner or judge): a think block competes with the
+   * forced structure and — over a warm conversational trunk — makes the model
+   * re-reason from scratch instead of attending to the prior turns.
+   */
+  enableThinking?: boolean;
   /** Sampling parameters. */
   params?: SamplingParams;
   /** Explicit parent branch for warm path (Continuous Context). */
@@ -129,6 +141,7 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
       policy: opts.policy,
       trace: opts.trace,
       eagerGrammar,
+      enableThinking: opts.enableThinking,
     });
 
     // Drain Subscription inline — forward to broadcast
