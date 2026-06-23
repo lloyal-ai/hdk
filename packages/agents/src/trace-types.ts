@@ -64,6 +64,12 @@ export type TraceEvent =
       tokenCount: number;
       role: 'spineHeader' | 'agentSuffix' | 'toolResult' | 'warmDelta' | 'probe' | 'recovery';
       probeText?: string;
+      /** Verbatim prefilled text. Populated for `warmDelta` (session-trunk
+       *  conversation turns) so the spine's accreting content is visible in
+       *  the trace — parallels `generate:end.output`. Omitted for the
+       *  pool-side prefills (spineHeader/toolResult/recovery), whose text is
+       *  already recoverable from prompt:format / tool:result / pool:recovery*. */
+      content?: string;
     }
   | TraceEventBase & { type: 'branch:prune'; branchHandle: number; position: number }
 

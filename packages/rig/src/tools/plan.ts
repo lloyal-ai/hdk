@@ -207,6 +207,12 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
       schema,
       params: { temperature: this._temperature },
       session: this._session,
+      // The planner is a grammar-constrained JSON decision over a warm
+      // conversational trunk (clarify history). Thinking-on makes the model
+      // open a <think> block and re-reason the query from scratch — re-asking
+      // already-answered clarifications instead of attending to the prior
+      // turns. Force it off so the schema-constrained decision reads the trunk.
+      enableThinking: false,
     });
 
     const timeMs = performance.now() - t;

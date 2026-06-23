@@ -1080,7 +1080,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           tw.write({
             traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
             type: 'branch:create', branchHandle: s.agent.id, parentHandle: s.agent.parentId,
-            position: 0, role: 'agentFork',
+            position: s.agent.forkHead, role: 'agentFork',
           });
           tw.write({
             traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),

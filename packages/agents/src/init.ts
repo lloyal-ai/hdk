@@ -65,13 +65,36 @@ export function* initAgents<E = AgentEvent>(
   opts?: { traceWriter?: TraceWriter },
 ): Operation<AgentHandle<E>> {
   const store = new BranchStore(ctx);
-  const session = new Session({ ctx, store });
+  const tw = opts?.traceWriter ?? new NullTraceWriter();
+  // Make the session trunk's conversation prefills (prefillUser /
+  // prefillAssistant / commitTurn) visible in the engine trace. They are
+  // single-branch `Branch.prefill` calls made by Session — below the Trace
+  // context — so unlike the pool's prefills nothing emits for them otherwise.
+  // `warmDelta` is the role reserved for exactly this; `content` carries the
+  // verbatim turn. Pure observability: runs after each prefill, never affects
+  // it; a NullTraceWriter makes it a no-op when untraced.
+  const session = new Session({
+    ctx,
+    store,
+    onPrefill: ({ branchHandle, tokenCount, content }) => {
+      tw.write({
+        traceId: tw.nextId(),
+        parentTraceId: null,
+        ts: performance.now(),
+        type: 'branch:prefill',
+        branchHandle,
+        tokenCount,
+        role: 'warmDelta',
+        content,
+      });
+    },
+  });
   const events: Channel<E, void> = createChannel<E, void>();
 
   yield* Ctx.set(ctx);
   yield* Store.set(store);
   yield* Events.set(events as unknown as Channel<AgentEvent, void>);
-  yield* Trace.set(opts?.traceWriter ?? new NullTraceWriter());
+  yield* Trace.set(tw);
 
   yield* ensure(function*() {
     const tw = yield* Trace.expect();
