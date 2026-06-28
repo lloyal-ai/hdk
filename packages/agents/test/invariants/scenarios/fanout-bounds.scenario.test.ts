@@ -1,8 +1,9 @@
 /**
  * Scenario: fan-out dispatch stays bounded + single-fiber under load.
  *
- * With more parallel agents than MAX_CONCURRENT_TOOLS all calling a fan-out
- * tool at once: at most the cap run concurrently; the rest queue FIFO on the
+ * With more parallel agents than the configured concurrency cap
+ * (`maxConcurrentTools`) all calling a fan-out tool at once: at most the cap
+ * run concurrently; the rest queue FIFO on the
  * permit gate and run as permits free. No agent's tool is lost (anti-
  * starvation), and the single-fiber store discipline (I1) survives the burst
  * of concurrent completions draining through one SETTLE.
@@ -16,8 +17,12 @@ import type { AgentPolicy } from '../../../src/AgentPolicy';
 import { runPool, STOP } from '../harness';
 import { I1_nativeStoreSingleFiber, formatResult } from '../predicates';
 
-// Mirrors MAX_CONCURRENT_TOOLS in agent-pool.ts (module-private there).
-const CAP = 8;
+// The cap is INJECTED via opts (maxConcurrentTools) and asserted below — the
+// test configures the value it checks rather than mirroring a module-private
+// const. A non-default value (4 vs the framework default 8) also proves the
+// opt is actually wired: if it were ignored, up to 8 of the 12 agents would
+// run at once and `maxConcurrent <= CAP` would fail.
+const CAP = 4;
 
 /** Fan-out tool: sleeps, records peak concurrent executions + which agents ran. */
 class TrackingFanoutTool extends Tool<Record<string, unknown>> {
@@ -64,6 +69,7 @@ describe('scenario: fan-out concurrency cap', () => {
       policy,
       tools: new Map<string, Tool>([['slow', tool]]),
       maxTurns: 5,
+      maxConcurrentTools: CAP,
       taskCount: N,
     });
     // Safety: the permit gate never lets more than the cap run at once.

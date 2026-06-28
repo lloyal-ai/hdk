@@ -48,6 +48,17 @@ class ThrowingFanoutTool extends Tool<Record<string, unknown>> {
   *execute(): Operation<unknown> { throw new Error('boom'); }
 }
 
+/** Throws a NON-Error value — exercises the `toError` normalization so the
+ *  tool:error trace carries a usable message instead of `undefined`. */
+class NonErrorThrowTool extends Tool<Record<string, unknown>> {
+  readonly name = 'raw';
+  readonly description = 'throws a raw string (non-Error)';
+  readonly parameters: JsonSchema = { type: 'object', properties: {} };
+  readonly fanout = true;
+  // eslint-disable-next-line @typescript-eslint/no-throw-literal
+  *execute(): Operation<unknown> { throw 'rate limited'; }
+}
+
 describe('scenario: fan-out dispatch failure paths', () => {
   it('ToolRetryError on a fan-out tool → parks, re-dispatches (fan-out), then settles', async () => {
     const tool = new FlakyFanoutTool();
@@ -81,5 +92,23 @@ describe('scenario: fan-out dispatch failure paths', () => {
     });
     // The fan-out child's generic-error mapping → DRAIN → processCompletion error.
     expect(run.traceEvents.some(e => e.type === 'tool:error')).toBe(true);
+  });
+
+  it('a NON-Error throw is normalized → tool:error carries a usable message', async () => {
+    const tool = new NonErrorThrowTool();
+    const run = await runPool({
+      nCtx: 4096,
+      cellsUsed: 100,
+      scripts: [{ tokens: [1, STOP], toolCall: { name: 'raw', arguments: '{}', id: 'r1' } }],
+      policy,
+      tools: new Map<string, Tool>([['raw', tool]]),
+      maxTurns: 5,
+      taskCount: 1,
+    });
+    const errEvents = run.traceEvents.filter(e => e.type === 'tool:error') as Array<{ error: string }>;
+    expect(errEvents.length).toBeGreaterThan(0);
+    // The thrown string survived normalization (`toError`) — the message is the
+    // value, not `undefined` (which an `err as Error` cast would have produced).
+    expect(errEvents[0].error).toBe('rate limited');
   });
 });

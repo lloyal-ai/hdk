@@ -54,10 +54,19 @@ type ToolCompletion =
   | { kind: 'retry'; agent: Agent; tc: ParsedToolCall; callId: string; dispatchTraceId: number; toolT0: number; retryAttempt: number; err: ToolRetryError }
   | { kind: 'error'; agent: Agent; tc: ParsedToolCall; callId: string; dispatchTraceId: number; err: Error };
 
-/** Max concurrent fan-out tool children (Effection has no semaphore — a
- *  FIFO counting gate caps it). Inline tools don't count: the loop fiber
- *  already serializes them. */
-const MAX_CONCURRENT_TOOLS = 8;
+/** Default cap on concurrent fan-out tool children (Effection has no semaphore
+ *  — a FIFO counting gate enforces it). Overridable per pool via
+ *  {@link AgentPoolOptions.maxConcurrentTools}. Inline tools don't count: the
+ *  loop fiber already serializes them. */
+const DEFAULT_MAX_CONCURRENT_TOOLS = 8;
+
+/** Normalize a thrown value to an `Error`. Tools — especially third-party —
+ *  may throw non-Error values (`throw 'rate limited'`, `throw { code: 500 }`);
+ *  an `err as Error` cast would leave `.message` undefined in the `tool:error`
+ *  trace and the agent's result. */
+function toError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(String(err));
+}
 
 /** FIFO counting gate: acquire before a fan-out child's `execute`, release in
  *  an `ensure`. A halt while queued runs the action cleanup (drops the waiter);
@@ -932,7 +941,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     const inflightTasks = new Map<number, Task<void>>();
     // Fired by a child on completion so the all-parked nap wakes immediately.
     const toolWake = createSignal<void, void>();
-    const permits = makePermits(MAX_CONCURRENT_TOOLS);
+    const permits = makePermits(opts.maxConcurrentTools ?? DEFAULT_MAX_CONCURRENT_TOOLS);
     function* awaitToolCompletion(): Operation<void> {
       const sub = yield* toolWake;
       yield* sub.next();
@@ -1087,6 +1096,12 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           inflightTasks.set(agent.id, yield* spawn(function*() {
             let took = false;
             try {
+              // Own this agent's inflightTasks entry: remove it on ANY exit —
+              // completion OR halt (wind-down/teardown). A halt unwinds via
+              // ensure (not catch), so it pushes no completion and DRAIN never
+              // runs for it; without this the stale entry keeps `fanoutQuiet`
+              // false and the loop never terminates.
+              yield* ensure(() => { inflightTasks.delete(agent.id); });
               yield* ensure(() => { if (took) permits.release(); });
               yield* permits.acquire(); took = true;
               // Per-tool TRACE/CALLER context set INSIDE the child so concurrent
@@ -1105,7 +1120,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
               if (err instanceof ToolRetryError) {
                 completedTools.push({ kind: 'retry', agent, tc, callId, dispatchTraceId, toolT0, retryAttempt: (retryAttempt ?? 0) + 1, err });
               } else {
-                completedTools.push({ kind: 'error', agent, tc, callId, dispatchTraceId, err: err as Error });
+                completedTools.push({ kind: 'error', agent, tc, callId, dispatchTraceId, err: toError(err) });
               }
             } finally {
               toolWake.send();
@@ -1143,7 +1158,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         } catch (err) {
           completion = err instanceof ToolRetryError
             ? { kind: 'retry', agent, tc, callId, dispatchTraceId, toolT0, retryAttempt: (retryAttempt ?? 0) + 1, err }
-            : { kind: 'error', agent, tc, callId, dispatchTraceId, err: err as Error };
+            : { kind: 'error', agent, tc, callId, dispatchTraceId, err: toError(err) };
         }
         const settled = yield* processCompletion(completion);
         if (settled) results.push(settled);
@@ -1352,7 +1367,9 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       const newlySettled: SettledTool[] = [];
       if (completedTools.length > 0) {
         for (const c of completedTools.splice(0)) {
-          inflightTasks.delete(c.agent.id);
+          // The inflightTasks entry was already removed by the child's `ensure`
+          // (runs synchronously on completion before the loop resumes — and on
+          // halt too, which is the case DRAIN can't see). DRAIN just post-processes.
           const settled = yield* processCompletion(c);
           if (settled) newlySettled.push(settled);
         }
