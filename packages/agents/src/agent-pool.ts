@@ -199,6 +199,76 @@ export class ContextPressure {
   }
 }
 
+/** Eager `{ result: string }` extraction grammar — constrains recovery output
+ *  from token 0. Shared by `recoverInline` and `recoverParallel`. */
+function* recoveryReportGrammar(ctx: SessionContext): Operation<string> {
+  return yield* call(() =>
+    ctx.jsonSchemaToGrammar(JSON.stringify({
+      type: 'object',
+      properties: { result: { type: 'string' } },
+      required: ['result'],
+    })),
+  );
+}
+
+/** Tokenize the recovery prompt (the `onRecovery` system+user turn) into a
+ *  branch-prefill delta appended to the agent's existing conversation KV.
+ *  Shared by both reap shapes. */
+function recoveryPromptTokens(
+  ctx: SessionContext,
+  recovery: { prompt: { system: string; user: string } },
+): number[] {
+  const { prompt } = ctx.formatChatSync(
+    JSON.stringify([
+      { role: 'system', content: recovery.prompt.system },
+      { role: 'user', content: recovery.prompt.user },
+    ]), { enableThinking: false },
+  );
+  return [...ctx.getTurnSeparator(), ...ctx.tokenizeSync(prompt, false)];
+}
+
+/** Parse a finished recovery branch's output, set the agent's result (source
+ *  `'recovery'`), emit `agent:recovered`, and write the recovery traces.
+ *  Returns true iff a result was extracted. Shared by both reap shapes. */
+function* finishRecovery(
+  agent: Agent,
+  output: string,
+  producedTokens: number,
+  events: EventSender,
+  tw: TraceWriter,
+  parentTraceId: number,
+): Operation<boolean> {
+  tw.write({
+    traceId: tw.nextId(), parentTraceId, ts: performance.now(),
+    type: 'pool:recoveryProduce', agentId: agent.id,
+    tokenCount: producedTokens, outputLength: output.length,
+  });
+  let failureReason: string | null = null;
+  try {
+    const parsed = JSON.parse(output) as { result: string };
+    if (parsed?.result) {
+      agent.setResult(stripDanglingToolCall(parsed.result), 'recovery');
+      yield* events.send({ type: 'agent:recovered', agentId: agent.id, result: agent.result! });
+      tw.write({
+        traceId: tw.nextId(), parentTraceId, ts: performance.now(),
+        type: 'pool:recoveryReturn', agentId: agent.id,
+        resultLength: parsed.result.length,
+      });
+      return true;
+    }
+    failureReason = 'no_result_field';
+  } catch (e) {
+    failureReason = `parse_error: ${(e as Error).message ?? 'unknown'}`;
+  }
+  tw.write({
+    traceId: tw.nextId(), parentTraceId, ts: performance.now(),
+    type: 'pool:recoveryFailed', agentId: agent.id,
+    reason: failureReason ?? 'unknown',
+    outputExcerpt: output.slice(0, 200),
+  });
+  return false;
+}
+
 /**
  * Inline recovery for a single killed agent (trailing stop).
  *
@@ -227,36 +297,15 @@ function* recoverInline(
     return false;
   }
 
-  // Build the nudge prompt — a minimal turn injection that triggers
-  // report behavior. The agent's KV already contains the full
-  // conversation context; the prompt is just a nudge.
-  const { prompt } = ctx.formatChatSync(
-    JSON.stringify([
-      { role: 'system', content: recovery.prompt.system },
-      { role: 'user', content: recovery.prompt.user },
-    ]), { enableThinking: false },
-  );
-  const sep = ctx.getTurnSeparator();
-  const delta = ctx.tokenizeSync(prompt, false);
-  const tokens = [...sep, ...delta];
+  const tokens = recoveryPromptTokens(ctx, recovery);
+  const reportGrammar = yield* recoveryReportGrammar(ctx);
 
-  // Eager report grammar — forces { result: string } output
-  const reportGrammar: string = yield* call(() =>
-    ctx.jsonSchemaToGrammar(JSON.stringify({
-      type: 'object',
-      properties: { result: { type: 'string' } },
-      required: ['result'],
-    })),
-  );
-
-  // Recovery runs in its own scope — if prefill or decode fails
-  // (KV exhaustion), the scope tears down cleanly. Diagnostic trace
-  // events (pool:recoveryProduce + recoveryReport/recoveryFailed) make
-  // silent recovery failures observable in traces.
+  // Recovery runs in its own scope — if prefill or decode fails (KV
+  // exhaustion), the scope tears down cleanly. The recoveryProduce/Return/
+  // Failed traces make silent recovery failures observable.
   let reported = false;
   let output = '';
   let producedTokens = 0;
-  let failureReason: string | null = null;
   try {
     yield* scoped(function*() {
       yield* call(() => store.prefill([[agent.branch, tokens]]));
@@ -278,46 +327,147 @@ function* recoverInline(
         yield* events.send({ type: 'agent:produce', agentId: agent.id, text, tokenCount: producedTokens });
       }
 
-      tw.write({
-        traceId: tw.nextId(), parentTraceId, ts: performance.now(),
-        type: 'pool:recoveryProduce', agentId: agent.id,
-        tokenCount: producedTokens, outputLength: output.length,
-      });
-
-      // Parse + return (recovery path — emits agent:recovered, NOT agent:return)
-      try {
-        const parsed = JSON.parse(output) as { result: string };
-        if (parsed?.result) {
-          agent.setResult(stripDanglingToolCall(parsed.result), 'recovery');
-          yield* events.send({ type: 'agent:recovered', agentId: agent.id, result: agent.result! });
-          reported = true;
-          tw.write({
-            traceId: tw.nextId(), parentTraceId, ts: performance.now(),
-            type: 'pool:recoveryReturn', agentId: agent.id,
-            resultLength: parsed.result.length,
-          });
-        } else {
-          failureReason = 'no_result_field';
-        }
-      } catch (e) {
-        failureReason = `parse_error: ${(e as Error).message ?? 'unknown'}`;
-      }
+      reported = yield* finishRecovery(agent, output, producedTokens, events, tw, parentTraceId);
     });
   } catch (e) {
-    failureReason = `scope_error: ${(e as Error).message ?? 'unknown'}`;
-  }
-
-  if (!reported) {
+    // Scope teardown (KV exhaustion during prefill/decode) — finishRecovery
+    // never ran, so emit the failure trace here.
     tw.write({
       traceId: tw.nextId(), parentTraceId, ts: performance.now(),
       type: 'pool:recoveryFailed', agentId: agent.id,
-      reason: failureReason ?? 'unknown',
+      reason: `scope_error: ${(e as Error).message ?? 'unknown'}`,
       outputExcerpt: output.slice(0, 200),
     });
   }
 
   // Always prune after scope exits (success or failure)
   if (!agent.branch.disposed) agent.branch.pruneSync();
+
+  // Emit tick so TUI updates pressure percentage after prune
+  const postPressure = new ContextPressure(ctx);
+  yield* events.send({ type: 'agent:tick', cellsUsed: postPressure.cellsUsed, nCtx: postPressure.nCtx });
+
+  return reported;
+}
+
+/**
+ * Parallel recovery — extract reports from the whole idle/unreported cohort in
+ * one batched pass: a single `store.prefill` of every recovery prompt, then a
+ * batched decode (one `store.commit` per step across all live branches —
+ * MOAT #1). Wall-clock ≈ the longest single report rather than Σ of all N,
+ * which is what makes a multi-agent wind-down feel instant.
+ *
+ * Up-front pressure gate: if KV can't fit the whole cohort's combined prefill
+ * at once, falls back to `staggered` (per-agent `recoverInline`, pruning
+ * between) — the headroom tradeoff staggering was introduced for (824e63a).
+ *
+ * Like `recoverInline`, this MUST run entirely on the loop fiber and finish
+ * before any agent transitions to 'idle' / the orchestrator wakes — a
+ * concurrent native call on the shared llama_context would SEGV.
+ *
+ * Returns the number of agents that reported.
+ */
+function* recoverParallel(
+  cohort: Agent[],
+  policy: AgentPolicy,
+  ctx: SessionContext,
+  store: BranchStore,
+  tw: TraceWriter,
+  parentTraceId: number,
+  events: EventSender,
+  pressureOpts: PressureThresholds,
+): Operation<number> {
+  // Build the cohort: idle, unreported, undisposed agents the policy opts to
+  // recover. A skip prunes that branch now — freeing KV for the batch.
+  const prefillPairs: [Branch, number[]][] = [];
+  const recovering: Agent[] = [];
+  for (const agent of cohort) {
+    if (agent.status !== 'idle' || agent.result || agent.branch.disposed) continue;
+    const recovery = policy.onRecovery?.(agent, new ContextPressure(ctx, pressureOpts));
+    if (!recovery || recovery.type === 'skip') {
+      if (!agent.branch.disposed) agent.branch.pruneSync();
+      continue;
+    }
+    prefillPairs.push([agent.branch, recoveryPromptTokens(ctx, recovery)]);
+    recovering.push(agent);
+  }
+  if (recovering.length === 0) return 0;
+
+  // Up-front pressure gate. Raw `remaining` (not headroom) — the hardLimit
+  // reserve exists precisely for recovery. If the whole cohort's prefill won't
+  // fit at once, recover staggered so each report gets the full freed headroom.
+  const pressure = new ContextPressure(ctx, pressureOpts);
+  const totalPrefill = prefillPairs.reduce((sum, [, t]) => sum + t.length, 0);
+  if (pressure.remaining < totalPrefill) {
+    let reported = 0;
+    for (const agent of recovering) {
+      if (yield* recoverInline(agent, policy, ctx, store, tw, parentTraceId, events, pressureOpts)) {
+        reported++;
+      }
+    }
+    return reported;
+  }
+
+  const reportGrammar = yield* recoveryReportGrammar(ctx);
+  const output = new Map<Agent, string>();
+  const produced = new Map<Agent, number>();
+  const done = new Set<Agent>();
+  for (const agent of recovering) { output.set(agent, ''); produced.set(agent, 0); }
+
+  let reported = 0;
+  try {
+    yield* scoped(function*() {
+      // One batched prefill of every extraction prompt, then per-branch grammar.
+      yield* call(() => store.prefill(prefillPairs));
+      for (let i = 0; i < recovering.length; i++) {
+        const agent = recovering[i];
+        agent.branch.setGrammar(reportGrammar);
+        tw.write({
+          traceId: tw.nextId(), parentTraceId, ts: performance.now(),
+          type: 'branch:prefill', branchHandle: agent.id,
+          tokenCount: prefillPairs[i][1].length, role: 'recovery',
+        });
+      }
+
+      // Batched produce/commit — one native commit per step across all live
+      // branches. A stop drops that agent from the batch and extracts its report.
+      while (done.size < recovering.length) {
+        const entries: [Branch, number][] = [];
+        for (const agent of recovering) {
+          if (done.has(agent)) continue;
+          const { token, text, isStop } = agent.branch.produceSync();
+          if (isStop) {
+            done.add(agent);
+            if (yield* finishRecovery(agent, output.get(agent)!, produced.get(agent)!, events, tw, parentTraceId)) {
+              reported++;
+            }
+            continue;
+          }
+          output.set(agent, output.get(agent)! + text);
+          produced.set(agent, produced.get(agent)! + 1);
+          entries.push([agent.branch, token]);
+          yield* events.send({ type: 'agent:produce', agentId: agent.id, text, tokenCount: produced.get(agent)! });
+        }
+        if (entries.length === 0) break;
+        yield* call(() => store.commit(entries));
+      }
+    });
+  } catch (e) {
+    // KV exhaustion mid-batch — mark every agent that hadn't finished failed.
+    const reason = `scope_error: ${(e as Error).message ?? 'unknown'}`;
+    for (const agent of recovering) {
+      if (done.has(agent)) continue;
+      tw.write({
+        traceId: tw.nextId(), parentTraceId, ts: performance.now(),
+        type: 'pool:recoveryFailed', agentId: agent.id,
+        reason, outputExcerpt: output.get(agent)!.slice(0, 200),
+      });
+    }
+  }
+
+  for (const agent of recovering) {
+    if (!agent.branch.disposed) agent.branch.pruneSync();
+  }
 
   // Emit tick so TUI updates pressure percentage after prune
   const postPressure = new ContextPressure(ctx);
@@ -1474,10 +1624,17 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         if (!recoveryAttempted) {
           recoveryAttempted = true;
           // Recover any idle agents that weren't handled by inline recovery
-          // (e.g., killed by max_turns, time budget, or free_text_stop)
-          for (const a of agents) {
-            if (a.status === 'idle' && !a.result && !a.branch.disposed) {
-              yield* recoverInline(a, policy, ctx, store, tw, poolScope.traceId, poolChannel, pressureOpts);
+          // (e.g., killed by max_turns, time budget, or free_text_stop).
+          // `parallel` batches the whole cohort (one prefill + batched decode —
+          // wall-clock ≈ the slowest single report); `staggered` (default)
+          // recovers them one at a time for maximum per-report headroom.
+          if (policy.recoveryShape === 'parallel') {
+            yield* recoverParallel(agents, policy, ctx, store, tw, poolScope.traceId, poolChannel, pressureOpts);
+          } else {
+            for (const a of agents) {
+              if (a.status === 'idle' && !a.result && !a.branch.disposed) {
+                yield* recoverInline(a, policy, ctx, store, tw, poolScope.traceId, poolChannel, pressureOpts);
+              }
             }
           }
         }

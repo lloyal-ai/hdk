@@ -294,6 +294,17 @@ export interface AgentPolicy {
    * @param attempt - 1 on the first failure of a call, 2 after one retry, …
    */
   onToolRetry?(agent: Agent, tool: string, error: ToolRetryError, attempt: number): ToolRetryAction;
+
+  /**
+   * Recovery reap shape for the termination / wind-down sweep.
+   * `'staggered'` (default) — recover one agent at a time (`recoverInline`),
+   * pruning each before the next so every report gets the full freed headroom.
+   * `'parallel'` — batch the whole idle-no-result cohort: one prefill of all
+   * recovery prompts, then a batched decode across all branches (one native
+   * call per step). Downgrades to `'staggered'` when KV can't fit the cohort's
+   * prefill at once. Absent → `'staggered'`.
+   */
+  recoveryShape?: 'staggered' | 'parallel';
 }
 
 /**
@@ -359,7 +370,7 @@ export interface DefaultAgentPolicyOpts {
      *  applies when `budget.time.softLimit` is set. @default 0.5 */
     time?: number;
   };
-  /** Scratchpad recovery for agents killed without reporting.
+  /** Recovery extraction for agents killed without reporting.
    *  Policy decides per-agent via {@link AgentPolicy.onRecovery}. */
   recovery?: {
     prompt: { system: string; user: string };
@@ -368,6 +379,8 @@ export interface DefaultAgentPolicyOpts {
     /** Skip extraction for agents with fewer tool calls than this. @default 2 */
     minToolCalls?: number;
   };
+  /** Recovery reap shape — see {@link AgentPolicy.recoveryShape}. @default 'staggered' */
+  recoveryShape?: 'staggered' | 'parallel';
   /** Budget thresholds. softLimit = nudge, hardLimit = kill.
    *  Same naming pattern for both resource types.
    *  time budget is global across nesting levels (ms since policy creation). */
@@ -393,6 +406,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
   private _exploreTime: number;
   private _forceExploit = false;
   private _recovery: DefaultAgentPolicyOpts['recovery'] | null;
+  private _recoveryShape: 'staggered' | 'parallel';
   private _budget: DefaultAgentPolicyOpts['budget'] | null;
   private _terminalToolName: string | null;
   private _maxToolRetries: number;
@@ -407,6 +421,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
       ...(opts?.extraGuards ?? []),
     ];
     this._recovery = opts?.recovery ?? null;
+    this._recoveryShape = opts?.recoveryShape ?? 'staggered';
     this._budget = opts?.budget ?? null;
     this._terminalToolName = opts?.terminalToolName ?? null;
     this._maxToolRetries = opts?.maxToolRetries ?? 1;
@@ -440,6 +455,17 @@ export class DefaultAgentPolicy implements AgentPolicy {
       hardLimit: this._budget?.context?.hardLimit
         ?? ContextPressure.DEFAULT_HARD_LIMIT,
     };
+  }
+
+  /** Recovery reap shape. The pool reads this at the termination / wind-down
+   *  sweep to pick `recoverParallel` (parallel) vs per-agent `recoverInline`. */
+  get recoveryShape(): 'staggered' | 'parallel' {
+    return this._recoveryShape;
+  }
+
+  /** Flip the reap shape at runtime — wind-down (Phase 2b) sets `'parallel'`. */
+  setRecoveryShape(shape: 'staggered' | 'parallel'): void {
+    this._recoveryShape = shape;
   }
 
   onProduced(
