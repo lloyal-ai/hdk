@@ -80,6 +80,10 @@ const DEFAULT_FIRST_STAGE_K = 100;
 export class SearchTool extends Tool<{ query: string }> {
   readonly name = 'search';
   readonly protected = false;
+  // Reranker (its own llama_context, _inflight-serialized) + in-memory BM25 —
+  // no op on the MAIN context, so it runs off the loop fiber under concurrent
+  // dispatch. See Tool.fanout.
+  readonly fanout = true;
   readonly description = 'Search the knowledge base. Returns sections ranked by relevance with line ranges for read_file.';
   readonly parameters: JsonSchema = {
     type: 'object',

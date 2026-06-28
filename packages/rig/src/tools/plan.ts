@@ -143,6 +143,11 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
     required: ['query'],
   };
 
+  // Decodes on the MAIN context: runs a nested `agent()`/useAgent over the
+  // session trunk on the ambient llama_context. MUST stay inline on the loop
+  // fiber. See Tool.fanout.
+  readonly fanout = false;
+
   private _prompt: { system: string; user: string };
   private _session: Session;
   private _maxTasks: number;

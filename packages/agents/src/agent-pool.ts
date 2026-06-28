@@ -1,5 +1,5 @@
-import { resource, call, ensure, createSignal, createChannel, spawn, scoped, each, sleep, action } from 'effection';
-import type { Operation, Subscription } from 'effection';
+import { resource, call, ensure, createSignal, createChannel, spawn, scoped, each, sleep, action, race } from 'effection';
+import type { Operation, Subscription, Task } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import { CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, GrammarTriggerType, type ParsedToolCall, type SessionContext } from '@lloyal-labs/sdk';
 import type { BranchStore } from '@lloyal-labs/sdk';
@@ -40,6 +40,56 @@ interface SettledTool {
   callId: string;
   args: string;
   probe?: string;
+}
+
+/**
+ * A fan-out tool's completion, pushed by its off-fiber child onto
+ * `completedTools` and processed on the loop fiber in DRAIN. Carries
+ * everything DRAIN needs to run the post-processing that the inline path runs
+ * inline — that post-processing tokenizes/reads the main `llama_context`, so it
+ * must stay on the loop fiber, never in the child.
+ */
+type ToolCompletion =
+  | { kind: 'result'; agent: Agent; tc: ParsedToolCall; callId: string; dispatchTraceId: number; toolT0: number; result: unknown }
+  | { kind: 'retry'; agent: Agent; tc: ParsedToolCall; callId: string; dispatchTraceId: number; toolT0: number; retryAttempt: number; err: ToolRetryError }
+  | { kind: 'error'; agent: Agent; tc: ParsedToolCall; callId: string; dispatchTraceId: number; err: Error };
+
+/** Default cap on concurrent fan-out tool children (Effection has no semaphore
+ *  — a FIFO counting gate enforces it). Overridable per pool via
+ *  {@link AgentPoolOptions.maxConcurrentTools}. Inline tools don't count: the
+ *  loop fiber already serializes them. */
+const DEFAULT_MAX_CONCURRENT_TOOLS = 8;
+
+/** Normalize a thrown value to an `Error`. Tools — especially third-party —
+ *  may throw non-Error values (`throw 'rate limited'`, `throw { code: 500 }`);
+ *  an `err as Error` cast would leave `.message` undefined in the `tool:error`
+ *  trace and the agent's result. */
+function toError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(String(err));
+}
+
+/** FIFO counting gate: acquire before a fan-out child's `execute`, release in
+ *  an `ensure`. A halt while queued runs the action cleanup (drops the waiter);
+ *  a halt before acquire returns never released, so callers guard release with
+ *  a `took` flag. */
+interface Permits { acquire(): Operation<void>; release(): void }
+function makePermits(n: number): Permits {
+  let available = n;
+  const waiters: Array<() => void> = [];
+  return {
+    *acquire(): Operation<void> {
+      if (available > 0) { available--; return; }
+      yield* action<void>((resolve) => {
+        const w = () => resolve();
+        waiters.push(w);
+        return () => { const i = waiters.indexOf(w); if (i >= 0) waiters.splice(i, 1); };
+      });
+    },
+    release(): void {
+      const w = waiters.shift();
+      if (w) w(); else available++;
+    },
+  };
 }
 
 /**
@@ -792,6 +842,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
 
       const prefillPairs: [Branch, number[]][] = [];
       const settledAgents: Agent[] = [];
+      const settledOrder: { agentId: number; callId: string; tokenCount: number }[] = [];
       const itemProbes = new Map<number, string | undefined>();
       const deferred: SettledTool[] = [];
 
@@ -811,6 +862,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
 
         prefillPairs.push([a.branch, item.prefillTokens]);
         settledAgents.push(a);
+        settledOrder.push({ agentId: a.id, callId: item.callId, tokenCount: item.prefillTokens.length });
         if (item.probe) itemProbes.set(a.id, item.probe);
         headroom -= item.prefillTokens.length;
         const postSettle = new ContextPressure(ctx, pressureOpts);
@@ -829,6 +881,12 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         yield* call(() => store.prefill(prefillPairs));
         counters.warmPrefillCalls++;
         counters.warmPrefillBranches += prefillPairs.length;
+
+        // Fan-out determinism: record the canonical scatter order so the replay
+        // settle-order oracle can reproduce this exact interleaving. On the
+        // serial path this equals dispatch order; the event is emitted uniformly.
+        tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+          type: 'tool:settle_order', batch: settledOrder });
 
         // Probe prefill from DISPATCH or nudge-replacement.
         const probePairs: [Branch, number[]][] = [];
@@ -868,7 +926,120 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       notBefore: number; attempt: number;
     }[] = [];
 
-    /** DISPATCH: execute tool calls sequentially, return settled items for next tick */
+    // ── Fan-out dispatch state ───────────────────────────────────
+    // A `Tool.fanout` tool runs on a child fiber OFF the loop fiber; its child
+    // pushes a ToolCompletion here on finish, and the loop fiber drains +
+    // post-processes them in the DRAIN phase. A plain array is the same
+    // cross-fiber rendezvous as pendingSpawns/pendingExtends — a child `push`
+    // is atomic w.r.t. the single-threaded event loop and only the loop fiber
+    // splices, so no lock is needed. Inline (`fanout` unset) tools never touch
+    // this; with no tool flagged the whole mechanism is inert (today's path).
+    const completedTools: ToolCompletion[] = [];
+    // agentId → its in-flight tool child (≤1 per agent: PRODUCE emits one call
+    // then parks the agent in awaiting_tool). Powers the termination guard now;
+    // targeted wind-down halt later.
+    const inflightTasks = new Map<number, Task<void>>();
+    // Fired by a child on completion so the all-parked nap wakes immediately.
+    const toolWake = createSignal<void, void>();
+    const permits = makePermits(opts.maxConcurrentTools ?? DEFAULT_MAX_CONCURRENT_TOOLS);
+    function* awaitToolCompletion(): Operation<void> {
+      const sub = yield* toolWake;
+      yield* sub.next();
+    }
+
+    /** Post-process one tool completion ON THE LOOP FIBER: tokenize the result,
+     *  send events, write traces, and return a SettledTool to prefill — or null
+     *  for a retry-park / error-kill. Shared by the inline path (called inline)
+     *  and DRAIN (called when a fan-out child's completion arrives). The body is
+     *  the relocated post-tool logic; relocating it onto the loop fiber is what
+     *  keeps the main-context tokenize/reads off the child fibers. */
+    function* processCompletion(c: ToolCompletion): Operation<SettledTool | null> {
+      const { agent, tc, callId, dispatchTraceId } = c;
+
+      if (c.kind === 'error') {
+        agent.transition('idle');
+        agent.setResult(`Tool error: ${c.err.message}`, 'tool_error');
+        tw.write({ traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
+          type: 'tool:error', agentId: agent.id, tool: tc.name,
+          error: c.err.message });
+        return null;
+      }
+
+      if (c.kind === 'retry') {
+        const attempt = c.retryAttempt;
+        // Strategy is the policy's: park-and-retry (optionally overriding the
+        // tool's delay estimate) or fail the call so the model can pivot. Hook
+        // absent → one retry at the tool's estimate.
+        const retryAction: ToolRetryAction =
+          policy.onToolRetry?.(agent, tc.name, c.err, attempt)
+            ?? (attempt <= 1 ? { type: 'retry' } : { type: 'fail' });
+        if (retryAction.type === 'retry') {
+          // Park: no SettledTool, nothing prefilled — the agent's KV never sees
+          // transient infrastructure weather. Emitted as an `agent:tool_retry`
+          // event (+ `tool:retry` trace) so a consumer can distinguish a
+          // waiting agent from a hung one.
+          const afterMs = retryAction.afterMs ?? c.err.retryAfterMs;
+          pendingRetries.push({
+            agent, tc, callId,
+            notBefore: performance.now() + afterMs,
+            attempt,
+          });
+          yield* poolChannel.send({
+            type: 'agent:tool_retry', agentId: agent.id, tool: tc.name,
+            retryAfterMs: afterMs, attempt,
+          });
+          tw.write({ traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
+            type: 'tool:retry', agentId: agent.id, tool: tc.name,
+            callId, retryAfterMs: afterMs, attempt });
+          return null;
+        }
+        // Policy chose fail — the outage is now a fact the model needs. Settle
+        // an honest, directive result through the normal path (NOT the
+        // tool_error path, which kills the agent's run).
+        const exhausted = {
+          error: retryAction.message
+            ?? `${tc.name} is currently unavailable (rate-limited; retry failed). ` +
+              `Do not call ${tc.name} again — use other sources or proceed with your current findings.`,
+        };
+        const resultStr = JSON.stringify(exhausted);
+        yield* poolChannel.send({ type: 'agent:tool_result', agentId: agent.id, tool: tc.name, result: resultStr });
+        const prefillTokens = buildToolResultDelta(ctx, resultStr, callId, { enableThinking: agent.fmt.enableThinking });
+        tw.write({ traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
+          type: 'tool:result', agentId: agent.id, tool: tc.name,
+          result: exhausted, prefillTokenCount: prefillTokens.length,
+          durationMs: performance.now() - c.toolT0 });
+        return { agentId: agent.id, prefillTokens, toolName: tc.name, callId, args: tc.arguments, probe: undefined };
+      }
+
+      // c.kind === 'result'
+      const result = c.result;
+      const tool = tools.get(tc.name);
+      const postToolPressure = new ContextPressure(ctx, pressureOpts);
+      const contextAvailablePercent = postToolPressure.percentAvailable;
+      if (result && typeof result === 'object' && !Array.isArray(result)) {
+        (result as Record<string, unknown>)._contextAvailablePercent = contextAvailablePercent;
+        const resultObj = result as Record<string, unknown>;
+        if (Array.isArray(resultObj.results)) {
+          agent.addNestedResults((resultObj.results as unknown[]).filter((f): f is string => typeof f === 'string'));
+        }
+        if (Array.isArray(resultObj.nestedResults)) {
+          agent.addNestedResults((resultObj.nestedResults as unknown[]).filter((f): f is string => typeof f === 'string'));
+        }
+      }
+      const resultStr = JSON.stringify(result);
+      yield* poolChannel.send({ type: 'agent:tool_result', agentId: agent.id, tool: tc.name, result: resultStr, contextAvailablePercent });
+      const prefillTokens = buildToolResultDelta(ctx, resultStr, callId, { enableThinking: agent.fmt.enableThinking });
+      const probe = tool?.probe(result) ?? undefined;
+      tw.write({ traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
+        type: 'tool:result', agentId: agent.id, tool: tc.name,
+        result, prefillTokenCount: prefillTokens.length,
+        durationMs: performance.now() - c.toolT0 });
+      return { agentId: agent.id, prefillTokens, toolName: tc.name, callId, args: tc.arguments, probe };
+    }
+
+    /** DISPATCH: run inline tools on the loop fiber, spawn fan-out tools off it.
+     *  Inline results return for next tick's SETTLE; fan-out completions arrive
+     *  via `completedTools` and are processed in DRAIN. */
     function* dispatch(calls: { agent: Agent; tc: ParsedToolCall; retryAttempt?: number; retryCallId?: string }[]): Operation<SettledTool[]> {
       const results: SettledTool[] = [];
 
@@ -913,6 +1084,56 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           peerHistory,
         };
 
+        // ── execute ──
+        if (tool?.fanout) {
+          // Fan-out: spawn OFF the loop fiber. The child runs ONLY execute() (a
+          // fanout tool issues no main-context op); the post-processing — which
+          // tokenizes/reads the main ctx — runs in DRAIN on the loop fiber. The
+          // agent stays awaiting_tool until its result settles. The child is a
+          // child task of the tick-loop task, so pool teardown / wind-down
+          // halts it (→ cancellableFetch aborts) for free.
+          const fanoutTool = tool;  // narrowed non-null by tool?.fanout
+          inflightTasks.set(agent.id, yield* spawn(function*() {
+            let took = false;
+            try {
+              // Own this agent's inflightTasks entry: remove it on ANY exit —
+              // completion OR halt (wind-down/teardown). A halt unwinds via
+              // ensure (not catch), so it pushes no completion and DRAIN never
+              // runs for it; without this the stale entry keeps `fanoutQuiet`
+              // false and the loop never terminates.
+              yield* ensure(() => { inflightTasks.delete(agent.id); });
+              yield* ensure(() => { if (took) permits.release(); });
+              yield* permits.acquire(); took = true;
+              // Per-tool TRACE/CALLER context set INSIDE the child so concurrent
+              // tools never clobber each other's (stronger isolation than the
+              // shared loop-fiber set the inline path uses).
+              yield* TraceParent.set(dispatchTraceId);
+              yield* CallingAgent.set(agent);
+              const result: unknown = yield* scoped(function*() {
+                return yield* call(() => fanoutTool.execute(toolArgs, toolContext));
+              });
+              completedTools.push({ kind: 'result', agent, tc, callId, dispatchTraceId, toolT0, result });
+            } catch (err) {
+              // A halt unwinds via ensure/finally, NOT catch — a halted child
+              // skips the push (its result correctly discarded); catch only ever
+              // sees real tool errors (incl. ToolRetryError).
+              if (err instanceof ToolRetryError) {
+                completedTools.push({ kind: 'retry', agent, tc, callId, dispatchTraceId, toolT0, retryAttempt: (retryAttempt ?? 0) + 1, err });
+              } else {
+                completedTools.push({ kind: 'error', agent, tc, callId, dispatchTraceId, err: toError(err) });
+              }
+            } finally {
+              toolWake.send();
+            }
+          }));
+          continue;
+        }
+
+        // ── inline (default) ──
+        // Run execute + post-process now, on the loop fiber — functionally the
+        // pre-fan-out path. Required for any tool that decodes on the main
+        // context (delegate, plan) and for the unknown-tool fallback below.
+        let completion: ToolCompletion;
         try {
           yield* TraceParent.set(dispatchTraceId);
           yield* CallingAgent.set(agent);
@@ -933,83 +1154,14 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
               })
             );
           });
-
-          const postToolPressure = new ContextPressure(ctx, pressureOpts);
-          const contextAvailablePercent = postToolPressure.percentAvailable;
-          if (result && typeof result === 'object' && !Array.isArray(result)) {
-            (result as Record<string, unknown>)._contextAvailablePercent = contextAvailablePercent;
-            const resultObj = result as Record<string, unknown>;
-            if (Array.isArray(resultObj.results)) {
-              agent.addNestedResults((resultObj.results as unknown[]).filter((f): f is string => typeof f === 'string'));
-            }
-            if (Array.isArray(resultObj.nestedResults)) {
-              agent.addNestedResults((resultObj.nestedResults as unknown[]).filter((f): f is string => typeof f === 'string'));
-            }
-          }
-
-          const resultStr = JSON.stringify(result);
-          yield* poolChannel.send({ type: 'agent:tool_result', agentId: agent.id, tool: tc.name, result: resultStr, contextAvailablePercent });
-
-          const prefillTokens = buildToolResultDelta(ctx, resultStr, callId, { enableThinking: agent.fmt.enableThinking });
-          const probe = tool?.probe(result) ?? undefined;
-          results.push({ agentId: agent.id, prefillTokens, toolName: tc.name, callId, args: tc.arguments, probe });
-
-          tw.write({ traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
-            type: 'tool:result', agentId: agent.id, tool: tc.name,
-            result, prefillTokenCount: prefillTokens.length,
-            durationMs: performance.now() - toolT0 });
+          completion = { kind: 'result', agent, tc, callId, dispatchTraceId, toolT0, result };
         } catch (err) {
-          if (err instanceof ToolRetryError) {
-            const attempt = (retryAttempt ?? 0) + 1;
-            // Strategy is the policy's: park-and-retry (optionally overriding
-            // the tool's delay estimate) or fail the call so the model can
-            // pivot. Hook absent → one retry at the tool's estimate.
-            const retryAction: ToolRetryAction =
-              policy.onToolRetry?.(agent, tc.name, err, attempt)
-                ?? (attempt <= 1 ? { type: 'retry' } : { type: 'fail' });
-            if (retryAction.type === 'retry') {
-              // Park: no SettledTool, nothing prefilled — the agent's KV
-              // never sees transient infrastructure weather. Surfaced to
-              // the TUI + trace so a waiting agent reads as waiting, not hung.
-              const afterMs = retryAction.afterMs ?? err.retryAfterMs;
-              pendingRetries.push({
-                agent, tc, callId,
-                notBefore: performance.now() + afterMs,
-                attempt,
-              });
-              yield* poolChannel.send({
-                type: 'agent:tool_retry', agentId: agent.id, tool: tc.name,
-                retryAfterMs: afterMs, attempt,
-              });
-              tw.write({ traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
-                type: 'tool:retry', agentId: agent.id, tool: tc.name,
-                callId, retryAfterMs: afterMs, attempt });
-              continue;
-            }
-            // Policy chose fail — the outage is now a fact the model needs.
-            // Settle an honest, directive result through the normal path
-            // (NOT the tool_error path, which kills the agent's run).
-            const exhausted = {
-              error: retryAction.message
-                ?? `${tc.name} is currently unavailable (rate-limited; retry failed). ` +
-                  `Do not call ${tc.name} again — use other sources or proceed with your current findings.`,
-            };
-            const resultStr = JSON.stringify(exhausted);
-            yield* poolChannel.send({ type: 'agent:tool_result', agentId: agent.id, tool: tc.name, result: resultStr });
-            const prefillTokens = buildToolResultDelta(ctx, resultStr, callId, { enableThinking: agent.fmt.enableThinking });
-            results.push({ agentId: agent.id, prefillTokens, toolName: tc.name, callId, args: tc.arguments, probe: undefined });
-            tw.write({ traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
-              type: 'tool:result', agentId: agent.id, tool: tc.name,
-              result: exhausted, prefillTokenCount: prefillTokens.length,
-              durationMs: performance.now() - toolT0 });
-            continue;
-          }
-          agent.transition('idle');
-          agent.setResult(`Tool error: ${(err as Error).message}`, 'tool_error');
-          tw.write({ traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
-            type: 'tool:error', agentId: agent.id, tool: tc.name,
-            error: (err as Error).message });
+          completion = err instanceof ToolRetryError
+            ? { kind: 'retry', agent, tc, callId, dispatchTraceId, toolT0, retryAttempt: (retryAttempt ?? 0) + 1, err }
+            : { kind: 'error', agent, tc, callId, dispatchTraceId, err: toError(err) };
         }
+        const settled = yield* processCompletion(completion);
+        if (settled) results.push(settled);
       }
 
       return results;
@@ -1209,8 +1361,22 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         yield* poolChannel.send({ type: 'agent:tick', cellsUsed: commitPressure.cellsUsed, nCtx: commitPressure.nCtx });
       }
 
+      // -- Phase 2.5: DRAIN -- post-process fan-out tools that finished since
+      // the last tick, ON THE LOOP FIBER (their tokenize/ctx reads happen here,
+      // never in the child). Each becomes a SettledTool for THIS tick's SETTLE.
+      const newlySettled: SettledTool[] = [];
+      if (completedTools.length > 0) {
+        for (const c of completedTools.splice(0)) {
+          // The inflightTasks entry was already removed by the child's `ensure`
+          // (runs synchronously on completion before the loop resumes — and on
+          // halt too, which is the case DRAIN can't see). DRAIN just post-processes.
+          const settled = yield* processCompletion(c);
+          if (settled) newlySettled.push(settled);
+        }
+      }
+
       // -- Phase 3: SETTLE (settle what fits, defer what doesn't)
-      const toSettle = [...pendingSettled, ...nudges];
+      const toSettle = [...pendingSettled, ...nudges, ...newlySettled];
       const deferred = toSettle.length > 0 ? yield* settle(toSettle) : [];
 
       // Stall-breaker: `deferred` has items but no active siblings can free
@@ -1300,7 +1466,11 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       // -- Termination + recovery
       // Wait for the orchestrator to finish before closing — it may spawn more agents.
       const allIdle = agents.every(a => a.status === 'idle' || a.status === 'disposed');
-      if (allIdle && orchestratorDone) {
+      // Don't exit while a fan-out tool is still in flight or a completion is
+      // waiting to drain. An awaiting_tool agent already keeps allIdle false,
+      // but this guards the edge where its agent was killed mid-flight.
+      const fanoutQuiet = completedTools.length === 0 && inflightTasks.size === 0;
+      if (allIdle && orchestratorDone && fanoutQuiet) {
         if (!recoveryAttempted) {
           recoveryAttempted = true;
           // Recover any idle agents that weren't handled by inline recovery
@@ -1319,21 +1489,28 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         yield* sleep(1);
       }
 
-      // All-parked: nothing active, nothing to settle — only future retries.
-      // Without this the loop busy-spins until the earliest notBefore (parked
-      // agents are awaiting_tool, so the allIdle sleep above never fires).
-      // Cap the nap at 50ms so orchestrator spawns/extends are picked up
-      // promptly.
+      // All-parked: nothing active, nothing to settle/drain this tick — only
+      // outstanding retries and/or in-flight fan-out tools. Without this the
+      // loop busy-spins (parked agents are awaiting_tool, so the allIdle sleep
+      // above never fires). Cap the nap at 50ms so orchestrator spawns/extends
+      // are picked up promptly; wake early when a fan-out tool completes.
       if (
-        pendingRetries.length > 0
+        (pendingRetries.length > 0 || inflightTasks.size > 0)
         && pendingSettled.length === 0
+        && completedTools.length === 0
         && pendingSpawns.length === 0
         && pendingExtends.length === 0
         && !agents.some(a => a.status === 'active')
       ) {
-        const nextDue = Math.min(...pendingRetries.map(r => r.notBefore));
+        const nextDue = pendingRetries.length > 0
+          ? Math.min(...pendingRetries.map(r => r.notBefore))
+          : performance.now() + 50;
         const nap = Math.max(1, Math.min(50, nextDue - performance.now()));
-        yield* sleep(nap);
+        if (inflightTasks.size > 0) {
+          yield* race([sleep(nap), awaitToolCompletion()]);
+        } else {
+          yield* sleep(nap);
+        }
       }
     }
 

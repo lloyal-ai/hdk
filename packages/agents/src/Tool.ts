@@ -78,6 +78,28 @@ export abstract class Tool<TArgs = any> {
   readonly protected?: boolean;
 
   /**
+   * Whether this tool is eligible for **fan-out** dispatch — running on a
+   * child fiber concurrently with other agents' tool calls (and the pool's
+   * own decode), instead of inline on the single tick-loop fiber.
+   *
+   * **Inline by default** (`false`/unset): the pool `await`s `execute()` on
+   * the loop fiber. Safe for ANY tool, and REQUIRED for any tool that issues
+   * a native op on the **main** `llama_context` — anything that nests
+   * `agentPool` / `withSpine` / `useAgent` (e.g. `delegate`, `plan`) or
+   * decodes on `context.branch`. Two concurrent decodes on one context
+   * segfault, so the single-fiber discipline must hold for these.
+   *
+   * **Fan-out** (`true`): `execute()` issues NO native op on the main context
+   * — only network I/O, pure CPU, or a *separate* context (e.g. the reranker,
+   * which owns its own and self-serializes). The pool spawns it off the loop
+   * fiber so one agent's slow/hung tool never stalls the others; completions
+   * drain back on-fiber. Set this ONLY when the no-main-context-decode
+   * invariant holds: a wrong `true` is a segfault, a wrong `false` is merely a
+   * parked loop — so the default is deliberately the safe one.
+   */
+  readonly fanout?: boolean;
+
+  /**
    * Execute the tool with parsed arguments
    *
    * Called by the agent pool when the model emits a tool call matching

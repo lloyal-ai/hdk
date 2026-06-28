@@ -252,6 +252,11 @@ export interface AgentPoolOptions {
   params?: SamplingParams;
   /** Maximum tool-call turns per agent before forced termination */
   maxTurns?: number;
+  /** Max concurrent fan-out tool executions across the pool. Fan-out tools
+   *  ({@link Tool.fanout}) run off the loop fiber; this FIFO-gates how many
+   *  execute at once. Inline tools are unaffected — the loop fiber already
+   *  serializes them. @default 8 */
+  maxConcurrentTools?: number;
   /** Tool name that signals agent completion. When the model calls this tool,
    *  the result is extracted from its arguments and the agent is marked done.
    *  The tool's execute() code-path is not reached — the framework intercepts

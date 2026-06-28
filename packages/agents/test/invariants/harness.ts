@@ -103,6 +103,7 @@ export interface PoolSpec {
   toolsJson?: string;
   terminalTool?: string;
   maxTurns?: number;
+  maxConcurrentTools?: number;
   taskCount?: number;
   orchestrate?: Orchestrator;
   trace?: boolean;
@@ -214,6 +215,7 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
         tools: spec.tools ?? new Map(),
         policy: spec.policy,
         maxTurns: spec.maxTurns ?? 100,
+        maxConcurrentTools: spec.maxConcurrentTools,
         terminalToolName: spec.terminalToolName,
         trace: spec.trace ?? false,
         pruneOnReturn: spec.pruneOnReturn ?? false,
