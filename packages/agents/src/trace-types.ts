@@ -202,6 +202,15 @@ export type TraceEvent =
       prefillTokenCount: number;
       durationMs: number;
     }
+  // Fan-out determinism: the ORDERED tool results scatter-prefilled in one
+  // SETTLE pass. Under inter-agent-concurrent dispatch, settle order = tool
+  // completion order (network-timing dependent); recording it lets the replay
+  // settle-order oracle reproduce the exact KV-prefill interleaving. On the
+  // serial path it equals dispatch order; emitted uniformly either way.
+  | TraceEventBase & {
+      type: 'tool:settle_order';
+      batch: Array<{ agentId: number; callId: string; tokenCount: number }>;
+    }
   | TraceEventBase & { type: 'tool:error'; agentId: number; tool: string; error: string }
   // Transient tool failure (ToolRetryError — e.g. provider rate-limited).
   // The agent is parked (awaiting_tool) and the call re-executes after

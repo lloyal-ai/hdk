@@ -68,6 +68,12 @@ export class DelegateTool extends Tool<Record<string, unknown>> {
   readonly description: string;
   readonly parameters: JsonSchema;
 
+  // Decodes on the MAIN context: nests `agentPool()` which reads the ambient
+  // Ctx/Store and runs produceSync/commit/fork on the same llama_context as
+  // the loop. MUST stay inline on the loop fiber — fanning this out
+  // concurrently with the loop's decode would segfault. See Tool.fanout.
+  readonly fanout = false;
+
   private _poolOpts: Omit<CreateAgentPoolOpts, 'orchestrate'>;
   private _systemPrompt: string;
   private _extractTasks: (args: Record<string, unknown>) => string[];

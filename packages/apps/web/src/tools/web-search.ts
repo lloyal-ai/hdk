@@ -68,6 +68,9 @@ export class TavilyProvider implements SearchProvider {
 export class WebSearchTool extends Tool<{ query: string }> {
   readonly name = "web_search";
   readonly protected = false;
+  // Network-only (Tavily HTTP) — issues no op on the main llama_context, so it
+  // runs off the loop fiber under concurrent dispatch. See Tool.fanout.
+  readonly fanout = true;
   readonly description =
     "Search the web. Returns results with titles, snippets, and URLs.";
   readonly parameters: JsonSchema = {
