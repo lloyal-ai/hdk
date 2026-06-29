@@ -1190,8 +1190,16 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       yield* spawn(function*() {
         const sub = yield* wd;
         yield* sub.next();
-        windingDown = true;
+        // Halt the orchestrator BEFORE flipping windingDown. The reap branch is
+        // gated on windingDown, and a reap's idle-transition fires the agent's
+        // statusSignal — which would resume the orchestrator's waitFor and let it
+        // spawn/extend the next task. Halting first guarantees it's dead before
+        // any reap can fire (the SEGV invariant: orchestrator halted before any
+        // idle-transition). halt() resolves only after teardown completes (its
+        // `finally` sets orchestratorDone); windingDown + toolWake are then set
+        // synchronously (no yield between), so the woken loop always sees both.
         yield* orchestratorTask.halt();
+        windingDown = true;
         toolWake.send();
       });
     }
