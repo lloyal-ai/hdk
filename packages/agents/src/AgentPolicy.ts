@@ -9,8 +9,8 @@ import { renderTemplate } from './prompt';
 // allocation for recoverInline: the prefill cost of the recovery prompt +
 // room for llama.cpp's batch workspace. Used to compute the budget
 // communicated to the model in its recovery prompt.
-const RECOVERY_PREFILL_OVERHEAD = 150;
-const BATCH_BUFFER = 512;
+export const RECOVERY_PREFILL_OVERHEAD = 150;
+export const BATCH_BUFFER = 512;
 
 /**
  * Convert a token budget to a conservative word count for the model-facing
@@ -19,7 +19,7 @@ const BATCH_BUFFER = 512;
  * typical ~0.75) to under-advertise the budget, rounds down to the nearest
  * 10, and floors at 10 so the model always has a non-zero target.
  */
-function tokenBudgetAsWords(budgetTokens: number): number {
+export function tokenBudgetAsWords(budgetTokens: number): number {
   return Math.max(10, Math.floor(budgetTokens * 0.7 / 10) * 10);
 }
 
@@ -279,8 +279,13 @@ export interface AgentPolicy {
    * Custom prompts must produce output matching this shape.
    *
    * Optional — defaults to skip when absent.
+   *
+   * `budgetTokens` (optional) overrides the pressure-derived report budget —
+   * the parallel recovery fold passes the per-report budget `b` so the prompt's
+   * advisory word count matches the grammar `maxLength` cap. Absent → the budget
+   * is derived from `pressure.remaining` as usual (staggered / per-agent).
    */
-  onRecovery?(agent: Agent, pressure: ContextPressure): RecoveryAction;
+  onRecovery?(agent: Agent, pressure: ContextPressure, budgetTokens?: number): RecoveryAction;
 
   /**
    * Transient tool failure (the tool threw {@link ToolRetryError}).
@@ -305,6 +310,11 @@ export interface AgentPolicy {
    * prefill at once. Absent → `'staggered'`.
    */
   recoveryShape?: 'staggered' | 'parallel';
+
+  /** Per-report token budget for the parallel recovery fold — advisory in the
+   *  recovery prompt + the grammar `maxLength` cap. Absent → uncapped
+   *  (staggered) / headroom-derived (fold). */
+  readonly reportBudget?: number;
 }
 
 /**
@@ -381,6 +391,12 @@ export interface DefaultAgentPolicyOpts {
   };
   /** Recovery reap shape — see {@link AgentPolicy.recoveryShape}. @default 'staggered' */
   recoveryShape?: 'staggered' | 'parallel';
+  /** Per-report token budget for the PARALLEL recovery fold — rendered into the
+   *  recovery prompt (advisory "within N words") AND used as the grammar
+   *  `maxLength` cap (hard). Unused by `staggered` (full-length reports). The
+   *  consumer sets it per Effort level. @default unset (fold falls back to
+   *  headroom-derived) */
+  reportBudget?: number;
   /** Budget thresholds. softLimit = nudge, hardLimit = kill.
    *  Same naming pattern for both resource types.
    *  time budget is global across nesting levels (ms since policy creation). */
@@ -407,6 +423,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
   private _forceExploit = false;
   private _recovery: DefaultAgentPolicyOpts['recovery'] | null;
   private _recoveryShape: 'staggered' | 'parallel';
+  private _reportBudget: number | null;
   private _budget: DefaultAgentPolicyOpts['budget'] | null;
   private _terminalToolName: string | null;
   private _maxToolRetries: number;
@@ -422,6 +439,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
     ];
     this._recovery = opts?.recovery ?? null;
     this._recoveryShape = opts?.recoveryShape ?? 'staggered';
+    this._reportBudget = opts?.reportBudget ?? null;
     this._budget = opts?.budget ?? null;
     this._terminalToolName = opts?.terminalToolName ?? null;
     this._maxToolRetries = opts?.maxToolRetries ?? 1;
@@ -463,9 +481,15 @@ export class DefaultAgentPolicy implements AgentPolicy {
     return this._recoveryShape;
   }
 
-  /** Flip the reap shape at runtime — wind-down (Phase 2b) sets `'parallel'`. */
+  /** Flip the reap shape at runtime — wind-down sets `'parallel'`. */
   setRecoveryShape(shape: 'staggered' | 'parallel'): void {
     this._recoveryShape = shape;
+  }
+
+  /** Per-report token budget for the parallel recovery fold (undefined = uncapped /
+   *  headroom-derived). The fold renders it into the prompt + caps the grammar. */
+  get reportBudget(): number | undefined {
+    return this._reportBudget ?? undefined;
   }
 
   onProduced(
@@ -635,7 +659,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
     this._nudgedThisTick = false;
   }
 
-  onRecovery(agent: Agent, pressure: ContextPressure): RecoveryAction {
+  onRecovery(agent: Agent, pressure: ContextPressure, budgetTokensOverride?: number): RecoveryAction {
     if (!this._recovery) return { type: 'skip' };
     const minTokens = this._recovery.minTokens ?? 100;
     const minToolCalls = this._recovery.minToolCalls ?? 2;
@@ -647,7 +671,10 @@ export class DefaultAgentPolicy implements AgentPolicy {
     // (not tokens) and under-advertised so the model has slack — tokenizers
     // vary across models but words are universal. Rendered into the prompt
     // as `it.budget` so authors can reference it via `<%= it.budget %>`.
-    const budgetTokens = Math.max(50, pressure.remaining - RECOVERY_PREFILL_OVERHEAD - BATCH_BUFFER);
+    // The parallel fold overrides this with its fixed per-report budget `b` so
+    // the advisory matches the grammar `maxLength` cap (graceful, not a guillotine).
+    const budgetTokens = budgetTokensOverride
+      ?? Math.max(50, pressure.remaining - RECOVERY_PREFILL_OVERHEAD - BATCH_BUFFER);
     const budget = tokenBudgetAsWords(budgetTokens);
     const tctx = { budget };
     return {

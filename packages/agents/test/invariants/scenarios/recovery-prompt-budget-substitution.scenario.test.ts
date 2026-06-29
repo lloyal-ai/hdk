@@ -22,7 +22,7 @@ function mkPressure(remaining: number): ContextPressure {
     {
       _storeKvPressure: () => ({ nCtx: 16384, cellsUsed: 16384 - remaining, remaining }),
     } as any,
-    { softLimit: 1024, hardLimit: 128, absoluteFloor: 512 },
+    { softLimit: 1024, hardLimit: 128 },
   );
 }
 
@@ -75,5 +75,35 @@ describe('scenario: recovery prompt budget substitution', () => {
     const action = policy.onRecovery(agent, mkPressure(100));
     const extract = action as { type: 'extract'; prompt: { system: string; user: string } };
     expect(extract.prompt.system).toBe('Budget: 30');
+  });
+
+  it('renders the budgetTokens override (the fold path), not the pressure-derived budget', () => {
+    const policy = new DefaultAgentPolicy({
+      terminalToolName: 'report',
+      recovery: {
+        prompt: {
+          system: 'You have <%= it.budget %> words to report.',
+          user: 'Report.',
+        },
+        minTokens: 0,
+        minToolCalls: 0,
+      },
+    });
+
+    const agent: any = { tokenCount: 200, toolCallCount: 5 };
+
+    // The parallel fold passes its fixed per-report budget `b` as onRecovery's 3rd
+    // arg so the prompt advisory matches the grammar maxLength cap. b=200 →
+    // words = floor(200 * 0.7 / 10) * 10 = 140 (NOT the pressure-derived ~5130).
+    const overridden = policy.onRecovery(agent, mkPressure(8000), 200) as
+      { type: 'extract'; prompt: { system: string; user: string } };
+    expect(overridden.prompt.system).toBe('You have 140 words to report.');
+
+    // At the SAME pressure the pressure-derived budget is far larger — proving the
+    // override took effect. Without it the model is told to write ~5000 words while
+    // the grammar caps it at ~140: exactly the over-generation the override fixes.
+    const pressureDerived = policy.onRecovery(agent, mkPressure(8000)) as
+      { type: 'extract'; prompt: { system: string } };
+    expect(pressureDerived.prompt.system).not.toBe(overridden.prompt.system);
   });
 });
