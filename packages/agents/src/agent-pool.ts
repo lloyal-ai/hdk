@@ -1,9 +1,9 @@
 import { resource, call, ensure, createSignal, createChannel, spawn, scoped, each, sleep, action, race } from 'effection';
-import type { Operation, Subscription, Task } from 'effection';
+import type { Operation, Subscription, Task, Signal } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import { CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, GrammarTriggerType, type ParsedToolCall, type SessionContext } from '@lloyal-labs/sdk';
 import type { BranchStore } from '@lloyal-labs/sdk';
-import { Ctx, Store, Trace, TraceParent, CallingAgent, SpineFmt, GrantStoreCtx } from './context';
+import { Ctx, Store, Trace, TraceParent, CallingAgent, SpineFmt, GrantStoreCtx, WindDown } from './context';
 import type { FormatConfig } from './Agent';
 import { buildToolResultDelta, buildTurnDelta } from '@lloyal-labs/sdk';
 import { traceScope } from './trace-scope';
@@ -795,6 +795,12 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     const poolT0 = performance.now();
     let poolParentTraceId: number | null = null;
     try { const p = yield* TraceParent.get(); if (p != null) poolParentTraceId = p; } catch { /* top level */ }
+    // Optional graceful wind-down signal: the consumer `.send()`s it (e.g. a
+    // "Wrap up" command) to drain the pool to a fast best-effort answer — stop
+    // spawning, reap active agents, let in-flight tools settle, then fold. Absent
+    // ⇒ no wind-down (today's behaviour). See the WindDown context.
+    let windDownSignal: Signal<void, void> | null = null;
+    try { windDownSignal = (yield* WindDown.get()) ?? null; } catch { /* no wind-down provided */ }
     const poolScope = traceScope(tw, poolParentTraceId, 'pool', { maxTurns, terminalToolName });
 
     // Whether the pool's tool registry contains tools besides the terminal tool.
@@ -1038,7 +1044,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     // (orchestratorDone && all agents idle/disposed).
     let orchestratorDone = false;
     let orchestratorError: unknown = null;
-    yield* spawn(function*() {
+    const orchestratorTask = yield* spawn(function*() {
       try {
         yield* orchestrate(poolContext);
       } catch (e) {
@@ -1170,6 +1176,32 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     function* awaitToolCompletion(): Operation<void> {
       const sub = yield* toolWake;
       yield* sub.next();
+    }
+
+    // ── Graceful wind-down (drain) ──────────────────────────────────────
+    // A pool-local flag the PRODUCE reap-branch + termination sweep read. The
+    // watcher flips it ONCE when the consumer's WindDown signal fires, halts the
+    // orchestrator (stop spawning — its `finally` sets orchestratorDone), and
+    // wakes any all-parked nap via toolWake. The reap is pool-internal (no policy
+    // surface); in-flight tools are NOT halted (they drain) — only `halt` aborts.
+    let windingDown = false;
+    if (windDownSignal) {
+      const wd = windDownSignal;
+      yield* spawn(function*() {
+        const sub = yield* wd;
+        yield* sub.next();
+        // Halt the orchestrator BEFORE flipping windingDown. The reap branch is
+        // gated on windingDown, and a reap's idle-transition fires the agent's
+        // statusSignal — which would resume the orchestrator's waitFor and let it
+        // spawn/extend the next task. Halting first guarantees it's dead before
+        // any reap can fire (the SEGV invariant: orchestrator halted before any
+        // idle-transition). halt() resolves only after teardown completes (its
+        // `finally` sets orchestratorDone); windingDown + toolWake are then set
+        // synchronously (no yield between), so the woken loop always sees both.
+        yield* orchestratorTask.halt();
+        windingDown = true;
+        toolWake.send();
+      });
     }
 
     /** Post-process one tool completion ON THE LOOP FIBER: tokenize the result,
@@ -1491,6 +1523,20 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       for (const a of agents) {
         if (a.status !== 'active') continue;
 
+        // Wind-down (drain): drop active agents to idle so the termination sweep
+        // folds the whole cohort fast. An agent mid-terminal-tool (emitting its
+        // voluntary report) is left to finish — same guard as shouldExit's terminal
+        // protection. NO inline recovery (defer to the fold) and NO tool abort.
+        // SEGV-safe: the orchestrator was halted before windingDown flipped, so no
+        // concurrent spawn/prefill races this idle-transition.
+        if (windingDown && !(terminalToolName && a.currentTool === terminalToolName)) {
+          tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+            type: 'pool:agentDrop', agentId: a.id, reason: 'wind_down' });
+          yield* poolChannel.send({ type: 'agent:done', agentId: a.id });
+          a.transition('idle');
+          continue;
+        }
+
         const policyExit = policy.shouldExit?.(a, pressure);
         if (policyExit ?? pressure.critical) {
           const exitReason = pressure.critical ? 'pressure_critical' as const
@@ -1703,7 +1749,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           // `parallel` batches the whole cohort (one prefill + batched decode —
           // wall-clock ≈ the slowest single report); `staggered` (default)
           // recovers them one at a time for maximum per-report headroom.
-          if (policy.recoveryShape === 'parallel') {
+          if (policy.recoveryShape === 'parallel' || windingDown) {
             yield* recoverParallel(agents, policy, ctx, store, tw, poolScope.traceId, poolChannel, pressureOpts);
           } else {
             for (const a of agents) {

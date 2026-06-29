@@ -1,4 +1,4 @@
-import { run, createChannel, scoped } from 'effection';
+import { run, createChannel, scoped, createSignal } from 'effection';
 import type { Channel } from 'effection';
 import { MockSessionContext } from '../../../sdk/test/MockSessionContext';
 import { Branch } from '../../../sdk/src/Branch';
@@ -7,7 +7,7 @@ import type { ChatFormat, ParseChatOutputOptions, ParseChatOutputResult } from '
 import { useAgentPool } from '../../src/agent-pool';
 import type { Orchestrator } from '../../src/orchestrators';
 import { parallel, chain } from '../../src/orchestrators';
-import { Ctx, Store, Events, Trace } from '../../src/context';
+import { Ctx, Store, Events, Trace, WindDown } from '../../src/context';
 import type { AgentPolicy } from '../../src/AgentPolicy';
 import type { AgentPoolResult, AgentEvent } from '../../src/types';
 import type { TraceEvent } from '../../src/trace-types';
@@ -101,6 +101,14 @@ export interface PoolSpec {
   policy: AgentPolicy;
   tools?: Map<string, Tool>;
   toolsJson?: string;
+  /** The pool's terminal tool name — read by `runPool`. */
+  terminalToolName?: string;
+  /**
+   * @deprecated Dead field — `runPool` reads `terminalToolName`, not this. Kept so
+   * the 6 existing call sites (authGuard-rejection, xss-cross-app-prose) still
+   * type-check; migrating them to `terminalToolName` changes their behaviour and is
+   * tracked in lloyal-ai/hdk#24.
+   */
   terminalTool?: string;
   maxTurns?: number;
   maxConcurrentTools?: number;
@@ -110,6 +118,13 @@ export interface PoolSpec {
   pruneOnReturn?: boolean;
   /** See `AgentPoolOptions.enableThinking`. @default false */
   enableThinking?: boolean;
+  /**
+   * If set, the harness provides a `WindDown` signal to the pool and `.send()`s
+   * it from the drain loop the FIRST time this predicate returns true for a
+   * channel event (`count` = 1-based event index). Drives the graceful-wind-down
+   * scenarios — e.g. fire on the first `agent:spawn` to reap the active cohort.
+   */
+  windDownAfter?: (ev: AgentEvent, count: number) => boolean;
 }
 
 /**
@@ -198,6 +213,8 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
     const events: Channel<AgentEvent, void> = createChannel();
     yield* Events.set(events as any);
     yield* Trace.set(trace);
+    const windDownSignal = createSignal<void, void>();
+    if (spec.windDownAfter) yield* WindDown.set(windDownSignal);
 
     const taskCount = spec.taskCount ?? spec.scripts.length;
     const taskSpecs = Array.from({ length: taskCount }, (_, i) => ({
@@ -222,8 +239,15 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
         enableThinking: spec.enableThinking,
       });
       let next = yield* sub.next();
+      let evCount = 0;
+      let windDownFired = false;
       while (!next.done) {
         channelEvents.push(next.value);
+        evCount++;
+        if (!windDownFired && spec.windDownAfter?.(next.value, evCount)) {
+          windDownFired = true;
+          windDownSignal.send();
+        }
         next = yield* sub.next();
       }
       return next.value;

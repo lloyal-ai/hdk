@@ -1,7 +1,7 @@
 import { createContext } from 'effection';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import type { BranchStore, Branch } from '@lloyal-labs/sdk';
-import type { Channel } from 'effection';
+import type { Channel, Signal } from 'effection';
 import type { AgentEvent } from './types';
 import type { TraceWriter } from './trace-writer';
 import type { TraceId } from './trace-types';
@@ -162,3 +162,22 @@ export const AppConfigStoreCtx = createContext<AppConfigStore>('lloyal.appConfig
  * @category Contract
  */
 export const GrantStoreCtx = createContext<GrantStore>('lloyal.grantStore');
+
+/**
+ * Effection context holding an optional wind-down {@link Signal}.
+ *
+ * A consumer that wants graceful "wrap up now" provides a `createSignal<void, void>()`
+ * in the pool's run scope and `.send()`s it on its Stop/Wrap-up command. The pool
+ * reads it at boot (`yield* WindDown.get()`); on emission it stops spawning new
+ * agents, reaps active ones to recovery, and lets in-flight tool calls **drain**
+ * (complete + settle) before reaping — then the termination sweep runs each
+ * policy's `onRecovery`. Answer-agnostic: what recovery yields (a report, or
+ * `skip`) is the policy's call.
+ *
+ * This is NOT abort — aborting everything (including in-flight tools) is `halt()`'s
+ * job (kill the run scope). Absent context = no wind-down capability (the pool runs
+ * to natural completion).
+ *
+ * @category Agents
+ */
+export const WindDown = createContext<Signal<void, void>>('lloyal.windDown');
