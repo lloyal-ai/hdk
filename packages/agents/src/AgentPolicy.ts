@@ -304,10 +304,13 @@ export interface AgentPolicy {
    * Recovery reap shape for the termination / wind-down sweep.
    * `'staggered'` (default) — recover one agent at a time (`recoverInline`),
    * pruning each before the next so every report gets the full freed headroom.
-   * `'parallel'` — batch the whole idle-no-result cohort: one prefill of all
-   * recovery prompts, then a batched decode across all branches (one native
-   * call per step). Downgrades to `'staggered'` when KV can't fit the cohort's
-   * prefill at once. Absent → `'staggered'`.
+   * `'parallel'` — recover the idle-no-result cohort as a bounded FOLD: each step
+   * takes the largest GROUP that fits in current KV at a fixed per-report budget
+   * (a fair share of headroom, or {@link reportBudget}), batches its prefill +
+   * decode (one native call per step), prunes it to replenish KV, and recurses —
+   * group size flexes 1..N with headroom (down to one-at-a-time under pressure),
+   * never switching modes. The per-report budget is enforced as a grammar
+   * `maxLength` cap. Absent → `'staggered'`.
    */
   recoveryShape?: 'staggered' | 'parallel';
 

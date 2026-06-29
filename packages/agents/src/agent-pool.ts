@@ -510,7 +510,12 @@ function* recoverParallel(
 
   // Render + tokenize every recovery prompt ONCE at the fixed budget `b` — the
   // prompt is identical across groups since `b` is fixed, so a boundary agent is
-  // never re-rendered/re-tokenized. A skip here prunes that branch now.
+  // never re-rendered/re-tokenized. This pass re-runs onRecovery only to bind `b`
+  // into the prompt; its skip is budget-independent (decided before the budget
+  // calc, on agent state unchanged since the eligibility probe), so it drops no one
+  // the probe kept and `b` stays the true fair share over `queue.length`. (A custom
+  // policy that DID skip here would only under-budget — shorter reports — never
+  // over-budget/exhaust.)
   const entries: { agent: Agent; tokens: number[] }[] = [];
   for (const agent of queue) {
     const recovery = policy.onRecovery!(agent, new ContextPressure(ctx, pressureOpts), b);
