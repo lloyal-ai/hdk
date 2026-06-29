@@ -128,7 +128,8 @@ export type TraceEvent =
         | 'policy_exit'
         | 'maxTurns'
         | 'tool_error'
-        | 'stop_token';
+        | 'stop_token'
+        | 'wind_down';
     }
   | TraceEventBase & {
       type: 'pool:agentNudge';
