@@ -101,6 +101,14 @@ export interface PoolSpec {
   policy: AgentPolicy;
   tools?: Map<string, Tool>;
   toolsJson?: string;
+  /** The pool's terminal tool name — read by `runPool`. */
+  terminalToolName?: string;
+  /**
+   * @deprecated Dead field — `runPool` reads `terminalToolName`, not this. Kept so
+   * the 6 existing call sites (authGuard-rejection, xss-cross-app-prose) still
+   * type-check; migrating them to `terminalToolName` changes their behaviour and is
+   * tracked in lloyal-ai/hdk#24.
+   */
   terminalTool?: string;
   maxTurns?: number;
   maxConcurrentTools?: number;
