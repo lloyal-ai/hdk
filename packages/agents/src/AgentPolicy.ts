@@ -12,6 +12,7 @@ import { renderTemplate } from './prompt';
 export const RECOVERY_PREFILL_OVERHEAD = 150;
 export const BATCH_BUFFER = 512;
 
+
 /**
  * Convert a token budget to a conservative word count for the model-facing
  * prompt. Tokens are tokenizer-specific; words are universal and better
@@ -281,9 +282,10 @@ export interface AgentPolicy {
    * Optional — defaults to skip when absent.
    *
    * `budgetTokens` (optional) overrides the pressure-derived report budget —
-   * the parallel recovery fold passes the per-report budget `b` so the prompt's
-   * advisory word count matches the grammar `maxLength` cap. Absent → the budget
-   * is derived from `pressure.remaining` as usual (staggered / per-agent).
+   * the in-loop (parallel / wind-down) recovery passes the per-report budget `b`
+   * so the prompt's advisory word count matches the pool's token-stop. Absent →
+   * the budget is derived from `pressure.remaining` (the staggered / full-headroom
+   * per-agent path).
    */
   onRecovery?(agent: Agent, pressure: ContextPressure, budgetTokens?: number): RecoveryAction;
 
@@ -301,22 +303,23 @@ export interface AgentPolicy {
   onToolRetry?(agent: Agent, tool: string, error: ToolRetryError, attempt: number): ToolRetryAction;
 
   /**
-   * Recovery reap shape for the termination / wind-down sweep.
+   * Recovery reap shape.
    * `'staggered'` (default) — recover one agent at a time (`recoverInline`),
-   * pruning each before the next so every report gets the full freed headroom.
-   * `'parallel'` — recover the idle-no-result cohort as a bounded FOLD: each step
-   * takes the largest GROUP that fits in current KV at a fixed per-report budget
-   * (a fair share of headroom, or {@link reportBudget}), batches its prefill +
-   * decode (one native call per step), prunes it to replenish KV, and recurses —
-   * group size flexes 1..N with headroom (down to one-at-a-time under pressure),
-   * never switching modes. The per-report budget is enforced as a grammar
-   * `maxLength` cap. Absent → `'staggered'`.
+   * pruning each before the next so every report gets the full freed headroom
+   * (uncapped, lossless; the high-effort path).
+   * `'parallel'` — recover killed-without-result agents IN-LOOP: the recovery turn
+   * is bin-packed into the tick loop alongside live siblings, capped at a per-report
+   * budget `b` (the prompt's word advisory + the pool's token-stop), and SETTLE
+   * admits only as many reports as fit `(prompt + b)` in current KV — the rest wave
+   * to the next tick once the admitted ones prune. Wind-down always uses this shape
+   * regardless of the setting. Absent → `'staggered'`.
    */
   recoveryShape?: 'staggered' | 'parallel';
 
-  /** Per-report token budget for the parallel recovery fold — advisory in the
-   *  recovery prompt + the grammar `maxLength` cap. Absent → uncapped
-   *  (staggered) / headroom-derived (fold). */
+  /** Explicit per-report token budget for in-loop (parallel / wind-down) recovery —
+   *  the prompt's word advisory + the pool's token-stop. Absent → adaptive: a fair
+   *  share of current headroom across the live agents, clamped to a [min, max].
+   *  Unused by `staggered` (full-length reports). */
   readonly reportBudget?: number;
 }
 
@@ -394,17 +397,24 @@ export interface DefaultAgentPolicyOpts {
   };
   /** Recovery reap shape — see {@link AgentPolicy.recoveryShape}. @default 'staggered' */
   recoveryShape?: 'staggered' | 'parallel';
-  /** Per-report token budget for the PARALLEL recovery fold — rendered into the
-   *  recovery prompt (advisory "within N words") AND used as the grammar
-   *  `maxLength` cap (hard). Unused by `staggered` (full-length reports). The
-   *  consumer sets it per Effort level. @default unset (fold falls back to
-   *  headroom-derived) */
+  /** Explicit per-report token budget for in-loop (PARALLEL / wind-down) recovery —
+   *  rendered into the recovery prompt (advisory "within N words") AND enforced by
+   *  the pool's token-stop (hard). Unused by `staggered` (full-length reports). The
+   *  consumer sets it per Effort level. @default unset → adaptive (a fair share of
+   *  current headroom across the live agents, clamped). */
   reportBudget?: number;
   /** Budget thresholds. softLimit = nudge, hardLimit = kill.
    *  Same naming pattern for both resource types.
    *  time budget is global across nesting levels (ms since policy creation). */
   budget?: {
-    /** KV context budget (tokens remaining). */
+    /** KV context budget (tokens remaining). softLimit = nudge floor, hardLimit = kill floor.
+     *  COUPLING (non-obvious): `softLimit` also sizes RECOVERY. The forced-report budget
+     *  `b` is an adaptive share of `headroom = remaining − softLimit` across the live
+     *  agents (see {@link AgentPolicy.onRecovery} + agent-pool `handleRecover`). So
+     *  RAISING `softLimit` SHORTENS recovery reports, and a `softLimit` large enough that
+     *  `headroom < aliveCount·(prompt + MIN_REPORT_BUDGET)` forces the reaped cohort onto
+     *  the serial `recoverInline` fallback instead of one-tick parallel recovery. Tune it
+     *  for the downstream reserve you need, aware it trades against recovery report length. */
     context?: { softLimit?: number; hardLimit?: number };
     /** Wall-time budget (ms since policy creation). */
     time?: { softLimit?: number; hardLimit?: number };
@@ -478,8 +488,8 @@ export class DefaultAgentPolicy implements AgentPolicy {
     };
   }
 
-  /** Recovery reap shape. The pool reads this at the termination / wind-down
-   *  sweep to pick `recoverParallel` (parallel) vs per-agent `recoverInline`. */
+  /** Recovery reap shape. The pool reads this to pick in-loop bin-packed recovery
+   *  (`parallel`) vs the blocking per-agent `recoverInline` (`staggered`). */
   get recoveryShape(): 'staggered' | 'parallel' {
     return this._recoveryShape;
   }
@@ -489,8 +499,9 @@ export class DefaultAgentPolicy implements AgentPolicy {
     this._recoveryShape = shape;
   }
 
-  /** Per-report token budget for the parallel recovery fold (undefined = uncapped /
-   *  headroom-derived). The fold renders it into the prompt + caps the grammar. */
+  /** Explicit per-report token budget for in-loop recovery (undefined = adaptive,
+   *  a headroom share across live agents). Rendered into the prompt + enforced by
+   *  the pool's token-stop. */
   get reportBudget(): number | undefined {
     return this._reportBudget ?? undefined;
   }
@@ -674,8 +685,9 @@ export class DefaultAgentPolicy implements AgentPolicy {
     // (not tokens) and under-advertised so the model has slack — tokenizers
     // vary across models but words are universal. Rendered into the prompt
     // as `it.budget` so authors can reference it via `<%= it.budget %>`.
-    // The parallel fold overrides this with its fixed per-report budget `b` so
-    // the advisory matches the grammar `maxLength` cap (graceful, not a guillotine).
+    // In-loop recovery overrides this with its per-report budget `b` (a headroom
+    // share across live agents) so the advisory matches the pool's token-stop
+    // (graceful self-conclusion, not a guillotine).
     const budgetTokens = budgetTokensOverride
       ?? Math.max(50, pressure.remaining - RECOVERY_PREFILL_OVERHEAD - BATCH_BUFFER);
     const budget = tokenBudgetAsWords(budgetTokens);
