@@ -1,30 +1,45 @@
 /**
- * Scenario: a recovery that yields no terminal-tool call → pool:recoveryFailed
+ * Scenario: recoverInline produces unparseable output → pool:recoveryFailed
  *
- * Shape: agent free-texts (no voluntary terminal call), policy says idle → agent
- * dropped → recoverInline runs → the recovery decode produces output that
- * parseChatOutput finds NO terminal call in → finishRecovery reports the failure
- * (not silent).
+ * Shape: agent emits tool call, result oversized, policy says idle →
+ * agent dropped → recoverInline runs → produces a non-JSON string →
+ * JSON.parse throws → failure is visible in the trace (not silent).
  *
  * What this locks:
  *   - I29: recovery diagnostic completeness. Every recovery attempt that
- *     prefills a recovery prompt terminates with exactly one of
+ *     prefills a recovery prompt must terminate with exactly one of
  *     `pool:recoveryReturn` or `pool:recoveryFailed`.
- *   - Failure reason + output excerpt are captured so ops can diagnose a failed
- *     recovery without re-running the job. The reason is `no_terminal_call` —
- *     the native tool-call path (parseChatOutput) found no call to extract,
- *     NOT a hand-rolled JSON.parse error.
+ *   - Failure reason + output excerpt are captured so ops can diagnose
+ *     why a recovery failed without re-running the job.
  */
 import { describe, it, expect } from 'vitest';
+import { Tool } from '../../../src/Tool';
+import type { Operation } from 'effection';
+import type { JsonSchema } from '../../../src/types';
 import type { AgentPolicy } from '../../../src/AgentPolicy';
 import { runPool, STOP } from '../harness';
 
-describe('scenario: recovery generates no terminal call', () => {
-  it('drop → recoverInline output has no terminal call → pool:recoveryFailed with excerpt', async () => {
+class BigResultTool extends Tool<{ query: string }> {
+  readonly name = 'web_search';
+  readonly description = 'returns a fixed big payload';
+  readonly parameters: JsonSchema = { type: 'object', properties: { query: { type: 'string' } } };
+  *execute(): Operation<unknown> {
+    return { results: ['x'.repeat(8000)] };
+  }
+}
+
+describe('scenario: recovery generates unparseable output', () => {
+  it('drop → recoverInline produces non-JSON → pool:recoveryFailed with excerpt', async () => {
+    const tools = new Map<string, Tool>([['web_search', new BigResultTool()]]);
+
     const policy: AgentPolicy = {
-      // Free-text every turn → idle drop → recoverInline runs (default staggered).
-      onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
+      onProduced: (_a, parsed) => {
+        if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
+        return { type: 'idle', reason: 'free_text_stop' };
+      },
+      // Policy chooses idle drop over nudge, forcing recoverInline to run.
       onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      // Recovery is enabled (not skip) so the produce/commit loop runs.
       onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),
       shouldExit: () => false,
     };
@@ -32,16 +47,20 @@ describe('scenario: recovery generates no terminal call', () => {
     const run = await runPool({
       nCtx: 4096,
       cellsUsed: 3000,
-      // [1, STOP] initial turn → idle → recoverInline; [2, 3, STOP] recovery decode.
-      // The script declares NO toolCall, so the mock's parseChatOutput returns no
-      // terminal call for the recovery output → finishRecovery fails (not silent).
-      scripts: [{ tokens: [1, STOP, 2, 3, STOP], content: 'unparseable prose' }],
+      // Script: [1, STOP] for the initial turn, then [2, 3, STOP] for
+      // the recovery produce loop. MockSessionContext.tokenToText emits
+      // "t2", "t3" — concatenates to "t2t3", which is not JSON.
+      scripts: [{
+        tokens: [1, STOP, 2, 3, STOP],
+        toolCall: { name: 'web_search', arguments: '{"query":"q"}' },
+      }],
       policy,
+      tools,
       terminalToolName: 'report',
       maxTurns: 5,
     });
 
-    // Recovery prefill happened (the blocking recoverInline path, role=recovery).
+    // Recovery prefill happened.
     const recoveryPrefills = run.traceEvents.filter(
       e => e.type === 'branch:prefill' && (e as any).role === 'recovery',
     );
@@ -52,10 +71,10 @@ describe('scenario: recovery generates no terminal call', () => {
     const failures = run.traceEvents.filter(e => e.type === 'pool:recoveryFailed');
     expect(reports.length + failures.length).toBe(recoveryPrefills.length);
 
-    // This run must have produced a failure (no terminal call in the output).
+    // This specific run must have produced a failure (non-JSON output).
     expect(failures.length).toBeGreaterThanOrEqual(1);
     const f = failures[0] as any;
-    expect(f.reason).toMatch(/no_terminal_call/);
+    expect(f.reason).toMatch(/parse_error/);
     expect(typeof f.outputExcerpt).toBe('string');
     expect(f.outputExcerpt.length).toBeGreaterThan(0);
   });

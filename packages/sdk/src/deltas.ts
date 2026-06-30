@@ -40,8 +40,7 @@ export interface DeltaOpts {
  *
  * @param ctx - Active session context
  * @param content - User message content
- * @param opts - Optional tools JSON for tool-aware formatting, an optional
- *   `system` message to lead the turn (default empty), + the thinking flag
+ * @param opts - Optional tools JSON for tool-aware formatting + thinking flag
  * @returns Token array ready for `branch.prefill()`
  *
  * @category Agents
@@ -49,14 +48,14 @@ export interface DeltaOpts {
 export function buildUserDelta(
   ctx: SessionContext,
   content: string,
-  opts: { tools?: string; system?: string } & DeltaOpts = {}
+  opts: { tools?: string } & DeltaOpts = {}
 ): number[] {
   const sep = ctx.getTurnSeparator();
   const fmtOpts: Record<string, unknown> = {};
   if (opts.tools) fmtOpts.tools = opts.tools;
   if (opts.enableThinking !== undefined) fmtOpts.enableThinking = opts.enableThinking;
   const { prompt } = ctx.formatChatSync(
-    JSON.stringify([{ role: 'system', content: opts.system ?? '' }, { role: 'user', content }]),
+    JSON.stringify([{ role: 'system', content: '' }, { role: 'user', content }]),
     fmtOpts
   );
   const delta = ctx.tokenizeSync(prompt, false);

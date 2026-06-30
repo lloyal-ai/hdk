@@ -480,6 +480,5 @@ export type AgentEvent =
   | { type: 'agent:tool_retry'; agentId: number; tool: string; retryAfterMs: number; attempt: number }
   | { type: 'agent:return'; agentId: number; result: string }
   | { type: 'agent:recovered'; agentId: number; result: string }
-  | { type: 'agent:failed'; agentId: number; reason: string }
   | { type: 'agent:done'; agentId: number }
   | { type: 'agent:tick'; cellsUsed: number; nCtx: number };

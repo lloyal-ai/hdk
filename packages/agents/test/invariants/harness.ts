@@ -125,15 +125,6 @@ export interface PoolSpec {
    * scenarios — e.g. fire on the first `agent:spawn` to reap the active cohort.
    */
   windDownAfter?: (ev: AgentEvent, count: number) => boolean;
-  /**
-   * Escape hatch to wrap/override any `ctx` method AFTER the instrumented mock is
-   * built but BEFORE the pool runs — the same affordance the harness uses
-   * internally for `_branchSample` / `parseChatOutput`. Recovery scenarios use it
-   * to make `tokenToText` spell out a parseable report (so the in-loop recovery
-   * SETS a result, as the real model would) and to capture the report grammar's
-   * `maxLength` budget out of `jsonSchemaToGrammar`.
-   */
-  instrument?: (ctx: InstrumentedMockSessionContext) => void;
 }
 
 /**
@@ -147,7 +138,6 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
     nCtx: spec.nCtx,
     cellsUsed: spec.cellsUsed,
   });
-  spec.instrument?.(ctx);
 
   // Wire scripted _branchSample: index by forkCount, advance per sample.
   let forkCount = 0;

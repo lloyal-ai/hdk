@@ -2,293 +2,184 @@ import { describe, it, expect } from 'vitest';
 import type { AgentPolicy } from '../../../src/AgentPolicy';
 import { runPool, STOP } from '../harness';
 import type { PoolRun } from '../harness';
-import { I1_nativeStoreSingleFiber } from '../predicates';
+import { I1_nativeStoreSingleFiber, I29_recoveryDiagnostic } from '../predicates';
 
 const N = 3;
 
-// The recovery report is a TERMINAL-tool call: the mock's script-driven
-// parseChatOutput returns this for the recovery output (same as the real model
-// emitting a Hermes `<tool_call><function=report>`), so finishRecovery extracts
-// `result` and the in-loop recovery SETS the agent's result. The grammar/maxLength
-// is verified against the real model; here the mock ignores the grammar, so we
-// assert the PATH, the co-batching, and the CAP (the token-stop, observable as
-// `pool:recoveryProduce.tokenCount`).
-const REPORT_CALL = { name: 'report', arguments: '{"result":"recovered"}' };
-
 /**
- * Every agent drops to idle WITHOUT a voluntary result on its first stop
- * (`free_text_stop`), so each is recovered: `parallel` injects the recovery turn
- * IN-LOOP (handleRecover → SETTLE admission → bin-packed decode); `staggered`
- * blocks via `recoverInline`. `reportBudget` is the FIXED per-report cap `b`.
+ * Every agent drops to idle WITHOUT a result on its first stop
+ * (`free_text_stop`, not `free_text_return`), so all N land in the
+ * termination-sweep recovery cohort. `onRecovery` always extracts (no
+ * min-token/min-tool gates), and `recoveryShape` selects the reap path under
+ * test. The recovery prompt is a parameter so the pressure tests can make
+ * Σ(prefill) dwarf the available headroom.
  */
 function idleNoResultPolicy(
   shape: 'staggered' | 'parallel',
-  reportBudget?: number,
+  recoveryPrompt: { system: string; user: string },
 ): AgentPolicy {
   return {
     onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
     onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
-    onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),
+    onRecovery: () => ({ type: 'extract', prompt: recoveryPrompt }),
     shouldExit: () => false,
     recoveryShape: shape,
+  };
+}
+
+/**
+ * A `'parallel'` policy that records the per-report budget the fold hands each
+ * agent — the fold's recovery pass calls `onRecovery(agent, pressure, b)` WITH a
+ * budget, while the eligibility probe calls it WITHOUT one, so recording only the
+ * defined-`budgetTokens` calls captures the fold's actual per-report budgets.
+ * Optionally pins a fixed `reportBudget` (the low-effort path) instead of the
+ * headroom-derived default.
+ */
+function recordingParallelPolicy(sink: number[], reportBudget?: number): AgentPolicy {
+  return {
+    onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
+    onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+    onRecovery: (_a, _pressure, budgetTokens) => {
+      if (budgetTokens !== undefined) sink.push(budgetTokens);
+      return { type: 'extract', prompt: { system: 's', user: 'u' } };
+    },
+    shouldExit: () => false,
+    recoveryShape: 'parallel',
     ...(reportBudget !== undefined ? { reportBudget } : {}),
   };
 }
 
-// role='recovery' → the BLOCKING `recoverInline` path (staggered + the stall-break
-// fallback). role='toolResult' → the IN-LOOP recovery turn prefilled through SETTLE
-// (the parallel path). In these no-tool scenarios `toolResult` prefills are exactly
-// the in-loop recovery turns.
-const inlinePrefills = (r: PoolRun) =>
+const recoveryPrefills = (r: PoolRun) =>
   r.traceEvents.filter(e => e.type === 'branch:prefill' && (e as { role?: string }).role === 'recovery');
-const inLoopPrefills = (r: PoolRun) =>
-  r.traceEvents.filter(e => e.type === 'branch:prefill' && (e as { role?: string }).role === 'toolResult');
-const recoveryProduce = (r: PoolRun) =>
-  r.traceEvents.filter(e => e.type === 'pool:recoveryProduce');
-const recoveryReturn = (r: PoolRun) =>
-  r.traceEvents.filter(e => e.type === 'pool:recoveryReturn');
+const prefillCount = (r: PoolRun) =>
+  r.nativeCalls.filter(c => c.op === 'prefill').length;
 
-// Each agent: main turn [1, STOP], then a short recovery decode [1, STOP].
+// Each agent: main turn [1, STOP], then recovery decode [2, STOP]. The mock
+// emits non-JSON text from token 2 → recovery lands on `pool:recoveryFailed`
+// (we assert the batching *shape* + budget, not parse success — the mock can't
+// produce grammar-valid JSON, and ignores the maxLength grammar entirely).
 const idleScriptsN = (n: number) =>
-  Array.from({ length: n }, () => ({ tokens: [1, STOP, 1, STOP], content: 'prose findings', toolCall: REPORT_CALL }));
+  Array.from({ length: n }, () => ({ tokens: [1, STOP, 2, STOP], content: 'prose findings' }));
 const idleScripts = () => idleScriptsN(N);
 
+// Group count of a parallel fold run, derived from the prefill delta vs a
+// staggered baseline: staggered does one recovery prefill per agent (M), the fold
+// does one per group (G), and root+spawn prefills (S) are identical between runs —
+// so prefillCount(par) − prefillCount(stag) = (S+G) − (S+M) = G − M.
+const groupCount = (par: PoolRun, stag: PoolRun, m: number) =>
+  prefillCount(par) - prefillCount(stag) + m;
+
 /**
- * Parallel recovery is a turn (#77): a killed-without-result agent gets the
- * recovery prompt injected IN-LOOP via the nudge/SETTLE path — prefilled as a
- * `toolResult`, re-activated with the native terminal-tool grammar, and decoded
- * BIN-PACKED in the tick loop alongside live siblings (one O(1) llama_decode per
- * tick, regardless of how many recover at once). The per-report cap is the budget
- * `b` (prompt advisory + token-stop), sized so the WHOLE cohort's prefill+decode
- * fits headroom in one tick — so every reaped agent recovers, nothing is deferred or
- * lost. `staggered` (high effort) is the lossless serial path — blocking
- * `recoverInline`, uncapped — and is unchanged.
+ * Parallel recovery is a bounded FOLD: each step recovers the largest group of
+ * the cohort that fits in current KV at a fixed per-report budget `b`, prunes it
+ * (freeing KV), and recurses. `k` (group size) flexes 1..N with headroom — k=N
+ * (one batched pass) when KV is ample, k=1 (one report at a time) when it's tight,
+ * intermediate when moderate. The maxLength report cap itself is verified against
+ * the real model (the grammar probe — `result ::= "\"" char{0,N} "\"" space`);
+ * here the mock ignores the grammar, so we assert the fold's *packing* + *budget*.
  */
-describe('scenario: parallel recovery (in-loop via SETTLE)', () => {
-  it('recovers every parallel agent IN-LOOP via SETTLE — never the blocking recoverInline', async () => {
-    const r = await runPool({
-      nCtx: 8192, cellsUsed: 0, scripts: idleScripts(),
-      policy: idleNoResultPolicy('parallel'),
-    });
+describe('scenario: parallel recovery (the fold)', () => {
+  it('packs the whole cohort into ONE batched pass when KV is ample (k=N)', async () => {
+    // Small recovery prompt + generous nCtx → all N reports fit at once, so the
+    // fold takes one group = one batched prefill. Same scripts/policy except the
+    // reap shape, so root + spawn prefills are identical between the two runs.
+    const prompt = { system: 's', user: 'u' };
+    const par = await runPool({ nCtx: 8192, cellsUsed: 0, scripts: idleScripts(), policy: idleNoResultPolicy('parallel', prompt) });
+    const stag = await runPool({ nCtx: 8192, cellsUsed: 0, scripts: idleScripts(), policy: idleNoResultPolicy('staggered', prompt) });
 
-    // Every agent's recovery turn was prefilled through SETTLE (role=toolResult)…
-    expect(inLoopPrefills(r).length).toBe(N);
-    // …and NONE went through the blocking private-loop recoverInline (role=recovery).
-    expect(inlinePrefills(r).length).toBe(0);
-    // Every agent extracted a result in-loop (no loss).
-    expect(recoveryProduce(r).length).toBe(N);
-    expect(recoveryReturn(r).length).toBe(N);
-    // The bin-packed decode holds the single-fiber invariant (the SEGV guard).
-    expect(I1_nativeStoreSingleFiber(r).ok).toBe(true);
-    expect(r.result).toBeDefined();
+    // Both shapes recover every agent (one recovery prefill trace each).
+    expect(recoveryPrefills(par).length).toBe(N);
+    expect(recoveryPrefills(stag).length).toBe(N);
+
+    // THE batching proof: the only difference between the runs is the reap shape,
+    // so the fold collapsing N recovery prefills into one batched `store.prefill`
+    // shows up as exactly (N-1) fewer native prefill calls.
+    expect(prefillCount(par)).toBe(prefillCount(stag) - (N - 1));
+
+    // The batched decode holds the single-fiber invariant (the SEGV guard)…
+    expect(I1_nativeStoreSingleFiber(par).ok).toBe(true);
+    // …and every recovering agent still gets exactly one diagnostic (no loss).
+    expect(I29_recoveryDiagnostic(par).ok).toBe(true);
   });
 
-  it('stall-regression: a killed agent\'s recovery decodes bin-packed in a COMMIT with a LIVE sibling', async () => {
-    // Agent 0 keeps producing (the live sibling); agent 1 stops early and is
-    // recovered MID-RUN. The regression (the bug this whole change fixes): the old
-    // recoverInline ran agent 1's recovery in a private blocking loop that froze
-    // agent 0 for the duration. In-loop, agent 1's recovery tokens ride the tick's
-    // batched COMMIT *with* agent 0's live tokens — proven by a branchCount≥2 commit
-    // landing strictly inside agent 1's recovery window.
-    const r = await runPool({
-      nCtx: 8192, cellsUsed: 0,
-      scripts: [
-        { tokens: [...Array(8).fill(1), STOP, 1, STOP], content: 'long live sibling', toolCall: REPORT_CALL },
-        { tokens: [1, STOP, 1, STOP], content: 'short recover me', toolCall: REPORT_CALL },
-      ],
-      policy: idleNoResultPolicy('parallel'),
-    });
+  it('shrinks to k=1 under pressure — one report at a time, none lost', async () => {
+    // Huge recovery prompt → at most one (prompt + report) fits per step, so the
+    // fold groups into N singletons: same native-prefill count as staggered, but
+    // reached by the fold partitioning, not a binary gate. Prune-between frees KV
+    // for the next singleton; every report still lands.
+    const big = 'x'.repeat(4000); // ~1000 tokens each; ~3000 across the cohort
+    const prompt = { system: big, user: big };
+    const parPressure = await runPool({ nCtx: 4096, cellsUsed: 0, scripts: idleScripts(), policy: idleNoResultPolicy('parallel', prompt) });
+    const stagPressure = await runPool({ nCtx: 4096, cellsUsed: 0, scripts: idleScripts(), policy: idleNoResultPolicy('staggered', prompt) });
 
-    // The short agent recovers FIRST; derive its id from the first recovery-turn
-    // prefill (role=toolResult) rather than hardcoding a fork handle. Its recovery
-    // window runs from that prefill to its recovery extraction (pool:recoveryProduce).
-    const prefill = r.traceEvents.find(
-      e => e.type === 'branch:prefill' && (e as { role?: string }).role === 'toolResult',
-    );
-    expect(prefill).toBeDefined();
-    const recoveringId = (prefill as { branchHandle: number }).branchHandle;
-    const produce = r.traceEvents.find(
-      e => e.type === 'pool:recoveryProduce' && (e as { agentId?: number }).agentId === recoveringId,
-    );
-    expect(produce).toBeDefined();
-    const tPrefill = (prefill as { ts: number }).ts;
-    const tProduce = (produce as { ts: number }).ts;
+    // k=1 ⇒ the fold's per-step prefills match the staggered baseline (no N→1 collapse).
+    expect(prefillCount(parPressure)).toBe(prefillCount(stagPressure));
 
-    // A batched commit (branchCount≥2 ⇒ recovering agent 1 + live agent 0 together)
-    // lands inside the window — recovery co-batched with the live sibling, no block.
-    const coBatched = r.nativeCalls.filter(
-      c => c.op === 'commit' && c.branchCount >= 2 && c.tStart > tPrefill && c.tStart < tProduce,
-    );
-    expect(coBatched.length).toBeGreaterThanOrEqual(1);
-
-    // And it never fell back to the blocking recoverInline path.
-    expect(inlinePrefills(r).length).toBe(0);
-    expect(recoveryReturn(r).some(e => (e as { agentId?: number }).agentId === recoveringId)).toBe(true);
-    expect(I1_nativeStoreSingleFiber(r).ok).toBe(true);
+    // Every agent still recovered — the grouping loses no reports.
+    expect(recoveryPrefills(parPressure).length).toBe(N);
+    expect(I29_recoveryDiagnostic(parPressure).ok).toBe(true);
   });
 
-  it('recovery budget draws from the hardLimit RESERVE, not softLimit (floor regression — a3 truncation)', async () => {
-    // The floor-fix: `b` = (remaining − hardLimit − …)/aliveCount, so a LARGE softLimit
-    // (the model NUDGE floor — no mechanical meaning for recovery) does NOT shrink the
-    // forced report. The OLD code drew from `remaining − softLimit`, so a big softLimit
-    // truncated recovery reports (the TC1 a3 "missing Moat #2"). Here softLimit=7000 sits
-    // far above hardLimit=512 with ~8k cells free: the budget reaches MAX (2048), proven by
-    // the token-stop landing at 2048 on an over-long recovery script. A softLimit-based
-    // floor would have starved it to ~500 — truncating the report.
-    const r = await runPool({
-      nCtx: 8192, cellsUsed: 0,
-      scripts: [{ tokens: [1, STOP, ...Array(2100).fill(1), STOP], content: 'over-long recovery', toolCall: REPORT_CALL }],
-      policy: { ...idleNoResultPolicy('parallel'), pressureThresholds: { softLimit: 7000, hardLimit: 512 } },
-    });
-    expect(recoveryProduce(r).length).toBe(1);
-    // The cap landed at MAX (2048) — sized from the hardLimit reserve. The old softLimit
-    // floor would have produced ~500 here (remaining − softLimit, not remaining − hardLimit).
-    expect((recoveryProduce(r)[0] as { tokenCount: number }).tokenCount).toBe(2048);
-    expect(recoveryReturn(r).length).toBe(1);
-    expect(I1_nativeStoreSingleFiber(r).ok).toBe(true);
+  it('folds into intermediate groups (1 < k < N) under moderate pressure — the partition branch', async () => {
+    // Headroom-derived budget: fitting all M at once is impossible (the prompts add
+    // overhead beyond the M×b the budget reserves), but several fit — so the fold
+    // takes a partial first group, then recovers the rest after pruning replenishes
+    // KV. This exercises the `used + cost > budget` break — the packing branch that
+    // k=N and k=1 never reach.
+    const M = 4;
+    const prompt = { system: 's', user: 'u' };
+    const par = await runPool({ nCtx: 4096, cellsUsed: 0, scripts: idleScriptsN(M), policy: idleNoResultPolicy('parallel', prompt) });
+    const stag = await runPool({ nCtx: 4096, cellsUsed: 0, scripts: idleScriptsN(M), policy: idleNoResultPolicy('staggered', prompt) });
+
+    const groups = groupCount(par, stag, M);
+    expect(groups).toBeGreaterThan(1);   // not one all-at-once pass…
+    expect(groups).toBeLessThan(M);      // …and not M singletons either
+
+    // Every agent still recovered — partitioning loses nothing.
+    expect(recoveryPrefills(par).length).toBe(M);
+    expect(I29_recoveryDiagnostic(par).ok).toBe(true);
   });
 
-  it('reap UNDER negative headroom still recovers IN-LOOP from the hardLimit reserve (SETTLE-admission floor)', async () => {
-    // The production reap shape: an agent born with headroom (remaining > softLimit, so it
-    // passes the `pressure_init` spawn guard) RESEARCHES the KV down BELOW softLimit, then
-    // reaps and must recover. At reap `headroom = remaining − softLimit < 0`, so the OLD
-    // SETTLE gate (`cost > headroom`) DEFERS every recovery → stall-break → serial
-    // `recoverInline` (role=recovery). The NEW gate budgets extracting items against
-    // `headroom + reserveBand` (= remaining − hardLimit) → it ADMITS in-loop (role=toolResult).
-    // Born at remaining 3192 (> soft 3000); ~400 research commits drain it to ≈2750
-    // (headroom ≈ −250, but remaining − hardLimit ≈ 2240 — plenty for the report).
-    const r = await runPool({
-      nCtx: 8192, cellsUsed: 5000,
-      scripts: [{ tokens: [...Array(400).fill(1), STOP, 1, STOP], content: 'research then reap', toolCall: REPORT_CALL }],
-      policy: { ...idleNoResultPolicy('parallel'), pressureThresholds: { softLimit: 3000, hardLimit: 512 } },
-    });
-    // Recovered (no loss), IN-LOOP via SETTLE — NOT the serial recoverInline the old
-    // softLimit floor would have forced under this negative headroom.
-    expect(recoveryReturn(r).length).toBe(1);
-    expect(inLoopPrefills(r).length).toBeGreaterThanOrEqual(1);
-    expect(inlinePrefills(r).length).toBe(0);
-    expect(I1_nativeStoreSingleFiber(r).ok).toBe(true);
+  it('budgets each report at a SHARE of KV, never the whole pool (the pool-wide-budget fix)', async () => {
+    // The bug the fold fixes: the old batched recovery told every concurrent agent
+    // it owned the full remaining KV → N reports collectively exhausted it. The fold
+    // passes a per-report budget `b` (a fair share of headroom) via the onRecovery
+    // override. Record what the fold hands each report and assert it's a share, not
+    // the pool. nCtx 4096 keeps the share below the MAX_REPORT_BUDGET cap so we see
+    // the division, not the clamp.
+    const foldBudgets: number[] = [];
+    const nCtx = 4096;
+    const run = await runPool({ nCtx, cellsUsed: 0, scripts: idleScripts(), policy: recordingParallelPolicy(foldBudgets) });
+
+    // Every agent was budgeted exactly once during the fold.
+    expect(foldBudgets.length).toBe(N);
+    // Each report's budget is a SHARE — comfortably under half the pool even at
+    // N=3 (it shrinks further as the cohort grows), and strictly positive. This is
+    // the structural fix: N concurrent reports can't collectively exhaust KV.
+    for (const b of foldBudgets) {
+      expect(b).toBeGreaterThan(0);
+      expect(b).toBeLessThan(nCtx / 2);
+    }
+    expect(I1_nativeStoreSingleFiber(run).ok).toBe(true);
   });
 
-  it('token-stop caps an over-long report at the fixed budget `b` (salvaged, not lost)', async () => {
-    // The cap that closes the deadlock: a non-compliant report that runs past its
-    // word advisory is force-finished at `b` tokens rather than decoding unbounded.
-    // reportBudget=4; the recovery script would emit 8 tokens, but the token-stop
-    // fires at 4 — and the partial report is still salvaged (no loss).
-    const r = await runPool({
-      nCtx: 8192, cellsUsed: 0,
-      scripts: [{ tokens: [1, STOP, 1, 1, 1, 1, 1, 1, 1, 1, STOP], content: 'x', toolCall: REPORT_CALL }],
-      policy: idleNoResultPolicy('parallel', 4),
-    });
-    expect(inLoopPrefills(r).length).toBe(1);
-    // The report was cut at exactly the budget — not the 8 the script would produce.
-    expect((recoveryProduce(r)[0] as { tokenCount: number }).tokenCount).toBe(4);
-    // …and the (partial) call was still extracted — the cap bounds, never drops.
-    expect(recoveryReturn(r).length).toBe(1);
-    expect(I1_nativeStoreSingleFiber(r).ok).toBe(true);
+  it('honors an explicit reportBudget as a fixed cap, bypassing headroom division (the low-effort path)', async () => {
+    // With ample KV the headroom-derived budget would clamp to MAX_REPORT_BUDGET
+    // (2048); an explicit reportBudget must win verbatim so a `quick`-effort run gets
+    // the short reports it asked for regardless of how much KV happens to be free.
+    const foldBudgets: number[] = [];
+    await runPool({ nCtx: 8192, cellsUsed: 0, scripts: idleScripts(), policy: recordingParallelPolicy(foldBudgets, 256) });
+    expect(foldBudgets.length).toBe(N);
+    for (const b of foldBudgets) expect(b).toBe(256); // exact — not headroom-divided, not the 2048 cap
   });
 
-  it('a simultaneous cohort reap recovers EVERY agent in-loop — adaptive `b` fits them all in one tick (loss regression)', async () => {
-    // The live failure this fix closes: a whole cohort hits the time limit on the SAME
-    // tick (the flat+medium run reaped 4 agents at 358s). The old SETTLE admission charged
-    // each recovery item (prompt + report-budget) against headroom and DEFERRED the
-    // overflow — and when the pool terminated after the admitted ones finished, the
-    // deferred agents' findings were LOST. Now `b` is sized in handleRecover so
-    // aliveCount·(prompt + b) ≤ headroom: the cohort's recovery turns all prefill + decode
-    // together in ONE batched tick (O(1) in branch count), nothing defers, nothing is lost.
-    // cellsUsed simulates a partly-filled KV so the adaptive sizing actually bites.
-    const r = await runPool({
-      nCtx: 4096, cellsUsed: 1024, scripts: idleScripts(),
-      policy: idleNoResultPolicy('parallel'), // ADAPTIVE budget — the production (low/med) path
-    });
-    expect(recoveryReturn(r).length).toBe(N);    // every agent recovered — ZERO loss (the headline)
-    expect(recoveryProduce(r).length).toBe(N);
-    expect(inLoopPrefills(r).length).toBe(N);     // …all in-loop in one tick (admitted together, not deferred)
-    expect(inlinePrefills(r).length).toBe(0);     // …never the serial recoverInline fallback
-    expect(I1_nativeStoreSingleFiber(r).ok).toBe(true);
-    expect(r.result).toBeDefined();
-  });
-
-  it('salvages a TRUNCATED terminal call (token-stop mid-call) — clean result, no JSON wrapper', async () => {
-    // When the token-stop cuts mid-tool-call, parseChatOutput yields unclosed JSON
-    // (`{"result":"…partial`). extractTerminalResult must recover the `result` body
-    // and unescape it — NOT leak the `{"result":"` wrapper into the finding.
-    const r = await runPool({
-      nCtx: 8192, cellsUsed: 0,
-      scripts: [{
-        tokens: [1, STOP, 1, STOP], content: 'x',
-        toolCall: { name: 'report', arguments: '{"result":"clean partial body' }, // truncated, no close
-      }],
-      policy: idleNoResultPolicy('parallel'),
-    });
-    const recovered = r.channelEvents.filter(e => e.type === 'agent:recovered');
-    expect(recovered.length).toBe(1);
-    expect((recovered[0] as { result: string }).result).toBe('clean partial body');
-  });
-
-  it('an extracting agent is EXEMPT from re-kill — its forced report is never lost mid-decode', async () => {
-    // The decision-boundary's lost-report failure mode: once an agent is producing
-    // its forced recovery report (extracting), a subsequent kill verdict must NOT
-    // reap it again — that would discard the very report recovery exists to save.
-    // `shouldExit: always` kills the agent on its first active tick (→ recovery),
-    // then keeps voting kill every tick; the extracting agent must ride through.
-    const alwaysExit: AgentPolicy = {
-      onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-      onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
-      onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),
-      shouldExit: () => true,
-      recoveryShape: 'parallel',
-    };
-    const r = await runPool({
-      nCtx: 8192, cellsUsed: 0,
-      scripts: [{ tokens: [1, STOP], content: 'killed before producing', toolCall: REPORT_CALL }],
-      policy: alwaysExit,
-    });
-
-    // It entered recovery (in-loop) exactly once…
-    expect(inLoopPrefills(r).length).toBe(1);
-    // …was reaped exactly ONCE (the initial kill), never re-killed while extracting…
-    expect(r.traceEvents.filter(e => e.type === 'pool:agentDrop').length).toBe(1);
-    // …and its report survived to completion (not lost).
-    expect(recoveryReturn(r).length).toBe(1);
-    expect(I1_nativeStoreSingleFiber(r).ok).toBe(true);
-    expect(r.result).toBeDefined();
-  });
-
-  it('without an explicit reportBudget the cap ADAPTS to headroom ÷ live agents — more agents, shorter reports', async () => {
-    // The default cap is a fair share of CURRENT headroom across the live agents,
-    // not a fixed number: recovering alone licenses a longer report than recovering
-    // as one of many. A recovery that would run long is token-stopped at that
-    // adaptive `b`, so the per-report token count is strictly smaller with more
-    // co-alive agents. (No reportBudget → the adaptive path.)
-    const longRecovery = (n: number) =>
-      Array.from({ length: n }, () => ({ tokens: [1, STOP, ...Array(2200).fill(1), STOP], content: 'x', toolCall: REPORT_CALL }));
-    const solo = await runPool({ nCtx: 4096, cellsUsed: 0, scripts: longRecovery(1), policy: idleNoResultPolicy('parallel') });
-    const crowd = await runPool({ nCtx: 4096, cellsUsed: 0, scripts: longRecovery(6), policy: idleNoResultPolicy('parallel') });
-    const soloCap = (recoveryProduce(solo)[0] as { tokenCount: number }).tokenCount;
-    const crowdCap = Math.min(...recoveryProduce(crowd).map(e => (e as { tokenCount: number }).tokenCount));
-    expect(crowdCap).toBeLessThan(soloCap); // headroom/6 < headroom/1
-    expect(recoveryReturn(crowd).length).toBe(6); // …and the whole crowd still recovered
-  });
-
-  it('staggered (high effort) recovers via the blocking recoverInline path, UNCAPPED (lossless) — unchanged', async () => {
-    // The lossless path: each report serializes through recoverInline and owns full
-    // headroom — NO token-stop, so even with a reportBudget set the report runs to
-    // its natural stop. This is what `parallel` trades away for responsiveness.
-    const r = await runPool({
-      nCtx: 8192, cellsUsed: 0,
-      scripts: Array.from({ length: N }, () => ({
-        tokens: [1, STOP, 1, 1, 1, 1, 1, 1, 1, 1, STOP], content: 'prose', toolCall: REPORT_CALL,
-      })),
-      policy: idleNoResultPolicy('staggered', 4), // budget set, but staggered ignores the token-stop
-    });
-
-    // Every agent recovered via recoverInline (role=recovery), none in-loop.
-    expect(inlinePrefills(r).length).toBe(N);
-    expect(inLoopPrefills(r).length).toBe(0);
-    // Uncapped: each report produced all 8 tokens (the full script), NOT cut at b=4.
-    for (const p of recoveryProduce(r)) expect((p as { tokenCount: number }).tokenCount).toBe(8);
-    expect(recoveryReturn(r).length).toBe(N);
-    expect(I1_nativeStoreSingleFiber(r).ok).toBe(true);
+  it('clamps the headroom-derived budget to MAX_REPORT_BUDGET (no report bloat under ample KV)', async () => {
+    // One agent + a large context → headroom/N would be many thousands of tokens;
+    // the fold caps it at MAX_REPORT_BUDGET (2048) so an early-Stop wind-down with
+    // plenty of KV still doesn't ask the model for an essay.
+    const foldBudgets: number[] = [];
+    await runPool({ nCtx: 16384, cellsUsed: 0, scripts: idleScriptsN(1), policy: recordingParallelPolicy(foldBudgets) });
+    expect(foldBudgets.length).toBe(1);
+    expect(foldBudgets[0]).toBe(2048); // MAX_REPORT_BUDGET ceiling
   });
 });

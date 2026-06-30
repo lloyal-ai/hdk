@@ -32,16 +32,13 @@ const windDownDrops = (r: PoolRun) =>
   r.traceEvents.filter(e => e.type === 'pool:agentDrop' && (e as { reason?: string }).reason === 'wind_down');
 const recoveryPrefills = (r: PoolRun) =>
   r.traceEvents.filter(e => e.type === 'branch:prefill' && (e as { role?: string }).role === 'recovery');
-// role='toolResult' prefills are the IN-LOOP recovery turns (handleRecover → SETTLE);
-// in these no-tool scenarios they are exactly the in-loop reaps.
-const inLoopPrefills = (r: PoolRun) =>
-  r.traceEvents.filter(e => e.type === 'branch:prefill' && (e as { role?: string }).role === 'toolResult');
 const spawnEvents = (r: PoolRun) =>
   r.channelEvents.filter(e => e.type === 'agent:spawn');
+const prefillCount = (r: PoolRun) => r.nativeCalls.filter(c => c.op === 'prefill').length;
 const onFirstSpawn = (ev: { type: string }) => ev.type === 'agent:spawn';
 
 describe('scenario: graceful wind-down (drain)', () => {
-  it('reaps the whole active cohort on WindDown and recovers them in-loop', async () => {
+  it('reaps the whole active cohort on WindDown and recovers via the fold', async () => {
     const run = await runPool({
       nCtx: 8192, cellsUsed: 0,
       scripts: activeScriptsN(N),
@@ -51,33 +48,31 @@ describe('scenario: graceful wind-down (drain)', () => {
     // Every active agent was reaped SPECIFICALLY by wind-down (a distinct reason
     // from pressure/time/maxTurns), and reaped in one tick (no stagger).
     expect(windDownDrops(run).length).toBe(N);
-    // Every reaped agent had its recovery turn injected IN-LOOP (handleRecover →
-    // SETTLE, role=toolResult) — wind-down always bin-packs the drain.
-    expect(inLoopPrefills(run).length).toBe(N);
-    // The bin-packed recovery decode holds the single-fiber SEGV invariant.
+    // Every reaped agent was recovered (idle-no-result → onRecovery extract).
+    expect(recoveryPrefills(run).length).toBe(N);
+    // The batched recovery decode holds the single-fiber SEGV invariant.
     expect(I1_nativeStoreSingleFiber(run).ok).toBe(true);
     // The run terminated cleanly with a result.
     expect(run.result).toBeDefined();
   });
 
-  it('FORCES in-loop recovery even when recoveryShape is staggered (wind-down overrides the shape)', async () => {
+  it('FORCES the fold even when recoveryShape is staggered (wind-down overrides the shape)', async () => {
     const windStag = await runPool({ nCtx: 8192, cellsUsed: 0, scripts: activeScriptsN(N), policy: activePolicy('staggered'), windDownAfter: onFirstSpawn });
     const windPar  = await runPool({ nCtx: 8192, cellsUsed: 0, scripts: activeScriptsN(N), policy: activePolicy('parallel'),  windDownAfter: onFirstSpawn });
     // Baseline: the SAME staggered policy WITHOUT wind-down — agents run to STOP,
-    // land idle-no-result, and the termination sweep recovers them one-at-a-time
-    // through the BLOCKING recoverInline (role=recovery, zero in-loop prefills).
+    // land idle-no-result, and the sweep recovers them one-at-a-time (staggered).
     const baseStag = await runPool({ nCtx: 8192, cellsUsed: 0, scripts: activeScriptsN(N), policy: activePolicy('staggered') });
 
-    // Wind-down — staggered shape AND parallel shape alike — injects every reap's
-    // recovery turn IN-LOOP (role=toolResult): the staggered shape was overridden.
-    expect(inLoopPrefills(windStag).length).toBe(N);
-    expect(inLoopPrefills(windPar).length).toBe(N);
-
-    // The staggered baseline (no wind-down) takes the blocking path instead — NO
-    // in-loop recovery turns, every recovery via recoverInline. That contrast is
-    // the proof wind-down forced the in-loop shape regardless of the policy.
-    expect(inLoopPrefills(baseStag).length).toBe(0);
+    // All three recover every agent…
+    expect(recoveryPrefills(windStag).length).toBe(N);
+    expect(recoveryPrefills(windPar).length).toBe(N);
     expect(recoveryPrefills(baseStag).length).toBe(N);
+
+    // …but wind-down with the STAGGERED shape takes the SAME native-prefill path
+    // as the PARALLEL shape (it folded), and strictly FEWER prefills than the
+    // staggered baseline that actually staggered. ⇒ wind-down forced the fold.
+    expect(prefillCount(windStag)).toBe(prefillCount(windPar));
+    expect(prefillCount(windStag)).toBeLessThan(prefillCount(baseStag));
   });
 
   it('leaves an agent mid-terminal-tool to finish its voluntary report; reaps its free-text sibling', async () => {

@@ -1370,11 +1370,12 @@ describe('SPLIT-SEMANTICS GATE: voluntary vs recovery emission', () => {
 
     // Token sequence for the single agent's branch:
     //   [STOP, 100, STOP]
-    //   - first STOP: agent's PRODUCE phase hits stop; the main turn's parse goes
-    //     through onProduced → idle (free_text_stop) → agent killed → recoverInline
-    //   - 100, STOP: recovery's produce/commit loop generates token 100, then STOP →
-    //     finishRecovery parses the recovery output via parseChatOutput, which (below)
-    //     returns the terminal `report` call → agent.setResult → agent:recovered
+    //   - first STOP: agent's PRODUCE phase hits stop, parser returns no
+    //     content/toolCalls (per parseChatOutput override below), policy
+    //     returns idle → agent killed → recoverInline fires
+    //   - 100, STOP: recovery's produce/commit loop generates token 100
+    //     (text = JSON payload), then STOP → JSON.parse succeeds →
+    //     agent.setResult fires → agent:recovered event emits
     const queues = [[STOP, 100, STOP]];
     ctx._branchSample = (handle: number): number => {
       const fi = branchForkIndex.get(handle) ?? -1;
@@ -1383,12 +1384,8 @@ describe('SPLIT-SEMANTICS GATE: voluntary vs recovery emission', () => {
       branchSampleCount.set(handle, idx + 1);
       return idx < queue.length ? queue[idx] : STOP;
     };
-    // The recovery output is a native terminal-tool call (the real model emits Hermes
-    // `<tool_call><function=report>`); finishRecovery extracts `result` via the same
-    // parseChatOutput path every turn uses. onProduced ignores it on the main turn
-    // (returns idle), so the agent still drops → recovers.
     ctx.parseChatOutput = (): ParseChatOutputResult =>
-      ({ content: '', reasoningContent: '', toolCalls: [{ name: 'report', arguments: '{"result":"recovered findings"}', id: 'c1' }] });
+      ({ content: '', reasoningContent: '', toolCalls: [] });
 
     const traceWriter = new CapturingTraceWriter();
     const collectedEvents: AgentEvent[] = [];
