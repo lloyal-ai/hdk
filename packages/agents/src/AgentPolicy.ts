@@ -270,14 +270,17 @@ export interface AgentPolicy {
   resetTick?(): void;
 
   /**
-   * Post-loop: should we extract findings from this killed agent?
+   * Recovery: should we force a report from this reaped agent (no result)?
    *
-   * Called for each idle agent without a result after the tick loop ends.
-   * Return `extract` with a prompt to fork from the agent's branch and
-   * generate grammar-constrained findings. Return `skip` to prune.
-   *
-   * The pool owns the extraction grammar (`{ "result": "..." }` schema).
-   * Custom prompts must produce output matching this shape.
+   * Called when an agent is reaped without a voluntary result. Return
+   * `extract` with a recovery prompt to inject as an in-loop forced
+   * terminal-tool turn; return `skip` to prune. The pool forces the native
+   * terminal-tool grammar (built from the designated terminal tool's schema
+   * via `formatChat`, `toolChoice:'auto'`) and extracts the result via
+   * `parseChatOutput` → `toolCalls` → the terminal tool's argument — generic
+   * over the designated terminal (`report`/`submit`/…), not a hand-emitted
+   * `{result}` JSON. The prompt is your recovery instruction; the grammar
+   * (not the prompt) shapes the output.
    *
    * Optional — defaults to skip when absent.
    *
@@ -408,13 +411,13 @@ export interface DefaultAgentPolicyOpts {
    *  time budget is global across nesting levels (ms since policy creation). */
   budget?: {
     /** KV context budget (tokens remaining). softLimit = nudge floor, hardLimit = kill floor.
-     *  COUPLING (non-obvious): `softLimit` also sizes RECOVERY. The forced-report budget
-     *  `b` is an adaptive share of `headroom = remaining − softLimit` across the live
-     *  agents (see {@link AgentPolicy.onRecovery} + agent-pool `handleRecover`). So
-     *  RAISING `softLimit` SHORTENS recovery reports, and a `softLimit` large enough that
-     *  `headroom < aliveCount·(prompt + MIN_REPORT_BUDGET)` forces the reaped cohort onto
-     *  the serial `recoverInline` fallback instead of one-tick parallel recovery. Tune it
-     *  for the downstream reserve you need, aware it trades against recovery report length. */
+     *  COUPLING (non-obvious): RECOVERY budgets from the `hardLimit` RESERVE, not `softLimit`.
+     *  The forced-report budget `b` and the SETTLE admission for an extracting agent draw from
+     *  `remaining − hardLimit` (see {@link AgentPolicy.onRecovery} + agent-pool `handleRecover`),
+     *  so recovery may decode the soft reserve down to `hardLimit`. `softLimit` is the model
+     *  NUDGE floor, reserved for downstream work (synth) — raising it nudges EARLIER but does
+     *  NOT shorten recovery reports. (`softLimit` is advisory: it gates the wrap-up nudge +
+     *  tool-result deferral, never a kill; `hardLimit` is the only mechanical floor.) */
     context?: { softLimit?: number; hardLimit?: number };
     /** Wall-time budget (ms since policy creation). */
     time?: { softLimit?: number; hardLimit?: number };
