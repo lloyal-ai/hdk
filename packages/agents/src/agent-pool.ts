@@ -302,7 +302,12 @@ function* finishRecovery(
     generationPrompt: agent.fmt.generationPrompt,
     parser: agent.fmt.parser,
   });
-  const call = parsed.toolCalls.find(c => c.name === terminalToolName) ?? parsed.toolCalls[0];
+  // When a terminal tool is designated, the report MUST be that tool's call — never fall
+  // back to a non-terminal call (that would set the result from the wrong args). With no
+  // terminal tool, take whatever the model produced (matches `_handleTerminalTool`).
+  const call = terminalToolName
+    ? parsed.toolCalls.find(c => c.name === terminalToolName)
+    : parsed.toolCalls[0];
   if (call) {
     const result = extractTerminalResult(call.arguments);
     if (result) {
@@ -766,8 +771,10 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
 
     // The eager terminal-tool grammar that forces a recovered agent to emit a
     // schema-valid terminal call (whatever the harness designated as terminal).
-    // Computed once from the terminal tool's schema; `null` when there is no
-    // terminal tool (recovery has no structured result to force, so it no-ops).
+    // Computed once from the terminal tool's schema; `null` when there is no terminal
+    // tool — recovery still runs, but with no grammar to force a schema-valid call the
+    // agent decodes unconstrained and `finishRecovery` extracts via `parseChatOutput`
+    // (or emits `agent:failed` when no call is parseable). It does NOT no-op.
     const terminalTool = terminalToolName ? tools.get(terminalToolName) : undefined;
     const terminalGrammar = terminalTool ? buildTerminalGrammar(ctx, terminalTool) : null;
     const policy = opts.policy ?? new DefaultAgentPolicy();
@@ -1549,7 +1556,10 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             // then re-decodes into the already-exhausted KV and fails. Salvage the
             // partial terminal call it has already emitted (parseChatOutput handles the
             // truncation); no further decode is needed.
-            yield* finishRecovery(a, a.rawOutput, a.tokenCount, poolChannel, tw, poolScope.traceId, ctx, terminalToolName);
+            // producedTokens = the report turn's tokens, not cumulative: `resetTurn`
+            // clears `rawOutput` (not `tokenCount`), so `rawOutput` is just the in-flight
+            // report — report-scoped + consistent with the in-loop path's `recoveryTokens`.
+            yield* finishRecovery(a, a.rawOutput, ctx.tokenizeSync(a.rawOutput, false).length, poolChannel, tw, poolScope.traceId, ctx, terminalToolName);
             a.transition('idle');
             safePrune(a.branch);
           } else if (policy.recoveryShape === 'parallel') {

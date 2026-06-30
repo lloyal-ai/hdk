@@ -59,4 +59,35 @@ describe('scenario: recovery generates no terminal call', () => {
     expect(typeof f.outputExcerpt).toBe('string');
     expect(f.outputExcerpt.length).toBeGreaterThan(0);
   });
+
+  it('recovery output has only a NON-terminal call + terminalToolName set → no_terminal_call (Fix A)', async () => {
+    // shouldExit reaps the agent before any voluntary result → recovery runs. The recovery
+    // decode parses to a NON-terminal `web_search` call; with terminalToolName 'report',
+    // finishRecovery must NOT treat it as the report — require the terminal match, else fail.
+    // Pre-Fix-A: `?? toolCalls[0]` set the result from web_search's args → pool:recoveryReturn.
+    const policy: AgentPolicy = {
+      onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
+      onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),
+      shouldExit: () => true,
+    };
+
+    const run = await runPool({
+      nCtx: 4096,
+      cellsUsed: 3000,
+      scripts: [{
+        tokens: [2, 3, STOP],
+        toolCall: { name: 'web_search', arguments: '{"query":"x"}' },
+      }],
+      policy,
+      terminalToolName: 'report',
+      maxTurns: 5,
+    });
+
+    const reports = run.traceEvents.filter(e => e.type === 'pool:recoveryReturn');
+    const failures = run.traceEvents.filter(e => e.type === 'pool:recoveryFailed');
+    expect(reports.length).toBe(0); // the non-terminal call must NOT be used as the report
+    expect(failures.length).toBeGreaterThanOrEqual(1);
+    expect((failures[0] as { reason: string }).reason).toMatch(/no_terminal_call/);
+  });
 });
