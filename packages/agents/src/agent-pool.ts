@@ -565,7 +565,11 @@ function* handleRecover(
   if (a.status === 'active') a.transition('awaiting_tool');
   a.markExtracting(b);
   a.resetTurn();
-  return { agentId: a.id, prefillTokens, toolName: '', callId: '', args: '' };
+  // Synthetic but identifiable settle identifiers. A recovery turn isn't a real tool
+  // call, but blank toolName/callId would emit a blank `tool:settle_order` entry and a
+  // blank ToolHistoryEntry; label them so the trace + history are self-describing
+  // (callId is unique per agent → keeps any callId-keyed replay oracle deterministic).
+  return { agentId: a.id, prefillTokens, toolName: 'recovery', callId: `recovery:${a.id}`, args: '' };
 }
 
 /**
