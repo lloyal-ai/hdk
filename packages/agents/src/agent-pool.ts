@@ -3,7 +3,7 @@ import type { Operation, Subscription, Task, Signal } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import { CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, GrammarTriggerType, type ParsedToolCall, type SessionContext } from '@lloyal-labs/sdk';
 import type { BranchStore } from '@lloyal-labs/sdk';
-import { Ctx, Store, Trace, TraceParent, CallingAgent, SpineFmt, GrantStoreCtx, WindDown } from './context';
+import { Ctx, Store, Trace, TraceParent, CallingAgent, SpineFmt, GrantStoreCtx, WindDown, CancelAgent } from './context';
 import type { FormatConfig } from './Agent';
 import { buildToolResultDelta, buildTurnDelta, buildUserDelta } from '@lloyal-labs/sdk';
 import { traceScope } from './trace-scope';
@@ -772,6 +772,11 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     // ⇒ no wind-down (today's behaviour). See the WindDown context.
     let windDownSignal: Signal<void, void> | null = null;
     try { windDownSignal = (yield* WindDown.get()) ?? null; } catch { /* no wind-down provided */ }
+    // Optional per-agent cancel signal: the consumer `.send({agentId})`s it (e.g. a
+    // per-card ×) to discard ONE live agent — halt its in-flight tool, emit a terminal
+    // agent:failed (user_cancel), prune its branch to reclaim KV. Absent ⇒ no cancel.
+    let cancelSignal: Signal<{ agentId: number }, void> | null = null;
+    try { cancelSignal = (yield* CancelAgent.get()) ?? null; } catch { /* no cancel provided */ }
     const poolScope = traceScope(tw, poolParentTraceId, 'pool', { maxTurns, terminalToolName });
 
     // Whether the pool's tool registry contains tools besides the terminal tool.
@@ -871,6 +876,12 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       discarded: boolean;
     }
     const pendingExtends: PendingExtend[] = [];
+
+    // Pending cancels — agentIds enqueued by the CancelAgent watcher, drained on the
+    // loop fiber before PRODUCE (a stable point: spawns settled, no decode in flight).
+    // Single-fiber discipline: the halt + prune runs on the tick, never from the
+    // watcher fiber, so it can't race the tick's native store work.
+    const pendingCancels: number[] = [];
 
     // Pool-level branch cleanup — ensures orphan-branch cleanup even when
     // spawns are lazy and the orchestrator's spawn scope exits early.
@@ -1213,6 +1224,25 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       });
     }
 
+    // ── Targeted cancel (per-agent) ─────────────────────────────────────
+    // The consumer `.send({agentId})`s CancelAgent (e.g. a per-card ×). Each emission
+    // enqueues onto pendingCancels + wakes the loop; the tick drains it (below) →
+    // halt that agent's in-flight tool + emit a terminal agent:failed + prune. Fires
+    // repeatedly for individual agents, unlike WindDown (fire-once, whole cohort). The
+    // orchestrator is NOT halted — siblings keep running.
+    if (cancelSignal) {
+      const cs = cancelSignal;
+      yield* spawn(function*() {
+        const sub = yield* cs;
+        for (;;) {
+          const next = yield* sub.next();
+          if (next.done) break;
+          pendingCancels.push(next.value.agentId);
+          toolWake.send();
+        }
+      });
+    }
+
     /** Post-process one tool completion ON THE LOOP FIBER: tokenize the result,
      *  send events, write traces, and return a SettledTool to prefill — or null
      *  for a retry-park / error-kill. Shared by the inline path (called inline)
@@ -1520,6 +1550,28 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       // If all we had was pending spawns, and none of them activated (shouldn't happen
       // normally — SPAWN always transitions to active), nothing to produce. Loop back.
       if (agents.length === 0) continue;
+
+      // -- Targeted cancel (user_cancel): discard one agent, reclaim its KV ---------
+      // Drained here (loop fiber, before PRODUCE) so teardown lands at a stable point,
+      // never mid-decode/mid-settle. Cancel = DISCARD: halt the agent's in-flight tool
+      // (aborting the fetch; its `ensure` removes it from inflightTasks), emit a terminal
+      // agent:failed (NO recovery — the user killed it deliberately), then idle + prune to
+      // free KV for siblings. Only agent:failed is emitted (no preceding agent:done) so the
+      // UI resolves straight to "cancelled" with no recovering flash. safePrune only reclaims
+      // childless leaves — a parent/chain agent no-ops (its findings still feed dependents).
+      if (pendingCancels.length > 0) {
+        for (const id of pendingCancels.splice(0)) {
+          const a = agentById.get(id);
+          if (!a || (a.status !== 'active' && a.status !== 'awaiting_tool')) continue;
+          const tool = inflightTasks.get(id);
+          if (tool) yield* tool.halt();
+          tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+            type: 'pool:agentDrop', agentId: id, reason: 'user_cancel' });
+          yield* poolChannel.send({ type: 'agent:failed', agentId: id, reason: 'user_cancel' });
+          a.transition('idle');
+          safePrune(a.branch);
+        }
+      }
 
       // -- Phase 1: PRODUCE -- sample from active agents, collect tool calls
       policy.resetTick?.();

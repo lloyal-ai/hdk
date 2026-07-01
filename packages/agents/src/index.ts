@@ -9,6 +9,7 @@ export {
   AppConfigStoreCtx,
   GrantStoreCtx,
   WindDown,
+  CancelAgent,
 } from './context';
 export { Tool, ToolRetryError } from './Tool';
 export { Agent } from './Agent';

@@ -129,7 +129,8 @@ export type TraceEvent =
         | 'maxTurns'
         | 'tool_error'
         | 'stop_token'
-        | 'wind_down';
+        | 'wind_down'
+        | 'user_cancel';
     }
   | TraceEventBase & {
       type: 'pool:agentNudge';
