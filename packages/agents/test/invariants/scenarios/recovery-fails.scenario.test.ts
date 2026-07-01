@@ -58,6 +58,13 @@ describe('scenario: recovery generates no terminal call', () => {
     expect(f.reason).toMatch(/no_terminal_call/);
     expect(typeof f.outputExcerpt).toBe('string');
     expect(f.outputExcerpt.length).toBeGreaterThan(0);
+
+    // The failure is announced on the CHANNEL too (`agent:failed`), not just the
+    // trace — the UI consumes `agent:failed` to leave the "writing report" state.
+    // (Deleting the emit would keep the trace assertions above green but hang the UI.)
+    const channelFailed = run.channelEvents.filter(e => e.type === 'agent:failed');
+    expect(channelFailed.length).toBe(failures.length);
+    expect((channelFailed[0] as { reason: string }).reason).toMatch(/no_terminal_call/);
   });
 
   it('recovery output has only a NON-terminal call + terminalToolName set → no_terminal_call (Fix A)', async () => {

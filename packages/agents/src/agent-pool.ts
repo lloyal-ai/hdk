@@ -1679,7 +1679,24 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
 
       // -- Phase 2: COMMIT -- batch-decode produced tokens
       if (entries.length > 0) {
-        yield* call(() => store.commit(entries));
+        try {
+          yield* call(() => store.commit(entries));
+        } catch (e) {
+          // Decode OOM (concurrent in-loop reports exhausted KV) tears down the pool.
+          // This batch is where admitted extractors decode their reports; unlike the
+          // blocking `recoverInline` path (its own scope_error catch), an in-loop
+          // extractor here would be orphaned with NO terminal event → eternal "writing
+          // report" spinner. Announce each in-flight extractor failed BEFORE propagating
+          // (the KV is exhausted — the run can't continue, so rethrow after).
+          const reason = `scope_error: ${(e as Error).message ?? 'unknown'}`;
+          for (const a of agents) {
+            if (!a.extracting || a.status !== 'active') continue;
+            tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+              type: 'pool:recoveryFailed', agentId: a.id, reason, outputExcerpt: a.rawOutput.slice(0, 200) });
+            yield* poolChannel.send({ type: 'agent:failed', agentId: a.id, reason });
+          }
+          throw e;
+        }
         steps++;
         const commitPressure = new ContextPressure(ctx, pressureOpts);
         yield* poolChannel.send({ type: 'agent:tick', cellsUsed: commitPressure.cellsUsed, nCtx: commitPressure.nCtx });
@@ -1759,7 +1776,11 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
             type: 'pool:agentDrop', agentId: a.id, reason,
           });
-          yield* poolChannel.send({ type: 'agent:done', agentId: a.id });
+          // `agent:done` is one-shot. An already-`extracting` agent got here via the
+          // critical-kill path, which ALREADY emitted `agent:done` at the kill; its
+          // recovery turn deferred and re-surfaced at the stall-break. Re-announcing it
+          // done would double-emit (violating the invariant `agent-pool.test.ts` asserts).
+          if (!a.extracting) yield* poolChannel.send({ type: 'agent:done', agentId: a.id });
           if (policy.recoveryShape === 'parallel' && !a.extracting) {
             // In-loop (first attempt): queue the recovery turn for next tick's
             // SETTLE (alongside the surviving nudges). Agent is awaiting_tool → no

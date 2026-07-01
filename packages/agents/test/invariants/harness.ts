@@ -33,6 +33,9 @@ export interface PoolRun {
   channelEvents: AgentEvent[];
   nativeCalls: NativeCall[];
   ctx: InstrumentedMockSessionContext;
+  /** Set if the pool run THREW (e.g. a decode OOM) instead of completing. The
+   *  captured `traceEvents`/`channelEvents` still reflect everything up to the throw. */
+  error?: unknown;
 }
 
 /**
@@ -44,6 +47,9 @@ export interface PoolRun {
 export class InstrumentedMockSessionContext extends MockSessionContext {
   readonly nativeCalls: NativeCall[] = [];
   private _seq = 0;
+  /** Simulate a decode OOM: throw from `_storeCommit` the first time this token is
+   *  in the committed batch (deterministic — tie it to a report-turn sentinel token). */
+  throwOnCommitToken: number | null = null;
 
   async _storePrefill(handles: number[], tokenArrays: number[][]): Promise<void> {
     const tStart = performance.now();
@@ -58,6 +64,9 @@ export class InstrumentedMockSessionContext extends MockSessionContext {
   }
 
   async _storeCommit(handles: number[], tokens: number[]): Promise<void> {
+    if (this.throwOnCommitToken != null && tokens.includes(this.throwOnCommitToken)) {
+      throw new Error('llama_decode failed: no KV slot (mock OOM)');
+    }
     const tStart = performance.now();
     const seq = this._seq++;
     await super._storeCommit(handles, tokens);
@@ -134,6 +143,9 @@ export interface PoolSpec {
    * `maxLength` budget out of `jsonSchemaToGrammar`.
    */
   instrument?: (ctx: InstrumentedMockSessionContext) => void;
+  /** Capture a thrown pool run into `PoolRun.error` instead of rejecting — for scenarios
+   *  that expect a throw AND need the events emitted before it. Default: re-throw (fail-loud). */
+  captureError?: boolean;
 }
 
 /**
@@ -217,7 +229,10 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
     ? JSON.stringify([...spec.tools.values()].map(t => t.schema))
     : '');
 
-  const result = await run(function* () {
+  let result: AgentPoolResult;
+  let poolError: unknown;
+  try {
+  result = await run(function* () {
     yield* Ctx.set(ctx as any);
     yield* Store.set(store);
     const events: Channel<AgentEvent, void> = createChannel();
@@ -263,9 +278,18 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
       return next.value;
     });
   });
+  } catch (e) {
+    // Default: RE-THROW (fail-loud — an unexpected pool throw must surface, e.g. the
+    // hardLimit<nBatch startup invariant). Scenarios that expect a throw AND need the
+    // events emitted before it opt in via `captureError`.
+    if (!spec.captureError) throw e;
+    poolError = e;
+    result = { agents: [] } as unknown as AgentPoolResult;
+  }
 
   return {
     result,
+    error: poolError,
     traceEvents: trace.events,
     channelEvents,
     nativeCalls: ctx.nativeCalls,
