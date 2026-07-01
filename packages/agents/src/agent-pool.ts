@@ -378,6 +378,13 @@ function* recoverInline(
   // (reflected in the rendered prompt via `<%= it.budget %>`).
   const recovery = policy.onRecovery?.(agent, new ContextPressure(ctx, pressureOpts));
   if (!recovery || recovery.type === 'skip') {
+    // Skip = policy judged the agent too thin to force a report. `agent:done` already
+    // fired at the drop, so emit a terminal event here too — else the agent orphans (no
+    // report row ever streams, timer never freezes). Nothing to salvage; fail it cleanly.
+    const reason = 'recovery_skipped';
+    tw.write({ traceId: tw.nextId(), parentTraceId, ts: performance.now(),
+      type: 'pool:recoveryFailed', agentId: agent.id, reason, outputExcerpt: agent.rawOutput.slice(0, 200) });
+    yield* events.send({ type: 'agent:failed', agentId: agent.id, reason });
     safePrune(agent.branch);
     return false;
   }
@@ -537,6 +544,7 @@ function isEmittingTerminal(agent: Agent, terminalToolName: string | undefined):
 function* handleRecover(
   a: Agent, policy: AgentPolicy, ctx: SessionContext,
   pressureOpts: PressureThresholds, aliveCount: number,
+  events: EventSender, tw: TraceWriter, parentTraceId: number,
 ): Operation<SettledTool | null> {
   // Per-report budget `b`: the prompt advisory (onRecovery's budget arg) and the
   // token-stop backstop share it. Size it so the WHOLE cohort's prefill+decode fits the
@@ -561,6 +569,15 @@ function* handleRecover(
     : Math.min(MAX_REPORT_BUDGET, Math.max(MIN_REPORT_BUDGET, fits));
   const recovery = policy.onRecovery?.(a, pressure, b);
   if (!recovery || recovery.type === 'skip') {
+    // Recovery skipped — the policy judged the agent too thin to force a report
+    // (e.g. `DefaultAgentPolicy` skips below its minTokens/minToolCalls floor). But
+    // `agent:done` ALREADY fired at the drop, so we MUST still emit a terminal event
+    // here — otherwise the consumer orphans the agent (eternal "recovering" state, no
+    // report row, timer never freezes). There's nothing to salvage; fail it cleanly.
+    const reason = 'recovery_skipped';
+    tw.write({ traceId: tw.nextId(), parentTraceId, ts: performance.now(),
+      type: 'pool:recoveryFailed', agentId: a.id, reason, outputExcerpt: a.rawOutput.slice(0, 200) });
+    yield* events.send({ type: 'agent:failed', agentId: a.id, reason });
     safePrune(a.branch);
     a.transition('idle');
     return null;
@@ -1532,7 +1549,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
             type: 'pool:agentDrop', agentId: a.id, reason: 'wind_down' });
           yield* poolChannel.send({ type: 'agent:done', agentId: a.id });
-          const settled = yield* handleRecover(a, policy, ctx, pressureOpts, aliveCount);
+          const settled = yield* handleRecover(a, policy, ctx, pressureOpts, aliveCount, poolChannel, tw, poolScope.traceId);
           if (settled) nudges.push(settled);
           continue;
         }
@@ -1565,7 +1582,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           } else if (policy.recoveryShape === 'parallel') {
             // In-loop: inject the recovery turn; SETTLE re-activates it (capped
             // report grammar) and the report decodes bin-packed with live agents.
-            const settled = yield* handleRecover(a, policy, ctx, pressureOpts, aliveCount);
+            const settled = yield* handleRecover(a, policy, ctx, pressureOpts, aliveCount, poolChannel, tw, poolScope.traceId);
             if (settled) nudges.push(settled);
           } else {
             // Staggered: blocking recoverInline, BEFORE the idle transition —
@@ -1624,7 +1641,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
                     reason: action.reason === 'max_turns' ? 'maxTurns' : 'pressure_softcut' });
                 }
                 yield* poolChannel.send({ type: 'agent:done', agentId: a.id });
-                const settled = yield* handleRecover(a, policy, ctx, pressureOpts, aliveCount);
+                const settled = yield* handleRecover(a, policy, ctx, pressureOpts, aliveCount, poolChannel, tw, poolScope.traceId);
                 if (settled) nudges.push(settled);
               } else {
                 yield* handleIdleDrop(a, action.reason, poolChannel, tw, poolScope.traceId);
@@ -1785,7 +1802,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             // In-loop (first attempt): queue the recovery turn for next tick's
             // SETTLE (alongside the surviving nudges). Agent is awaiting_tool → no
             // transition.
-            const settled = yield* handleRecover(a, policy, ctx, pressureOpts, aliveCount);
+            const settled = yield* handleRecover(a, policy, ctx, pressureOpts, aliveCount, poolChannel, tw, poolScope.traceId);
             if (settled) resolved.push(settled);
           } else {
             // Staggered — OR a parallel agent ALREADY extracting whose recovery
