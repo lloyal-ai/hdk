@@ -883,6 +883,13 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     // watcher fiber, so it can't race the tick's native store work.
     const pendingCancels: number[] = [];
 
+    // Agents that received a terminal agent:failed(user_cancel). Downstream phases must
+    // treat them as fully DISCARDED: the termination sweep must not force-recover a
+    // cancelled agent whose branch couldn't be pruned (non-leaf/recursed → safePrune
+    // no-op), and DRAIN must not emit tool events for a completion that lands after the
+    // cancel. Both consumption points check this set.
+    const cancelledIds = new Set<number>();
+
     // Pool-level branch cleanup — ensures orphan-branch cleanup even when
     // spawns are lazy and the orchestrator's spawn scope exits early.
     yield* ensure(() => {
@@ -1252,6 +1259,11 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     function* processCompletion(c: ToolCompletion): Operation<SettledTool | null> {
       const { agent, tc, callId, dispatchTraceId } = c;
 
+      // Discarded by a user cancel while this tool was in flight: drop the completion
+      // silently — no tool:result / agent:tool_result, no result set. The agent already
+      // got its terminal agent:failed(user_cancel); a late tool event would contradict it.
+      if (cancelledIds.has(agent.id)) return null;
+
       if (c.kind === 'error') {
         agent.transition('idle');
         agent.setResult(`Tool error: ${c.err.message}`, 'tool_error');
@@ -1568,6 +1580,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
             type: 'pool:agentDrop', agentId: id, reason: 'user_cancel' });
           yield* poolChannel.send({ type: 'agent:failed', agentId: id, reason: 'user_cancel' });
+          cancelledIds.add(id);
           a.transition('idle');
           safePrune(a.branch);
         }
@@ -1906,7 +1919,9 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           // is a no-op for them. One at a time → maximum per-report headroom
           // (the lossless path).
           for (const a of agents) {
-            if (a.status === 'idle' && !a.result && !a.branch.disposed) {
+            // A user-cancelled agent is DISCARDED — never force-recover it, even if its
+            // branch couldn't be pruned (non-leaf/recursed → safePrune no-op'd).
+            if (a.status === 'idle' && !a.result && !a.branch.disposed && !cancelledIds.has(a.id)) {
               yield* recoverInline(a, policy, ctx, store, tw, poolScope.traceId, poolChannel, pressureOpts, terminalGrammar, terminalToolName);
             }
           }
