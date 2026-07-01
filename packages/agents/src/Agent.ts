@@ -143,6 +143,17 @@ export class Agent {
   private _currentTool: string | null = null;
   private _toolObserved = false;
   private _parsed: ParseChatOutputResult | null = null;
+  // True while the agent produces its forced recovery report (the in-loop
+  // `parallel` recovery path): PRODUCE routes its isStop to finishRecovery
+  // instead of onProduced, and the kill/reap guards skip it.
+  private _extracting = false;
+  // Per-report cap for the in-loop recovery report. `_recoveryBudget` is the token
+  // target the pool set (policy.reportBudget, else a headroom share across the live
+  // agents); the token-stop fires once the report's own tokens reach it.
+  // `_recoveryTokenBase` snapshots the cumulative `_tokenCount` at recovery entry so
+  // the cap counts ONLY the report's tokens (resetTurn clears rawOutput, not _tokenCount).
+  private _recoveryBudget = 0;
+  private _recoveryTokenBase = 0;
 
   /** The agent that called the tool which spawned this agent's pool (null for top-level) */
   readonly parent: Agent | null = null;
@@ -222,6 +233,19 @@ export class Agent {
   get traceBuffer(): TraceToken[] { return this._traceBuffer; }
   get currentTool(): string | null { return this._currentTool; }
   get parsed(): ParseChatOutputResult | null { return this._parsed; }
+  /** Whether this agent is mid forced-recovery-report (in-loop parallel path). */
+  get extracting(): boolean { return this._extracting; }
+  /** The fixed per-report token cap for this recovery (set at {@link markExtracting}). */
+  get recoveryBudget(): number { return this._recoveryBudget; }
+  /** Tokens produced SINCE recovery entry — what the token-stop backstop checks. */
+  get recoveryTokens(): number { return this._tokenCount - this._recoveryTokenBase; }
+  /** Mark the agent as producing its recovery report (idempotent, one-way). Records
+   *  the per-report budget `b` and snapshots the token base for the cap. */
+  markExtracting(budget: number): void {
+    this._extracting = true;
+    this._recoveryBudget = budget;
+    this._recoveryTokenBase = this._tokenCount;
+  }
 
   /** Accumulate generated token text into the current turn */
   accumulateToken(text: string): void {

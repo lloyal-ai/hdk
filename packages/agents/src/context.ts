@@ -181,3 +181,22 @@ export const GrantStoreCtx = createContext<GrantStore>('lloyal.grantStore');
  * @category Agents
  */
 export const WindDown = createContext<Signal<void, void>>('lloyal.windDown');
+
+/**
+ * Effection context holding an optional per-agent cancel {@link Signal}.
+ *
+ * A consumer that wants to cancel a single live agent (e.g. a per-card ×) provides a
+ * `createSignal<{ agentId: number }, void>()` in the pool's run scope and
+ * `.send({ agentId })`s it. The pool reads it at boot (`yield* CancelAgent.get()`); on
+ * emission it halts that agent's in-flight tool (aborting the fetch), emits a terminal
+ * `agent:failed` (reason `user_cancel`) — NO recovery, the user killed it deliberately —
+ * and prunes its branch to reclaim KV for its siblings. Cancel = **discard**, not drain.
+ *
+ * This is the per-agent twin of {@link WindDown} (which reaps the whole cohort to
+ * recovery). Intended for flat / independent (parallel) agents — chain agents feed the
+ * spine, so the consumer wires this only where an agent's branch is a reclaimable leaf.
+ * Absent context = no cancel capability.
+ *
+ * @category Agents
+ */
+export const CancelAgent = createContext<Signal<{ agentId: number }, void>>('lloyal.cancelAgent');
