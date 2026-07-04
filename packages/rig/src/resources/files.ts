@@ -10,9 +10,17 @@ interface Section {
   startLine: number;
   endLine: number;
 }
-const { parseMarkdown } = loadBinary() as unknown as {
-  parseMarkdown(text: string): Section[];
-};
+// Lazy: loading the native binding at module scope would bind the GPU
+// variant from whatever raw LLOYAL_GPU exists at import time — before the
+// consumer has resolved/sanitized its config — and eagerly loads a binary
+// even for processes that never chunk a corpus. Defer to first use.
+let _parseMarkdown: ((text: string) => Section[]) | null = null;
+function parseMarkdown(text: string): Section[] {
+  _parseMarkdown ??= (
+    loadBinary() as unknown as { parseMarkdown(text: string): Section[] }
+  ).parseMarkdown;
+  return _parseMarkdown(text);
+}
 
 /** Pattern accepted in glob inputs — tail must be `.md`, `.mdx`, or
  *  `.{md,mdx}` (with optional ordering / overlap variants). Anything else
