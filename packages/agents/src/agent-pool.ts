@@ -697,18 +697,26 @@ function* setupAgent(
 /**
  * Concurrent agent generation loop as an Effection resource
  *
- * Runs N agents in parallel using a four-phase tick loop over shared
+ * Runs N agents in parallel using a phased tick loop over shared
  * {@link BranchStore} infrastructure. Each agent forks from a parent
  * branch, generates tokens, invokes tools, and reports findings.
  *
- * **Four-phase tick loop:**
- * 1. **PRODUCE** — sample all active agents via `produceSync()` (no async gap)
- * 2. **COMMIT** — single GPU call via `store.commit()` for all produced tokens
- * 3. **SETTLE** — drain settled tool results, batch prefill, reset grammars
- * 4. **DISPATCH** — execute collected tool calls sequentially via `scoped()` + `call()`
+ * **Tick loop (per tick):** SPAWN+EXTEND (drain queued spawns/extends +
+ * pending cancels) → PRODUCE (sample all active agents via `produceSync()`,
+ * no async gap) → COMMIT (single `store.commit()` for all produced tokens) →
+ * DRAIN (post-process completed fan-out tool results) → SETTLE (drain settled
+ * tool results, batch prefill, reset grammars) → DISPATCH (execute collected
+ * tool calls).
  *
- * Tool dispatch uses `scoped()` + `call()` — each tool executes to completion
- * before the next tick, ensuring exclusive `llama_context` access (no concurrent decode).
+ * **Dispatch is per-agent serial, inter-agent concurrent.** Each agent has at
+ * most one tool in flight — PRODUCE emits one call, then parks the agent
+ * `awaiting_tool` until its result settles (the barrier that yields the
+ * decision boundary). Inline tools run on this loop fiber, so `llama_context`
+ * access is exclusive by single-fiber discipline. A `Tool.fanout` tool runs
+ * OFF the loop fiber (bounded by a permit gate), issues no main-context op,
+ * and has its result tokenized/prefilled later in DRAIN + SETTLE on the loop
+ * fiber — so the store is only ever touched from the tick loop, never
+ * concurrently.
  *
  * **Resource semantics:** `provide()` suspends after all agents complete,
  * keeping branches alive so the caller can fork from them (e.g. for

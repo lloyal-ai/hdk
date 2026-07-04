@@ -243,8 +243,9 @@ export interface App {
 
 /**
  * A zero-arg Operation that constructs an {@link App}. This — not a
- * constructed `App` — is what the registry consumes (`createAppRegistry({
- * apps })` at boot, or `registry.enable(factory)` dynamically): the
+ * constructed `App` — is what the registry consumes via
+ * `registry.enable(factory)` (the one enable path, whether at boot or
+ * dynamically): the
  * registry runs the factory inside a per-app **detached** Effection scope
  * that it seeds with `AppConfigStoreCtx` / `AppRegistryCtx` / `RerankerCtx`,
  * so the factory reads its config and reranker, does any setup, and returns
@@ -262,8 +263,8 @@ export interface App {
  * Apps installed via `harness.dev install` (signed npm tarballs from
  * the canonical channel) export a factory of this exact shape from
  * their package entry point — the harness imports it with a plain
- * `import { createXxxApp } from '@lloyal-labs/<name>-app'` and passes
- * it to `createAppRegistry({ apps: [...] })`.
+ * `import { createXxxApp } from '@lloyal-labs/<name>-app'` and enables
+ * it with `registry.enable(createXxxApp)`.
  */
 export type AppFactory = () => Operation<App>;
 
@@ -287,11 +288,12 @@ export type AppState = 'enabled' | 'disabled';
  * enable/disable are methods on this interface.
  *
  * Registry state is the single source of truth for which apps are
- * enabled within a harness scope. The harness declares its boot set
- * via `createAppRegistry({ apps })`; each app runs in its own detached
- * Effection scope. `disable` (or registry scope-exit) tears that scope
- * down, firing the app factory's `ensure(...)` teardown. There are no
- * install/uninstall hooks.
+ * enabled within a harness scope. `createAppRegistry({ configStore })`
+ * returns an empty registry; the harness enables its boot set with a
+ * `registry.enable(factory)` call per app, each running in its own
+ * detached Effection scope. `disable` (or registry scope-exit) tears that
+ * scope down, firing the app factory's `ensure(...)` teardown. There are
+ * no install/uninstall hooks.
  */
 export interface AppRegistry {
   /**
@@ -318,7 +320,7 @@ export interface AppRegistry {
    * validates the manifest, and adds it. Returns the constructed App.
    * Throws — and tears down the partial scope — if the factory
    * throws, validation fails, or the name is already enabled. The boot
-   * set is enabled the same way via `createAppRegistry({ apps })`.
+   * set is enabled the same way — a `registry.enable(factory)` call per app.
    */
   enable(factory: AppFactory): Operation<App>;
   /**
