@@ -68,6 +68,19 @@ export function bindHeadless<E, C>(opts: BindHeadlessOpts<E, C>): void {
     }
   ).parentPort;
 
+  // `bridge` needs a real IPC channel: Electron `parentPort`, else a
+  // `child_process.fork()` child's `process.send`. In a plain Node process
+  // (e.g. RR_BRIDGE set outside a fork/Electron parent) neither exists — fail
+  // fast with a clear message rather than a cryptic "process.send is not a
+  // function" when the first frame posts.
+  if (!pp && typeof process.send !== "function") {
+    throw new Error(
+      "bindHeadless: 'bridge' mode requires an IPC channel — an Electron " +
+        "parentPort or a child_process.fork() child (neither process.parentPort " +
+        "nor process.send is available).",
+    );
+  }
+
   const post: (m: BindingFrame<E, C>) => void = pp
     ? (m) => pp.postMessage(m)
     : (m) => process.send!(m);

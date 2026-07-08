@@ -52,9 +52,11 @@ export function createBus<T>(): EventBus<T> {
 }
 
 /**
- * The wire frame every binding transport carries — a closed, JSON-serializable
- * union. `E`/`C` are the harness's own event/command unions; the binding treats
- * them as opaque payload and never inspects their semantics.
+ * The wire frame the BIDIRECTIONAL binding transports carry — `bridge` (and,
+ * later, `wss`) — a closed, JSON-serializable union. `E`/`C` are the harness's
+ * own event/command unions; the binding treats them as opaque payload and never
+ * inspects their semantics. Exception: the one-way `jsonl` transport emits raw
+ * events as NDJSON (no envelope, no `ready`) — it has no inbound command channel.
  */
 export type BindingFrame<E = unknown, C = unknown> =
   | { t: "event"; payload: E }
