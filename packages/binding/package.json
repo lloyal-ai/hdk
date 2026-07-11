@@ -1,0 +1,46 @@
+{
+  "name": "@lloyal-labs/binding",
+  "version": "0.1.0",
+  "description": "The harness's headless interface — the event/command binding and its transports",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lloyal-ai/hdk.git",
+    "directory": "packages/binding"
+  },
+  "homepage": "https://github.com/lloyal-ai/hdk/tree/main/packages/binding#readme",
+  "bugs": {
+    "url": "https://github.com/lloyal-ai/hdk/issues"
+  },
+  "keywords": [
+    "binding",
+    "transport",
+    "headless",
+    "harness",
+    "event-bus"
+  ],
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "files": [
+    "dist/",
+    "LICENSE",
+    "LICENSE-FAQ.md"
+  ]
+}

@@ -4,6 +4,7 @@
     "packages/agents",
     "packages/sdk",
     "packages/rig",
+    "packages/binding",
     "packages/harness-cli",
     "packages/apps/*"
   ],
