@@ -1,18 +1,16 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { createBus } from "../src/index";
-import { bindHeadless } from "../src/node";
+import { ndjson, ipc } from "../src/node";
 
-describe("bindHeadless — jsonl transport (one-way NDJSON)", () => {
+describe("ndjson — one-way JSON Lines binding", () => {
   it("drains bootstrap then streams live events as raw NDJSON, in order", () => {
     const bus = createBus<{ type: string }>();
     const lines: string[] = [];
-    bindHeadless({
-      uiChannel: bus,
-      dispatch: () => {},
-      bootstrap: [{ type: "a" }, { type: "b" }],
-      mode: "jsonl",
-      out: (l) => lines.push(l),
-    });
+    ndjson<{ type: string }>({ out: (l) => lines.push(l) })(
+      bus,
+      () => {},
+      [{ type: "a" }, { type: "b" }],
+    );
     expect(lines).toEqual(['{"type":"a"}', '{"type":"b"}']); // bootstrap, in order
     bus.send({ type: "c" });
     expect(lines).toEqual(['{"type":"a"}', '{"type":"b"}', '{"type":"c"}']); // live after
@@ -22,30 +20,30 @@ describe("bindHeadless — jsonl transport (one-way NDJSON)", () => {
     const bus = createBus<{ type: string }>();
     const lines: string[] = [];
     let dispatched = 0;
-    bindHeadless({
-      uiChannel: bus,
-      dispatch: () => {
+    ndjson<{ type: string }>({ out: (l) => lines.push(l) })(
+      bus,
+      () => {
         dispatched++;
       },
-      bootstrap: [{ type: "boot" }],
-      mode: "jsonl",
-      out: (l) => lines.push(l),
-    });
+      [{ type: "boot" }],
+    );
     expect(lines).toEqual(['{"type":"boot"}']);
-    // no `{"t":...}` frame envelope and no `ready` — jsonl is raw + one-way
-    expect(lines.some((l) => l.includes('"t":') || l.includes('"payload"'))).toBe(false);
-    expect(dispatched).toBe(0); // jsonl has no command channel
+    // no `{"t":...}` frame envelope and no `ready` — ndjson is raw + one-way
+    expect(lines.some((l) => l.includes('"t":') || l.includes('"payload"'))).toBe(
+      false,
+    );
+    expect(dispatched).toBe(0); // ndjson has no command channel
   });
 });
 
-describe("bindHeadless — bridge transport", () => {
+describe("ipc — parentPort-else-fork bridge binding", () => {
   afterEach(() => {
     delete (process as unknown as { parentPort?: unknown }).parentPort;
     vi.useRealTimers();
   });
 
   it("posts framed events + a trailing ready, and dispatches inbound commands", () => {
-    vi.useFakeTimers(); // contain bindHeadless's keep-alive interval
+    vi.useFakeTimers(); // contain ipc's keep-alive interval
     const posted: unknown[] = [];
     let onMessage: ((e: { data: unknown }) => void) | undefined;
     (process as unknown as { parentPort: unknown }).parentPort = {
@@ -57,12 +55,9 @@ describe("bindHeadless — bridge transport", () => {
     };
     const bus = createBus<{ type: string }>();
     const commands: unknown[] = [];
-    bindHeadless({
-      uiChannel: bus,
-      dispatch: (c) => commands.push(c),
-      bootstrap: [{ type: "boot" }],
-      mode: "bridge",
-    });
+    ipc<{ type: string }, unknown>()(bus, (c) => commands.push(c), [
+      { type: "boot" },
+    ]);
     // bootstrap framed as an event, then a trailing ready
     expect(posted).toEqual([
       { t: "event", payload: { type: "boot" } },
@@ -77,19 +72,12 @@ describe("bindHeadless — bridge transport", () => {
     expect(commands).toEqual([{ cmd: "ping" }]);
   });
 
-  it("throws a clear error when 'bridge' has no IPC channel", () => {
+  it("throws a clear error when there is no IPC channel", () => {
     const orig = process.send;
     delete (process as unknown as { parentPort?: unknown }).parentPort;
     (process as unknown as { send?: unknown }).send = undefined; // simulate no fork IPC
     try {
-      expect(() =>
-        bindHeadless({
-          uiChannel: createBus(),
-          dispatch: () => {},
-          bootstrap: [],
-          mode: "bridge",
-        }),
-      ).toThrow(/requires an IPC channel/);
+      expect(() => ipc()(createBus(), () => {}, [])).toThrow(/no IPC channel/);
     } finally {
       (process as unknown as { send?: unknown }).send = orig;
     }
