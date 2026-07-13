@@ -9,7 +9,7 @@
  * This module is the reusable glue. Option-A serving (one model residency per
  * connection): each connection forks its own harness child and bridges that
  * child's fork-IPC `BindingFrame`s ⇄ the wss socket. (Option B — N Sessions
- * sharing one in-process residency — uses `@lloyal-labs/binding`'s `bindWss`
+ * sharing one in-process residency — uses `@lloyal-labs/binding`'s `wss`
  * against per-Session buses instead; that is the compute-strand's host.)
  */
 

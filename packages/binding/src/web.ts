@@ -2,7 +2,8 @@
  * @lloyal-labs/binding/web — the browser side of the `wss` transport.
  *
  * A pure `event → handler` sink plus a command up-channel over one WebSocket —
- * the browser sibling of `bindWss`, speaking the same `BindingFrame`. Zero-
+ * the browser sibling of the server-side `wss` binding, speaking the same
+ * `BindingFrame`. Zero-
  * dependency and DOM-lib-free: it declares only the minimal structural WebSocket
  * surface it uses, so the app's bundler supplies the real browser global.
  *
@@ -74,6 +75,10 @@ export function connectWss<E, C>(
 
   return {
     send(command: C): void {
+      // In the MVP `sessionId` may still be "" if send() precedes the first
+      // inbound frame — harmless, the server ignores inbound sessionId (one
+      // Session per connection). TODO(multi-session): fail-fast on "" once the
+      // server routes commands by sessionId.
       const routed: RoutedBindingFrame<E, C> = {
         sessionId,
         frame: { t: "command", payload: command },

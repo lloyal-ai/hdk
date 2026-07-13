@@ -63,6 +63,7 @@ export function ipc<E, C>(): Binding<E, C> {
         parentPort?: {
           postMessage(m: unknown): void;
           on(e: "message", cb: (ev: { data: unknown }) => void): void;
+          off?(e: "message", cb: (ev: { data: unknown }) => void): void;
           start?(): void;
         };
       }
@@ -86,9 +87,13 @@ export function ipc<E, C>(): Binding<E, C> {
     const onMsg = (m: { t?: string; payload?: unknown }): void => {
       if (m?.t === "command") dispatch(m.payload as C);
     };
+    // Named wrapper so the disposer can detach the parentPort listener (Node's
+    // MessagePort and Electron's MessagePortMain both alias `off` → removeListener).
+    const ppOnMsg = (e: { data: unknown }): void =>
+      onMsg(e.data as { t?: string; payload?: unknown });
 
     if (pp) {
-      pp.on("message", (e) => onMsg(e.data as { t?: string; payload?: unknown }));
+      pp.on("message", ppOnMsg);
       pp.start?.();
     } else {
       process.on("message", onMsg);
@@ -110,7 +115,8 @@ export function ipc<E, C>(): Binding<E, C> {
       unsub();
       stopKeepAlive();
       process.off("exit", stopKeepAlive);
-      if (!pp) process.off("message", onMsg);
+      if (pp) pp.off?.("message", ppOnMsg);
+      else process.off("message", onMsg);
     };
   };
 }
@@ -171,6 +177,9 @@ export function wss<E, C>(
     } catch {
       return; // ignore non-JSON / binary frames
     }
+    // MVP: one Session per connection, so inbound commands need no sessionId
+    // filter. TODO(multi-session): when N Sessions share a socket, drop frames
+    // whose `m.sessionId !== sessionId`.
     if (m?.frame?.t === "command") dispatch(m.frame.payload as C);
   });
 
