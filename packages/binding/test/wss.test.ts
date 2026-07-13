@@ -3,7 +3,7 @@ import { createBus } from "../src/index";
 import { wss } from "../src/node";
 import { connectWss } from "../src/web";
 
-// Every wss frame is routed: { sessionId, frame } (wire-protocol.md §4). The
+// Every wss frame is routed: { sessionId, frame }. The
 // run-plane BindingFrame is transported unchanged inside `frame`; the session
 // plane rides beside it as a SessionFrame.
 const SID = "s1";

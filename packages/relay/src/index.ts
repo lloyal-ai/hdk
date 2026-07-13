@@ -71,11 +71,21 @@ export function bridgeConnection(
   // One fixed Session per connection (MVP); carried on every wss frame so the
   // protocol never bakes in connection ≡ Session.
   const sessionId = randomUUID();
+  // Set once the socket is gone so a late child message can't send on a closed
+  // socket (`ws` throws on send-after-close, which would crash the relay).
+  let closed = false;
   const route = (
     frame: BindingFrame<unknown, unknown> | SessionFrame,
   ): void => {
+    if (closed) return;
     const routed: RoutedBindingFrame<unknown, unknown> = { sessionId, frame };
-    socket.send(JSON.stringify(routed));
+    try {
+      socket.send(JSON.stringify(routed));
+    } catch {
+      // socket closed mid-flight (client disconnected while the child was still
+      // emitting) — stop routing; dispose() tears the child down on close.
+      closed = true;
+    }
   };
 
   const postState = (state: SessionState): void => {
@@ -106,7 +116,15 @@ export function bridgeConnection(
     } catch {
       return; // ignore non-JSON / binary frames
     }
-    if (m?.frame?.t === "command") child.send(m.frame);
+    // Guard: a late command after the child died/disconnected would throw
+    // ERR_IPC_CHANNEL_CLOSED and crash the relay.
+    if (m?.frame?.t === "command" && child.connected) {
+      try {
+        child.send(m.frame);
+      } catch {
+        /* child channel closed between the check and the send */
+      }
+    }
   });
 
   // terminal: child death → `died` (carry signal/code); then close the socket.
@@ -120,6 +138,7 @@ export function bridgeConnection(
   });
 
   const dispose = (): void => {
+    closed = true;
     if (!child.killed) child.kill();
   };
   socket.on("close", dispose);

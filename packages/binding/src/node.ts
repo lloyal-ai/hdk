@@ -64,6 +64,10 @@ export function ipc<E, C>(): Binding<E, C> {
           postMessage(m: unknown): void;
           on(e: "message", cb: (ev: { data: unknown }) => void): void;
           off?(e: "message", cb: (ev: { data: unknown }) => void): void;
+          removeListener?(
+            e: "message",
+            cb: (ev: { data: unknown }) => void,
+          ): void;
           start?(): void;
         };
       }
@@ -115,7 +119,9 @@ export function ipc<E, C>(): Binding<E, C> {
       unsub();
       stopKeepAlive();
       process.off("exit", stopKeepAlive);
-      if (pp) pp.off?.("message", ppOnMsg);
+      // Prefer `off`; fall back to `removeListener` for hosts whose MessagePort
+      // exposes only the EventEmitter alias.
+      if (pp) (pp.off ?? pp.removeListener)?.call(pp, "message", ppOnMsg);
       else process.off("message", onMsg);
     };
   };
