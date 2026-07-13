@@ -171,9 +171,17 @@ export function wss<E, C>(
   opts: WssOpts<E, C>,
 ): (state: SessionState) => void {
   const { uiChannel, dispatch, bootstrap, sessionId } = opts;
+  // Set once the socket is gone so a bus emission racing the "close" event can't
+  // send on a closing/closed socket (`ws` throws, which would crash the host).
+  let closed = false;
   const route = (frame: BindingFrame<E, C> | SessionFrame): void => {
+    if (closed) return;
     const routed: RoutedBindingFrame<E, C> = { sessionId, frame };
-    socket.send(JSON.stringify(routed));
+    try {
+      socket.send(JSON.stringify(routed));
+    } catch {
+      closed = true; // socket closed mid-flight
+    }
   };
 
   socket.on("message", (data) => {
@@ -192,7 +200,10 @@ export function wss<E, C>(
   const unsubscribe = uiChannel.subscribe((ev) =>
     route({ t: "event", payload: ev }),
   );
-  socket.on("close", unsubscribe);
+  socket.on("close", () => {
+    closed = true;
+    unsubscribe();
+  });
 
   // Seed bootstrap through the (already-subscribed) bus, then signal ready.
   for (const ev of bootstrap) uiChannel.send(ev);

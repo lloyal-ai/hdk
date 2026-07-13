@@ -106,6 +106,31 @@ describe("wss — server transport", () => {
     bus.send({ type: "after-close" });
     expect(sent).toEqual([{ sessionId: SID, frame: { t: "ready" } }]); // no event frame after close
   });
+
+  it("swallows a throwing socket.send (no host crash) and stops routing", () => {
+    const bus = createBus<{ type: string }>();
+    const sent: unknown[] = [];
+    let throwNow = false;
+    const socket = {
+      send: (data: string) => {
+        if (throwNow) throw new Error("socket closing");
+        sent.push(JSON.parse(data));
+      },
+      on: (_e: string, _cb: (...a: never[]) => void) => {},
+    };
+    wss(socket as never, {
+      uiChannel: bus,
+      dispatch: () => {},
+      bootstrap: [],
+      sessionId: SID,
+    });
+    expect(sent).toHaveLength(1); // ready
+    throwNow = true;
+    expect(() => bus.send({ type: "boom" })).not.toThrow(); // swallowed, not propagated
+    throwNow = false;
+    bus.send({ type: "after" });
+    expect(sent).toHaveLength(1); // closed after the throw → no further routing
+  });
 });
 
 // ── connectWss (browser client) ────────────────────────────────────
@@ -181,5 +206,19 @@ describe("connectWss — browser client", () => {
     connectWss<unknown, unknown>("wss://x", { onEvent: () => {}, onClose });
     ws.drop();
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores malformed frames without crashing the handler", () => {
+    const ws = mockGlobalWs();
+    const onEvent = vi.fn();
+    connectWss<{ type: string }, unknown>("wss://x", { onEvent });
+    // valid JSON, but no / non-string frame.t → must not throw.
+    expect(() => ws.emit({ sessionId: SID })).not.toThrow();
+    expect(() => ws.emit({ sessionId: SID, frame: {} })).not.toThrow();
+    expect(() => ws.emit({ sessionId: SID, frame: { t: 5 } })).not.toThrow();
+    expect(onEvent).not.toHaveBeenCalled();
+    // a well-formed frame still routes after a malformed one.
+    ws.emit({ sessionId: SID, frame: { t: "event", payload: { type: "ok" } } });
+    expect(onEvent).toHaveBeenCalledWith({ type: "ok" });
   });
 });

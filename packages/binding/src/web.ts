@@ -67,6 +67,9 @@ export function connectWss<E, C>(
     }
     if (typeof m.sessionId === "string") sessionId = m.sessionId;
     const frame = m.frame;
+    // Malformed-but-valid-JSON message: guard before branching on `t` so a bad
+    // frame can't throw and kill the handler loop.
+    if (!frame || typeof frame.t !== "string") return;
     if (frame.t === "event") handlers.onEvent(frame.payload);
     else if (frame.t === "session") handlers.onSession?.(frame.payload);
     else if (frame.t === "ready") handlers.onReady?.();
