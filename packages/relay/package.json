@@ -1,0 +1,37 @@
+{
+  "name": "@lloyal-labs/relay",
+  "version": "0.1.0",
+  "description": "The self-hostable framework-relay — serves a headless harness to remote frontends over wss",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "relay",
+    "anchor",
+    "wss",
+    "serving",
+    "harness",
+    "headless"
+  ],
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@lloyal-labs/binding": "^0.1.0"
+  },
+  "files": [
+    "dist/",
+    "LICENSE",
+    "LICENSE-FAQ.md"
+  ]
+}
