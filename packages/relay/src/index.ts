@@ -71,9 +71,17 @@ export function bridgeConnection(
   // One fixed Session per connection (MVP); carried on every wss frame so the
   // protocol never bakes in connection ≡ Session.
   const sessionId = randomUUID();
-  // Set once the socket is gone so a late child message can't send on a closed
-  // socket (`ws` throws on send-after-close, which would crash the relay).
+  // Terminal teardown: kill the child (if forked) + close the socket. Idempotent;
+  // reached from the socket "close" event, child exit, OR a send failure (the
+  // socket died without a clean close, so nothing else would tear the child down).
   let closed = false;
+  let child: ChildProcess | undefined;
+  const dispose = (): void => {
+    if (closed) return;
+    closed = true;
+    if (child && !child.killed) child.kill();
+    socket.close();
+  };
   const route = (
     frame: BindingFrame<unknown, unknown> | SessionFrame,
   ): void => {
@@ -82,9 +90,7 @@ export function bridgeConnection(
     try {
       socket.send(JSON.stringify(routed));
     } catch {
-      // socket closed mid-flight (client disconnected while the child was still
-      // emitting) — stop routing; dispose() tears the child down on close.
-      closed = true;
+      dispose(); // socket died mid-flight — tear the child + socket down
     }
   };
 
@@ -94,8 +100,10 @@ export function bridgeConnection(
   };
 
   postState({ phase: "warming" });
+  // If the warming post already failed, the socket is dead — don't fork an orphan.
+  if (closed) return dispose;
 
-  const child: ChildProcess = fork(harness.bin, harness.args ?? [], {
+  child = fork(harness.bin, harness.args ?? [], {
     env: { ...process.env, ...harness.env, RR_BRIDGE: "1" },
   });
 
@@ -118,7 +126,7 @@ export function bridgeConnection(
     }
     // Guard: a late command after the child died/disconnected would throw
     // ERR_IPC_CHANNEL_CLOSED and crash the relay.
-    if (m?.frame?.t === "command" && child.connected) {
+    if (m?.frame?.t === "command" && child?.connected) {
       try {
         child.send(m.frame);
       } catch {
@@ -127,20 +135,16 @@ export function bridgeConnection(
     }
   });
 
-  // terminal: child death → `died` (carry signal/code); then close the socket.
+  // terminal: child death → `died` (carry signal/code); then tear down.
   child.on("exit", (code, signal) => {
     postState({
       phase: "died",
       ...(signal ? { signal } : {}),
       ...(code != null ? { code } : {}),
     });
-    socket.close();
+    dispose();
   });
 
-  const dispose = (): void => {
-    closed = true;
-    if (!child.killed) child.kill();
-  };
   socket.on("close", dispose);
 
   return dispose;

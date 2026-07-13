@@ -171,16 +171,24 @@ export function wss<E, C>(
   opts: WssOpts<E, C>,
 ): (state: SessionState) => void {
   const { uiChannel, dispatch, bootstrap, sessionId } = opts;
-  // Set once the socket is gone so a bus emission racing the "close" event can't
-  // send on a closing/closed socket (`ws` throws, which would crash the host).
+  // Terminal teardown: mark closed + detach the bus. Reached from the socket
+  // "close" event OR a send failure (the socket died without a clean close, so
+  // the "close" handler never fires — unsubscribe here or the bus leaks this
+  // connection's `route` closure and keeps invoking it on every event).
   let closed = false;
+  let unsubscribe: (() => void) | undefined;
+  const teardown = (): void => {
+    if (closed) return;
+    closed = true;
+    unsubscribe?.();
+  };
   const route = (frame: BindingFrame<E, C> | SessionFrame): void => {
     if (closed) return;
     const routed: RoutedBindingFrame<E, C> = { sessionId, frame };
     try {
       socket.send(JSON.stringify(routed));
     } catch {
-      closed = true; // socket closed mid-flight
+      teardown(); // socket died mid-flight — stop routing + unsubscribe the bus
     }
   };
 
@@ -197,13 +205,10 @@ export function wss<E, C>(
     if (m?.frame?.t === "command") dispatch(m.frame.payload as C);
   });
 
-  const unsubscribe = uiChannel.subscribe((ev) =>
+  unsubscribe = uiChannel.subscribe((ev) =>
     route({ t: "event", payload: ev }),
   );
-  socket.on("close", () => {
-    closed = true;
-    unsubscribe();
-  });
+  socket.on("close", teardown);
 
   // Seed bootstrap through the (already-subscribed) bus, then signal ready.
   for (const ev of bootstrap) uiChannel.send(ev);

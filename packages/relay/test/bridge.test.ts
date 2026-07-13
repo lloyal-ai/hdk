@@ -129,4 +129,26 @@ describe("bridgeConnection", () => {
     dispose();
     expect(child.kill).toHaveBeenCalled();
   });
+
+  it("does not fork an orphan if the warming post fails (dead socket)", () => {
+    const socket = new FakeSocket();
+    socket.send.mockImplementation(() => {
+      throw new Error("dead socket");
+    });
+    bridgeConnection(asSocket(socket), { harness: { bin: "x" } });
+    expect(h.fork).not.toHaveBeenCalled();
+    expect(socket.close).toHaveBeenCalled();
+  });
+
+  it("a send failure tears down: kills the child and closes the socket", () => {
+    const socket = new FakeSocket();
+    bridgeConnection(asSocket(socket), { harness: { bin: "x" } });
+    const child = h.state.child!;
+    socket.send.mockImplementation(() => {
+      throw new Error("dead socket");
+    });
+    child.emit("message", { t: "event", payload: 1 }); // route → send throws → dispose
+    expect(child.kill).toHaveBeenCalled();
+    expect(socket.close).toHaveBeenCalled();
+  });
 });
