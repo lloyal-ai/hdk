@@ -193,6 +193,7 @@ export function wss<E, C>(
   };
 
   socket.on("message", (data) => {
+    if (closed) return; // teardown stops inbound too — no half-open dispatch
     let m: RoutedBindingFrame<E, C>;
     try {
       m = JSON.parse(typeof data === "string" ? data : String(data));

@@ -151,4 +151,17 @@ describe("bridgeConnection", () => {
     expect(child.kill).toHaveBeenCalled();
     expect(socket.close).toHaveBeenCalled();
   });
+
+  it("stops forwarding commands to the child after dispose", () => {
+    const socket = new FakeSocket();
+    const dispose = bridgeConnection(asSocket(socket), { harness: { bin: "x" } });
+    const child = h.state.child!;
+    dispose();
+    child.send.mockClear();
+    socket.emit(
+      "message",
+      JSON.stringify({ sessionId: "z", frame: { t: "command", payload: "x" } }),
+    );
+    expect(child.send).not.toHaveBeenCalled();
+  });
 });

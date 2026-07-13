@@ -131,6 +131,16 @@ describe("wss — server transport", () => {
     bus.send({ type: "after" });
     expect(sent).toHaveLength(1); // closed after the throw → no further routing
   });
+
+  it("stops dispatching inbound commands after close (no half-open)", () => {
+    const bus = createBus<unknown>();
+    const dispatch = vi.fn();
+    const { socket, emit, close } = makeSocket();
+    wss(socket, { uiChannel: bus, dispatch, bootstrap: [], sessionId: SID });
+    close();
+    emit({ sessionId: SID, frame: { t: "command", payload: { do: "x" } } });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
 });
 
 // ── connectWss (browser client) ────────────────────────────────────

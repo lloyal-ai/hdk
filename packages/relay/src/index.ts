@@ -118,6 +118,7 @@ export function bridgeConnection(
   // socket → child: unwrap the routed frame; only `command` crosses down to the
   // child, which speaks the bare run-plane BindingFrame over fork IPC.
   socket.on("message", (data: unknown) => {
+    if (closed) return; // dispose stops inbound too — no late command to a dying child
     let m: RoutedBindingFrame<unknown, unknown>;
     try {
       m = JSON.parse(typeof data === "string" ? data : String(data));
