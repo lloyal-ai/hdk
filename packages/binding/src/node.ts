@@ -58,6 +58,10 @@ export function ndjson<E, C = never>(
         unsub?.(); // detach the dead subscriber so the bus stops invoking it
       }
     });
+    // If the sink threw during subscribe()'s synchronous buffer drain, `unsub`
+    // was still undefined then (the drain runs before subscribe returns), so the
+    // detach above no-op'd and left the dead handler attached — detach it now.
+    if (closed) unsub();
     for (const ev of bootstrap) bus.send(ev);
     return () => unsub?.();
   };
@@ -239,6 +243,10 @@ export function wss<E, C>(
   unsubscribe = uiChannel.subscribe((ev) =>
     route({ t: "event", payload: ev }),
   );
+  // If socket.send threw during subscribe()'s synchronous buffer drain, teardown()
+  // ran while `unsubscribe` was still undefined and couldn't detach the bus —
+  // detach now (idempotent if teardown already unsubscribed on a later failure).
+  if (closed) unsubscribe();
   socket.on("close", teardown);
 
   // Seed bootstrap through the (already-subscribed) bus, then signal ready.

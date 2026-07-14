@@ -141,6 +141,34 @@ describe("wss — server transport", () => {
     emit({ sessionId: SID, frame: { t: "command", payload: { do: "x" } } });
     expect(dispatch).not.toHaveBeenCalled();
   });
+
+  it("detaches the bus when socket.send throws during subscribe()'s buffer drain", () => {
+    // Same trigger as the ndjson twin: a bus whose subscribe() drains a buffered
+    // event synchronously before returning. socket.send throws on that drained
+    // event → teardown runs while `unsubscribe` is still undefined. The post-subscribe
+    // `if (closed) unsubscribe()` must still detach, else the bus leaks the route closure.
+    const unsub = vi.fn();
+    const bus = {
+      send: () => {},
+      subscribe: (handler: (e: unknown) => void) => {
+        handler({ type: "buffered" }); // drain BEFORE returning unsub
+        return unsub;
+      },
+    };
+    const socket = {
+      send: () => {
+        throw new Error("socket closing");
+      },
+      on: () => {},
+    };
+    wss(socket as never, {
+      uiChannel: bus as never,
+      dispatch: () => {},
+      bootstrap: [],
+      sessionId: SID,
+    });
+    expect(unsub).toHaveBeenCalledTimes(1); // detached despite the drain-time failure
+  });
 });
 
 // ── connectWss (browser client) ────────────────────────────────────

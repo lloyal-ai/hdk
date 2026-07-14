@@ -48,6 +48,28 @@ describe("ndjson — one-way JSON Lines binding", () => {
     expect(() => bus.send({ type: "b" })).not.toThrow();
     expect(calls).toBe(1); // closed after the first failure → no further writes
   });
+
+  it("detaches the subscriber when the sink throws during subscribe()'s buffer drain", () => {
+    // createBus drains buffered events *synchronously inside* subscribe(), before
+    // it returns the unsubscribe fn — so a sink failure during that drain hits the
+    // catch while `unsub` is still undefined. A bus mirroring that semantics proves
+    // the adapter still detaches (via the post-subscribe `if (closed) unsub()`),
+    // rather than leaking a dead handler retained in the bus forever.
+    const unsub = vi.fn();
+    const bus = {
+      send: () => {},
+      subscribe: (handler: (e: { type: string }) => void) => {
+        handler({ type: "buffered" }); // drain BEFORE returning unsub (the trigger)
+        return unsub;
+      },
+    };
+    ndjson<{ type: string }>({
+      out: () => {
+        throw new Error("EPIPE");
+      },
+    })(bus as never, () => {}, []);
+    expect(unsub).toHaveBeenCalledTimes(1); // detached despite the drain-time failure
+  });
 });
 
 describe("ipc — parentPort-else-fork bridge binding", () => {
