@@ -57,6 +57,7 @@ export function connectWss<E, C>(
   // The server addresses every frame with a `sessionId`; capture the last-seen
   // one so the command up-channel echoes it (the MVP has one fixed id).
   let sessionId = "";
+  let closed = false; // stop send()ing once the socket is gone
 
   ws.addEventListener("message", (ev) => {
     let m: RoutedBindingFrame<E, C>;
@@ -74,10 +75,14 @@ export function connectWss<E, C>(
     else if (frame.t === "session") handlers.onSession?.(frame.payload);
     else if (frame.t === "ready") handlers.onReady?.();
   });
-  if (handlers.onClose) ws.addEventListener("close", handlers.onClose);
+  ws.addEventListener("close", () => {
+    closed = true;
+    handlers.onClose?.();
+  });
 
   return {
     send(command: C): void {
+      if (closed) return; // socket gone — dropping is the stateless contract
       // In the MVP `sessionId` may still be "" if send() precedes the first
       // inbound frame — harmless, the server ignores inbound sessionId (one
       // Session per connection). TODO(multi-session): fail-fast on "" once the
@@ -86,7 +91,11 @@ export function connectWss<E, C>(
         sessionId,
         frame: { t: "command", payload: command },
       };
-      ws.send(JSON.stringify(routed));
+      try {
+        ws.send(JSON.stringify(routed));
+      } catch {
+        closed = true; // socket closing mid-send
+      }
     },
     close(): void {
       ws.close();

@@ -152,6 +152,21 @@ describe("bridgeConnection", () => {
     expect(socket.close).toHaveBeenCalled();
   });
 
+  it("reports died + tears down if fork throws (bad bin)", () => {
+    const socket = new FakeSocket();
+    const states: { phase: string }[] = [];
+    h.fork.mockImplementationOnce(() => {
+      throw new Error("ENOENT: bad bin");
+    });
+    const dispose = bridgeConnection(asSocket(socket), {
+      harness: { bin: "nope" },
+      onState: (s) => states.push(s),
+    });
+    expect(states.map((s) => s.phase)).toEqual(["warming", "died"]);
+    expect(socket.close).toHaveBeenCalled();
+    expect(typeof dispose).toBe("function");
+  });
+
   it("stops forwarding commands to the child after dispose", () => {
     const socket = new FakeSocket();
     const dispose = bridgeConnection(asSocket(socket), { harness: { bin: "x" } });

@@ -45,7 +45,17 @@ export function ndjson<E, C = never>(
 ): Binding<E, C> {
   const out = opts.out ?? ((line: string) => process.stdout.write(line + "\n"));
   return (bus, _dispatch, bootstrap) => {
-    const unsub = bus.subscribe((ev) => out(JSON.stringify(ev)));
+    // Stop writing once the sink fails (e.g. stdout EPIPE — piped to a closed
+    // reader) so a write error can't crash the process.
+    let closed = false;
+    const unsub = bus.subscribe((ev) => {
+      if (closed) return;
+      try {
+        out(JSON.stringify(ev));
+      } catch {
+        closed = true;
+      }
+    });
     for (const ev of bootstrap) bus.send(ev);
     return unsub;
   };
@@ -84,11 +94,20 @@ export function ipc<E, C>(): Binding<E, C> {
       );
     }
 
+    // Stop posting once the IPC channel is gone (host quit / channel closed) so a
+    // post failure can't crash the engine child; the disposer sets it too.
+    let closed = false;
     const post = (m: BindingFrame<E, C>): void => {
-      if (pp) pp.postMessage(m);
-      else process.send!(m);
+      if (closed) return;
+      try {
+        if (pp) pp.postMessage(m);
+        else process.send!(m);
+      } catch {
+        closed = true; // IPC channel closed mid-flight
+      }
     };
     const onMsg = (m: { t?: string; payload?: unknown }): void => {
+      if (closed) return; // halt inbound too — no dispatch after teardown
       if (m?.t === "command") dispatch(m.payload as C);
     };
     // Named wrapper so the disposer can detach the parentPort listener (Node's
@@ -116,6 +135,7 @@ export function ipc<E, C>(): Binding<E, C> {
     post({ t: "ready" });
 
     return () => {
+      closed = true;
       unsub();
       stopKeepAlive();
       process.off("exit", stopKeepAlive);

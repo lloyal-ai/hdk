@@ -34,6 +34,20 @@ describe("ndjson — one-way JSON Lines binding", () => {
     );
     expect(dispatched).toBe(0); // ndjson has no command channel
   });
+
+  it("swallows a throwing sink (e.g. stdout EPIPE) and stops writing", () => {
+    const bus = createBus<{ type: string }>();
+    let calls = 0;
+    ndjson<{ type: string }>({
+      out: () => {
+        calls++;
+        throw new Error("EPIPE");
+      },
+    })(bus, () => {}, []);
+    expect(() => bus.send({ type: "a" })).not.toThrow(); // swallowed
+    expect(() => bus.send({ type: "b" })).not.toThrow();
+    expect(calls).toBe(1); // closed after the first failure → no further writes
+  });
 });
 
 describe("ipc — parentPort-else-fork bridge binding", () => {

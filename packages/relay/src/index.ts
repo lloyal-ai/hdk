@@ -103,9 +103,16 @@ export function bridgeConnection(
   // If the warming post already failed, the socket is dead — don't fork an orphan.
   if (closed) return dispose;
 
-  child = fork(harness.bin, harness.args ?? [], {
-    env: { ...process.env, ...harness.env, RR_BRIDGE: "1" },
-  });
+  try {
+    child = fork(harness.bin, harness.args ?? [], {
+      env: { ...process.env, ...harness.env, RR_BRIDGE: "1" },
+    });
+  } catch {
+    // fork failed (e.g. bad bin path) — report died + tear down, don't hang in warming.
+    postState({ phase: "died" });
+    dispose();
+    return dispose;
+  }
 
   // child → socket: the forked harness posts **bare** run-plane BindingFrames over
   // fork IPC. Wrap each in the routed envelope; the child's `ready` flips → live.

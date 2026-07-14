@@ -218,6 +218,17 @@ describe("connectWss — browser client", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("drops send() after the socket closes (no throw, no emit)", () => {
+    const ws = mockGlobalWs();
+    const client = connectWss<unknown, { do: string }>("wss://x", {
+      onEvent: () => {},
+    });
+    ws.drop(); // socket closed
+    ws.sent.length = 0;
+    expect(() => client.send({ do: "x" })).not.toThrow();
+    expect(ws.sent).toHaveLength(0);
+  });
+
   it("ignores malformed frames without crashing the handler", () => {
     const ws = mockGlobalWs();
     const onEvent = vi.fn();
