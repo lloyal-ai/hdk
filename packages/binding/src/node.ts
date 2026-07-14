@@ -179,7 +179,7 @@ export interface WssOpts<E, C> {
   /** called with each inbound command (the app wraps `commands.send`) */
   dispatch: (command: C) => void;
   /** events seeded before `ready` (e.g. config loaded, download plan) */
-  bootstrap: E[];
+  bootstrap: readonly E[];
   /**
    * the Session this connection is addressed to. The MVP carries one fixed
    * `sessionId` per connection; carrying it on every frame keeps

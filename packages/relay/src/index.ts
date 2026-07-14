@@ -143,8 +143,21 @@ export function bridgeConnection(
     }
   });
 
-  // terminal: child death → `died` (carry signal/code); then tear down.
+  // A spawn failure (bad bin / ENOENT) or IPC-level error surfaces as an `error`
+  // event — and a ChildProcess with no `error` listener throws it as an uncaught
+  // exception that crashes the relay. (fork()'s try/catch above only catches
+  // SYNCHRONOUS throws; ENOENT surfaces asynchronously here.) Report died + tear
+  // down instead.
+  child.on("error", () => {
+    if (closed) return;
+    postState({ phase: "died" });
+    dispose();
+  });
+
+  // terminal: child death → `died` (carry signal/code); then tear down. Guarded
+  // so an `error`-then-`exit` (or a prior teardown) reports `died` only once.
   child.on("exit", (code, signal) => {
+    if (closed) return;
     postState({
       phase: "died",
       ...(signal ? { signal } : {}),

@@ -168,6 +168,37 @@ describe("bridgeConnection", () => {
     expect(typeof dispose).toBe("function");
   });
 
+  it("reports died + tears down on an async child 'error' (spawn failure)", () => {
+    // fork() returns a child then fails to spawn asynchronously (ENOENT) — Node
+    // emits `error`, which crashes the relay if unlistened. The bridge must
+    // report `died` and tear down instead. (The sync-throw path is covered above;
+    // this is the async-emit path fork()'s try/catch cannot see.)
+    const socket = new FakeSocket();
+    const states: { phase: string }[] = [];
+    bridgeConnection(asSocket(socket), {
+      harness: { bin: "x" },
+      onState: (s) => states.push(s),
+    });
+    const child = h.state.child!;
+    child.emit("error", new Error("spawn ENOENT"));
+    expect(states.at(-1)).toEqual({ phase: "died" });
+    expect(child.kill).toHaveBeenCalled();
+    expect(socket.close).toHaveBeenCalled();
+  });
+
+  it("reports died only once when error is followed by exit", () => {
+    const socket = new FakeSocket();
+    const states: { phase: string }[] = [];
+    bridgeConnection(asSocket(socket), {
+      harness: { bin: "x" },
+      onState: (s) => states.push(s),
+    });
+    const child = h.state.child!;
+    child.emit("error", new Error("spawn ENOENT"));
+    child.emit("exit", 1, null); // Node may still fire exit after a spawn error
+    expect(states.filter((s) => s.phase === "died")).toHaveLength(1);
+  });
+
   it("stops forwarding commands to the child after dispose", () => {
     const socket = new FakeSocket();
     const dispose = bridgeConnection(asSocket(socket), { harness: { bin: "x" } });
