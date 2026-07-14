@@ -24,7 +24,6 @@ interface BrowserWebSocket {
   ): void;
   addEventListener(type: "close", listener: () => void): void;
 }
-declare const WebSocket: { new (url: string): BrowserWebSocket };
 
 export interface WssClientHandlers<E> {
   /** a run-plane event (opaque to the binding) */
@@ -53,7 +52,22 @@ export function connectWss<E, C>(
   url: string,
   handlers: WssClientHandlers<E>,
 ): WssClient<C> {
-  const ws = new WebSocket(url);
+  // DOM-lib-free: read the WebSocket constructor off `globalThis` with a narrow
+  // cast (no global `declare`, so nothing to clash with a consumer's lib.dom).
+  // Portable — browsers, Deno, Bun, and Node >=21 all expose a global WebSocket;
+  // fail fast where none exists instead of a cryptic ReferenceError.
+  const WebSocketCtor = (
+    globalThis as unknown as {
+      WebSocket?: new (url: string) => BrowserWebSocket;
+    }
+  ).WebSocket;
+  if (!WebSocketCtor) {
+    throw new Error(
+      "connectWss needs a global WebSocket (browsers, Deno, Bun, Node >=21). " +
+        "None found in this runtime; on the server use the node entry's wss() instead.",
+    );
+  }
+  const ws = new WebSocketCtor(url);
   // The server addresses every frame with a `sessionId`; capture the last-seen
   // one so the command up-channel echoes it (the MVP has one fixed id).
   let sessionId = "";

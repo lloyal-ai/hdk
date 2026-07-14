@@ -229,6 +229,13 @@ describe("connectWss — browser client", () => {
     expect(ws.sent).toHaveLength(0);
   });
 
+  it("throws a clear error when no WebSocket global exists (Node <21 / SSR)", () => {
+    // no mockGlobalWs() — globalThis.WebSocket is undefined here
+    expect(() => connectWss("wss://x", { onEvent: () => {} })).toThrow(
+      /WebSocket/,
+    );
+  });
+
   it("ignores malformed frames without crashing the handler", () => {
     const ws = mockGlobalWs();
     const onEvent = vi.fn();
