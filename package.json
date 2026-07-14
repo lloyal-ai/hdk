@@ -5,6 +5,7 @@
     "packages/sdk",
     "packages/rig",
     "packages/binding",
+    "packages/relay",
     "packages/harness-cli",
     "packages/apps/*"
   ],

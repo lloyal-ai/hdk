@@ -7,19 +7,16 @@ import core from "../dist/index.js";
 import node from "../dist/node.js";
 
 const { createBus } = core;
-const { bindHeadless } = node;
+const { ipc } = node;
 const __filename = fileURLToPath(import.meta.url);
 
 if (process.env.__BIND_CHILD) {
   // CHILD: a headless "harness" bound over the fork transport. `parentPort` is
-  // undefined here, so bindHeadless uses process.send / process.on('message').
+  // undefined here, so ipc() uses process.send / process.on('message').
   const bus = createBus();
-  bindHeadless({
-    uiChannel: bus,
-    dispatch: (c) => process.send?.({ t: "cmd-echo", payload: c }),
-    bootstrap: [{ type: "boot" }],
-    mode: "bridge",
-  });
+  ipc()(bus, (c) => process.send?.({ t: "cmd-echo", payload: c }), [
+    { type: "boot" },
+  ]);
   bus.send({ type: "hello" });
 } else {
   // PARENT: fork the child and assert the frame round-trips both ways.

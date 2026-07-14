@@ -1,111 +1,258 @@
 /**
- * @lloyal-labs/binding/node — the Node transports of the binding.
+ * @lloyal-labs/binding/node — the Node bindings.
  *
- * `selectMode` — the `RR_BRIDGE` / TTY / jsonl mode selector.
- * `bindHeadless` — wires a *headless* transport (one-way `jsonl`, or the
- *   `parentPort`-else-`fork` `bridge`) to a harness's `EventBus` + a command
- *   dispatch callback. The `bridge` transport auto-detects Electron `parentPort`
- *   (a local cut) vs a Node forked child's IPC channel (`process.send`). Ink
- *   (in-process) is NOT handled here — the app mounts it directly.
+ * A *binding* attaches a consumer to a harness's headless interface with **one
+ * uniform shape** (`Binding`): given the harness's `EventBus` (events out), a
+ * command sink (commands in), and the bootstrap events, it wires them to a
+ * transport and returns a disposer. The local adapters live here — `ndjson`
+ * (one-way JSON Lines) and `ipc` (the `parentPort`-else-`fork` bridge). `render`
+ * (Ink) is app-side and conforms to the same shape; in-process is plain
+ * `bus.subscribe` (pub/sub), not a transport. The remote `wss` binding is the
+ * server-side superset — it also authors the session plane.
  */
 
-import type { EventBus, BindingFrame } from "./index";
+import type {
+  EventBus,
+  BindingFrame,
+  SessionFrame,
+  SessionState,
+  RoutedBindingFrame,
+} from "./index";
 
-export type BindMode = "ink" | "jsonl" | "bridge";
+/** Tear down a binding: unsubscribe, remove listeners, stop keep-alive. */
+export type Dispose = () => void;
 
 /**
- * Pick the binding mode. `RR_BRIDGE` forces the bridge transport (some IPC host
- * is present); a TTY without jsonl mounts Ink (app-side); otherwise one-way JSONL.
+ * The uniform binding contract. Every local adapter — `render` (Ink, app-side),
+ * `ndjson`, `ipc` — has this shape, so an app threads the same triple into
+ * whichever it picks, with no `mode` enum and no in-process special case.
+ * Transport *capabilities* differ by boundary (`ndjson` is one-way — no inbound
+ * commands, no `ready`), but the attachment/lifecycle *shape* is one.
  */
-export function selectMode(opts: {
-  env?: NodeJS.ProcessEnv;
-  isTTY: boolean;
-  jsonl?: boolean;
-}): BindMode {
-  const bridge = !!(opts.env ?? process.env).RR_BRIDGE;
-  if (bridge) return "bridge";
-  if (opts.isTTY && !opts.jsonl) return "ink";
-  return "jsonl";
+export type Binding<E, C> = (
+  bus: EventBus<E>,
+  dispatch: (command: C) => void,
+  bootstrap: readonly E[],
+) => Dispose;
+
+/**
+ * One-way JSON Lines: write each event as a line (default: stdout). No inbound
+ * command channel, no `ready`, no envelope — raw events. `dispatch` is never
+ * called.
+ */
+export function ndjson<E, C = never>(
+  opts: { out?: (line: string) => void } = {},
+): Binding<E, C> {
+  const out = opts.out ?? ((line: string) => process.stdout.write(line + "\n"));
+  return (bus, _dispatch, bootstrap) => {
+    // Stop writing once the sink fails (e.g. stdout EPIPE — piped to a closed
+    // reader) so a write error can't crash the process.
+    let closed = false;
+    let unsub: (() => void) | undefined;
+    unsub = bus.subscribe((ev) => {
+      if (closed) return;
+      try {
+        out(JSON.stringify(ev));
+      } catch {
+        closed = true;
+        unsub?.(); // detach the dead subscriber so the bus stops invoking it
+      }
+    });
+    // If the sink threw during subscribe()'s synchronous buffer drain, `unsub`
+    // was still undefined then (the drain runs before subscribe returns), so the
+    // detach above no-op'd and left the dead handler attached — detach it now.
+    if (closed) unsub();
+    for (const ev of bootstrap) bus.send(ev);
+    return () => unsub?.();
+  };
 }
 
-export interface BindHeadlessOpts<E, C> {
+/**
+ * The `parentPort`-else-`fork` bridge: full-duplex `BindingFrame` over Electron
+ * `parentPort` if present, else a `child_process.fork()` child's IPC channel.
+ * Events + a trailing `ready` go down; `command` frames come up.
+ */
+export function ipc<E, C>(): Binding<E, C> {
+  return (bus, dispatch, bootstrap) => {
+    const pp = (
+      process as unknown as {
+        parentPort?: {
+          postMessage(m: unknown): void;
+          on(e: "message", cb: (ev: { data: unknown }) => void): void;
+          off?(e: "message", cb: (ev: { data: unknown }) => void): void;
+          removeListener?(
+            e: "message",
+            cb: (ev: { data: unknown }) => void,
+          ): void;
+          start?(): void;
+        };
+      }
+    ).parentPort;
+
+    // Needs a real IPC channel: Electron `parentPort`, else a
+    // `child_process.fork()` child's `process.send`. Fail fast in a plain Node
+    // process rather than a cryptic "process.send is not a function" when the
+    // first frame posts.
+    if (!pp && typeof process.send !== "function") {
+      throw new Error(
+        "ipc(): no IPC channel — needs an Electron parentPort or a " +
+          "child_process.fork() child (neither process.parentPort nor process.send).",
+      );
+    }
+
+    // Stop posting once the IPC channel is gone (host quit / channel closed) so a
+    // post failure can't crash the engine child; the disposer sets it too.
+    let closed = false;
+    const post = (m: BindingFrame<E, C>): void => {
+      if (closed) return;
+      try {
+        if (pp) pp.postMessage(m);
+        else process.send!(m);
+      } catch {
+        closed = true; // IPC channel closed mid-flight
+      }
+    };
+    const onMsg = (m: { t?: string; payload?: unknown }): void => {
+      if (closed) return; // halt inbound too — no dispatch after teardown
+      if (m?.t === "command") dispatch(m.payload as C);
+    };
+    // Named wrapper so the disposer can detach the parentPort listener (Node's
+    // MessagePort and Electron's MessagePortMain both alias `off` → removeListener).
+    const ppOnMsg = (e: { data: unknown }): void =>
+      onMsg(e.data as { t?: string; payload?: unknown });
+
+    if (pp) {
+      pp.on("message", ppOnMsg);
+      pp.start?.();
+    } else {
+      process.on("message", onMsg);
+    }
+
+    const unsub = bus.subscribe((ev) => post({ t: "event", payload: ev }));
+
+    // No Ink/stdin handle holds the libuv loop open here; keep it alive while the
+    // suspended command loop waits.
+    const keepAlive = setInterval(() => {}, 1 << 30);
+    const stopKeepAlive = (): void => clearInterval(keepAlive);
+    process.on("exit", stopKeepAlive);
+    // Parent died / IPC channel closed: stop the keep-alive so the child exits
+    // instead of hanging as an orphan holding a dead channel open.
+    const onDisconnect = (): void => {
+      closed = true;
+      stopKeepAlive();
+    };
+    process.on("disconnect", onDisconnect);
+
+    // Seed bootstrap through the (already-subscribed) bus, then signal ready.
+    for (const ev of bootstrap) bus.send(ev);
+    post({ t: "ready" });
+
+    return () => {
+      closed = true;
+      unsub();
+      stopKeepAlive();
+      process.off("exit", stopKeepAlive);
+      process.off("disconnect", onDisconnect);
+      // Prefer `off`; fall back to `removeListener` for hosts whose MessagePort
+      // exposes only the EventEmitter alias.
+      if (pp) (pp.off ?? pp.removeListener)?.call(pp, "message", ppOnMsg);
+      else process.off("message", onMsg);
+    };
+  };
+}
+
+/**
+ * The minimal server-side WebSocket surface the `wss` binding uses — structurally
+ * satisfied by the `ws` library's socket (and Node's global `WebSocket`). The
+ * relay/host supplies it, so the binding stays zero-dependency and
+ * transport-library-agnostic.
+ */
+export interface WsServerSocket {
+  send(data: string): void;
+  on(event: "message", listener: (data: unknown) => void): void;
+  on(event: "close", listener: () => void): void;
+}
+
+export interface WssOpts<E, C> {
   /** the harness's event bus (events flow out of it) */
   uiChannel: EventBus<E>;
   /** called with each inbound command (the app wraps `commands.send`) */
   dispatch: (command: C) => void;
   /** events seeded before `ready` (e.g. config loaded, download plan) */
-  bootstrap: E[];
-  /** which headless transport ('ink' is app-side, not accepted here) */
-  mode: "jsonl" | "bridge";
-  /** jsonl line sink; defaults to stdout NDJSON */
-  out?: (line: string) => void;
+  bootstrap: readonly E[];
+  /**
+   * the Session this connection is addressed to. The MVP carries one fixed
+   * `sessionId` per connection; carrying it on every frame keeps
+   * `connection ≡ Session` out of the protocol.
+   */
+  sessionId: string;
 }
 
 /**
- * Wire a headless transport of the binding. Synchronous setup — the harness's own
- * loop keeps running afterward. The `bridge` transport speaks the `BindingFrame`
- * over Electron `parentPort` if present, else the Node fork IPC channel.
+ * The **server-side** `wss` binding — the remote sibling of `ipc`, speaking the
+ * run-plane `BindingFrame` over a WebSocket, wrapped per-frame in a
+ * `RoutedBindingFrame` (sessionId outside) so the inner envelope is transported
+ * unchanged. Called in-process, once per connection (Option B: one call per
+ * Session bus; a single-embed self-host: one call total).
+ *
+ * Unlike the local `Binding` adapters it is a **superset**: it returns
+ * `postSession`, because the box gateway authors the session plane (`SessionFrame`,
+ * never a `BindingFrame` variant) — the local cuts fix the active Session by
+ * construction and have no session plane. The bus auto-detaches on socket close.
  */
-export function bindHeadless<E, C>(opts: BindHeadlessOpts<E, C>): void {
-  const { uiChannel, dispatch, bootstrap, mode } = opts;
-
-  if (mode === "jsonl") {
-    const out =
-      opts.out ?? ((line: string) => process.stdout.write(line + "\n"));
-    uiChannel.subscribe((ev) => out(JSON.stringify(ev)));
-    for (const ev of bootstrap) uiChannel.send(ev);
-    return;
-  }
-
-  // mode === "bridge": parentPort (Electron utilityProcess) else fork() IPC.
-  const pp = (
-    process as unknown as {
-      parentPort?: {
-        postMessage(m: unknown): void;
-        on(e: "message", cb: (ev: { data: unknown }) => void): void;
-        start?(): void;
-      };
+export function wss<E, C>(
+  socket: WsServerSocket,
+  opts: WssOpts<E, C>,
+): (state: SessionState) => void {
+  const { uiChannel, dispatch, bootstrap, sessionId } = opts;
+  // Terminal teardown: mark closed + detach the bus. Reached from the socket
+  // "close" event OR a send failure (the socket died without a clean close, so
+  // the "close" handler never fires — unsubscribe here or the bus leaks this
+  // connection's `route` closure and keeps invoking it on every event).
+  let closed = false;
+  let unsubscribe: (() => void) | undefined;
+  const teardown = (): void => {
+    if (closed) return;
+    closed = true;
+    unsubscribe?.();
+  };
+  const route = (frame: BindingFrame<E, C> | SessionFrame): void => {
+    if (closed) return;
+    const routed: RoutedBindingFrame<E, C> = { sessionId, frame };
+    try {
+      socket.send(JSON.stringify(routed));
+    } catch {
+      teardown(); // socket died mid-flight — stop routing + unsubscribe the bus
     }
-  ).parentPort;
-
-  // `bridge` needs a real IPC channel: Electron `parentPort`, else a
-  // `child_process.fork()` child's `process.send`. In a plain Node process
-  // (e.g. RR_BRIDGE set outside a fork/Electron parent) neither exists — fail
-  // fast with a clear message rather than a cryptic "process.send is not a
-  // function" when the first frame posts.
-  if (!pp && typeof process.send !== "function") {
-    throw new Error(
-      "bindHeadless: 'bridge' mode requires an IPC channel — an Electron " +
-        "parentPort or a child_process.fork() child (neither process.parentPort " +
-        "nor process.send is available).",
-    );
-  }
-
-  const post: (m: BindingFrame<E, C>) => void = pp
-    ? (m) => pp.postMessage(m)
-    : (m) => process.send!(m);
-
-  const onMsg = (m: { t?: string; payload?: unknown }): void => {
-    if (m?.t === "command") dispatch(m.payload as C);
   };
 
-  if (pp) {
-    // Electron MessagePortMain: the envelope arrives wrapped as `e.data`.
-    pp.on("message", (e) => onMsg(e.data as { t?: string; payload?: unknown }));
-    pp.start?.();
-  } else {
-    // Node child_process.fork IPC: the envelope arrives directly.
-    process.on("message", (m) => onMsg(m as { t?: string; payload?: unknown }));
-  }
+  socket.on("message", (data) => {
+    if (closed) return; // teardown stops inbound too — no half-open dispatch
+    let m: RoutedBindingFrame<E, C>;
+    try {
+      m = JSON.parse(typeof data === "string" ? data : String(data));
+    } catch {
+      return; // ignore non-JSON / binary frames
+    }
+    // MVP: one Session per connection, so inbound commands need no sessionId
+    // filter. TODO(multi-session): when N Sessions share a socket, drop frames
+    // whose `m.sessionId !== sessionId`.
+    if (m?.frame?.t === "command") dispatch(m.frame.payload as C);
+  });
 
-  uiChannel.subscribe((ev) => post({ t: "event", payload: ev }));
-
-  // No Ink/stdin handle holds the libuv loop open in bridge mode; keep it alive
-  // while the suspended command loop waits. Cleared on exit.
-  const keepAlive = setInterval(() => {}, 1 << 30);
-  process.on("exit", () => clearInterval(keepAlive));
+  unsubscribe = uiChannel.subscribe((ev) =>
+    route({ t: "event", payload: ev }),
+  );
+  // If socket.send threw during subscribe()'s synchronous buffer drain, teardown()
+  // ran while `unsubscribe` was still undefined and couldn't detach the bus —
+  // detach now (idempotent if teardown already unsubscribed on a later failure).
+  if (closed) unsubscribe();
+  socket.on("close", teardown);
 
   // Seed bootstrap through the (already-subscribed) bus, then signal ready.
   for (const ev of bootstrap) uiChannel.send(ev);
-  post({ t: "ready" });
+  route({ t: "ready" });
+
+  // The gateway authors the session plane; posting wraps it as a SessionFrame.
+  return (state: SessionState) => route({ t: "session", payload: state });
 }
