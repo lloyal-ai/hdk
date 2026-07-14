@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
+import { connectWss } from "@lloyal-labs/binding/web";
 
 // Mock node:child_process.fork to hand back a controllable fake child, so the
 // bridge's lifecycle + routing + cleanup can be exercised without a real bin.
@@ -178,5 +179,75 @@ describe("bridgeConnection", () => {
       JSON.stringify({ sessionId: "z", frame: { t: "command", payload: "x" } }),
     );
     expect(child.send).not.toHaveBeenCalled();
+  });
+});
+
+// Cross-package loopback: the relay's routed envelope must be exactly what the
+// binding's real browser client (`connectWss`) parses. The relay and the client
+// are tested in isolation elsewhere with hand-built frames — only wiring one's
+// output into the other's input catches an envelope drift between them.
+describe("bridge ⇄ connectWss client loopback", () => {
+  afterEach(() => {
+    // @ts-expect-error test-only global cleanup
+    delete globalThis.WebSocket;
+  });
+
+  it("the relay's routed envelope matches the client's unwrap, both directions", () => {
+    let clientMsg: ((ev: { data: unknown }) => void) | undefined;
+    let clientClose: (() => void) | undefined;
+    let socketMsg: ((data: unknown) => void) | undefined;
+
+    const relaySocket = {
+      send: (data: string) => clientMsg?.({ data }), // relay → client
+      on: (event: "message" | "close", cb: (...a: never[]) => void) => {
+        if (event === "message") socketMsg = cb as (d: unknown) => void;
+      },
+      close: () => {},
+    };
+    // @ts-expect-error install the browser global connectWss reads
+    globalThis.WebSocket = function () {
+      return {
+        send: (data: string) => socketMsg?.(data), // client → relay
+        close: () => clientClose?.(),
+        addEventListener: (type: string, cb: (arg: never) => void) => {
+          if (type === "message")
+            clientMsg = cb as (ev: { data: unknown }) => void;
+          else if (type === "close") clientClose = cb as () => void;
+        },
+      };
+    };
+
+    const events: unknown[] = [];
+    const sessions: unknown[] = [];
+    let ready = 0;
+    // client first, so its message listener is live when the relay posts `warming`.
+    const client = connectWss<{ hello: number }, { go: number }>("wss://x", {
+      onEvent: (e) => events.push(e),
+      onSession: (s) => sessions.push(s),
+      onReady: () => ready++,
+    });
+
+    bridgeConnection(relaySocket as unknown as RelaySocket, {
+      harness: { bin: "x" },
+    });
+    const child = h.state.child!;
+
+    // the relay authored `warming` on fork → reaches the client's session plane.
+    expect(sessions).toContainEqual({ phase: "warming" });
+
+    // child `ready` → `live` (session plane) + the client's run-plane onReady.
+    child.emit("message", { t: "ready" });
+    expect(ready).toBe(1);
+    expect(sessions).toContainEqual({ phase: "live" });
+
+    // a bare child event frame → wrapped by the relay → unwrapped to onEvent.
+    child.emit("message", { t: "event", payload: { hello: 1 } });
+    expect(events).toEqual([{ hello: 1 }]);
+
+    // command down: client.send → relay unwrap → bare frame to child.send.
+    client.send({ go: 1 });
+    expect(child.send).toHaveBeenCalledWith({ t: "command", payload: { go: 1 } });
+
+    void clientClose;
   });
 });
