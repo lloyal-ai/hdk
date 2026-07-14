@@ -1,13 +1,14 @@
 /**
- * @lloyal-labs/relay — the self-hostable framework-relay.
+ * @lloyal-labs/relay — the glue for a self-hostable framework-relay.
  *
- * A persisted Node server that serves a headless harness to remote frontends over
- * `wss` — the self-host serving front door. It is **harness-agnostic**: it forks
- * ANY deployable harness bin and serves ANY static frontend, so a deploy tool can
- * provision it as a wrapper rather than a rewrite.
+ * The reusable glue for serving a headless harness to remote frontends over `wss` —
+ * the self-host serving front door. It is **harness-agnostic**: it bridges ANY
+ * deployable harness bin to a wss socket, so a host (a deploy tool, or a developer's
+ * own Hono/Express/Koa server) can mount it as a wrapper rather than a rewrite. This
+ * module ships the bridge only; the host owns the HTTP/ws server and static serving.
  *
- * This module is the reusable glue. Option-A serving (one model residency per
- * connection): each connection forks its own harness child and bridges that
+ * Option-A serving (one model residency per connection): each connection forks its
+ * own harness child and bridges that
  * child's fork-IPC `BindingFrame`s ⇄ the wss socket. (Option B — N Sessions
  * sharing one in-process residency — uses `@lloyal-labs/binding`'s `wss`
  * against per-Session buses instead; that is the compute-strand's host.)
@@ -34,8 +35,8 @@ export interface RelayHarnessSpec {
 
 /**
  * The minimal wss socket the relay bridges to — structurally satisfied by the
- * `ws` library's socket. The reference server (src/server.ts) supplies it, so
- * this glue never imports `ws`.
+ * `ws` library's socket. The host that mounts this glue (a deploy tool, a
+ * developer's own server) supplies it, so this glue never imports `ws`.
  */
 export interface RelaySocket {
   send(data: string): void;

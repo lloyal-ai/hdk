@@ -7,8 +7,8 @@ comments claim, machine-checked. It mirrors `packages/agents/test/invariants/`.
 ## Two tiers
 
 - **Specific regressions** live *beside the source* in `test/*.test.ts`
-  (`adapters.test.ts`, `wss.test.ts`, `bus.test.ts`) and in `../relay`'s
-  `bridge.test.ts`. Each pins one fixed bug: a throwing sink is swallowed, the
+  (`adapters.test.ts`, `wss.test.ts`, `bus.test.ts`) and in the `@lloyal-labs/relay`
+  package's `test/bridge.test.ts`. Each pins one fixed bug: a throwing sink is swallowed, the
   ndjson/wss subscriber detaches when the sink fails **during** `subscribe()`'s
   synchronous buffer drain (the window where `unsub` isn't assigned yet), etc.
 - **Structural invariants** live here. They don't target a single bug — they
