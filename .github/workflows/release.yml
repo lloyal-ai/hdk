@@ -36,14 +36,20 @@ jobs:
           test -f packages/agents/dist/index.d.ts
           test -f packages/rig/dist/index.js
           test -f packages/rig/dist/index.d.ts
+          test -f packages/binding/dist/index.js
+          test -f packages/binding/dist/index.d.ts
+          test -f packages/binding/dist/node.js
+          test -f packages/binding/dist/web.js
+          test -f packages/relay/dist/index.js
+          test -f packages/relay/dist/index.d.ts
 
       - name: Typecheck
-        run: npx tsc -b packages/sdk packages/agents packages/rig
+        run: npx tsc -b packages/sdk packages/agents packages/rig packages/binding packages/relay
 
       - name: Publish packages
         if: success() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.skip_publish))
         run: |
-          for pkg in packages/sdk packages/agents packages/rig packages/harness-cli; do
+          for pkg in packages/sdk packages/agents packages/rig packages/harness-cli packages/binding packages/relay; do
             name=$(node -p "require('./$pkg/package.json').name")
             version=$(node -p "require('./$pkg/package.json').version")
             if npm view "$name@$version" version >/dev/null 2>&1; then
