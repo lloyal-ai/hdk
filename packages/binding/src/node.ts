@@ -48,16 +48,18 @@ export function ndjson<E, C = never>(
     // Stop writing once the sink fails (e.g. stdout EPIPE — piped to a closed
     // reader) so a write error can't crash the process.
     let closed = false;
-    const unsub = bus.subscribe((ev) => {
+    let unsub: (() => void) | undefined;
+    unsub = bus.subscribe((ev) => {
       if (closed) return;
       try {
         out(JSON.stringify(ev));
       } catch {
         closed = true;
+        unsub?.(); // detach the dead subscriber so the bus stops invoking it
       }
     });
     for (const ev of bootstrap) bus.send(ev);
-    return unsub;
+    return () => unsub?.();
   };
 }
 
@@ -129,6 +131,13 @@ export function ipc<E, C>(): Binding<E, C> {
     const keepAlive = setInterval(() => {}, 1 << 30);
     const stopKeepAlive = (): void => clearInterval(keepAlive);
     process.on("exit", stopKeepAlive);
+    // Parent died / IPC channel closed: stop the keep-alive so the child exits
+    // instead of hanging as an orphan holding a dead channel open.
+    const onDisconnect = (): void => {
+      closed = true;
+      stopKeepAlive();
+    };
+    process.on("disconnect", onDisconnect);
 
     // Seed bootstrap through the (already-subscribed) bus, then signal ready.
     for (const ev of bootstrap) bus.send(ev);
@@ -139,6 +148,7 @@ export function ipc<E, C>(): Binding<E, C> {
       unsub();
       stopKeepAlive();
       process.off("exit", stopKeepAlive);
+      process.off("disconnect", onDisconnect);
       // Prefer `off`; fall back to `removeListener` for hosts whose MessagePort
       // exposes only the EventEmitter alias.
       if (pp) (pp.off ?? pp.removeListener)?.call(pp, "message", ppOnMsg);
