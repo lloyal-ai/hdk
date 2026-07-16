@@ -6,6 +6,7 @@
     "packages/rig",
     "packages/binding",
     "packages/relay",
+    "packages/host",
     "packages/harness-cli",
     "packages/apps/*"
   ],

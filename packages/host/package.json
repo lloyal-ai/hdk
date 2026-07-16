@@ -1,0 +1,46 @@
+{
+  "name": "@lloyal-labs/host",
+  "version": "0.1.0",
+  "description": "The box model-runtime host — one resident model, N native harness sessions, FIFO admission",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lloyal-ai/hdk.git",
+    "directory": "packages/host"
+  },
+  "homepage": "https://github.com/lloyal-ai/hdk/tree/main/packages/host#readme",
+  "bugs": {
+    "url": "https://github.com/lloyal-ai/hdk/issues"
+  },
+  "keywords": [
+    "host",
+    "serving",
+    "harness",
+    "model-runtime",
+    "resident"
+  ],
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@lloyal-labs/binding": "^0.1.0",
+    "effection": "^4.0.2"
+  },
+  "files": [
+    "dist/",
+    "LICENSE",
+    "LICENSE-FAQ.md"
+  ]
+}
