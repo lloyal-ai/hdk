@@ -164,16 +164,68 @@ describe("ModelRuntimeHost", () => {
       host.admit({ sessionId: "X", onState: onState("X") });
       yield* waitFor(() => host.sessions.has("X"), "X live");
 
-      // A second admit of the SAME id must be refused — never a second
-      // materialise, never an overwrite of the live record.
+      // A second admit of the SAME id is refused SYNCHRONOUSLY inside admit —
+      // never enqueued, so the pump can't re-materialise or overwrite the live
+      // record. No wait needed: `queueDepth === 0` is the deterministic gate (a
+      // broken guard would have `push`ed).
       const dupPhases: string[] = [];
       host.admit({ sessionId: "X", onState: (s) => dupPhases.push(s.phase) });
-      yield* sleep(20); // give the pump every chance to (wrongly) re-materialise
 
       expect(dupPhases).toEqual(["died"]); // the duplicate was refused
+      expect(host.queueDepth).toBe(0); // never enqueued
       expect(host.occupancy).toBe(1); // still exactly one X
       expect(started.filter((id) => id === "X")).toHaveLength(1); // materialised once
       expect(disposed).toEqual([]); // the live X was NOT disposed/orphaned
+    });
+  });
+
+  it("a throwing served.run dies that session but leaves the host + siblings alive", async () => {
+    const { onState, phases } = stateCollector();
+    const disposed: string[] = [];
+    const served: ServedHarness = {
+      async materialise(id: string): Promise<Materialised> {
+        return {
+          context: { id },
+          uiChannel: createBus<unknown>(),
+          commands: createSignal<unknown, void>(),
+          dispose() {
+            disposed.push(id);
+          },
+        };
+      },
+      *run(_m: Materialised, id: string): Operation<void> {
+        if (id === "boom") throw new Error("harness crashed");
+        yield* suspend(); // a healthy sibling — stays live
+      },
+    };
+
+    await run(function* () {
+      const host = yield* createModelRuntimeHost({ served, maxNativeSessions: 4 });
+      host.admit({ sessionId: "boom", onState: onState("boom") });
+      host.admit({ sessionId: "ok", onState: onState("ok") });
+      yield* waitFor(
+        () =>
+          (phases.get("boom")?.includes("died") ?? false) &&
+          host.sessions.has("ok"),
+        "boom died, ok live",
+      );
+
+      // The crashing harness reached the terminal `died` (never draining/reaped),
+      // yet its context was still disposed + the slot freed — and the throw did
+      // NOT propagate up the spawn to take down the pump.
+      expect(phases.get("boom")).toEqual(["queued", "warming", "live", "died"]);
+      expect(disposed).toEqual(["boom"]); // context freed despite the crash
+      expect(host.sessions.has("boom")).toBe(false);
+
+      // The host survived: the healthy sibling is still live, and the pump still
+      // admits after a session crash.
+      expect(host.sessions.has("ok")).toBe(true);
+      host.admit({ sessionId: "later", onState: onState("later") });
+      yield* waitFor(
+        () => host.sessions.has("later"),
+        "host still admits after a crash",
+      );
+      expect(host.occupancy).toBe(2);
     });
   });
 

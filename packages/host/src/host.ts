@@ -87,29 +87,52 @@ export function createModelRuntimeHost<Ctx = unknown>(
       m: Materialised<Ctx>,
       req: AdmissionRequest,
     ): Operation<void> {
+      // Terminal state: `reaped` on a clean stop (a `release`/halt, or a harness
+      // that ends on its own); `died` if the harness itself THROWS. It flips only
+      // in the catch below — and in Effection a halt unwinds via ensure/finally
+      // and never enters catch, so a normal release stays `reaped`.
+      let outcome: "reaped" | "died" = "reaped";
       // Teardown runs LIFO — register the slot-drop FIRST (runs last) and the
       // dispose SECOND (runs first): on unwind we dispose the context BEFORE
       // dropping the slot + re-pumping, so occupancy never understates resident
       // memory and the pump can't over-admit while a context is still freeing.
       yield* ensure(() => {
         sessions.delete(req.sessionId);
-        emit(req, { phase: "reaped" });
+        emit(req, { phase: outcome });
         kick();
       });
       yield* ensure(() => {
-        m.dispose();
+        // A throwing dispose must not abort teardown (the slot-drop above still
+        // has to run) nor reject the halt promise — swallow it. Freeing the
+        // context is the supplier's contract; a failure there is not the host's
+        // to propagate.
+        try {
+          m.dispose();
+        } catch {
+          /* supplier's dispose failed — not the host's error to surface */
+        }
       });
       try {
         yield* served.run(m, req.sessionId); // the UNCHANGED harness, concurrent
+      } catch {
+        // A harness ERROR (not a halt — halts bypass catch) is isolated to THIS
+        // session: mark it `died` and SWALLOW, so an uncaught throw can't
+        // propagate up the spawn into the pump and take down the host + every
+        // sibling session.
+        outcome = "died";
       } finally {
-        emit(req, { phase: "draining" });
+        // Clean stop → `draining` then `reaped`; a died session skips straight to
+        // its terminal `died` (emitted by the slot-drop ensure above).
+        if (outcome !== "died") emit(req, { phase: "draining" });
       }
     }
 
-    // The admission pump. Sole mutator of `queue` + `sessions`; non-reentrant by
-    // being one fiber. `materialise` is awaited here ⇒ context construction is
-    // serialised (over its `await` is the only window an admission could race the
-    // last free slot). The harnesses it spawns run fully concurrently.
+    // The admission pump — the sole ADMITTER: the only fiber that dequeues and
+    // writes NEW `sessions` entries. (`admit` only enqueues at the tail + does a
+    // read-only dedup check; a session's own teardown ensure deletes its entry.)
+    // Non-reentrant by being one fiber, so `materialise`'s `await` is the only
+    // window and no two admissions can race the last free slot. The harnesses it
+    // spawns run fully concurrently.
     yield* spawn(function* (): Operation<void> {
       for (;;) {
         dirty = false;
@@ -131,7 +154,10 @@ export function createModelRuntimeHost<Ctx = unknown>(
             sessionId: req.sessionId,
             task,
             cancel: () => {
-              void task.halt();
+              // Fire-and-forget halt: swallow a teardown rejection so it can't
+              // surface as an unhandled promise rejection. (`release()` returns
+              // the promise for callers that want to await the teardown.)
+              void task.halt().catch(() => {});
             },
           });
           emit(req, { phase: "live" });
