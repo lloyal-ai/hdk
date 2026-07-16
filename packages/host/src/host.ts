@@ -23,13 +23,16 @@ import type {
   Materialised,
   ModelRuntimeHostOpts,
   NativeSessionRecord,
+  SessionState,
 } from "./types";
 
 /** The handle a transport (or a driver) drives. Sync methods — callable from a
  *  plain `ws.on("connection")` callback; they feed the pump, never block it. */
 export interface ModelRuntimeHost<Ctx = unknown> {
   /** Enqueue a Session for admission (FIFO). Emits `queued`, then the pump takes
-   *  it to `warming`→`live` when a slot is free (or `died` if materialise fails). */
+   *  it to `warming`→`live` when a slot is free (or `died` if materialise fails).
+   *  A `sessionId` that is already queued or live is refused (emits `died`) — the
+   *  one-Session↔one-context invariant, so a duplicate never orphans a context. */
   admit(req: AdmissionRequest): void;
   /** Release a live Session: halt its harness scope (the context frees on unwind),
    *  which re-pumps the queue for the next waiting Session. No-op if unknown.
@@ -57,6 +60,17 @@ export function createModelRuntimeHost<Ctx = unknown>(
     const queue: AdmissionRequest[] = [];
     const sessions = new Map<string, NativeSessionRecord<Ctx>>();
 
+    // A caller-provided `onState` must never take down the pump or corrupt a
+    // teardown — the "one bad callback can't sink all N sessions" boundary. Every
+    // transition goes through here.
+    const emit = (req: AdmissionRequest, state: SessionState): void => {
+      try {
+        req.onState?.(state);
+      } catch {
+        /* a broken observer is the observer's problem, not the host's */
+      }
+    };
+
     // Race-free wake latch. `admit` and `release` call `kick()` synchronously
     // (from any callback); the pump drains the queue, then suspends until the
     // next kick. `dirty` closes the window between "queue looks drained" and
@@ -79,7 +93,7 @@ export function createModelRuntimeHost<Ctx = unknown>(
       // memory and the pump can't over-admit while a context is still freeing.
       yield* ensure(() => {
         sessions.delete(req.sessionId);
-        req.onState?.({ phase: "reaped" });
+        emit(req, { phase: "reaped" });
         kick();
       });
       yield* ensure(() => {
@@ -88,7 +102,7 @@ export function createModelRuntimeHost<Ctx = unknown>(
       try {
         yield* served.run(m, req.sessionId); // the UNCHANGED harness, concurrent
       } finally {
-        req.onState?.({ phase: "draining" });
+        emit(req, { phase: "draining" });
       }
     }
 
@@ -101,14 +115,14 @@ export function createModelRuntimeHost<Ctx = unknown>(
         dirty = false;
         while (queue.length > 0 && sessions.size < maxNativeSessions) {
           const req = queue.shift()!;
-          req.onState?.({ phase: "warming" });
+          emit(req, { phase: "warming" });
           let m: Materialised<Ctx>;
           try {
             m = yield* call(() => served.materialise(req.sessionId));
           } catch {
             // Typed rejection for THIS request, not a dead pump. Nothing was
             // inserted, so there is nothing to roll back.
-            req.onState?.({ phase: "died" });
+            emit(req, { phase: "died" });
             continue;
           }
           const task = yield* spawn(() => sessionOp(m, req));
@@ -120,7 +134,7 @@ export function createModelRuntimeHost<Ctx = unknown>(
               void task.halt();
             },
           });
-          req.onState?.({ phase: "live" });
+          emit(req, { phase: "live" });
         }
         if (dirty) continue; // a kick landed during the drain — re-drain
         yield* action<void>((resolve) => {
@@ -135,7 +149,16 @@ export function createModelRuntimeHost<Ctx = unknown>(
 
     const host: ModelRuntimeHost<Ctx> = {
       admit(req) {
-        req.onState?.({ phase: "queued", position: queue.length });
+        // Refuse a duplicate: a `sessionId` already resident or waiting would,
+        // once the pump ran, overwrite the live record and orphan its context.
+        if (
+          sessions.has(req.sessionId) ||
+          queue.some((q) => q.sessionId === req.sessionId)
+        ) {
+          emit(req, { phase: "died" });
+          return;
+        }
+        emit(req, { phase: "queued", position: queue.length });
         queue.push(req);
         kick();
       },
