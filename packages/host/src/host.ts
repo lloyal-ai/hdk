@@ -35,10 +35,13 @@ export interface ModelRuntimeHost<Ctx = unknown> {
    *  `died`) — the one-Session↔one-context invariant, so a duplicate never orphans
    *  a context (including one mid-`warming`, whose materialise is still in flight). */
   admit(req: AdmissionRequest): void;
-  /** Release a live Session: halt its harness scope (the context frees on unwind),
-   *  which re-pumps the queue for the next waiting Session. No-op if unknown.
-   *  Returns the halt promise — the transport may ignore it; a caller that wants
-   *  to await the context actually freeing (e.g. a graceful drain) can. */
+  /** Release a Session at ANY phase — the transport calls this on disconnect:
+   *  `live` halts its harness scope (context frees on unwind, then re-pump);
+   *  `queued` is dropped from the queue (never materialises); `warming` is flagged
+   *  so the pump discards the just-built context rather than spawn a consumer-less
+   *  harness. No-op if unknown. Returns the halt promise for a `live` release (an
+   *  awaitable teardown a graceful drain can wait on); resolves immediately for
+   *  `queued`/`warming` (whose disposal, if any, the pump completes). */
   release(sessionId: string): Promise<void>;
   /** Live Sessions. `sessions.size` IS the authoritative occupancy (no counter). */
   readonly sessions: ReadonlyMap<string, NativeSessionRecord<Ctx>>;
@@ -90,6 +93,14 @@ export function createModelRuntimeHost<Ctx = unknown>(
       dirty = true;
       wakeWaiter?.();
     };
+
+    // The one session whose `materialise` is in flight (the single pump means at
+    // most one at a time) plus a flag `release()` sets to cancel it mid-`warming`.
+    // Kept as a single slot, NOT a per-id set, precisely so a re-`admit` of the
+    // same id can't confuse "this specific request was released" with "this id is
+    // known" — `admitted` stays populated through warming, blocking re-admit.
+    let warmingReq: AdmissionRequest | null = null;
+    let warmingCancelled = false;
 
     function* sessionOp(
       m: Materialised<Ctx>,
@@ -148,6 +159,8 @@ export function createModelRuntimeHost<Ctx = unknown>(
         dirty = false;
         while (queue.length > 0 && sessions.size < maxNativeSessions) {
           const req = queue.shift()!;
+          warmingReq = req;
+          warmingCancelled = false;
           emit(req, { phase: "warming" });
           let m: Materialised<Ctx>;
           try {
@@ -155,8 +168,24 @@ export function createModelRuntimeHost<Ctx = unknown>(
           } catch {
             // Typed rejection for THIS request, not a dead pump. Release the id
             // (nothing else was inserted) so a later admit can retry it.
+            warmingReq = null;
             admitted.delete(req.sessionId);
             emit(req, { phase: "died" });
+            continue;
+          }
+          warmingReq = null;
+          if (warmingCancelled) {
+            // `release()` cancelled this session while its context was being built
+            // (transport gone). Discard the just-built context and never spawn a
+            // consumer-less harness. The id frees HERE — the pump owns the delete
+            // on the cancel path, so a re-admit stayed blocked until now.
+            admitted.delete(req.sessionId);
+            try {
+              m.dispose();
+            } catch {
+              /* freeing a just-built context — not the host's error to surface */
+            }
+            emit(req, { phase: "reaped" });
             continue;
           }
           const task = yield* spawn(() => sessionOp(m, req));
@@ -200,8 +229,26 @@ export function createModelRuntimeHost<Ctx = unknown>(
         kick();
       },
       release(sessionId) {
+        // Live: halt the harness scope (context frees on unwind, pump re-pumps).
         const rec = sessions.get(sessionId);
-        return rec ? rec.task.halt() : Promise.resolve();
+        if (rec) return rec.task.halt();
+        // Warming (materialise in flight for this id): flag it so the pump discards
+        // the just-built context instead of spawning. Leave `admitted` to the
+        // pump's cancel path (keeps a re-admit blocked until the discard completes).
+        if (warmingReq?.sessionId === sessionId) {
+          warmingCancelled = true;
+          return Promise.resolve();
+        }
+        // Queued (behind the cap): pull it out, free its id, re-pump — it never
+        // materialises, so no consumer-less harness is ever spawned.
+        const idx = queue.findIndex((q) => q.sessionId === sessionId);
+        if (idx >= 0) {
+          const [req] = queue.splice(idx, 1);
+          admitted.delete(sessionId);
+          emit(req, { phase: "reaped" });
+          kick();
+        }
+        return Promise.resolve();
       },
       get sessions() {
         return sessions;

@@ -293,6 +293,98 @@ describe("ModelRuntimeHost", () => {
     });
   });
 
+  it("release cancels a still-queued Session (never materialises, frees the id)", async () => {
+    const { served, started, disposed } = fakeHarness();
+    const { phases, onState } = stateCollector();
+
+    await run(function* () {
+      const host = yield* createModelRuntimeHost({ served, maxNativeSessions: 2 });
+      host.admit({ sessionId: "A", onState: onState("A") });
+      host.admit({ sessionId: "B", onState: onState("B") });
+      host.admit({ sessionId: "C", onState: onState("C") });
+      yield* waitFor(
+        () => host.occupancy === 2 && host.queueDepth === 1,
+        "A + B live, C queued",
+      );
+
+      // Release C while it is still queued behind the cap. It must leave the
+      // queue and never materialise a consumer-less harness.
+      yield* call(() => host.release("C"));
+      expect(host.queueDepth).toBe(0);
+      expect(phases.get("C")).toEqual(["queued", "reaped"]); // never warmed
+      expect(started).toEqual(["A", "B"]); // C never materialised
+      expect(host.occupancy).toBe(2); // cap unaffected
+
+      // Its id is freed — a fresh admit of "C" is accepted (would be refused if
+      // release hadn't cleared `admitted`) and queues behind the cap.
+      host.admit({ sessionId: "C", onState: onState("C") });
+      yield* waitFor(() => host.queueDepth === 1, "fresh C re-queued");
+    });
+
+    // Host scope unwound → only the two live sessions had contexts to dispose;
+    // the cancelled C never built one.
+    expect(disposed.sort()).toEqual(["A", "B"]);
+  });
+
+  it("release during warming discards the just-built context (never spawns a harness)", async () => {
+    const started: string[] = [];
+    const disposed: string[] = [];
+    const phasesW: string[] = [];
+    // Hold the FIRST materialise pending so its session parks in `warming`.
+    let releaseMaterialise!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseMaterialise = resolve;
+    });
+    let firstBlocked = false;
+    const served: ServedHarness = {
+      async materialise(id: string): Promise<Materialised> {
+        started.push(id);
+        if (!firstBlocked) {
+          firstBlocked = true;
+          await gate;
+        }
+        return {
+          context: { id },
+          uiChannel: createBus<unknown>(),
+          commands: createSignal<unknown, void>(),
+          dispose() {
+            disposed.push(id);
+          },
+        };
+      },
+      *run(): Operation<void> {
+        yield* suspend();
+      },
+    };
+
+    await run(function* () {
+      const host = yield* createModelRuntimeHost({ served, maxNativeSessions: 2 });
+      host.admit({ sessionId: "W", onState: (s) => phasesW.push(s.phase) });
+      yield* waitFor(
+        () => started.includes("W") && !host.sessions.has("W"),
+        "W is warming (materialise in flight)",
+      );
+
+      // Release W mid-warming, THEN let its materialise resolve. The pump must
+      // discard the freshly-built context, not spawn a consumer-less harness.
+      yield* call(() => host.release("W"));
+      releaseMaterialise();
+      yield* waitFor(
+        () => disposed.includes("W"),
+        "W's just-built context was disposed",
+      );
+
+      expect(host.sessions.has("W")).toBe(false); // never went live
+      expect(host.occupancy).toBe(0); // slot freed
+      expect(phasesW).toEqual(["queued", "warming", "reaped"]);
+      expect(started.filter((id) => id === "W")).toHaveLength(1); // built once
+
+      // The id freed and the pump is healthy — a fresh admit still goes live.
+      host.admit({ sessionId: "W2", onState: () => {} });
+      yield* waitFor(() => host.sessions.has("W2"), "host still admits after a warming cancel");
+    });
+  });
+
   it("survives an onState callback that throws (one bad observer can't sink the host)", async () => {
     const { served } = fakeHarness();
 
