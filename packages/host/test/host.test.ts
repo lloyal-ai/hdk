@@ -229,6 +229,70 @@ describe("ModelRuntimeHost", () => {
     });
   });
 
+  it("refuses a duplicate sessionId that races the warming window (materialise in flight)", async () => {
+    const started: string[] = [];
+    const disposed: string[] = [];
+    // A gate that keeps the FIRST materialise pending until we release it —
+    // parking the session in `warming` (shifted from `queue`, not yet in
+    // `sessions`), the exact window the old queue/sessions dedup missed.
+    let releaseMaterialise!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseMaterialise = resolve;
+    });
+    let firstBlocked = false;
+    const served: ServedHarness = {
+      async materialise(id: string): Promise<Materialised> {
+        started.push(id);
+        if (!firstBlocked) {
+          firstBlocked = true;
+          await gate; // hold the first admission in `warming`
+        }
+        return {
+          context: { id },
+          uiChannel: createBus<unknown>(),
+          commands: createSignal<unknown, void>(),
+          dispose() {
+            disposed.push(id);
+          },
+        };
+      },
+      *run(): Operation<void> {
+        yield* suspend();
+      },
+    };
+
+    await run(function* () {
+      const host = yield* createModelRuntimeHost({ served, maxNativeSessions: 4 });
+
+      host.admit({ sessionId: "R", onState: () => {} });
+      // Wait until the pump has SHIFTED R out of the queue and is parked on
+      // materialise: R is now in neither `queue` nor `sessions` — pure `warming`.
+      yield* waitFor(
+        () =>
+          started.includes("R") &&
+          host.queueDepth === 0 &&
+          !host.sessions.has("R"),
+        "R is warming (materialise in flight)",
+      );
+
+      // Duplicate admit DURING the warming window — the race. Must be refused
+      // synchronously and never enqueued (a broken guard would queue it and, once
+      // the pump re-ran, materialise a second context that overwrites the live R).
+      const dupPhases: string[] = [];
+      host.admit({ sessionId: "R", onState: (s) => dupPhases.push(s.phase) });
+      expect(dupPhases).toEqual(["died"]);
+      expect(host.queueDepth).toBe(0);
+
+      // Let the first materialise finish → R goes live, materialised exactly once,
+      // and the live R was never disposed/orphaned.
+      releaseMaterialise();
+      yield* waitFor(() => host.sessions.has("R"), "R live");
+      expect(started.filter((id) => id === "R")).toHaveLength(1);
+      expect(disposed).toEqual([]);
+      expect(host.occupancy).toBe(1);
+    });
+  });
+
   it("survives an onState callback that throws (one bad observer can't sink the host)", async () => {
     const { served } = fakeHarness();
 

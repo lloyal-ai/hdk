@@ -31,8 +31,9 @@ import type {
 export interface ModelRuntimeHost<Ctx = unknown> {
   /** Enqueue a Session for admission (FIFO). Emits `queued`, then the pump takes
    *  it to `warming`→`live` when a slot is free (or `died` if materialise fails).
-   *  A `sessionId` that is already queued or live is refused (emits `died`) — the
-   *  one-Session↔one-context invariant, so a duplicate never orphans a context. */
+   *  A `sessionId` that is already queued, warming, or live is refused (emits
+   *  `died`) — the one-Session↔one-context invariant, so a duplicate never orphans
+   *  a context (including one mid-`warming`, whose materialise is still in flight). */
   admit(req: AdmissionRequest): void;
   /** Release a live Session: halt its harness scope (the context frees on unwind),
    *  which re-pumps the queue for the next waiting Session. No-op if unknown.
@@ -59,6 +60,13 @@ export function createModelRuntimeHost<Ctx = unknown>(
   return resource(function* (provide) {
     const queue: AdmissionRequest[] = [];
     const sessions = new Map<string, NativeSessionRecord<Ctx>>();
+    // Every id from `admit` until final teardown — the dedup gate spanning
+    // queued ∪ warming ∪ live. It is the ONLY correct dedup source: mid-`warming`
+    // a request sits in neither `queue` (already shifted) nor `sessions` (not set
+    // until materialise resolves), so a `queue`/`sessions` check would let a
+    // duplicate `admit` slip through that window and orphan the live context.
+    // (Keying off a Set also makes the check O(1).)
+    const admitted = new Set<string>();
 
     // A caller-provided `onState` must never take down the pump or corrupt a
     // teardown — the "one bad callback can't sink all N sessions" boundary. Every
@@ -98,6 +106,7 @@ export function createModelRuntimeHost<Ctx = unknown>(
       // memory and the pump can't over-admit while a context is still freeing.
       yield* ensure(() => {
         sessions.delete(req.sessionId);
+        admitted.delete(req.sessionId); // id free to be re-admitted
         emit(req, { phase: outcome });
         kick();
       });
@@ -128,11 +137,12 @@ export function createModelRuntimeHost<Ctx = unknown>(
     }
 
     // The admission pump — the sole ADMITTER: the only fiber that dequeues and
-    // writes NEW `sessions` entries. (`admit` only enqueues at the tail + does a
-    // read-only dedup check; a session's own teardown ensure deletes its entry.)
+    // writes NEW `sessions` entries. (`admit` only enqueues at the tail after an
+    // O(1) `admitted` dedup check; a session's own teardown ensure removes its id.)
     // Non-reentrant by being one fiber, so `materialise`'s `await` is the only
-    // window and no two admissions can race the last free slot. The harnesses it
-    // spawns run fully concurrently.
+    // suspension window — and that window is exactly why dedup keys off `admitted`
+    // (which still holds the id mid-`warming`) rather than `queue`/`sessions`. The
+    // harnesses it spawns run fully concurrently.
     yield* spawn(function* (): Operation<void> {
       for (;;) {
         dirty = false;
@@ -143,8 +153,9 @@ export function createModelRuntimeHost<Ctx = unknown>(
           try {
             m = yield* call(() => served.materialise(req.sessionId));
           } catch {
-            // Typed rejection for THIS request, not a dead pump. Nothing was
-            // inserted, so there is nothing to roll back.
+            // Typed rejection for THIS request, not a dead pump. Release the id
+            // (nothing else was inserted) so a later admit can retry it.
+            admitted.delete(req.sessionId);
             emit(req, { phase: "died" });
             continue;
           }
@@ -175,15 +186,15 @@ export function createModelRuntimeHost<Ctx = unknown>(
 
     const host: ModelRuntimeHost<Ctx> = {
       admit(req) {
-        // Refuse a duplicate: a `sessionId` already resident or waiting would,
-        // once the pump ran, overwrite the live record and orphan its context.
-        if (
-          sessions.has(req.sessionId) ||
-          queue.some((q) => q.sessionId === req.sessionId)
-        ) {
+        // Refuse a duplicate: an id already queued, warming, or live would, once
+        // the pump ran, overwrite the live record and orphan its context. Gate on
+        // `admitted` (NOT `queue`/`sessions`) — it still holds the id during the
+        // `warming` window, where the request is in neither structure.
+        if (admitted.has(req.sessionId)) {
           emit(req, { phase: "died" });
           return;
         }
+        admitted.add(req.sessionId);
         emit(req, { phase: "queued", position: queue.length });
         queue.push(req);
         kick();
