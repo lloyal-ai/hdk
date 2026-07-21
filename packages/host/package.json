@@ -38,6 +38,10 @@
     "@lloyal-labs/binding": "^0.1.0",
     "effection": "^4.0.2"
   },
+  "devDependencies": {
+    "@lloyal-labs/sdk": "^3.0.3",
+    "@lloyal-labs/lloyal.node": "^3.1.1"
+  },
   "files": [
     "dist/",
     "LICENSE",
