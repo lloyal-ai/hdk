@@ -25,6 +25,7 @@ import { describe, expect, it } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import process from "node:process";
 import { run, sleep, suspend, call, createSignal, type Operation } from "effection";
 import { createContext } from "@lloyal-labs/lloyal.node";
 import { Branch } from "@lloyal-labs/sdk";
@@ -211,49 +212,54 @@ describeWithModel(`@lloyal-labs/host integration — ${SKIP_REASON ?? path.basen
       const gb = (b: number) => (b / 1e9).toFixed(2);
       const weightsBytes = fs.statSync(MODEL!).size;
 
-      // Treatment: N contexts over the SAME path. The weak-cache shares ONE weights
-      // copy, so TOTAL RSS growth ≈ 1 model + N tiny KV — NOT N× weights.
-      const rssBefore = process.memoryUsage().rss;
+      // Contexts are created RAW here (not via the host), so dispose in `finally` — a
+      // mid-test assertion failure must still free the native contexts (tests 1 & 3 get
+      // this for free from the host resource's teardown).
       const same: SessionContext[] = [];
-      const deltaSame: number[] = [];
-      for (let i = 0; i < N; i++) {
-        const b0 = process.memoryUsage().rss;
-        const ctx = await makeCtx(MODEL!);
-        await decodeK(ctx, 2); // fault weight pages resident
-        deltaSame.push(process.memoryUsage().rss - b0);
-        same.push(ctx);
-      }
-      const grew = process.memoryUsage().rss - rssBefore;
-      console.log(
-        `[host-integration] N=${N} same-path grew RSS ${gb(grew)}GB (one model=${gb(weightsBytes)}GB); ` +
-          `per-ctx Δ(GB)=[${deltaSame.map(gb).join(", ")}]`,
-      );
-      // Load-bearing + robust to in-process RSS reclaim (reclaim only LOWERS `grew`):
-      // N contexts cost ~1 model, not N×. 4 duplicated 2.6GB sets ≈ 11GB.
-      expect(grew).toBeLessThan(weightsBytes * 2);
-
-      // Control (OBSERVATIONAL only). Per-model RSS deltas are unreliable in-process
-      // under memory pressure (macOS reclaims/compresses → negative deltas), so we
-      // LOG distinct-model growth for a human eyeball and lean on the timing test
-      // (primary spec) for the mechanism proof — exactly the confound the plan
-      // anticipated ("if RSS is noisy, lean on timing").
-      const distinctPaths = resolveDistinctModels(MODEL!, 2);
       const distinct: SessionContext[] = [];
-      for (const p of distinctPaths) {
-        const b0 = process.memoryUsage().rss;
-        const ctx = await makeCtx(p);
-        await decodeK(ctx, 2);
+      try {
+        // Treatment: N contexts over the SAME path. The weak-cache shares ONE weights
+        // copy, so TOTAL RSS growth ≈ 1 model + N tiny KV — NOT N× weights.
+        const rssBefore = process.memoryUsage().rss;
+        const deltaSame: number[] = [];
+        for (let i = 0; i < N; i++) {
+          const b0 = process.memoryUsage().rss;
+          const ctx = await makeCtx(MODEL!);
+          await decodeK(ctx, 2); // fault weight pages resident
+          deltaSame.push(process.memoryUsage().rss - b0);
+          same.push(ctx);
+        }
+        const grew = process.memoryUsage().rss - rssBefore;
         console.log(
-          `[host-integration] distinct ${path.basename(p)} Δ RSS ${gb(process.memoryUsage().rss - b0)}GB`,
+          `[host-integration] N=${N} same-path grew RSS ${gb(grew)}GB (one model=${gb(weightsBytes)}GB); ` +
+            `per-ctx Δ(GB)=[${deltaSame.map(gb).join(", ")}]`,
         );
-        distinct.push(ctx);
-      }
-      if (distinctPaths.length === 0) {
-        console.log("[host-integration] distinct control skipped (<1 distinct model on disk)");
-      }
+        // Load-bearing + robust to in-process RSS reclaim (reclaim only LOWERS `grew`):
+        // N contexts cost ~1 model, not N×. 4 duplicated 2.6GB sets ≈ 11GB.
+        expect(grew).toBeLessThan(weightsBytes * 2);
 
-      for (const c of distinct) c.dispose();
-      for (const c of same) c.dispose();
+        // Control (OBSERVATIONAL only). Per-model RSS deltas are unreliable in-process
+        // under memory pressure (macOS reclaims/compresses → negative deltas), so we
+        // LOG distinct-model growth for a human eyeball and lean on the timing test
+        // (primary spec) for the mechanism proof — exactly the confound the plan
+        // anticipated ("if RSS is noisy, lean on timing").
+        const distinctPaths = resolveDistinctModels(MODEL!, 2);
+        for (const p of distinctPaths) {
+          const b0 = process.memoryUsage().rss;
+          const ctx = await makeCtx(p);
+          await decodeK(ctx, 2);
+          console.log(
+            `[host-integration] distinct ${path.basename(p)} Δ RSS ${gb(process.memoryUsage().rss - b0)}GB`,
+          );
+          distinct.push(ctx);
+        }
+        if (distinctPaths.length === 0) {
+          console.log("[host-integration] distinct control skipped (<1 distinct model on disk)");
+        }
+      } finally {
+        for (const c of distinct) c.dispose();
+        for (const c of same) c.dispose();
+      }
     },
     240_000,
   );
