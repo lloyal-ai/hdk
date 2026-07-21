@@ -1,3 +1,4 @@
+/// <reference types="node" />
 /**
  * Suite A — the B-mechanism proof for `@lloyal-labs/host`, against a REAL model.
  *
@@ -25,7 +26,6 @@ import { describe, expect, it } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import process from "node:process";
 import { run, sleep, suspend, call, createSignal, type Operation } from "effection";
 import { createContext } from "@lloyal-labs/lloyal.node";
 import { Branch } from "@lloyal-labs/sdk";
