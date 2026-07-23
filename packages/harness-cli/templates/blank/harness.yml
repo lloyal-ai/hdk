@@ -1,0 +1,9 @@
+# harness.yml — the deployment manifest. Your program lives in harness/harness.ts.
+# Every target listed explicitly; only the fields you chose are shown.
+
+targets: [cli]
+
+model:
+  llm:
+    id: "reasoning-4b"          # kvCache: q4_0 · gpu: auto · branches: from capacity — add a line to override
+    context: 32768

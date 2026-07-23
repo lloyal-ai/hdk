@@ -1,0 +1,9 @@
+node_modules/
+dist/
+traces/
+
+# Model weights are fetched or dropped locally, never committed.
+models/**/*.gguf
+
+*.log
+.DS_Store
