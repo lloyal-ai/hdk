@@ -65,6 +65,13 @@ describe('resolveModel — filesystem walk', () => {
     ).rejects.toThrow(/not found/);
   });
 
+  it('explicit path: pointing at a directory → rejected (must be a file)', async () => {
+    fs.mkdirSync(path.join(root, 'weights'), { recursive: true });
+    await expect(
+      resolveModel({ projectRoot: root, role: 'llm', spec: { path: 'weights' } }),
+    ).rejects.toThrow(/not a file/);
+  });
+
   it('id with an existing slot → used without a fetch', async () => {
     put('models/llm/reasoning-4b.gguf');
     const out = await resolveModel({ projectRoot: root, role: 'llm', spec: { id: 'reasoning-4b' } });

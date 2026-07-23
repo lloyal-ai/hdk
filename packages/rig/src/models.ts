@@ -132,11 +132,17 @@ export async function resolveModel(opts: ResolveModelOpts): Promise<string> {
   assertSafeSegment('role', role);
   const roleDir = path.join(projectRoot, 'models', role);
 
-  // 1. explicit path — trusted by possession
+  // 1. explicit path — trusted by possession, but must be a real file
   if (spec?.path) {
     const p = path.resolve(projectRoot, spec.path);
-    if (!fs.existsSync(p)) {
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(p);
+    } catch {
       throw new Error(`Model path not found for role "${role}": ${p}`);
+    }
+    if (!stat.isFile()) {
+      throw new Error(`Model path for role "${role}" is not a file: ${p}`);
     }
     return p;
   }
