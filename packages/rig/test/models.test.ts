@@ -141,6 +141,17 @@ describe('fetchVerified — streaming digest verification', () => {
     expect(fs.readFileSync(dest)).toEqual(Buffer.from(bytes));
   });
 
+  it('dest already present (concurrent winner) → resolves without error', async () => {
+    const dest = path.join(root, 'models/llm/t.gguf');
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.writeFileSync(dest, Buffer.from(bytes)); // a prior/concurrent verified copy
+    const out = await fetchVerified(entry(sha256(bytes), ['mock://ok']), dest, {
+      fetchImpl: mockFetch({ 'mock://ok': bytes }),
+    });
+    expect(out).toBe(dest);
+    expect(fs.readFileSync(dest)).toEqual(Buffer.from(bytes));
+  });
+
   it('all URLs fail → aggregated error naming each source', async () => {
     const dest = path.join(root, 'models/llm/t.gguf');
     await expect(

@@ -253,7 +253,18 @@ async function streamOne(
       `Digest mismatch for ${entry.label}: expected ${entry.sha256}, got ${digest} — refusing to load.`,
     );
   }
-  fs.renameSync(tmp, dest);
+  // Atomic replace. POSIX `rename` replaces silently; Windows `rename` fails if
+  // `dest` exists — and a concurrent fetch may already have placed a
+  // (digest-verified) copy there, in which case an existing `dest` is fine.
+  try {
+    fs.renameSync(tmp, dest);
+  } catch (err) {
+    if (fs.existsSync(dest)) {
+      try { fs.unlinkSync(tmp); } catch { /* best effort */ }
+    } else {
+      throw err;
+    }
+  }
   opts.onProgress?.(got, total, url);
   return dest;
 }

@@ -23,11 +23,12 @@ export { loadResources, chunkResources, resolveCorpusInput } from './resources';
 
 // Node-only: model catalog + verified project-local resolution/fetch
 // (requires node:fs / node:crypto / streaming fetch)
-export { MODEL_CATALOG, catalogEntry, resolveModel } from './models';
+export { MODEL_CATALOG, catalogEntry, resolveModel, fetchVerified } from './models';
 export type {
   ModelRole,
   ModelCatalogEntry,
   ModelSpec,
   ModelProgress,
   ResolveModelOpts,
+  FetchVerifiedOpts,
 } from './models';
