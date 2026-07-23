@@ -96,18 +96,20 @@ main(function* () {
   };
   const bootstrap: WorkflowEvent[] = [];
 
-  // Surface pick — the same events/commands, a different binding.
+  // Surface pick — the same events/commands, a different binding. Each binding
+  // returns a disposer; tie it to the scope so listeners are torn down on exit.
+  let dispose: () => void;
   if (process.env.RR_BRIDGE) {
     // A desktop shell forked this bin: stream over the process channel.
-    ipc<WorkflowEvent, Command>()(events, dispatch, bootstrap);
+    dispose = ipc<WorkflowEvent, Command>()(events, dispatch, bootstrap);
   } else if (process.stdout.isTTY) {
     // A terminal: mount the Ink view.
-    const dispose = renderCli(events, dispatch, bootstrap);
-    yield* ensure(() => dispose());
+    dispose = renderCli(events, dispatch, bootstrap);
   } else {
     // A pipe: newline-delimited JSON.
-    ndjson<WorkflowEvent, Command>()(events, dispatch, bootstrap);
+    dispose = ndjson<WorkflowEvent, Command>()(events, dispatch, bootstrap);
   }
+  yield* ensure(() => dispose());
 
   // Run the harness. Returns when it sees `quit` (or the scope unwinds).
   yield* harness(ctx, events, commands);

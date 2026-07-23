@@ -136,6 +136,11 @@ function* runQuery(
 ): Operation<string> {
   const registry = yield* AppRegistryCtx.expect();
   const apps = registry.enabled();
+  if (apps.length === 0) {
+    throw new Error(
+      "No AgentApp is enabled — enable one in harness.ts (e.g. `yield* registry.enable(createWikipediaApp)`).",
+    );
+  }
   const tools = [...apps.flatMap((a) => [...a.tools]), reportTool];
   const spinePrompt = renderSpine({ apps });
 
