@@ -17,7 +17,7 @@
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
@@ -47,6 +47,21 @@ export interface ModelCatalogEntry {
 }
 
 const USER_AGENT = '@lloyal-labs/rig model-fetch';
+
+/**
+ * A path segment safe to interpolate into `models/<role>/<id>.gguf` — a plain
+ * name: no path separators, no `..`, no leading dot. Guards a config `id` or
+ * `role` from escaping the project's `models/` directory.
+ */
+const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+function assertSafeSegment(kind: 'role' | 'id', value: string): void {
+  if (!SAFE_SEGMENT.test(value)) {
+    throw new Error(
+      `Invalid model ${kind} "${value}": expected a plain name ` +
+        `([A-Za-z0-9][A-Za-z0-9._-]*), with no path separators.`,
+    );
+  }
+}
 
 /**
  * The platform's default catalog. Extend by adding an entry — no plumbing
@@ -99,6 +114,8 @@ export interface ResolveModelOpts {
   /** The `harness.yml` entry for this role (may be omitted → scan the slot). */
   spec?: ModelSpec;
   onProgress?: ModelProgress;
+  /** Inject a non-default `fetch` (proxied network, or tests). Defaults to global `fetch`. */
+  fetchImpl?: typeof fetch;
 }
 
 /**
@@ -111,7 +128,8 @@ export interface ResolveModelOpts {
  *   no id                             → exactly one `.gguf` in the role dir → adopt; >1 → fail clearly
  */
 export async function resolveModel(opts: ResolveModelOpts): Promise<string> {
-  const { projectRoot, role, spec, onProgress } = opts;
+  const { projectRoot, role, spec, onProgress, fetchImpl } = opts;
+  assertSafeSegment('role', role);
   const roleDir = path.join(projectRoot, 'models', role);
 
   // 1. explicit path — trusted by possession
@@ -125,6 +143,7 @@ export async function resolveModel(opts: ResolveModelOpts): Promise<string> {
 
   // 2/3. configured id → slot; fetch + verify if absent
   if (spec?.id) {
+    assertSafeSegment('id', spec.id);
     const slot = path.join(roleDir, `${spec.id}.gguf`);
     if (fs.existsSync(slot)) return slot;
     const entry = catalogEntry(role, spec.id);
@@ -134,7 +153,7 @@ export async function resolveModel(opts: ResolveModelOpts): Promise<string> {
           `Drop the .gguf there, or set a known catalog id.`,
       );
     }
-    return fetchVerified(entry, slot, onProgress);
+    return fetchVerified(entry, slot, { onProgress, fetchImpl });
   }
 
   // 4. no id / no path → adopt the sole .gguf in the role dir, or fail clearly
@@ -154,24 +173,34 @@ export async function resolveModel(opts: ResolveModelOpts): Promise<string> {
   );
 }
 
-/** Stream a catalog entry into `dest`, verify sha256 fail-closed, atomic rename.
- *  Walks `entry.urls` in fallback order; a truncated or tampered download is
- *  deleted and errored, never renamed into place. */
-async function fetchVerified(
+/** Options for {@link fetchVerified}. */
+export interface FetchVerifiedOpts {
+  onProgress?: ModelProgress;
+  /** Inject a non-default `fetch`. Defaults to global `fetch`. */
+  fetchImpl?: typeof fetch;
+}
+
+/**
+ * Stream a catalog entry into `dest`, verify sha256 fail-closed, atomic rename.
+ * Walks `entry.urls` in fallback order; a truncated or tampered download is
+ * deleted and errored, never renamed into place. Exposed for reuse + testing.
+ */
+export async function fetchVerified(
   entry: ModelCatalogEntry,
   dest: string,
-  onProgress?: ModelProgress,
+  opts: FetchVerifiedOpts = {},
 ): Promise<string> {
   fs.mkdirSync(path.dirname(dest), { recursive: true });
-  const tmp = `${dest}.partial`;
-  try { fs.unlinkSync(tmp); } catch { /* stale or first run */ }
+  // Per-invocation temp name so concurrent fetches of the same model never
+  // race on — or delete — each other's partial.
+  const tmp = `${dest}.${process.pid}.${randomBytes(4).toString('hex')}.partial`;
 
   const errors: string[] = [];
   for (const url of entry.urls) {
     try {
-      return await streamOne(entry, url, tmp, dest, onProgress);
+      return await streamOne(entry, url, tmp, dest, opts);
     } catch (err) {
-      errors.push(`  ${url}: ${(err as Error).message}`);
+      errors.push(`  ${url}: ${err instanceof Error ? err.message : String(err)}`);
       try { fs.unlinkSync(tmp); } catch { /* best effort */ }
     }
   }
@@ -183,11 +212,16 @@ async function streamOne(
   url: string,
   tmp: string,
   dest: string,
-  onProgress?: ModelProgress,
+  opts: FetchVerifiedOpts,
 ): Promise<string> {
-  const res = await fetch(url, { redirect: 'follow', headers: { 'User-Agent': USER_AGENT } });
+  const doFetch = opts.fetchImpl ?? fetch;
+  const res = await doFetch(url, { redirect: 'follow', headers: { 'User-Agent': USER_AGENT } });
   if (!res.ok || !res.body) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-  const total = Number(res.headers.get('content-length') ?? entry.sizeBytes);
+
+  // Content-Length is progress-display only; fall back to the catalog size
+  // unless the header is a positive finite number.
+  const headerLen = Number(res.headers.get('content-length'));
+  const total = Number.isFinite(headerLen) && headerLen > 0 ? headerLen : entry.sizeBytes;
 
   const hash = createHash('sha256');
   let got = 0;
@@ -197,15 +231,15 @@ async function streamOne(
       hash.update(chunk);
       got += chunk.length;
       const now = Date.now();
-      if (onProgress && now - lastEmit >= 200) {
+      if (opts.onProgress && now - lastEmit >= 200) {
         lastEmit = now;
-        onProgress(got, total, url);
+        opts.onProgress(got, total, url);
       }
       cb(null, chunk);
     },
   });
 
-  // Stream (never buffer 2.6 GB) with correct backpressure via pipeline.
+  // Stream (never buffer multi-GB weights) with correct backpressure via pipeline.
   await pipeline(
     Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]),
     meter,
@@ -220,6 +254,6 @@ async function streamOne(
     );
   }
   fs.renameSync(tmp, dest);
-  onProgress?.(got, total, url);
+  opts.onProgress?.(got, total, url);
   return dest;
 }
