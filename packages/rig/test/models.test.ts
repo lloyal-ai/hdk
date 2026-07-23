@@ -98,6 +98,23 @@ describe('resolveModel — filesystem walk', () => {
       resolveModel({ projectRoot: root, role: '../evil' as ModelRole }),
     ).rejects.toThrow(/Invalid model role/);
   });
+
+  it('id containing ".." → rejected (matches the docstring)', async () => {
+    await expect(
+      resolveModel({ projectRoot: root, role: 'llm', spec: { id: 'a..b' } }),
+    ).rejects.toThrow(/Invalid model id/);
+  });
+
+  it('role path is a file (not a directory) → clear error, no ENOTDIR crash', async () => {
+    fs.mkdirSync(path.join(root, 'models'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'models', 'llm'), 'oops'); // models/llm is a FILE
+    await expect(resolveModel({ projectRoot: root, role: 'llm' })).rejects.toThrow(/No model configured/);
+  });
+
+  it('a directory named *.gguf is not adopted (regular files only)', async () => {
+    fs.mkdirSync(path.join(root, 'models', 'llm', 'notamodel.gguf'), { recursive: true });
+    await expect(resolveModel({ projectRoot: root, role: 'llm' })).rejects.toThrow(/No model configured/);
+  });
 });
 
 describe('fetchVerified — streaming digest verification', () => {

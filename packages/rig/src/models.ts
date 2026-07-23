@@ -55,10 +55,10 @@ const USER_AGENT = '@lloyal-labs/rig model-fetch';
  */
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 function assertSafeSegment(kind: 'role' | 'id', value: string): void {
-  if (!SAFE_SEGMENT.test(value)) {
+  if (!SAFE_SEGMENT.test(value) || value.includes('..')) {
     throw new Error(
       `Invalid model ${kind} "${value}": expected a plain name ` +
-        `([A-Za-z0-9][A-Za-z0-9._-]*), with no path separators.`,
+        `([A-Za-z0-9][A-Za-z0-9._-]*), with no path separators or "..".`,
     );
   }
 }
@@ -156,10 +156,20 @@ export async function resolveModel(opts: ResolveModelOpts): Promise<string> {
     return fetchVerified(entry, slot, { onProgress, fetchImpl });
   }
 
-  // 4. no id / no path → adopt the sole .gguf in the role dir, or fail clearly
-  const present = fs.existsSync(roleDir)
-    ? fs.readdirSync(roleDir).filter((f) => f.endsWith('.gguf'))
-    : [];
+  // 4. no id / no path → adopt the sole .gguf in the role dir, or fail clearly.
+  // Guard for a real directory (a file at models/<role> shouldn't ENOTDIR) and
+  // count only regular `.gguf` files (not a directory that happens to end .gguf).
+  let present: string[] = [];
+  try {
+    if (fs.statSync(roleDir).isDirectory()) {
+      present = fs
+        .readdirSync(roleDir, { withFileTypes: true })
+        .filter((d) => d.isFile() && d.name.endsWith('.gguf'))
+        .map((d) => d.name);
+    }
+  } catch {
+    // roleDir absent or not statable → no local models for this role
+  }
   if (present.length === 1) return path.join(roleDir, present[0]);
   if (present.length === 0) {
     throw new Error(
