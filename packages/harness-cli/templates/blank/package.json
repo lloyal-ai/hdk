@@ -18,6 +18,7 @@
   "scripts": {
     "dev": "tsx targets/cli/index.ts",
     "build": "tsc",
+    "prestart": "tsc",
     "start": "node bin/run.js"
   },
   "dependencies": {
@@ -25,7 +26,7 @@
     "@lloyal-labs/binding": "^0.1.0",
     "@lloyal-labs/lloyal-agents": "^3.0.0",
     "@lloyal-labs/lloyal.node": "^3.0.1",
-    "@lloyal-labs/rig": "^3.0.0",
+    "@lloyal-labs/rig": "^3.2.0",
     "@lloyal-labs/sdk": "^3.0.0",
     "@lloyal-labs/wikipedia-app": "https://apps.lloyal.ai/v1/bundles/lloyal__wikipedia-1.0.0.tgz",
     "effection": "^4.0.2",

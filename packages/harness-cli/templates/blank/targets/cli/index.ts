@@ -35,8 +35,21 @@ interface HarnessConfig {
 }
 
 function loadConfig(): HarnessConfig {
-  const raw = readFileSync(join(process.cwd(), "harness.yml"), "utf8");
-  return (parse(raw) ?? {}) as HarnessConfig;
+  let raw: string;
+  try {
+    raw = readFileSync(join(process.cwd(), "harness.yml"), "utf8");
+  } catch {
+    process.stderr.write("harness.yml not found — run from your harness project root.\n");
+    process.exit(1);
+  }
+  try {
+    return (parse(raw) ?? {}) as HarnessConfig;
+  } catch (err) {
+    process.stderr.write(
+      `harness.yml is not valid YAML: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    process.exit(1);
+  }
 }
 
 const llm: ModelEntry = loadConfig().model?.llm ?? {};
