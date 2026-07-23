@@ -22,9 +22,9 @@ const USAGE = [
   '  --dir <path>  Parent directory to create the harness in (default: cwd)',
   '  -h, --help    Show this help',
   '',
-  'Emits a runnable harness: parallel research pool + synth, wired to the',
-  'lloyal/wikipedia app via the signed-channel canonical URL. Plug in your',
-  'own model in harness.json and run `npm install && npm run dev "<query>"`.',
+  'Emits a runnable harness: a parallel research pool + synth over a resident',
+  'model (fetched + verified on first run — no API key), wired to the signed',
+  'lloyal/wikipedia app. Run `npm install && npm start`.',
 ].join('\n');
 
 // Same grammar as `harness.dev app`: identifier-safe lowercase that
@@ -76,7 +76,7 @@ export const createCommand: Command = {
       // ENOENT — good
     }
 
-    const templateDir = resolveTemplateDir('harness');
+    const templateDir = resolveTemplateDir('blank');
     const substitutions = buildSubstitutions(name);
 
     try {
@@ -93,12 +93,11 @@ export const createCommand: Command = {
         '  next steps:\n' +
         `    cd ${name}\n` +
         '    npm install\n' +
-        '    edit harness.json — point model.path at a local .gguf file\n' +
-        `    npm run dev "What was the Cuban missile crisis?"\n` +
+        '    npm start\n' +
         '\n' +
-        '  the harness ships with the lloyal/wikipedia app preinstalled\n' +
-        '  (signed-channel canonical URL). Add more apps via:\n' +
-        '    npx harness.dev install lloyal/corpus\n',
+        '  No API key needed — the model is fetched + digest-verified on first\n' +
+        '  run and runs inside your app. The lloyal/wikipedia app is preinstalled;\n' +
+        '  add more via: npx harness.dev install <publisher>/<name>\n',
     );
     return 0;
   },
@@ -110,7 +109,7 @@ export const createCommand: Command = {
  * `<pkg-root>/dist/commands/create.js`, so the templates are at
  * `<pkg-root>/templates/<kind>`.
  */
-function resolveTemplateDir(kind: 'app' | 'harness'): string {
+function resolveTemplateDir(kind: 'app' | 'harness' | 'blank'): string {
   const here = __dirname;
   const candidates = [
     resolve(here, '..', '..', 'templates', kind),
