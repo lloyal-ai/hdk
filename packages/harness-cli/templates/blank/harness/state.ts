@@ -56,9 +56,9 @@ export function reduce(s: AppState, ev: WorkflowEvent): AppState {
     case "ready":
       return s.phase === "booting" ? { ...s, phase: "ready" } : s;
     case "answer":
-      return { ...s, phase: "answered", answer: ev.text };
+      return { ...s, phase: "answered", answer: ev.text, error: null };
     case "error":
-      return { ...s, phase: "error", error: ev.message };
+      return { ...s, phase: "error", error: ev.message, answer: "" };
 
     // ── framework agent events (shared across every harness) ──
     case "agent:spawn": {
@@ -72,7 +72,9 @@ export function reduce(s: AppState, ev: WorkflowEvent): AppState {
         currentTool: null,
         toolCalls: 0,
       });
-      return { ...s, phase: "working", agents };
+      // A new query begins — clear the prior answer/error so it doesn't
+      // linger while this run produces.
+      return { ...s, phase: "working", agents, answer: "", error: null };
     }
     case "agent:produce":
       return patch(s, ev.agentId, (a) => ({
