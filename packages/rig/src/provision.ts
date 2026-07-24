@@ -69,9 +69,12 @@ export function* provisionAppModels(opts: ProvisionAppModelsOpts): Operation<voi
   }
 
   if (roles.has('reranker')) {
-    // Pin from harness.yml if configured, else adopt the catalog's reranker.
+    // Pin from harness.yml only when it actually NAMES a model (id or path); a
+    // `reranker:` block with only tuning (e.g. `context:`) must NOT suppress the
+    // catalog fallback and leave resolveModel with an id-less, path-less spec.
+    const pinned = opts.reranker?.id || opts.reranker?.path ? opts.reranker : undefined;
     const fallback = MODEL_CATALOG.find((e) => e.role === 'reranker');
-    const spec = opts.reranker ?? (fallback ? { id: fallback.id } : undefined);
+    const spec = pinned ?? (fallback ? { id: fallback.id } : undefined);
     const modelPath = yield* call(() =>
       resolveModel({
         projectRoot: opts.projectRoot,

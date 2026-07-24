@@ -14,6 +14,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { run } from 'effection';
 import { RerankerCtx } from '@lloyal-labs/lloyal-agents';
 import type { AppFactory, App, AppManifest, Reranker } from '@lloyal-labs/lloyal-agents';
+import type { ModelSpec } from '../src/models';
 
 const RERANKER_PATH = '/fake/models/reranker/qwen3-reranker-0.6b-q8.gguf';
 
@@ -123,6 +124,18 @@ describe('provisionAppModels', () => {
       });
     });
     expect(resolveModel.mock.calls[0][0]).toMatchObject({ spec: { id: 'custom-reranker' } });
+  });
+
+  it('an id-less reranker spec (only tuning, e.g. context) falls back to the catalog default', async () => {
+    await run(function* () {
+      yield* provisionAppModels({
+        apps: [factory(['reranker'])],
+        projectRoot: '/proj',
+        // A `reranker:` block that tunes but names no model — must NOT block the fallback.
+        reranker: { context: 4096 } as unknown as ModelSpec,
+      });
+    });
+    expect(resolveModel.mock.calls[0][0]).toMatchObject({ spec: { id: 'qwen3-reranker-0.6b-q8' } });
   });
 
   it('duplicate reranker requirements load the shared reranker once', async () => {
