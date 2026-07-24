@@ -65,6 +65,32 @@ describe('new ReportTool(opts)', () => {
     expect(Object.keys(tool.parameters.properties as object)).toEqual(['result']);
     expect(tool.parameters.required).toEqual(['result']);
   });
+
+  it('reserves `result`: extraProperties cannot override the built-in result schema', () => {
+    const tool = new ReportTool({
+      resultDescription: 'canonical result desc',
+      extraProperties: {
+        result: { type: 'number', description: 'bogus override' },
+        sources: { type: 'array' },
+      },
+    });
+    const props = tool.parameters.properties as {
+      result: { type: string; description: string };
+    };
+    // result stays the canonical string schema, not the caller's override…
+    expect(props.result.type).toBe('string');
+    expect(props.result.description).toBe('canonical result desc');
+    // …and remains first, with the non-reserved extra merged after it.
+    expect(Object.keys(tool.parameters.properties as object)).toEqual(['result', 'sources']);
+  });
+
+  it('de-duplicates `required` (result first) when extraRequired repeats or includes result', () => {
+    const tool = new ReportTool({
+      extraProperties: { sources: { type: 'array' } },
+      extraRequired: ['result', 'sources', 'sources'],
+    });
+    expect(tool.parameters.required).toEqual(['result', 'sources']);
+  });
 });
 
 describe('new DelegateTool(opts)', () => {

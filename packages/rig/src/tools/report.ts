@@ -20,6 +20,10 @@ export interface ReportToolOpts {
    * parallel `report` tool. The pool still captures only the `result` string;
    * a policy override reads the sibling fields off the same tool call.
    *
+   * `result` is RESERVED and cannot be overridden here — the pool's terminal
+   * capture reads `.result`, so it is always the canonical string schema. A
+   * `result` key in `extraProperties` is ignored (use `resultDescription`).
+   *
    * @example
    * new ReportTool({
    *   extraProperties: {
@@ -67,6 +71,11 @@ export class ReportTool extends Tool<{ result: string }> {
     super();
     this.description = opts?.description ??
       'Submit your final research findings with specific evidence, direct quotes, data points, and source URLs from the pages you read. State what you found AND what you checked but could not find. Do not summarize — preserve detail.';
+    // `result` is reserved: strip it from the extras so it can't be overridden
+    // (the pool's terminal capture reads `.result`) and set it canonically as
+    // the first property — the extension is strictly additive.
+    const extra = { ...(opts?.extraProperties ?? {}) };
+    delete extra.result;
     this.parameters = {
       type: 'object',
       properties: {
@@ -75,9 +84,12 @@ export class ReportTool extends Tool<{ result: string }> {
           description: opts?.resultDescription ??
             'Detailed findings with direct quotes, data points, and source URLs. Include what was found and what was not found.',
         },
-        ...(opts?.extraProperties ?? {}),
+        ...extra,
       },
-      required: ['result', ...(opts?.extraRequired ?? [])],
+      // De-duplicate (Set preserves insertion order → `result` stays first), so a
+      // caller repeating a name or passing `result` in extraRequired can't emit an
+      // invalid `required` array.
+      required: [...new Set(['result', ...(opts?.extraRequired ?? [])])],
     };
   }
 
