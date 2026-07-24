@@ -2,6 +2,11 @@ node_modules/
 dist/
 traces/
 
+# Build outputs: cli (dist/ above), desktop (electron-vite → out/),
+# web (vite → dist-web/).
+out/
+dist-web/
+
 # Model weights are fetched or dropped locally, never committed.
 models/**/*.gguf
 

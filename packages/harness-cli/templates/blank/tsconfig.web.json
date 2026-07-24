@@ -1,0 +1,29 @@
+{
+  // Typecheck-only config for the DOM sources — the web browser app + the
+  // Electron renderer view (React). The bundlers (vite / electron-vite) BUILD
+  // them via esbuild (no typecheck); run `tsc -p tsconfig.web.json` to typecheck
+  // them in your editor / CI. The Node `tsconfig.json` compiles the cli boot +
+  // web serve host; tsconfig.electron.json covers the Electron main + preload.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["vite/client"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "noEmit": true
+  },
+  "include": [
+    "harness/protocol.ts",
+    "harness/state.ts",
+    "targets/desktop/App.tsx",
+    "targets/desktop/view.tsx",
+    "targets/web/main.tsx",
+    "targets/web/boot.ts",
+    "targets/web/web-bridge.ts"
+  ]
+}
