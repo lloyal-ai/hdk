@@ -213,7 +213,7 @@ describe('defineApp appProtocolVersion', () => {
   });
 });
 
-// ── requires (auxiliary model roles) — eager, untrusted app.json ──
+// ── requires (auxiliary services) — eager, untrusted app.json ──
 
 describe('defineApp requires validation', () => {
   it('accepts a valid requires array', () => {
@@ -230,9 +230,9 @@ describe('defineApp requires validation', () => {
     );
   });
 
-  it('rejects an unknown role in requires', () => {
+  it('rejects an unknown service in requires', () => {
     expect(() => build({ ...baseManifest, requires: ['bogus'] } as unknown as AppManifest)).toThrow(
-      /unknown role/,
+      /unknown service/,
     );
   });
 });

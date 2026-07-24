@@ -44,7 +44,7 @@ import type {
   ConfigFlow,
   AppHints,
 } from '@lloyal-labs/lloyal-agents';
-import { APP_MODEL_ROLES } from '@lloyal-labs/lloyal-agents';
+import { SERVICES } from '@lloyal-labs/lloyal-agents';
 import { SUPPORTED_APP_PROTOCOL_VERSIONS } from './protocol';
 
 /**
@@ -177,19 +177,19 @@ function assertProtocolTools(tools: readonly string[]): void {
 function assertRequires(requires: unknown): void {
   // `requires` comes from `app.json` (parsed as untrusted JSON), so validate it
   // like the rest of the manifest: absent is fine; otherwise it must be an array
-  // of the closed {@link APP_MODEL_ROLES} set. A malformed value would silently
-  // break pre-provisioning (the boot reads `manifest.requires` before enable).
+  // of the closed {@link SERVICES} set. A malformed value would silently break
+  // pre-provisioning (the boot reads `manifest.requires` before enable).
   if (requires === undefined) return;
   if (!Array.isArray(requires)) {
     throw new Error(
-      `defineApp: manifest.requires must be an array of model roles, got ${typeof requires}`,
+      `defineApp: manifest.requires must be an array of service names, got ${typeof requires}`,
     );
   }
-  for (const role of requires) {
-    if (typeof role !== 'string' || !(APP_MODEL_ROLES as readonly string[]).includes(role)) {
+  for (const service of requires) {
+    if (typeof service !== 'string' || !(SERVICES as readonly string[]).includes(service)) {
       throw new Error(
-        `defineApp: manifest.requires contains unknown role ${JSON.stringify(role)}; ` +
-          `supported roles are ${JSON.stringify(APP_MODEL_ROLES)}.`,
+        `defineApp: manifest.requires contains unknown service ${JSON.stringify(service)}; ` +
+          `supported services are ${JSON.stringify(SERVICES)}.`,
       );
     }
   }
