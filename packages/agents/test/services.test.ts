@@ -1,18 +1,18 @@
 /**
- * Tests for the app model-role capability surface: the closed
- * {@link APP_MODEL_ROLES} set, `AppManifest.requires`, and the static
- * `AppFactory.requires` the harness boot reads without running the factory.
+ * Tests for the app **Services** capability surface: the closed {@link SERVICES}
+ * set, `AppManifest.requires`, and the manifest an `AppFactory` carries
+ * statically for the harness boot to read without running the factory.
  *
  * @category Testing
  */
 import { describe, it, expect } from 'vitest';
-import { APP_MODEL_ROLES } from '../src/index';
-import type { App, AppFactory, AppManifest, AppModelRole } from '../src/index';
+import { SERVICES } from '../src/index';
+import type { App, AppFactory, AppManifest, Service } from '../src/index';
 
-describe('app model roles', () => {
-  it('APP_MODEL_ROLES is the closed reranker+embedding set (trunk llm excluded)', () => {
-    expect(APP_MODEL_ROLES).toEqual(['reranker', 'embedding']);
-    expect(APP_MODEL_ROLES).not.toContain('llm');
+describe('app services', () => {
+  it('SERVICES is the closed reranker+embedding set (trunk llm excluded)', () => {
+    expect(SERVICES).toEqual(['reranker', 'embedding']);
+    expect(SERVICES).not.toContain('llm');
   });
 
   it('a factory carries its manifest statically — requires readable without running it', () => {
@@ -35,11 +35,12 @@ describe('app model roles', () => {
     expect(factory.manifest).toBeUndefined();
   });
 
-  it('AppManifest.requires typechecks as the closed set', () => {
+  it('AppManifest.requires typechecks as the closed Service set', () => {
+    const services: readonly Service[] = ['reranker'];
     const m: AppManifest = {
       name: 'demo',
       protocol: { name: 'demo_research', useWhen: 'demoing', tools: ['demo_tool'] },
-      requires: ['reranker'],
+      requires: services,
     };
     expect(m.requires).toEqual(['reranker']);
   });

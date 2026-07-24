@@ -72,19 +72,22 @@ export interface AppHints {
 }
 
 /**
- * The auxiliary model roles an app can declare it needs, via
- * {@link AppManifest.requires}. A closed set — the disclosure sibling of
- * {@link AppHints.authKind} and the worker's `entitlements` taxonomy: the
- * harness provisions each required role and publishes the bound service on the
- * framework context the factory reads (`RerankerCtx`) *before* the factory
- * runs. `llm` is never listed — it is the harness's own trunk model, always
- * present; apps declare only the *auxiliary* roles they consume. `embedding`
- * is reserved (no consumer yet).
+ * The HDK **Services** an app can declare it needs, via {@link AppManifest.requires}.
+ * A Service is an auxiliary platform capability the harness provides as a shared,
+ * injected instance: the app declares the *service* (not a model), and the platform
+ * binds the implementation (which model backs it) one layer down at the
+ * harness/deploy level. A closed set today (`reranker`, `embedding`); extensible as
+ * the platform adds services. A disclosure sibling of {@link AppHints.authKind} and
+ * the worker's `entitlements` taxonomy: the harness provisions each required service
+ * and publishes the bound instance on the framework context the factory reads
+ * (`RerankerCtx`) *before* the factory runs. The trunk `llm` is never listed — it is
+ * the harness's own model, always present; apps declare only the *auxiliary* services
+ * they consume. `embedding` is reserved (no consumer yet).
  */
-export const APP_MODEL_ROLES = ['reranker', 'embedding'] as const;
+export const SERVICES = ['reranker', 'embedding'] as const;
 
-/** One of the closed {@link APP_MODEL_ROLES}. */
-export type AppModelRole = (typeof APP_MODEL_ROLES)[number];
+/** One of the closed {@link SERVICES} — an HDK service an app can require. */
+export type Service = (typeof SERVICES)[number];
 
 /**
  * The declarative app manifest — content of `app.json` plus the
@@ -108,14 +111,14 @@ export interface AppManifest {
   /** The model-facing identity. */
   readonly protocol: AppProtocol;
   /**
-   * The auxiliary model roles this app needs to function (e.g. `['reranker']`
-   * when a tool scores content). The harness reads this *before* the factory
-   * runs, provisions each role, and publishes the bound service on the
-   * framework context the factory reads (`RerankerCtx`). Absent / empty means
-   * the app needs only the trunk `llm`. A governed disclosure — projected into
-   * the attention surface + signed into the catalog, like `entitlements`.
+   * The HDK {@link Service}s this app needs to function (e.g. `['reranker']` when
+   * a tool scores content). The harness reads this *before* the factory runs,
+   * provisions each service, and publishes the bound instance on the framework
+   * context the factory reads (`RerankerCtx`). Absent / empty means the app needs
+   * only the trunk `llm`. A governed disclosure — a peer to `entitlements` (NOT the
+   * attention surface): signed into the catalog + shown to the reviewer.
    */
-  readonly requires?: readonly AppModelRole[];
+  readonly requires?: readonly Service[];
   /** Optional UX/marketplace metadata. */
   readonly hints?: AppHints;
   /**
