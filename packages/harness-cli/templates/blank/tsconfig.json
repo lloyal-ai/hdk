@@ -1,4 +1,10 @@
 {
+  // The Node build (`tsc`): compiles the cli boot + the web serve host
+  // (bin/run.js, bin/serve.js) as NodeNext ESM. The tree is partitioned by
+  // runtime across THREE configs — the DOM sources (browser + Electron renderer
+  // React) typecheck via tsconfig.web.json; the Electron main + preload (CommonJS
+  // context, `__dirname`) via tsconfig.electron.json — so no `.ts` is left
+  // unchecked, and each compiles under the libs/module it actually runs on.
   "compilerOptions": {
     "target": "ES2022",
     "module": "NodeNext",
@@ -14,8 +20,10 @@
     "declaration": false,
     "sourceMap": true
   },
-  "//": "The node `tsc` build compiles the cli boot + the web serve host (bin/run.js, bin/serve.js). The browser + Electron sources build via vite / electron-vite (see electron.vite.config.ts, targets/web/vite.web.config.ts) and are excluded here — they use DOM libs a Node tsconfig doesn't carry. See tsconfig.web.json for their typecheck config.",
   "include": ["harness/**/*", "targets/**/*"],
+  // Excluded here (built/typechecked by the sibling configs above): the whole
+  // Electron target (main/preload are CJS, App/view are DOM-React) and the web
+  // browser sources.
   "exclude": [
     "targets/desktop",
     "targets/web/main.tsx",

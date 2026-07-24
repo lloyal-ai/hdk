@@ -1,4 +1,9 @@
 {
+  // Typecheck-only config for the DOM sources — the web browser app + the
+  // Electron renderer view (React). The bundlers (vite / electron-vite) BUILD
+  // them via esbuild (no typecheck); run `tsc -p tsconfig.web.json` to typecheck
+  // them in your editor / CI. The Node `tsconfig.json` compiles the cli boot +
+  // web serve host; tsconfig.electron.json covers the Electron main + preload.
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
@@ -12,7 +17,6 @@
     "resolveJsonModule": true,
     "noEmit": true
   },
-  "//": "Typecheck-only config for the DOM sources — the web browser app + the Electron renderer view (React). The bundlers (vite / electron-vite) BUILD them via esbuild (no typecheck); run `tsc -p tsconfig.web.json` to typecheck them in your editor / CI. The Node `tsconfig.json` compiles the cli boot + web serve host; the two configs partition the tree by runtime (Node vs DOM).",
   "include": [
     "harness/protocol.ts",
     "harness/state.ts",

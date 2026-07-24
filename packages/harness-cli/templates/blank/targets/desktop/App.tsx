@@ -30,17 +30,42 @@ export function HarnessApp() {
 
   useEffect(() => {
     let alive = true;
-    // Seed from the consistent-cut snapshot, then apply only newer events.
-    void window.harness.requestSnapshot().then((snap) => {
-      if (!alive) return;
-      seqRef.current = snap.seq;
-      setState(snap.state);
+    let seeded = false;
+    // Subscribe FIRST so no frame is missed, but hold frames until the snapshot
+    // lands — applying them live would let a frame advance `seqRef` and then be
+    // overwritten by an older snapshot cut (a lost-event gap on reload).
+    const pending: { seq: number; ev: WorkflowEvent }[] = [];
+    const apply = (frame: { seq: number; ev: WorkflowEvent }): void => {
+      if (frame.seq <= seqRef.current) return;
+      seqRef.current = frame.seq;
+      setState((s) => reduce(s, frame.ev));
+    };
+    // Seed from `base`@`baseSeq`, then fold any buffered frames newer than the cut
+    // — computed OUTSIDE the updater so React StrictMode's double-invoke is safe.
+    const seed = (base: AppState, baseSeq: number): void => {
+      if (!alive || seeded) return;
+      let next = base;
+      let cur = baseSeq;
+      for (const f of pending) {
+        if (f.seq <= cur) continue;
+        cur = f.seq;
+        next = reduce(next, f.ev);
+      }
+      pending.length = 0;
+      seqRef.current = cur;
+      seeded = true;
+      setState(next);
+    };
+    const off = window.harness.onEvent((frame) => {
+      if (seeded) apply(frame);
+      else pending.push(frame);
     });
-    const off = window.harness.onEvent(({ seq, ev }) => {
-      if (seq <= seqRef.current) return;
-      seqRef.current = seq;
-      setState((s) => reduce(s, ev));
-    });
+    window.harness
+      .requestSnapshot()
+      .then((snap) => seed(snap.state, snap.seq))
+      // No snapshot (e.g. the host is unreachable): seed from the initial state so
+      // the stream is never stuck buffering, and replay whatever we've buffered.
+      .catch(() => seed(initialState, -1));
     return () => {
       alive = false;
       off();

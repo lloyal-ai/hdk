@@ -36,6 +36,14 @@ export function installWebBridge(): void {
       });
       return () => {
         listeners.delete(cb);
+        // Last listener gone (view unmount / HMR): close the socket so it isn't
+        // leaked, and reset — a later subscription reconnects a fresh session
+        // (which re-seeds from initialState @ 0, matching requestSnapshot).
+        if (listeners.size === 0) {
+          client?.close();
+          client = null;
+          seq = 0;
+        }
       };
     },
     send(command: Command): void {

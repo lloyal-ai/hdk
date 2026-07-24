@@ -18,6 +18,7 @@
   "scripts": {
     "dev": "tsx targets/cli/index.ts",
     "build": "tsc",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.web.json && tsc -p tsconfig.electron.json",
     "prestart": "tsc",
     "start": "node bin/run.js",
     "dev:desktop": "tsc && electron-vite dev",
