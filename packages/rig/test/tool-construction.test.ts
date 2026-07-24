@@ -41,6 +41,30 @@ describe('new ReportTool(opts)', () => {
     const props = tool.parameters.properties as { result: { description: string } };
     expect(props.result.description).toBe('custom result desc');
   });
+
+  it('merges extraProperties + extraRequired into the schema (the citation seam)', () => {
+    const sources = {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { title: { type: 'string' }, url: { type: 'string' } },
+        required: ['title', 'url'],
+      },
+    };
+    const tool = new ReportTool({ extraProperties: { sources }, extraRequired: ['sources'] });
+    const props = tool.parameters.properties as Record<string, unknown>;
+    // `result` is preserved; `sources` is merged in alongside it.
+    expect(props).toHaveProperty('result');
+    expect(props.sources).toEqual(sources);
+    // Both are required — `result` first, extras appended.
+    expect(tool.parameters.required).toEqual(['result', 'sources']);
+  });
+
+  it('leaves the schema at the default {result} shape when no extras are passed', () => {
+    const tool = new ReportTool();
+    expect(Object.keys(tool.parameters.properties as object)).toEqual(['result']);
+    expect(tool.parameters.required).toEqual(['result']);
+  });
 });
 
 describe('new DelegateTool(opts)', () => {

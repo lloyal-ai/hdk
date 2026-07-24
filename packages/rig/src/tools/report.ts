@@ -3,13 +3,58 @@ import { Tool } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema } from '@lloyal-labs/lloyal-agents';
 
 /**
- * Terminal tool for submitting agent results
+ * Options for {@link ReportTool}.
+ *
+ * @category Rig
+ */
+export interface ReportToolOpts {
+  /** Override the tool description shown in the agent's tool schema. */
+  description?: string;
+  /** Override the `result` parameter description. */
+  resultDescription?: string;
+  /**
+   * Extra JSON-schema properties merged into `parameters.properties` alongside
+   * `result`. Their shape is grammar-forced when the model emits the report
+   * call, so a harness can require structured fields (e.g. a
+   * `sources: [{title, url}]` array for inline citations) WITHOUT re-declaring a
+   * parallel `report` tool. The pool still captures only the `result` string;
+   * a policy override reads the sibling fields off the same tool call.
+   *
+   * @example
+   * new ReportTool({
+   *   extraProperties: {
+   *     sources: {
+   *       type: 'array',
+   *       items: { type: 'object', properties: { title: { type: 'string' }, url: { type: 'string' } }, required: ['title', 'url'] },
+   *     },
+   *   },
+   *   extraRequired: ['sources'],
+   * });
+   */
+  extraProperties?: Record<string, JsonSchema>;
+  /**
+   * Property names (from {@link extraProperties}) to mark `required` alongside
+   * `result`. Note the grammar forces a required field's PRESENCE and SHAPE, not
+   * its contents: a required array without `minItems` still permits `[]`, and a
+   * bare `{ type: 'string' }` url permits any string.
+   */
+  extraRequired?: string[];
+}
+
+/**
+ * Terminal tool for submitting agent results.
  *
  * Used as the `terminalToolName` in agent pools — when an agent calls
  * this tool, the pool records the result string and marks the agent
  * as finished. The tool's `execute()` code-path is not reached; the
  * agent pool intercepts the call at the policy layer and extracts the
  * `result` argument as the agent's return value.
+ *
+ * **Schema extension.** The default schema is `{ result: string }`. Pass
+ * {@link ReportToolOpts.extraProperties} / {@link ReportToolOpts.extraRequired}
+ * to merge additional grammar-forced fields into `parameters` — the seam a
+ * harness uses to force structured `sources` for inline citations instead of
+ * shadowing this tool with a hand-synced copy.
  *
  * @category Rig
  */
@@ -18,12 +63,7 @@ export class ReportTool extends Tool<{ result: string }> {
   readonly description: string;
   readonly parameters: JsonSchema;
 
-  constructor(opts?: {
-    /** Override the tool description shown in the agent's tool schema. */
-    description?: string;
-    /** Override the result parameter description. */
-    resultDescription?: string;
-  }) {
+  constructor(opts?: ReportToolOpts) {
     super();
     this.description = opts?.description ??
       'Submit your final research findings with specific evidence, direct quotes, data points, and source URLs from the pages you read. State what you found AND what you checked but could not find. Do not summarize — preserve detail.';
@@ -35,8 +75,9 @@ export class ReportTool extends Tool<{ result: string }> {
           description: opts?.resultDescription ??
             'Detailed findings with direct quotes, data points, and source URLs. Include what was found and what was not found.',
         },
+        ...(opts?.extraProperties ?? {}),
       },
-      required: ['result'],
+      required: ['result', ...(opts?.extraRequired ?? [])],
     };
   }
 

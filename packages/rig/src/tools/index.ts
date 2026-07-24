@@ -23,6 +23,7 @@ export type { SearchProvider, SearchResult } from './web-search';
 export { createKeylessSearchProvider } from './keyless-search';
 export type { KeylessSearchOptions } from './keyless-search';
 export { ReportTool } from './report';
+export type { ReportToolOpts } from './report';
 export { DelegateTool } from './delegate';
 export type { DelegateToolOpts } from './delegate';
 export type { Reranker, ScoredChunk, ScoredResult } from './types';

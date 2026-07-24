@@ -24,6 +24,7 @@ export type {
   DelegateToolOpts,
   KeylessSearchOptions,
   PlanToolOpts,
+  ReportToolOpts,
   PlanResult, PlanIntent, ResearchTask,
   SearchProvider, SearchResult,
   Reranker, ScoredChunk, ScoredResult,
