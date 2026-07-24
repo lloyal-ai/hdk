@@ -1,9 +1,9 @@
 /**
  * `@lloyal-labs/corpus-app` — HDK reference app: local-corpus research.
  *
- * Zero-arg factory: requires a reranker (its `search` tool scores
- * chunks), loads + tokenizes the corpus at construction, and returns a
- * validated {@link App} whose {@link CorpusSource} is already-bound.
+ * Requires a reranker (its `search` tool scores chunks); loads + tokenizes the
+ * corpus at construction, and returns a validated {@link App} whose
+ * {@link CorpusSource} is already-bound.
  *
  * @packageDocumentation
  */
@@ -11,9 +11,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { call } from "effection";
-import type { Operation } from "effection";
 import { AppConfigStoreCtx, RerankerCtx } from "@lloyal-labs/lloyal-agents";
-import type { App, AppManifest, Tool } from "@lloyal-labs/lloyal-agents";
+import type { AppManifest, Tool } from "@lloyal-labs/lloyal-agents";
 import { defineApp } from "@lloyal-labs/rig";
 import type { Reranker } from "@lloyal-labs/rig";
 import { loadResources, chunkResources } from "@lloyal-labs/rig/node";
@@ -24,23 +23,32 @@ export type { CorpusSourceOpts, CorpusPromptData } from "./source";
 export { BM25Index } from "./bm25";
 export type { Bm25Opts, Bm25Hit } from "./bm25";
 
+// The declarative manifest + skill template, read once at module load. The
+// manifest is handed to defineApp, which advertises it on the factory — so the
+// harness boot reads `requires: ['reranker']` and provisions before enabling.
+const dir = join(__dirname, "..");
+const manifest = JSON.parse(readFileSync(join(dir, "app.json"), "utf8")) as AppManifest;
+const skill = readFileSync(join(dir, "skill.eta"), "utf8");
+
 /**
  * Construct the corpus research app. Reads `corpusPath` from the app's stored
  * config, loads + chunks the corpus, tokenizes the chunks through the shared
  * reranker (from `RerankerCtx`), and wires the three corpus tools.
+ *
+ * `requires: ['reranker']` (from `app.json`) rides the factory's manifest, so
+ * the harness provisions + sets `RerankerCtx` before this runs — the
+ * `RerankerCtx.expect()` below is a guaranteed read, not a gamble.
  */
-export function* createCorpusApp(): Operation<App> {
-  const dir = join(__dirname, "..");
-  const manifest = JSON.parse(readFileSync(join(dir, "app.json"), "utf8")) as AppManifest;
-  const skill = readFileSync(join(dir, "skill.eta"), "utf8");
-
+export const createCorpusApp = defineApp(manifest, function* () {
   let reranker: Reranker;
   try {
     reranker = yield* RerankerCtx.expect();
   } catch {
     throw new Error(
       "createCorpusApp: the corpus app requires a reranker (its `search` tool scores " +
-        "chunks). Set RerankerCtx via createReranker(...) before enabling.",
+        "chunks), but RerankerCtx is unset. The harness boot normally provisions it from " +
+        "the app's `requires: ['reranker']` — call provisionAppModels({ apps, projectRoot }) " +
+        "(or otherwise set RerankerCtx) before enabling this app.",
     );
   }
 
@@ -62,5 +70,5 @@ export function* createCorpusApp(): Operation<App> {
   const tools: Record<string, Tool> = {};
   for (const t of source.tools) tools[t.name] = t;
 
-  return defineApp({ manifest, source, tools, skill });
-}
+  return { source, tools, skill };
+});

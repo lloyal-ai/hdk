@@ -6,6 +6,7 @@
     "useWhen": "investigating a local document corpus — finding occurrences of terms, reading specific files at line offsets, semantic retrieval over indexed corpus content.",
     "tools": ["grep", "read_file", "search"]
   },
+  "requires": ["reranker"],
   "configSchema": {
     "type": "object",
     "required": ["corpusPath"],

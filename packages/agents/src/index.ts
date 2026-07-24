@@ -67,6 +67,7 @@ export type {
   AppManifest,
   AppProtocol,
   AppHints,
+  AppModelRole,
   AppRegistry,
   AppFactory,
   AppState,
@@ -76,6 +77,7 @@ export type {
   ExamplesTemplateFn,
   ConfigFlow,
 } from './app-types';
+export { APP_MODEL_ROLES } from './app-types';
 
 export type { AppConfigStore } from './app-config';
 export type { GrantStore } from './grant-store';

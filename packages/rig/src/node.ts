@@ -32,3 +32,8 @@ export type {
   ResolveModelOpts,
   FetchVerifiedOpts,
 } from './models';
+
+// Node-only: provision the auxiliary models an enabled app set requires
+// (aggregates AppFactory.requires → resolveModel + createReranker + RerankerCtx)
+export { provisionAppModels } from './provision';
+export type { ProvisionAppModelsOpts } from './provision';

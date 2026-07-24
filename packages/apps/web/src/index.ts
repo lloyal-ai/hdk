@@ -1,18 +1,17 @@
 /**
  * `@lloyal-labs/web-app` — HDK reference app: web research.
  *
- * Zero-arg factory: reads config from `AppConfigStoreCtx` and
- * the shared reranker from `RerankerCtx`, constructs the {@link WebSource}
- * already-bound (no `source.bind`), and returns a validated {@link App}.
+ * Reads config from `AppConfigStoreCtx` and the shared reranker from
+ * `RerankerCtx`, constructs the {@link WebSource} already-bound (no
+ * `source.bind`), and returns a validated {@link App}.
  *
  * @packageDocumentation
  */
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Operation } from "effection";
 import { AppConfigStoreCtx, RerankerCtx } from "@lloyal-labs/lloyal-agents";
-import type { App, AppManifest, Tool } from "@lloyal-labs/lloyal-agents";
+import type { AppManifest, Tool } from "@lloyal-labs/lloyal-agents";
 import { defineApp, TavilyProvider, createKeylessSearchProvider } from "@lloyal-labs/rig";
 import type { Reranker, SearchProvider } from "@lloyal-labs/rig";
 import { WebSource } from "./source";
@@ -20,17 +19,21 @@ import { WebSource } from "./source";
 export { WebSource } from "./source";
 export type { WebSourceOpts } from "./source";
 
+// The declarative manifest + skill template, read once at module load. The
+// manifest (with `requires: ['reranker']`) rides the factory — so the harness
+// provisions the reranker before enabling web research.
+const dir = join(__dirname, "..");
+const manifest = JSON.parse(readFileSync(join(dir, "app.json"), "utf8")) as AppManifest;
+const skill = readFileSync(join(dir, "skill.eta"), "utf8");
+
 /**
  * Construct the web research app. Provider selection: a `tavilyKey` in the
  * app's stored config (or `TAVILY_API_KEY`) → Tavily; otherwise a keyless
- * DuckDuckGo provider. The reranker (if any) is read from `RerankerCtx` and
- * injected into the source at construction.
+ * DuckDuckGo provider. `requires: ['reranker']` makes the harness provision +
+ * set `RerankerCtx` before this runs, so the reranker is always present — the
+ * `catch` below stays only as a defensive guard.
  */
-export function* createWebApp(): Operation<App> {
-  const dir = join(__dirname, "..");
-  const manifest = JSON.parse(readFileSync(join(dir, "app.json"), "utf8")) as AppManifest;
-  const skill = readFileSync(join(dir, "skill.eta"), "utf8");
-
+export const createWebApp = defineApp(manifest, function* () {
   const cfgStore = yield* AppConfigStoreCtx.expect();
   const cfg = (yield* cfgStore.get("web")) ?? {};
   const tavilyKey =
@@ -51,5 +54,5 @@ export function* createWebApp(): Operation<App> {
   const tools: Record<string, Tool> = {};
   for (const t of source.tools) tools[t.name] = t;
 
-  return defineApp({ manifest, source, tools, skill });
-}
+  return { source, tools, skill };
+});

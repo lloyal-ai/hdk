@@ -53,6 +53,7 @@ export {
   CHANNEL_TRUST_ROOTS,
 } from './protocol';
 export { defineApp } from './define-app';
+export type { AppSetup } from './define-app';
 export { cancellableFetch, FetchTimeoutError } from './cancellable-fetch';
 export { createInMemoryConfigStore } from './config-store';
 export { createGrantStore } from './grant-store';

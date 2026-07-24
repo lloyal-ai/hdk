@@ -7,3 +7,7 @@ model:
   llm:
     id: "reasoning-4b"          # kvCache: q4_0 · gpu: auto · branches: from capacity — add a line to override
     context: 32768
+  # An app that needs a reranker (e.g. corpus, web) auto-provisions the catalog
+  # default when it's enabled. Pin a specific one here to override:
+  #   reranker:
+  #     id: "qwen3-reranker-0.6b-q8"

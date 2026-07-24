@@ -29,20 +29,21 @@
 
 import { describe, it, expect } from 'vitest';
 import { defineApp } from '../src/define-app';
+import type { AppSetup } from '../src/define-app';
 import { SUPPORTED_APP_PROTOCOL_VERSIONS } from '../src/protocol';
-import type { App, AppManifest, Source, Tool } from '@lloyal-labs/lloyal-agents';
+import type { AppManifest, Source, Tool } from '@lloyal-labs/lloyal-agents';
 
-function baseSpec() {
-  const manifest: AppManifest = {
-    name: 'gate',
-    version: '1.0.0',
-    appProtocolVersion: '3.0',
-    protocol: {
-      name: 'gate_research',
-      useWhen: 'verify gate behavior',
-      tools: ['gate_search'],
-    },
-  };
+const baseManifest: AppManifest = {
+  name: 'gate',
+  appProtocolVersion: '3.0',
+  protocol: {
+    name: 'gate_research',
+    useWhen: 'verify gate behavior',
+    tools: ['gate_search'],
+  },
+};
+
+function parts(): AppSetup {
   const tool: Tool = {
     name: 'gate_search',
     description: 'search',
@@ -52,11 +53,17 @@ function baseSpec() {
     },
   } as unknown as Tool;
   return {
-    manifest,
     source: { name: 'gate' } as Source,
     tools: { gate_search: tool },
     skill: 'body',
   };
+}
+
+/** Build the factory — eager manifest validation happens at this call. */
+function build(manifest: AppManifest) {
+  return defineApp(manifest, function* () {
+    return parts();
+  });
 }
 
 // ── P-appProtocolVersion-compat ─────────────────────────────────
@@ -64,51 +71,39 @@ function baseSpec() {
 describe('P-appProtocolVersion-compat (§10.4)', () => {
   it('accepts every version in SUPPORTED_APP_PROTOCOL_VERSIONS', () => {
     for (const version of SUPPORTED_APP_PROTOCOL_VERSIONS) {
-      const spec = baseSpec();
-      spec.manifest = { ...spec.manifest, appProtocolVersion: version };
-      expect(() => defineApp(spec)).not.toThrow();
+      expect(() => build({ ...baseManifest, appProtocolVersion: version })).not.toThrow();
     }
   });
 
   it('accepts an undefined appProtocolVersion (apps without one default to current)', () => {
-    const spec = baseSpec();
-    spec.manifest = { ...spec.manifest, appProtocolVersion: undefined };
-    expect(() => defineApp(spec)).not.toThrow();
+    expect(() => build({ ...baseManifest, appProtocolVersion: undefined })).not.toThrow();
   });
 
   it('rejects a version outside the supported set', () => {
-    const spec = baseSpec();
-    spec.manifest = { ...spec.manifest, appProtocolVersion: '4.0' };
-    expect(() => defineApp(spec)).toThrow(/appProtocolVersion.*supported set/);
+    expect(() => build({ ...baseManifest, appProtocolVersion: '4.0' })).toThrow(
+      /appProtocolVersion.*supported set/,
+    );
   });
 
   it('rejects an empty-string version', () => {
-    const spec = baseSpec();
-    spec.manifest = { ...spec.manifest, appProtocolVersion: '' };
-    expect(() => defineApp(spec)).toThrow(/appProtocolVersion/);
+    expect(() => build({ ...baseManifest, appProtocolVersion: '' })).toThrow(/appProtocolVersion/);
   });
 
   it('rejects a typo-shaped version (e.g. "3.0.1")', () => {
-    const spec = baseSpec();
-    spec.manifest = { ...spec.manifest, appProtocolVersion: '3.0.1' };
-    expect(() => defineApp(spec)).toThrow(/appProtocolVersion/);
+    expect(() => build({ ...baseManifest, appProtocolVersion: '3.0.1' })).toThrow(/appProtocolVersion/);
   });
 });
 
-// ── Returned App.manifest preserves the version round-trip ──────
+// ── Factory manifest preserves the version round-trip ───────────
 
 describe('appProtocolVersion round-trip', () => {
-  it('preserves the version on the returned App.manifest', () => {
-    const spec = baseSpec();
-    spec.manifest = { ...spec.manifest, appProtocolVersion: '3.0' };
-    const app: App = defineApp(spec);
-    expect(app.manifest.appProtocolVersion).toBe('3.0');
+  it('preserves the version on the factory manifest', () => {
+    const factory = build({ ...baseManifest, appProtocolVersion: '3.0' });
+    expect(factory.manifest?.appProtocolVersion).toBe('3.0');
   });
 
-  it('preserves undefined on the returned App.manifest (no implicit defaulting)', () => {
-    const spec = baseSpec();
-    spec.manifest = { ...spec.manifest, appProtocolVersion: undefined };
-    const app: App = defineApp(spec);
-    expect(app.manifest.appProtocolVersion).toBeUndefined();
+  it('preserves undefined on the factory manifest (no implicit defaulting)', () => {
+    const factory = build({ ...baseManifest, appProtocolVersion: undefined });
+    expect(factory.manifest?.appProtocolVersion).toBeUndefined();
   });
 });

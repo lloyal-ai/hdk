@@ -9,9 +9,9 @@
  *    factory; describes what the app *is* without any runtime values.
  *
  * 2. **Runtime App object** ({@link App}, {@link SkillTemplateFn},
- *    {@link ExamplesTemplateFn}). Constructed by `defineApp(...)` inside
- *    the app's factory; bundles the manifest with the live `Source`,
- *    `Tool[]`, and template renderers.
+ *    {@link ExamplesTemplateFn}). Assembled by the {@link AppFactory} that
+ *    `defineApp(manifest, setup)` returns, bundling the manifest with the
+ *    setup's live `Source`, `Tool[]`, and template renderers.
  *
  * 3. **Per-spawn render context** ({@link AgentRenderCtx},
  *    {@link ExamplesRenderCtx}). Passed by the framework to template
@@ -72,6 +72,21 @@ export interface AppHints {
 }
 
 /**
+ * The auxiliary model roles an app can declare it needs, via
+ * {@link AppManifest.requires}. A closed set — the disclosure sibling of
+ * {@link AppHints.authKind} and the worker's `entitlements` taxonomy: the
+ * harness provisions each required role and publishes the bound service on the
+ * framework context the factory reads (`RerankerCtx`) *before* the factory
+ * runs. `llm` is never listed — it is the harness's own trunk model, always
+ * present; apps declare only the *auxiliary* roles they consume. `embedding`
+ * is reserved (no consumer yet).
+ */
+export const APP_MODEL_ROLES = ['reranker', 'embedding'] as const;
+
+/** One of the closed {@link APP_MODEL_ROLES}. */
+export type AppModelRole = (typeof APP_MODEL_ROLES)[number];
+
+/**
  * The declarative app manifest — content of `app.json` plus the
  * `appProtocolVersion` declaration. Imported into the app's factory
  * and passed to `defineApp(...)`.
@@ -92,6 +107,15 @@ export interface AppManifest {
   readonly appProtocolVersion?: string;
   /** The model-facing identity. */
   readonly protocol: AppProtocol;
+  /**
+   * The auxiliary model roles this app needs to function (e.g. `['reranker']`
+   * when a tool scores content). The harness reads this *before* the factory
+   * runs, provisions each role, and publishes the bound service on the
+   * framework context the factory reads (`RerankerCtx`). Absent / empty means
+   * the app needs only the trunk `llm`. A governed disclosure — projected into
+   * the attention surface + signed into the catalog, like `entitlements`.
+   */
+  readonly requires?: readonly AppModelRole[];
   /** Optional UX/marketplace metadata. */
   readonly hints?: AppHints;
   /**
@@ -196,14 +220,13 @@ export interface ConfigFlow {
 // ── Runtime App object ────────────────────────────────────────────
 
 /**
- * The runtime artifact returned by `defineApp(...)` inside an app's
- * factory. Combines the declarative {@link AppManifest} with the live
- * `Source`, `Tool[]`, and prompt templates the framework needs at
- * spawn time.
+ * The runtime artifact an app's {@link AppFactory} returns — assembled by
+ * `defineApp` from the declarative {@link AppManifest} and the setup's live
+ * `Source`, `Tool[]`, and prompt templates the framework needs at spawn time.
  *
- * Apps are constructed inside zero-arg `Operation<App>` factories
- * (typically `createWebApp`, `createJiraApp`, etc.) that read config
- * from `AppConfigStoreCtx` and the shared reranker from `RerankerCtx`.
+ * The factory (from `defineApp(manifest, setup)`) is a zero-arg
+ * `Operation<App>` whose `setup` reads config from `AppConfigStoreCtx` and the
+ * shared reranker from `RerankerCtx`.
  * Both npm-distributed apps and signed-bundle apps use the identical
  * factory signature.
  */
@@ -242,31 +265,47 @@ export interface App {
 }
 
 /**
- * A zero-arg Operation that constructs an {@link App}. This — not a
- * constructed `App` — is what the registry consumes via
- * `registry.enable(factory)` (the one enable path, whether at boot or
- * dynamically): the
- * registry runs the factory inside a per-app **detached** Effection scope
- * that it seeds with `AppConfigStoreCtx` / `AppRegistryCtx` / `RerankerCtx`,
- * so the factory reads its config and reranker, does any setup, and returns
- * the App.
+ * A zero-arg Operation that constructs an {@link App} — the value
+ * `defineApp(manifest, setup)` returns. This — not a constructed `App` — is
+ * what the registry consumes via `registry.enable(factory)` (the one enable
+ * path, whether at boot or dynamically): the registry runs the factory inside a
+ * per-app **detached** Effection scope that it seeds with `AppConfigStoreCtx` /
+ * `AppRegistryCtx` / `RerankerCtx`, so the `setup` reads its config and
+ * reranker, does any setup, and returns the runtime pieces `defineApp`
+ * validates + assembles into the App.
  *
- * **Setup and teardown are structured, not hooks.** The factory body *is*
- * the setup. For resources that need teardown (a connection, a watcher),
- * the factory is a `resource()` that allocates, registers cleanup with
- * `ensure(...)`, and `provide(...)`s the App — the cleanup fires when the
- * app's detached scope is torn down (`registry.disable(name)`, or registry
+ * **Setup and teardown are structured, not hooks.** The `setup` you pass to
+ * `defineApp` *is* the setup. For resources that need teardown (a connection, a
+ * watcher), `setup` is a `resource()` that allocates, registers cleanup with
+ * `ensure(...)`, and `provide(...)`s the runtime pieces — the cleanup fires when
+ * the app's detached scope is torn down (`registry.disable(name)`, or registry
  * scope exit). Apps with no external resources are a plain
- * `function* () { return defineApp(...) }`. There are no
- * `install`/`uninstall`/`enable`/`disable` hooks.
+ * `defineApp(manifest, function* () { return { source, tools, skill }; })`.
+ * There are no `install`/`uninstall`/`enable`/`disable` hooks.
  *
- * Apps installed via `harness.dev install` (signed npm tarballs from
- * the canonical channel) export a factory of this exact shape from
- * their package entry point — the harness imports it with a plain
- * `import { createXxxApp } from '@lloyal-labs/<name>-app'` and enables
- * it with `registry.enable(createXxxApp)`.
+ * Apps installed via `harness.dev install` (signed npm tarballs from the
+ * canonical channel) export a factory made this way from their package entry
+ * point — the harness imports it with a plain
+ * `import { createXxxApp } from '@lloyal-labs/<name>-app'` and enables it with
+ * `registry.enable(createXxxApp)`.
+ *
+ * The factory also carries its {@link AppManifest} statically as
+ * {@link AppFactory.manifest}, so the harness boot can read what the app needs
+ * (e.g. `manifest.requires`) *without* running the factory — provisioning must
+ * happen before construction. Apps set it from their `app.json` (the scaffold
+ * does this).
  */
-export type AppFactory = () => Operation<App>;
+export interface AppFactory {
+  (): Operation<App>;
+  /**
+   * The app's declarative {@link AppManifest}, advertised statically so the
+   * harness boot can read what the app needs (e.g. `manifest.requires`) BEFORE
+   * running the factory. Apps set it from their `app.json`; a factory that
+   * doesn't advertise one is still valid — the boot just can't pre-provision
+   * for it (it falls back to the factory's own construction-time reads).
+   */
+  readonly manifest?: AppManifest;
+}
 
 /**
  * The framework-tracked runtime state of an app: `'enabled'` once its
