@@ -14,5 +14,12 @@
     "declaration": false,
     "sourceMap": true
   },
-  "include": ["harness/**/*", "targets/**/*"]
+  "//": "The node `tsc` build compiles the cli boot + the web serve host (bin/run.js, bin/serve.js). The browser + Electron sources build via vite / electron-vite (see electron.vite.config.ts, targets/web/vite.web.config.ts) and are excluded here — they use DOM libs a Node tsconfig doesn't carry. See tsconfig.web.json for their typecheck config.",
+  "include": ["harness/**/*", "targets/**/*"],
+  "exclude": [
+    "targets/desktop",
+    "targets/web/main.tsx",
+    "targets/web/boot.ts",
+    "targets/web/web-bridge.ts"
+  ]
 }

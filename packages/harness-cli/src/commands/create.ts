@@ -129,6 +129,8 @@ function buildSubstitutions(name: string): Record<string, string> {
   return {
     __NAME__: name,
     __NAME_PASCAL__: pascalCase(name),
+    // Reverse-DNS app id for the desktop target (Electron appId / bundle id).
+    __APP_ID__: `dev.harness.${name.replace(/[-_]/g, '')}`,
   };
 }
 

@@ -19,11 +19,19 @@
     "dev": "tsx targets/cli/index.ts",
     "build": "tsc",
     "prestart": "tsc",
-    "start": "node bin/run.js"
+    "start": "node bin/run.js",
+    "dev:desktop": "tsc && electron-vite dev",
+    "build:desktop": "tsc && electron-vite build",
+    "pack": "npm run build:desktop && electron-builder --dir",
+    "dist": "npm run build:desktop && electron-builder",
+    "serve": "tsc && node bin/serve.js",
+    "dev:web": "vite --config targets/web/vite.web.config.ts",
+    "build:web": "vite build --config targets/web/vite.web.config.ts"
   },
   "dependencies": {
     "@inkjs/ui": "^2.0.0",
     "@lloyal-labs/binding": "^0.1.0",
+    "@lloyal-labs/host": "^0.1.0",
     "@lloyal-labs/lloyal-agents": "^3.0.0",
     "@lloyal-labs/lloyal.node": "^3.0.1",
     "@lloyal-labs/rig": "^3.2.0",
@@ -32,12 +40,21 @@
     "effection": "^4.0.2",
     "ink": "^5.0.1",
     "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "ws": "^8.18.0",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/ws": "^8.5.13",
+    "@vitejs/plugin-react": "^5.0.0",
+    "electron": "^42.0.0",
+    "electron-builder": "^26.0.0",
+    "electron-vite": "^5.0.0",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vite": "^7.0.0"
   }
 }
