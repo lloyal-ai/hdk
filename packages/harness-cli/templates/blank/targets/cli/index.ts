@@ -20,8 +20,8 @@ import { main, call, ensure, createSignal } from "effection";
 import { createBus } from "@lloyal-labs/binding";
 import { ipc, ndjson } from "@lloyal-labs/binding/node";
 import { createContext } from "@lloyal-labs/lloyal.node";
-import { resolveModel } from "@lloyal-labs/rig/node";
-import { harness } from "../../harness/harness.js";
+import { resolveModel, provisionAppModels } from "@lloyal-labs/rig/node";
+import { harness, apps } from "../../harness/harness.js";
 import type { Command, WorkflowEvent } from "../../harness/protocol.js";
 import { renderCli } from "./view.js";
 
@@ -31,7 +31,7 @@ interface ModelEntry {
   context?: number;
 }
 interface HarnessConfig {
-  model?: { llm?: ModelEntry };
+  model?: { llm?: ModelEntry; reranker?: ModelEntry };
 }
 
 function loadConfig(): HarnessConfig {
@@ -52,7 +52,8 @@ function loadConfig(): HarnessConfig {
   }
 }
 
-const llm: ModelEntry = loadConfig().model?.llm ?? {};
+const config = loadConfig();
+const llm: ModelEntry = config.model?.llm ?? {};
 const context = llm.context ?? 32768;
 
 main(function* () {
@@ -88,6 +89,23 @@ main(function* () {
       typeV: "q4_0",
     }),
   );
+
+  // Provision any auxiliary model an enabled app needs (a reranker, etc.) BEFORE
+  // the harness enables its apps. No-op for the default (wikipedia needs none);
+  // add a reranker-requiring app to `apps` and its model is fetched + verified
+  // here, then injected via RerankerCtx.
+  let fetchingReranker = false;
+  yield* provisionAppModels({
+    apps,
+    projectRoot: process.cwd(),
+    reranker: config.model?.reranker,
+    onProgress: (got, total) => {
+      fetchingReranker = true;
+      const pct = total > 0 ? Math.round((100 * got) / total) : 0;
+      process.stderr.write(`\rfetching reranker — ${pct}%   `);
+    },
+  });
+  if (fetchingReranker) process.stderr.write("\n");
 
   const events = createBus<WorkflowEvent>();
   const commands = createSignal<Command, void>();

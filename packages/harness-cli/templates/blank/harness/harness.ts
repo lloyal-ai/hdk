@@ -28,7 +28,7 @@ import {
   DefaultAgentPolicy,
   AppRegistryCtx,
 } from "@lloyal-labs/lloyal-agents";
-import type { App, AgentRenderCtx } from "@lloyal-labs/lloyal-agents";
+import type { App, AppFactory, AgentRenderCtx } from "@lloyal-labs/lloyal-agents";
 import {
   createAppRegistry,
   createInMemoryConfigStore,
@@ -38,6 +38,14 @@ import {
 } from "@lloyal-labs/rig";
 import { createWikipediaApp } from "@lloyal-labs/wikipedia-app";
 import type { Command, WorkflowEvent } from "./protocol.js";
+
+/**
+ * The AgentApps this harness enables. The boot reads each factory's `requires`
+ * (e.g. wikipedia needs nothing; corpus/web need a reranker) and provisions
+ * those models before enabling — so add an installed app's factory here and the
+ * model it needs is fetched for you. Install more with `harness.dev install <app>`.
+ */
+export const apps: AppFactory[] = [createWikipediaApp];
 
 const MAX_TURNS = 8;
 
@@ -89,13 +97,13 @@ export function* harness(
     }
   });
 
-  // Compose your AgentApps. Wikipedia needs no reranker, config, or auth, so
-  // the config store stays empty. Install more with `harness.dev install <app>`
-  // and enable them here.
+  // Compose your AgentApps. Wikipedia needs no reranker, config, or auth, so the
+  // config store stays empty. The boot has already provisioned any model these
+  // apps declare (see `apps` above); here we just enable each one.
   const registry = yield* createAppRegistry({
     configStore: createInMemoryConfigStore(),
   });
-  yield* registry.enable(createWikipediaApp);
+  for (const app of apps) yield* registry.enable(app);
 
   events.send({ type: "ready" });
 

@@ -72,6 +72,21 @@ export interface AppHints {
 }
 
 /**
+ * The auxiliary model roles an app can declare it needs, via
+ * {@link AppManifest.requires}. A closed set — the disclosure sibling of
+ * {@link AppHints.authKind} and the worker's `entitlements` taxonomy: the
+ * harness provisions each required role and publishes the bound service on the
+ * framework context the factory reads (`RerankerCtx`) *before* the factory
+ * runs. `llm` is never listed — it is the harness's own trunk model, always
+ * present; apps declare only the *auxiliary* roles they consume. `embedding`
+ * is reserved (no consumer yet).
+ */
+export const APP_MODEL_ROLES = ['reranker', 'embedding'] as const;
+
+/** One of the closed {@link APP_MODEL_ROLES}. */
+export type AppModelRole = (typeof APP_MODEL_ROLES)[number];
+
+/**
  * The declarative app manifest — content of `app.json` plus the
  * `appProtocolVersion` declaration. Imported into the app's factory
  * and passed to `defineApp(...)`.
@@ -92,6 +107,15 @@ export interface AppManifest {
   readonly appProtocolVersion?: string;
   /** The model-facing identity. */
   readonly protocol: AppProtocol;
+  /**
+   * The auxiliary model roles this app needs to function (e.g. `['reranker']`
+   * when a tool scores content). The harness reads this *before* the factory
+   * runs, provisions each role, and publishes the bound service on the
+   * framework context the factory reads (`RerankerCtx`). Absent / empty means
+   * the app needs only the trunk `llm`. A governed disclosure — projected into
+   * the attention surface + signed into the catalog, like `entitlements`.
+   */
+  readonly requires?: readonly AppModelRole[];
   /** Optional UX/marketplace metadata. */
   readonly hints?: AppHints;
   /**
@@ -265,8 +289,22 @@ export interface App {
  * their package entry point — the harness imports it with a plain
  * `import { createXxxApp } from '@lloyal-labs/<name>-app'` and enables
  * it with `registry.enable(createXxxApp)`.
+ *
+ * The factory also carries its {@link AppManifest.requires} statically as
+ * {@link AppFactory.requires}, so the harness boot can read what auxiliary
+ * models the app needs *without* running the factory — provisioning must
+ * happen before construction. Apps set it from their `app.json` (the scaffold
+ * does this); a factory that requires nothing simply omits it.
  */
-export type AppFactory = () => Operation<App>;
+export interface AppFactory {
+  (): Operation<App>;
+  /**
+   * The auxiliary model roles this app needs — the static mirror of
+   * `manifest.requires`. Read by the boot before the factory runs; absent
+   * means none.
+   */
+  readonly requires?: readonly AppModelRole[];
+}
 
 /**
  * The framework-tracked runtime state of an app: `'enabled'` once its
