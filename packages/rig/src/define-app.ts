@@ -15,8 +15,9 @@
  *   is a non-empty unique array of names matching the same regex;
  *   `protocol.useWhen` is a single bounded sentence with no chat-role markers,
  *   code fences, or newlines (metadata sanitization); `appProtocolVersion` (if
- *   declared) is in `SUPPORTED_APP_PROTOCOL_VERSIONS`. A malformed manifest
- *   fails the moment the app module is imported.
+ *   declared) is in `SUPPORTED_APP_PROTOCOL_VERSIONS`; `requires` (if present)
+ *   is an array of the closed model-role set. A malformed manifest fails the
+ *   moment the app module is imported.
  * - **At factory run (enable time):** the setup output. The `tools` map keys
  *   equal `manifest.protocol.tools[]` as a set (every declared tool has an
  *   implementation, no extras, each `.name` matches its key); and `skill`
@@ -43,6 +44,7 @@ import type {
   ConfigFlow,
   AppHints,
 } from '@lloyal-labs/lloyal-agents';
+import { APP_MODEL_ROLES } from '@lloyal-labs/lloyal-agents';
 import { SUPPORTED_APP_PROTOCOL_VERSIONS } from './protocol';
 
 /**
@@ -172,6 +174,27 @@ function assertProtocolTools(tools: readonly string[]): void {
   }
 }
 
+function assertRequires(requires: unknown): void {
+  // `requires` comes from `app.json` (parsed as untrusted JSON), so validate it
+  // like the rest of the manifest: absent is fine; otherwise it must be an array
+  // of the closed {@link APP_MODEL_ROLES} set. A malformed value would silently
+  // break pre-provisioning (the boot reads `manifest.requires` before enable).
+  if (requires === undefined) return;
+  if (!Array.isArray(requires)) {
+    throw new Error(
+      `defineApp: manifest.requires must be an array of model roles, got ${typeof requires}`,
+    );
+  }
+  for (const role of requires) {
+    if (typeof role !== 'string' || !(APP_MODEL_ROLES as readonly string[]).includes(role)) {
+      throw new Error(
+        `defineApp: manifest.requires contains unknown role ${JSON.stringify(role)}; ` +
+          `supported roles are ${JSON.stringify(APP_MODEL_ROLES)}.`,
+      );
+    }
+  }
+}
+
 function assertAppProtocolVersion(version: string | undefined): void {
   // Undefined is permitted — apps that don't declare a version are
   // assumed to target the framework's default ("3.0"). The registry
@@ -293,6 +316,7 @@ export function defineApp(
   assertIdentifier(manifest.protocol.name, 'manifest.protocol.name');
   assertUseWhen(manifest.protocol.useWhen);
   assertProtocolTools(manifest.protocol.tools);
+  assertRequires(manifest.requires);
 
   const factory = function* (): Operation<App> {
     const parts = yield* setup();

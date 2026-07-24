@@ -58,6 +58,16 @@ export interface ProvisionAppModelsOpts {
 export function* provisionAppModels(opts: ProvisionAppModelsOpts): Operation<void> {
   const roles = new Set<AppModelRole>(opts.apps.flatMap((a) => a.manifest?.requires ?? []));
 
+  // Fail fast on unsupported roles BEFORE provisioning anything, so an
+  // unimplemented requirement can't leave a half-loaded reranker behind.
+  if (roles.has('embedding')) {
+    throw new Error(
+      "provisionAppModels: an enabled app requires an 'embedding' model, but " +
+        'embedding provisioning is not implemented yet (EmbeddingCtx/Embedder ' +
+        "are reserved). Remove the app, or its 'embedding' requirement, until it lands.",
+    );
+  }
+
   if (roles.has('reranker')) {
     // Pin from harness.yml if configured, else adopt the catalog's reranker.
     const fallback = MODEL_CATALOG.find((e) => e.role === 'reranker');
@@ -72,13 +82,5 @@ export function* provisionAppModels(opts: ProvisionAppModelsOpts): Operation<voi
     );
     const reranker = yield* createReranker(modelPath);
     yield* RerankerCtx.set(reranker);
-  }
-
-  if (roles.has('embedding')) {
-    throw new Error(
-      "provisionAppModels: an enabled app requires an 'embedding' model, but " +
-        'embedding provisioning is not implemented yet (EmbeddingCtx/Embedder ' +
-        "are reserved). Remove the app, or its 'embedding' requirement, until it lands.",
-    );
   }
 }

@@ -95,16 +95,21 @@ main(function* () {
   // add a reranker-requiring app to `apps` and its model is fetched + verified
   // here, then injected via RerankerCtx.
   let fetchingReranker = false;
-  yield* provisionAppModels({
-    apps,
-    projectRoot: process.cwd(),
-    reranker: config.model?.reranker,
-    onProgress: (got, total) => {
-      fetchingReranker = true;
-      const pct = total > 0 ? Math.round((100 * got) / total) : 0;
-      process.stderr.write(`\rfetching reranker — ${pct}%   `);
-    },
-  });
+  try {
+    yield* provisionAppModels({
+      apps,
+      projectRoot: process.cwd(),
+      reranker: config.model?.reranker,
+      onProgress: (got, total) => {
+        fetchingReranker = true;
+        const pct = total > 0 ? Math.round((100 * got) / total) : 0;
+        process.stderr.write(`\rfetching reranker — ${pct}%   `);
+      },
+    });
+  } catch (err) {
+    process.stderr.write(`\n${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  }
   if (fetchingReranker) process.stderr.write("\n");
 
   const events = createBus<WorkflowEvent>();

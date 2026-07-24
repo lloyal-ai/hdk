@@ -213,6 +213,30 @@ describe('defineApp appProtocolVersion', () => {
   });
 });
 
+// ── requires (auxiliary model roles) — eager, untrusted app.json ──
+
+describe('defineApp requires validation', () => {
+  it('accepts a valid requires array', () => {
+    expect(() => build({ ...baseManifest, requires: ['reranker'] })).not.toThrow();
+  });
+
+  it('accepts an absent requires', () => {
+    expect(() => build({ ...baseManifest, requires: undefined })).not.toThrow();
+  });
+
+  it('rejects a non-array requires (malformed app.json)', () => {
+    expect(() => build({ ...baseManifest, requires: 'reranker' } as unknown as AppManifest)).toThrow(
+      /requires must be an array/,
+    );
+  });
+
+  it('rejects an unknown role in requires', () => {
+    expect(() => build({ ...baseManifest, requires: ['bogus'] } as unknown as AppManifest)).toThrow(
+      /unknown role/,
+    );
+  });
+});
+
 // ── Tools-map coverage — validated at factory run ────────────────
 
 describe('defineApp tools map coverage', () => {

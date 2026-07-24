@@ -46,7 +46,9 @@ export const createCorpusApp = defineApp(manifest, function* () {
   } catch {
     throw new Error(
       "createCorpusApp: the corpus app requires a reranker (its `search` tool scores " +
-        "chunks). Set RerankerCtx via createReranker(...) before enabling.",
+        "chunks), but RerankerCtx is unset. The harness boot normally provisions it from " +
+        "the app's `requires: ['reranker']` — call provisionAppModels({ apps, projectRoot }) " +
+        "(or otherwise set RerankerCtx) before enabling this app.",
     );
   }
 

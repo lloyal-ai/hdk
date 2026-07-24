@@ -1,7 +1,8 @@
 /**
  * Tests for {@link provisionAppModels} — the boot helper that reads the
- * aggregate `AppFactory.requires` of an app set and provisions the auxiliary
- * models (today: the shared reranker, published on `RerankerCtx`).
+ * aggregate model requirements (`manifest.requires`, carried on each
+ * `AppFactory`) of an app set and provisions the auxiliary models (today: the
+ * shared reranker, published on `RerankerCtx`).
  *
  * `resolveModel` (verified native fetch) and `createReranker` (loads a model
  * context) are mocked — the unit under test is the aggregation + wiring, not
@@ -99,6 +100,18 @@ describe('provisionAppModels', () => {
         yield* provisionAppModels({ apps: [factory(['embedding'])], projectRoot: '/proj' });
       }),
     ).rejects.toThrow(/embedding/);
+  });
+
+  it('a reranker + reserved embedding requirement fails fast — no reranker is loaded', async () => {
+    await expect(
+      run(function* () {
+        yield* provisionAppModels({
+          apps: [factory(['reranker']), factory(['embedding'])],
+          projectRoot: '/proj',
+        });
+      }),
+    ).rejects.toThrow(/embedding/);
+    expect(createReranker).not.toHaveBeenCalled();
   });
 
   it('a harness.yml reranker spec is passed through to resolveModel', async () => {
