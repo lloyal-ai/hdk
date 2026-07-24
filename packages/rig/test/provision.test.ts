@@ -12,7 +12,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { run } from 'effection';
 import { RerankerCtx } from '@lloyal-labs/lloyal-agents';
-import type { AppFactory, App, Reranker } from '@lloyal-labs/lloyal-agents';
+import type { AppFactory, App, AppManifest, Reranker } from '@lloyal-labs/lloyal-agents';
 
 const RERANKER_PATH = '/fake/models/reranker/qwen3-reranker-0.6b-q8.gguf';
 
@@ -38,12 +38,17 @@ vi.mock('../src/reranker', () => ({ createReranker }));
 // Import under test AFTER the mocks are registered.
 const { provisionAppModels } = await import('../src/provision');
 
-/** A factory that carries `requires` statically and throws if actually run. */
+/** A factory that carries its manifest statically and throws if actually run. */
 function factory(requires?: readonly ('reranker' | 'embedding')[]): AppFactory {
   const f = function* (): Generator<never, App, unknown> {
     throw new Error('provisionAppModels must NOT run the factory');
   };
-  return Object.assign(f as unknown as AppFactory, requires ? { requires } : {});
+  const manifest = {
+    name: 'test',
+    protocol: { name: 'test_research', useWhen: 'testing', tools: ['test_tool'] },
+    ...(requires ? { requires } : {}),
+  } as AppManifest;
+  return Object.assign(f as unknown as AppFactory, { manifest });
 }
 
 beforeEach(() => {

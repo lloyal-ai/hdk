@@ -15,20 +15,24 @@ describe('app model roles', () => {
     expect(APP_MODEL_ROLES).not.toContain('llm');
   });
 
-  it('a factory carries requires statically — readable without running it', () => {
-    const requires: readonly AppModelRole[] = ['reranker'];
+  it('a factory carries its manifest statically — requires readable without running it', () => {
+    const manifest: AppManifest = {
+      name: 'demo',
+      protocol: { name: 'demo_research', useWhen: 'demoing', tools: ['demo_tool'] },
+      requires: ['reranker'],
+    };
     const f = function* (): Generator<never, App, unknown> {
       throw new Error('not run');
     };
-    const factory: AppFactory = Object.assign(f as unknown as AppFactory, { requires });
-    expect(factory.requires).toEqual(['reranker']);
+    const factory: AppFactory = Object.assign(f as unknown as AppFactory, { manifest });
+    expect(factory.manifest?.requires).toEqual(['reranker']);
   });
 
-  it('a factory with no requires reads as undefined', () => {
+  it('a factory with no manifest reads as undefined', () => {
     const factory: AppFactory = function* (): Generator<never, App, unknown> {
       throw new Error('not run');
     } as unknown as AppFactory;
-    expect(factory.requires).toBeUndefined();
+    expect(factory.manifest).toBeUndefined();
   });
 
   it('AppManifest.requires typechecks as the closed set', () => {

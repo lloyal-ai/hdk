@@ -1,30 +1,31 @@
 /**
- * `defineApp(spec): App` — sync wiring helper called inside every app's
- * factory after constructing its `Source` and `Tool[]` instances.
+ * `defineApp(manifest, setup): AppFactory` — the one affordance an app author
+ * calls. It pairs the declarative {@link AppManifest} (from `app.json`) with an
+ * effectful `setup` that constructs the runtime pieces (`source`, `tools`,
+ * `skill`, ...), and returns the {@link AppFactory} the harness enables.
  *
- * Performs all framework-side validations of the app's declared shape
- * before the App enters the registry:
+ * The returned factory also carries its `manifest` statically, so the harness
+ * boot can read what the app needs (e.g. `manifest.requires`) BEFORE running
+ * the factory — provisioning happens before construction.
  *
- * - **Manifest schema.** `name` and `protocol.name` match
- *   `[a-z][a-z0-9_-]{1,63}`; `protocol.tools` is a non-empty unique array
- *   of names matching the same regex; `protocol.useWhen` is a single
- *   bounded sentence with no chat-role markers, code fences, or newlines
- *   (metadata sanitization).
- * - **App protocol version.** `manifest.appProtocolVersion` is in
- *   `SUPPORTED_APP_PROTOCOL_VERSIONS`. Absence is permitted
- *   (treated as `"3.0"`).
- * - **Tool map coverage.** The keys of the supplied `tools` object equal
- *   `manifest.protocol.tools[]` as a set — every declared tool has an
- *   implementation, no extras.
- * - **Boundary-marker double-emission.** `skill` (when string-typed) MUST
- *   NOT contain the literal `Apply the **` substring — the framework
- *   prepends the marker via `BOUNDARY_MARKER`, so an `skill.eta` that
- *   includes the line would emit it twice.
+ * Validation is split by what's knowable when:
  *
- * Validation errors throw synchronously with a clear message naming the
- * failing field and the violated rule. App factories should call
- * `defineApp` last (after `yield*`ing tool factories) so a malformed
- * manifest fails at construction time, not later at registration.
+ * - **Eager (at `defineApp` call = import time):** the manifest shape.
+ *   `name` and `protocol.name` match `[a-z][a-z0-9_-]{1,63}`; `protocol.tools`
+ *   is a non-empty unique array of names matching the same regex;
+ *   `protocol.useWhen` is a single bounded sentence with no chat-role markers,
+ *   code fences, or newlines (metadata sanitization); `appProtocolVersion` (if
+ *   declared) is in `SUPPORTED_APP_PROTOCOL_VERSIONS`. A malformed manifest
+ *   fails the moment the app module is imported.
+ * - **At factory run (enable time):** the setup output. The `tools` map keys
+ *   equal `manifest.protocol.tools[]` as a set (every declared tool has an
+ *   implementation, no extras, each `.name` matches its key); and `skill`
+ *   (string form) does not contain the literal `Apply the **` substring — the
+ *   framework prepends the boundary marker, so an `skill.eta` with the line
+ *   would emit it twice.
+ *
+ * Validation errors throw with a clear message naming the failing field and
+ * the violated rule.
  *
  * @packageDocumentation
  * @category Protocol
@@ -35,6 +36,7 @@ import type {
   Tool,
   Source,
   App,
+  AppFactory,
   AppManifest,
   SkillTemplateFn,
   ExamplesTemplateFn,
@@ -44,13 +46,11 @@ import type {
 import { SUPPORTED_APP_PROTOCOL_VERSIONS } from './protocol';
 
 /**
- * Argument to {@link defineApp}. The fields that survive into the
- * returned {@link App} are surfaced here with the same names. There are
- * no lifecycle hooks — setup is the factory body, teardown is `ensure(...)`.
+ * What an app's `setup` returns — the runtime pieces `defineApp` assembles into
+ * the {@link App}, alongside the declarative manifest. The `manifest` is NOT
+ * here: it is the first argument to {@link defineApp} (declared once, up front).
  */
-export interface DefineAppSpec {
-  /** The declarative app manifest, imported from `app.json`. */
-  manifest: AppManifest;
+export interface AppSetup {
   /** The app's Source. */
   source: Source;
   /**
@@ -202,7 +202,7 @@ function assertToolMapCoverage(
     throw new Error(
       `defineApp: tools map is missing implementations for protocol.tools: ` +
         `${JSON.stringify(missing)}. Every declared tool must have a corresponding ` +
-        `entry in the \`tools\` map passed to defineApp.`,
+        `entry in the \`tools\` map returned by setup.`,
     );
   }
 
@@ -240,7 +240,7 @@ function assertSkillTemplate(skill: string | SkillTemplateFn): void {
     return;
   }
   if (typeof skill !== 'string') {
-    throw new Error(`defineApp: spec.skill must be a string or SkillTemplateFn, got ${typeof skill}`);
+    throw new Error(`defineApp: setup.skill must be a string or SkillTemplateFn, got ${typeof skill}`);
   }
   if (skill.includes(BOUNDARY_MARKER_PREFIX)) {
     throw new Error(
@@ -255,65 +255,71 @@ function assertSkillTemplate(skill: string | SkillTemplateFn): void {
 // ── defineApp ─────────────────────────────────────────────────────
 
 /**
- * Validate an app's declared shape and return the runtime {@link App}
- * object the framework will register and render against.
+ * Define an app from its declarative `manifest` and an effectful `setup`, and
+ * return the {@link AppFactory} the registry enables.
  *
- * Throws synchronously on the first validation failure with a message
- * naming the failing field and the violated rule.
+ * The manifest is validated **eagerly** (at this call — import time), so a
+ * malformed manifest fails fast. `setup` runs when the factory is enabled; its
+ * returned `tools`/`skill` are validated then, and the {@link App} is assembled
+ * (tools ordered to match `protocol.tools`). The returned factory carries
+ * `manifest` statically for pre-enable provisioning.
  *
  * @example
  * ```ts
- * export function* createJiraApp(): Operation<App> {
- *   const cfgStore = yield* AppConfigStoreCtx.expect();
- *   const cfg = yield* cfgStore.get(manifest.name);
- *   if (!cfg) throw new Error('jira app requires config');
+ * import manifest from '../app.json';
  *
- *   const source = new JiraSource(cfg);
- *   const searchTool = yield* createJiraSearchTool(cfg);
- *   const readTool = yield* createJiraReadTool(cfg);
- *
- *   return defineApp({
- *     manifest,
+ * export const createJiraApp = defineApp(manifest, function* () {
+ *   const cfg = yield* AppConfigStoreCtx.expect();
+ *   const conf = yield* cfg.get('jira');
+ *   if (!conf) throw new Error('jira app requires config');
+ *   const source = new JiraSource(conf);
+ *   return {
  *     source,
- *     tools: { jira_search: searchTool, jira_read: readTool },
- *     skill: skillTemplate,
- *   });
- * }
+ *     tools: { jira_search: source.searchTool, jira_read: source.readTool },
+ *     skill,
+ *   };
+ * });
  * ```
  */
-export function defineApp(spec: DefineAppSpec): App {
-  // 1. Manifest top-level identifier.
-  assertIdentifier(spec.manifest.name, 'manifest.name');
+export function defineApp(
+  manifest: AppManifest,
+  setup: () => Operation<AppSetup>,
+): AppFactory {
+  // Eager manifest validation — a malformed manifest fails at import, before
+  // the app is ever enabled. (Tool-map + skill checks need the setup output, so
+  // they run when the factory runs — the same enable-time point as before.)
+  assertIdentifier(manifest.name, 'manifest.name');
+  assertAppProtocolVersion(manifest.appProtocolVersion);
+  assertIdentifier(manifest.protocol.name, 'manifest.protocol.name');
+  assertUseWhen(manifest.protocol.useWhen);
+  assertProtocolTools(manifest.protocol.tools);
 
-  // 2. App protocol version (if declared).
-  assertAppProtocolVersion(spec.manifest.appProtocolVersion);
+  const factory = function* (): Operation<App> {
+    const parts = yield* setup();
 
-  // 3. Protocol substructure: name, useWhen, tools.
-  assertIdentifier(spec.manifest.protocol.name, 'manifest.protocol.name');
-  assertUseWhen(spec.manifest.protocol.useWhen);
-  assertProtocolTools(spec.manifest.protocol.tools);
+    assertToolMapCoverage(manifest.protocol.tools, parts.tools);
+    assertSkillTemplate(parts.skill);
 
-  // 4. Tools map coverage and name agreement.
-  assertToolMapCoverage(spec.manifest.protocol.tools, spec.tools);
+    // Preserve `protocol.tools` insertion order in the runtime tools array
+    // — that's the order the catalog renders and the order the spine
+    // prefill receives schemas in. The framework relies on stable ordering
+    // for the §10.1 snapshot gate.
+    const tools = manifest.protocol.tools.map((name) => parts.tools[name]);
 
-  // 5. Agent template double-emission guard.
-  assertSkillTemplate(spec.skill);
-
-  // Preserve `protocol.tools` insertion order in the runtime tools array
-  // — that's the order the catalog renders and the order the spine
-  // prefill receives schemas in. The framework relies on stable ordering
-  // for the §10.1 snapshot gate.
-  const tools = spec.manifest.protocol.tools.map((name) => spec.tools[name]);
-
-  return {
-    name: spec.manifest.name,
-    manifest: spec.manifest,
-    source: spec.source,
-    tools,
-    skill: spec.skill,
-    examples: spec.examples,
-    configSchema: spec.manifest.configSchema,
-    hints: spec.hints ?? spec.manifest.hints,
-    configFlow: spec.configFlow,
+    return {
+      name: manifest.name,
+      manifest,
+      source: parts.source,
+      tools,
+      skill: parts.skill,
+      examples: parts.examples,
+      configSchema: manifest.configSchema,
+      hints: parts.hints ?? manifest.hints,
+      configFlow: parts.configFlow,
+    };
   };
+
+  // Advertise the manifest statically so the harness boot can read it (e.g.
+  // `requires`) before running the factory.
+  return Object.assign(factory, { manifest });
 }

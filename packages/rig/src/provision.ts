@@ -55,7 +55,7 @@ export interface ProvisionAppModelsOpts {
  * harness) — nothing is fetched or loaded.
  */
 export function* provisionAppModels(opts: ProvisionAppModelsOpts): Operation<void> {
-  const roles = new Set<AppModelRole>(opts.apps.flatMap((a) => a.requires ?? []));
+  const roles = new Set<AppModelRole>(opts.apps.flatMap((a) => a.manifest?.requires ?? []));
 
   if (roles.has('reranker')) {
     // Pin from harness.yml if configured, else adopt the catalog's reranker.
