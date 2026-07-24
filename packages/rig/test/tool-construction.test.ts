@@ -91,6 +91,14 @@ describe('new ReportTool(opts)', () => {
     });
     expect(tool.parameters.required).toEqual(['result', 'sources']);
   });
+
+  it('throws when extraRequired names a property missing from extraProperties', () => {
+    // typo / extraRequired without the matching extraProperties → invalid schema
+    expect(() => new ReportTool({ extraRequired: ['sources'] })).toThrow(/not defined in extraProperties/);
+    expect(
+      () => new ReportTool({ extraProperties: { sources: { type: 'array' } }, extraRequired: ['sauces'] }),
+    ).toThrow(/"sauces"/);
+  });
 });
 
 describe('new DelegateTool(opts)', () => {

@@ -38,9 +38,12 @@ export interface ReportToolOpts {
   extraProperties?: Record<string, JsonSchema>;
   /**
    * Property names (from {@link extraProperties}) to mark `required` alongside
-   * `result`. Note the grammar forces a required field's PRESENCE and SHAPE, not
-   * its contents: a required array without `minItems` still permits `[]`, and a
-   * bare `{ type: 'string' }` url permits any string.
+   * `result`. Every name must be defined in `extraProperties` (or be the reserved
+   * `result`) — an unknown name throws, since a required-but-undefined property is
+   * an invalid schema the grammar can't force. Note the grammar forces a required
+   * field's PRESENCE and SHAPE, not its contents: a required array without
+   * `minItems` still permits `[]`, and a bare `{ type: 'string' }` url permits any
+   * string.
    */
   extraRequired?: string[];
 }
@@ -76,6 +79,19 @@ export class ReportTool extends Tool<{ result: string }> {
     // the first property — the extension is strictly additive.
     const extra = { ...(opts?.extraProperties ?? {}) };
     delete extra.result;
+    // Fail loud on a required name with no schema: `result` is always defined
+    // (the base property); any other required name must have been supplied in
+    // extraProperties, else the schema requires an untyped property the grammar
+    // can't force — a caller typo, caught here rather than silently dropped.
+    const extraRequired = opts?.extraRequired ?? [];
+    for (const name of extraRequired) {
+      if (name !== 'result' && !Object.prototype.hasOwnProperty.call(extra, name)) {
+        throw new Error(
+          `ReportTool: extraRequired references "${name}", which is not defined in extraProperties. ` +
+            `Add it to extraProperties, or remove it from extraRequired.`,
+        );
+      }
+    }
     this.parameters = {
       type: 'object',
       properties: {
@@ -89,7 +105,7 @@ export class ReportTool extends Tool<{ result: string }> {
       // De-duplicate (Set preserves insertion order → `result` stays first), so a
       // caller repeating a name or passing `result` in extraRequired can't emit an
       // invalid `required` array.
-      required: [...new Set(['result', ...(opts?.extraRequired ?? [])])],
+      required: [...new Set(['result', ...extraRequired])],
     };
   }
 
