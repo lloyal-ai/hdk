@@ -6,7 +6,7 @@
     "useWhen": "gathering evidence from the open web — verifying current claims, retrieving primary sources from URLs, surveying official documentation and authoritative discussion.",
     "tools": ["web_search", "fetch_page"]
   },
-  "requires": ["reranker"],
+  "services": ["reranker"],
   "configSchema": {
     "type": "object",
     "properties": {

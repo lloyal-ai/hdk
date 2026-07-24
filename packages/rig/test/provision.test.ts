@@ -1,6 +1,6 @@
 /**
  * Tests for {@link provisionAppModels} — the boot helper that reads the
- * aggregate model requirements (`manifest.requires`, carried on each
+ * aggregate service requirements (`manifest.services`, carried on each
  * `AppFactory`) of an app set and provisions the auxiliary models (today: the
  * shared reranker, published on `RerankerCtx`).
  *
@@ -41,14 +41,14 @@ vi.mock('../src/reranker', () => ({ createReranker }));
 const { provisionAppModels } = await import('../src/provision');
 
 /** A factory that carries its manifest statically and throws if actually run. */
-function factory(requires?: readonly ('reranker' | 'embedding')[]): AppFactory {
+function factory(services?: readonly ('reranker' | 'embedding')[]): AppFactory {
   const f = function* (): Generator<never, App, unknown> {
     throw new Error('provisionAppModels must NOT run the factory');
   };
   const manifest = {
     name: 'test',
     protocol: { name: 'test_research', useWhen: 'testing', tools: ['test_tool'] },
-    ...(requires ? { requires } : {}),
+    ...(services ? { services } : {}),
   } as AppManifest;
   return Object.assign(f as unknown as AppFactory, { manifest });
 }

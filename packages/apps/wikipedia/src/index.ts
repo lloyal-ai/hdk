@@ -18,7 +18,7 @@ export { WikipediaSource } from "./source";
 export type { WikipediaSourceOpts } from "./source";
 
 // The declarative manifest + skill template, read once at module load; the
-// manifest rides the factory (wikipedia declares no `requires`).
+// manifest rides the factory (wikipedia declares no `services`).
 const dir = join(__dirname, "..");
 const manifest = JSON.parse(readFileSync(join(dir, "app.json"), "utf8")) as AppManifest;
 const skill = readFileSync(join(dir, "skill.eta"), "utf8");

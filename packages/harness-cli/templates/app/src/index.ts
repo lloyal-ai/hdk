@@ -4,9 +4,9 @@
  * An app = its declarative manifest (`app.json`) + a `setup` that constructs the
  * runtime pieces. `defineApp` pairs them and returns the factory the harness
  * enables; it also advertises the manifest, so the harness can provision any
- * models you declare in `requires` (e.g. a reranker) before enabling.
+ * models you declare in `services` (e.g. a reranker) before enabling.
  *
- * To customize for your domain: edit `app.json` (name, `useWhen`, `requires`),
+ * To customize for your domain: edit `app.json` (name, `useWhen`, `services`),
  * the tool `dispatch` bodies in `src/tools/`, and the per-spawn skill template
  * `skill.eta`.
  *
