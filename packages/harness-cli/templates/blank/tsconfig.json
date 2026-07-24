@@ -1,10 +1,11 @@
 {
-  // The Node build (`tsc`): compiles the cli boot + the web serve host
-  // (bin/run.js, bin/serve.js) as NodeNext ESM. The tree is partitioned by
-  // runtime across THREE configs — the DOM sources (browser + Electron renderer
-  // React) typecheck via tsconfig.web.json; the Electron main + preload (CommonJS
-  // context, `__dirname`) via tsconfig.electron.json — so no `.ts` is left
-  // unchecked, and each compiles under the libs/module it actually runs on.
+  // The Node build (`tsc`): compiles the TypeScript entrypoints under `targets/`
+  // — the cli boot + the web serve host — into `dist/` as NodeNext ESM (the
+  // `bin/run.js` / `bin/serve.js` shims just load the built output). The tree is
+  // partitioned by runtime across THREE configs — the DOM sources (browser +
+  // Electron renderer React) typecheck via tsconfig.web.json; the Electron main +
+  // preload (CommonJS context, `__dirname`) via tsconfig.electron.json — so no
+  // `.ts` is left unchecked, and each compiles under the libs/module it runs on.
   "compilerOptions": {
     "target": "ES2022",
     "module": "NodeNext",

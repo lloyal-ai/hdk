@@ -94,6 +94,14 @@ function createWindow(): void {
     if (isExternalUrl(url)) void shell.openExternal(url);
     return { action: "deny" };
   });
+  // Same for in-place navigations (a bare <a href> with no target): keep the
+  // renderer pinned to the app, and hand http(s) links to the system browser.
+  win.webContents.on("will-navigate", (e, url) => {
+    if (url !== win?.webContents.getURL()) {
+      e.preventDefault();
+      if (isExternalUrl(url)) void shell.openExternal(url);
+    }
+  });
   if (process.env.ELECTRON_RENDERER_URL) {
     win.loadURL(process.env.ELECTRON_RENDERER_URL);
   } else {
