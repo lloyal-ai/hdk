@@ -27,6 +27,7 @@ import type { AppFactory, Service } from '@lloyal-labs/lloyal-agents';
 import { MODEL_CATALOG, resolveModel } from './models';
 import type { ModelProgress, ModelSpec } from './models';
 import { createReranker } from './reranker';
+import type { RerankerLoadOpts } from './reranker';
 
 /** Options for {@link provisionAppModels}. */
 export interface ProvisionAppModelsOpts {
@@ -42,6 +43,13 @@ export interface ProvisionAppModelsOpts {
    * `model.reranker`. Absent → the platform catalog's reranker default.
    */
   reranker?: ModelSpec;
+  /**
+   * Optional context-sizing overrides for the reranker load (`nSeqMax`/`nCtx`/
+   * `nBatch`), threaded into `createReranker`. Absent → its defaults (nSeqMax
+   * 10 · nCtx 4096). Lets a harness tune the shared reranker without
+   * hand-loading it — e.g. a larger `nCtx` for longer rerank inputs.
+   */
+  rerankerLoad?: RerankerLoadOpts;
   onProgress?: ModelProgress;
 }
 
@@ -84,7 +92,7 @@ export function* provisionAppModels(opts: ProvisionAppModelsOpts): Operation<voi
         onProgress: opts.onProgress,
       }),
     );
-    const reranker = yield* createReranker(modelPath);
+    const reranker = yield* createReranker(modelPath, opts.rerankerLoad);
     yield* RerankerCtx.set(reranker);
   }
 }

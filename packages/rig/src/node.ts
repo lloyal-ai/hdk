@@ -17,6 +17,7 @@ export * from './index';
 
 // Node-only: Reranker factory (requires @lloyal-labs/lloyal.node)
 export { createReranker } from './reranker';
+export type { RerankerLoadOpts } from './reranker';
 
 // Node-only: Resource loading (requires node:fs)
 export { loadResources, chunkResources, resolveCorpusInput } from './resources';

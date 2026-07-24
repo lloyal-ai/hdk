@@ -6,6 +6,21 @@ import type { Operation } from "effection";
 import type { Chunk, Reranker, ScoredResult } from "@lloyal-labs/lloyal-agents";
 
 /**
+ * Context-sizing overrides for {@link createReranker}. All optional; each
+ * defaults inside `createReranker` (nSeqMax 10 · nCtx 4096 · nBatch derived).
+ * Threaded through `provisionAppModels` (its `rerankerLoad`) so a harness can
+ * tune the shared reranker without hand-loading it.
+ */
+export interface RerankerLoadOpts {
+  /** Max parallel scoring sequences (default 10). */
+  nSeqMax?: number;
+  /** Reranker model context window (default 4096). */
+  nCtx?: number;
+  /** Decode batch size (default floor(nCtx / nSeqMax)). */
+  nBatch?: number;
+}
+
+/**
  * Create a {@link Reranker} backed by a dedicated reranking model context,
  * as an Effection `resource()`.
  *
@@ -23,14 +38,14 @@ import type { Chunk, Reranker, ScoredResult } from "@lloyal-labs/lloyal-agents";
  * resource finally and an explicit call don't double-free.
  *
  * @param modelPath - Absolute path to the reranking model file (GGUF)
- * @param opts - Optional context sizing overrides
- * @param opts.nSeqMax - Maximum parallel scoring sequences (default 8)
+ * @param opts - Optional context sizing overrides ({@link RerankerLoadOpts})
+ * @param opts.nSeqMax - Maximum parallel scoring sequences (default 10)
  * @param opts.nCtx - Context window size for the reranker model (default 4096)
  * @returns An Effection resource yielding a ready-to-use reranker
  *
  * @example
  * ```ts
- * const reranker = yield* createReranker(rerankerPath, { nSeqMax: 8, nCtx: 4096 });
+ * const reranker = yield* createReranker(rerankerPath, { nSeqMax: 10, nCtx: 4096 });
  * yield* RerankerCtx.set(reranker);
  * // ... pool work ...
  * // reranker disposes automatically on scope exit
@@ -40,7 +55,7 @@ import type { Chunk, Reranker, ScoredResult } from "@lloyal-labs/lloyal-agents";
  */
 export function createReranker(
   modelPath: string,
-  opts?: { nSeqMax?: number; nCtx?: number; nBatch?: number },
+  opts?: RerankerLoadOpts,
 ): Operation<Reranker> {
   return resource(function* (provide) {
     // Default bumped 8→10: warm-trunk + per-query branch consume 2 leases in
