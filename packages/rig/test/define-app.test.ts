@@ -213,25 +213,25 @@ describe('defineApp appProtocolVersion', () => {
   });
 });
 
-// ── requires (auxiliary services) — eager, untrusted app.json ──
+// ── services (auxiliary) — eager, untrusted app.json ──
 
-describe('defineApp requires validation', () => {
-  it('accepts a valid requires array', () => {
-    expect(() => build({ ...baseManifest, requires: ['reranker'] })).not.toThrow();
+describe('defineApp services validation', () => {
+  it('accepts a valid services array', () => {
+    expect(() => build({ ...baseManifest, services: ['reranker'] })).not.toThrow();
   });
 
-  it('accepts an absent requires', () => {
-    expect(() => build({ ...baseManifest, requires: undefined })).not.toThrow();
+  it('accepts an absent services', () => {
+    expect(() => build({ ...baseManifest, services: undefined })).not.toThrow();
   });
 
-  it('rejects a non-array requires (malformed app.json)', () => {
-    expect(() => build({ ...baseManifest, requires: 'reranker' } as unknown as AppManifest)).toThrow(
-      /requires must be an array/,
+  it('rejects a non-array services (malformed app.json)', () => {
+    expect(() => build({ ...baseManifest, services: 'reranker' } as unknown as AppManifest)).toThrow(
+      /services must be an array/,
     );
   });
 
-  it('rejects an unknown service in requires', () => {
-    expect(() => build({ ...baseManifest, requires: ['bogus'] } as unknown as AppManifest)).toThrow(
+  it('rejects an unknown service in services', () => {
+    expect(() => build({ ...baseManifest, services: ['bogus'] } as unknown as AppManifest)).toThrow(
       /unknown service/,
     );
   });

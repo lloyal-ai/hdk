@@ -25,7 +25,7 @@ export type { Bm25Opts, Bm25Hit } from "./bm25";
 
 // The declarative manifest + skill template, read once at module load. The
 // manifest is handed to defineApp, which advertises it on the factory — so the
-// harness boot reads `requires: ['reranker']` and provisions before enabling.
+// harness boot reads `services: ['reranker']` and provisions before enabling.
 const dir = join(__dirname, "..");
 const manifest = JSON.parse(readFileSync(join(dir, "app.json"), "utf8")) as AppManifest;
 const skill = readFileSync(join(dir, "skill.eta"), "utf8");
@@ -35,7 +35,7 @@ const skill = readFileSync(join(dir, "skill.eta"), "utf8");
  * config, loads + chunks the corpus, tokenizes the chunks through the shared
  * reranker (from `RerankerCtx`), and wires the three corpus tools.
  *
- * `requires: ['reranker']` (from `app.json`) rides the factory's manifest, so
+ * `services: ['reranker']` (from `app.json`) rides the factory's manifest, so
  * the harness provisions + sets `RerankerCtx` before this runs — the
  * `RerankerCtx.expect()` below is a guaranteed read, not a gamble.
  */
@@ -47,7 +47,7 @@ export const createCorpusApp = defineApp(manifest, function* () {
     throw new Error(
       "createCorpusApp: the corpus app requires a reranker (its `search` tool scores " +
         "chunks), but RerankerCtx is unset. The harness boot normally provisions it from " +
-        "the app's `requires: ['reranker']` — call provisionAppModels({ apps, projectRoot }) " +
+        "the app's `services: ['reranker']` — call provisionAppModels({ apps, projectRoot }) " +
         "(or otherwise set RerankerCtx) before enabling this app.",
     );
   }

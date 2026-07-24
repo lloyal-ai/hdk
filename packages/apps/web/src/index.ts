@@ -20,7 +20,7 @@ export { WebSource } from "./source";
 export type { WebSourceOpts } from "./source";
 
 // The declarative manifest + skill template, read once at module load. The
-// manifest (with `requires: ['reranker']`) rides the factory — so the harness
+// manifest (with `services: ['reranker']`) rides the factory — so the harness
 // provisions the reranker before enabling web research.
 const dir = join(__dirname, "..");
 const manifest = JSON.parse(readFileSync(join(dir, "app.json"), "utf8")) as AppManifest;
@@ -29,7 +29,7 @@ const skill = readFileSync(join(dir, "skill.eta"), "utf8");
 /**
  * Construct the web research app. Provider selection: a `tavilyKey` in the
  * app's stored config (or `TAVILY_API_KEY`) → Tavily; otherwise a keyless
- * DuckDuckGo provider. `requires: ['reranker']` makes the harness provision +
+ * DuckDuckGo provider. `services: ['reranker']` makes the harness provision +
  * set `RerankerCtx` before this runs, so the reranker is always present — the
  * `catch` below stays only as a defensive guard.
  */

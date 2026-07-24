@@ -72,7 +72,7 @@ export interface AppHints {
 }
 
 /**
- * The HDK **Services** an app can declare it needs, via {@link AppManifest.requires}.
+ * The HDK **Services** an app can declare it needs, via {@link AppManifest.services}.
  * A Service is an auxiliary platform capability the harness provides as a shared,
  * injected instance: the app declares the *service* (not a model), and the platform
  * binds the implementation (which model backs it) one layer down at the
@@ -118,7 +118,7 @@ export interface AppManifest {
    * only the trunk `llm`. A governed disclosure — a peer to `entitlements` (NOT the
    * attention surface): signed into the catalog + shown to the reviewer.
    */
-  readonly requires?: readonly Service[];
+  readonly services?: readonly Service[];
   /** Optional UX/marketplace metadata. */
   readonly hints?: AppHints;
   /**
@@ -294,7 +294,7 @@ export interface App {
  *
  * The factory also carries its {@link AppManifest} statically as
  * {@link AppFactory.manifest}, so the harness boot can read what the app needs
- * (e.g. `manifest.requires`) *without* running the factory — provisioning must
+ * (e.g. `manifest.services`) *without* running the factory — provisioning must
  * happen before construction. Apps set it from their `app.json` (the scaffold
  * does this).
  */
@@ -302,7 +302,7 @@ export interface AppFactory {
   (): Operation<App>;
   /**
    * The app's declarative {@link AppManifest}, advertised statically so the
-   * harness boot can read what the app needs (e.g. `manifest.requires`) BEFORE
+   * harness boot can read what the app needs (e.g. `manifest.services`) BEFORE
    * running the factory. Apps set it from their `app.json`; a factory that
    * doesn't advertise one is still valid — the boot just can't pre-provision
    * for it (it falls back to the factory's own construction-time reads).

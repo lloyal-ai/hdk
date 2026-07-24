@@ -2,7 +2,7 @@
  * Provision the HDK Services an enabled app set declares.
  *
  * An AgentApp declares the auxiliary Services it needs (`reranker`, `embedding`)
- * via its manifest's `requires` (carried statically on the `AppFactory`, mirrored
+ * via its manifest's `services` (carried statically on the `AppFactory`, mirrored
  * from `app.json`) — it declares the *service*, not a model. The harness boot
  * passes the same factory list it will enable; this reads the aggregate
  * requirement and — for each service some app needs — resolves + loads the model
@@ -31,7 +31,7 @@ import { createReranker } from './reranker';
 /** Options for {@link provisionAppModels}. */
 export interface ProvisionAppModelsOpts {
   /**
-   * The app factories the harness will enable. Their static `requires` is read
+   * The app factories the harness will enable. Their static `services` is read
    * to decide which auxiliary Services to load — the factories are NOT run here.
    */
   apps: readonly AppFactory[];
@@ -46,7 +46,7 @@ export interface ProvisionAppModelsOpts {
 }
 
 /**
- * Read the aggregate `requires` of `apps`, provision each required Service, and
+ * Read the aggregate `services` of `apps`, provision each required Service, and
  * publish the bound instance on its framework context — so `registry.enable`
  * injects it. Call once at boot, BEFORE `createAppRegistry`/`enable`, in the
  * scope the harness runs in: the reranker resource + `RerankerCtx` value both
@@ -57,7 +57,7 @@ export interface ProvisionAppModelsOpts {
  * harness) — nothing is fetched or loaded.
  */
 export function* provisionAppModels(opts: ProvisionAppModelsOpts): Operation<void> {
-  const services = new Set<Service>(opts.apps.flatMap((a) => a.manifest?.requires ?? []));
+  const services = new Set<Service>(opts.apps.flatMap((a) => a.manifest?.services ?? []));
 
   // Fail fast on unsupported services BEFORE provisioning anything, so an
   // unimplemented requirement can't leave a half-loaded reranker behind.

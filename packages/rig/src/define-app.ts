@@ -5,7 +5,7 @@
  * `skill`, ...), and returns the {@link AppFactory} the harness enables.
  *
  * The returned factory also carries its `manifest` statically, so the harness
- * boot can read what the app needs (e.g. `manifest.requires`) BEFORE running
+ * boot can read what the app needs (e.g. `manifest.services`) BEFORE running
  * the factory — provisioning happens before construction.
  *
  * Validation is split by what's knowable when:
@@ -15,8 +15,8 @@
  *   is a non-empty unique array of names matching the same regex;
  *   `protocol.useWhen` is a single bounded sentence with no chat-role markers,
  *   code fences, or newlines (metadata sanitization); `appProtocolVersion` (if
- *   declared) is in `SUPPORTED_APP_PROTOCOL_VERSIONS`; `requires` (if present)
- *   is an array of the closed model-role set. A malformed manifest fails the
+ *   declared) is in `SUPPORTED_APP_PROTOCOL_VERSIONS`; `services` (if present)
+ *   is an array of the closed service set. A malformed manifest fails the
  *   moment the app module is imported.
  * - **At factory run (enable time):** the setup output. The `tools` map keys
  *   equal `manifest.protocol.tools[]` as a set (every declared tool has an
@@ -174,21 +174,21 @@ function assertProtocolTools(tools: readonly string[]): void {
   }
 }
 
-function assertRequires(requires: unknown): void {
-  // `requires` comes from `app.json` (parsed as untrusted JSON), so validate it
+function assertServices(services: unknown): void {
+  // `services` comes from `app.json` (parsed as untrusted JSON), so validate it
   // like the rest of the manifest: absent is fine; otherwise it must be an array
   // of the closed {@link SERVICES} set. A malformed value would silently break
-  // pre-provisioning (the boot reads `manifest.requires` before enable).
-  if (requires === undefined) return;
-  if (!Array.isArray(requires)) {
+  // pre-provisioning (the boot reads `manifest.services` before enable).
+  if (services === undefined) return;
+  if (!Array.isArray(services)) {
     throw new Error(
-      `defineApp: manifest.requires must be an array of service names, got ${typeof requires}`,
+      `defineApp: manifest.services must be an array of service names, got ${typeof services}`,
     );
   }
-  for (const service of requires) {
+  for (const service of services) {
     if (typeof service !== 'string' || !(SERVICES as readonly string[]).includes(service)) {
       throw new Error(
-        `defineApp: manifest.requires contains unknown service ${JSON.stringify(service)}; ` +
+        `defineApp: manifest.services contains unknown service ${JSON.stringify(service)}; ` +
           `supported services are ${JSON.stringify(SERVICES)}.`,
       );
     }
@@ -316,7 +316,7 @@ export function defineApp(
   assertIdentifier(manifest.protocol.name, 'manifest.protocol.name');
   assertUseWhen(manifest.protocol.useWhen);
   assertProtocolTools(manifest.protocol.tools);
-  assertRequires(manifest.requires);
+  assertServices(manifest.services);
 
   const factory = function* (): Operation<App> {
     const parts = yield* setup();
@@ -344,6 +344,6 @@ export function defineApp(
   };
 
   // Advertise the manifest statically so the harness boot can read it (e.g.
-  // `requires`) before running the factory.
+  // `services`) before running the factory.
   return Object.assign(factory, { manifest });
 }
