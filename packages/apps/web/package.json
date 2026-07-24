@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/web-app",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "private": true,
   "description": "HDK reference app \u2014 web research (Source + tools + contract). Distributed via the signed-bundle channel, never public npm.",
   "license": "SEE LICENSE IN LICENSE",
@@ -29,8 +29,8 @@
     "linkedom": "^0.18.12"
   },
   "peerDependencies": {
-    "@lloyal-labs/lloyal-agents": "^3.0.0",
-    "@lloyal-labs/rig": "^3.0.0",
+    "@lloyal-labs/lloyal-agents": "^3.4.0",
+    "@lloyal-labs/rig": "^3.5.0",
     "effection": "^4.0.2"
   }
 }
