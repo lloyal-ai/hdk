@@ -1,8 +1,9 @@
 /**
  * Provision the auxiliary model roles an enabled app set declares.
  *
- * An AgentApp declares the non-`llm` models it needs via `AppFactory.requires`
- * (the static mirror of its `app.json`). The harness boot passes the same
+ * An AgentApp declares the non-`llm` models it needs via its manifest's
+ * `requires` (carried statically on the `AppFactory`, mirrored from `app.json`).
+ * The harness boot passes the same
  * factory list it will enable; this reads the aggregate requirement and — for
  * each role some app needs — resolves + loads the model and publishes it on the
  * framework context apps read at construction, BEFORE any factory runs.
