@@ -23,8 +23,6 @@
     "start": "node bin/run.js",
     "dev:desktop": "tsc && electron-vite dev",
     "build:desktop": "tsc && electron-vite build",
-    "pack": "npm run build:desktop && electron-builder --dir",
-    "dist": "npm run build:desktop && electron-builder",
     "serve": "tsc && node bin/serve.js",
     "dev:web": "vite --config targets/web/vite.web.config.ts",
     "build:web": "vite build --config targets/web/vite.web.config.ts"
@@ -52,7 +50,6 @@
     "@types/ws": "^8.5.13",
     "@vitejs/plugin-react": "^5.0.0",
     "electron": "^42.0.0",
-    "electron-builder": "^26.0.0",
     "electron-vite": "^5.0.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
