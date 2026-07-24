@@ -69,7 +69,7 @@ describe('provisionAppModels', () => {
     });
     expect(resolveModel).toHaveBeenCalledOnce();
     expect(resolveModel.mock.calls[0][0]).toMatchObject({ role: 'reranker', projectRoot: '/proj' });
-    expect(createReranker).toHaveBeenCalledWith(RERANKER_PATH);
+    expect(createReranker).toHaveBeenCalledWith(RERANKER_PATH, undefined);
     expect(bound).toBe(fakeReranker);
   });
 
@@ -146,5 +146,16 @@ describe('provisionAppModels', () => {
       });
     });
     expect(createReranker).toHaveBeenCalledOnce();
+  });
+
+  it('rerankerLoad is threaded into createReranker (tuning the shared reranker)', async () => {
+    await run(function* () {
+      yield* provisionAppModels({
+        apps: [factory(['reranker'])],
+        projectRoot: '/proj',
+        rerankerLoad: { nCtx: 16384 },
+      });
+    });
+    expect(createReranker).toHaveBeenCalledWith(RERANKER_PATH, { nCtx: 16384 });
   });
 });
