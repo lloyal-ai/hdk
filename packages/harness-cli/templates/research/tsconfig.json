@@ -1,0 +1,37 @@
+{
+  // The Node build (`tsc --noEmit` typechecks; esbuild bundles): the harness
+  // center under `harness/` + the Node entrypoints under `targets/` — the cli
+  // boot + the web serve host — as NodeNext ESM. The cli + serve builds DIVERGE
+  // from `blank`: the harness imports the 7 tuned `.eta` prompt sources, so those
+  // bundles are produced by esbuild (`--loader:.eta=text`), not plain `tsc` —
+  // `types/eta.d.ts` is the type-only shim that lets tsc accept those imports.
+  // The tree is partitioned by runtime across THREE configs: the DOM sources
+  // (browser + Electron renderer React) typecheck via tsconfig.web.json; the
+  // Electron main + preload (CommonJS context, `__dirname`) via
+  // tsconfig.electron.json — so no `.ts` is left unchecked.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "jsx": "react-jsx",
+    "outDir": "dist",
+    "rootDir": ".",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "types": ["node"],
+    "declaration": false,
+    "sourceMap": true
+  },
+  "include": ["harness/**/*", "targets/**/*", "types/**/*"],
+  // Excluded here (built/typechecked by the sibling configs above): the whole
+  // Electron target (main/preload are CJS, App/view are DOM-React) and the web
+  // browser sources.
+  "exclude": [
+    "targets/desktop",
+    "targets/web/main.tsx",
+    "targets/web/boot.ts",
+    "targets/web/web-bridge.ts"
+  ]
+}

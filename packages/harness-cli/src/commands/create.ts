@@ -13,19 +13,24 @@ const USAGE = [
   'harness.dev — scaffold a new harness project (the default action)',
   '',
   'Usage:',
-  '  npx harness.dev <name> [--dir <path>]',
+  '  npx harness.dev <name> [--template <blank|research>] [--dir <path>]',
   '',
   'Arguments:',
   '  <name>        Harness project name — also the directory created.',
   '',
   'Options:',
+  '  --template <blank|research>',
+  '                Starting point (default: blank). blank = a minimal parallel',
+  '                pool + synth; research = the tuned recon→plan→agents→synth',
+  '                pipeline (grounded multi-agent research).',
   '  --dir <path>  Parent directory to create the harness in (default: cwd)',
   '  -h, --help    Show this help',
   '',
-  'Emits a runnable harness: a parallel research pool + synth over a resident',
-  'model (fetched + verified on first run — no API key), wired to the signed',
-  'lloyal/wikipedia app. Run `npm install && npm start`.',
+  'Emits a runnable harness on cli + desktop + web off one center, on a resident',
+  'model (fetched + verified on first run — no API key). Run `npm install && npm start`.',
 ].join('\n');
+
+type TemplateKind = 'blank' | 'research';
 
 // Same grammar as `harness.dev app`: identifier-safe lowercase that
 // satisfies both directory and npm package-name conventions.
@@ -41,6 +46,7 @@ export const createCommand: Command = {
       options: {
         help: { type: 'boolean', short: 'h' },
         dir: { type: 'string' },
+        template: { type: 'string' },
       },
       allowPositionals: true,
     });
@@ -62,6 +68,14 @@ export const createCommand: Command = {
       return 1;
     }
 
+    const template = (values.template ?? 'blank') as TemplateKind;
+    if (template !== 'blank' && template !== 'research') {
+      process.stderr.write(
+        `harness.dev: invalid --template "${values.template}" — expected "blank" or "research".\n`,
+      );
+      return 1;
+    }
+
     const parentDir = resolve(values.dir ?? process.cwd());
     const dest = join(parentDir, name);
 
@@ -76,7 +90,7 @@ export const createCommand: Command = {
       // ENOENT — good
     }
 
-    const templateDir = resolveTemplateDir('blank');
+    const templateDir = resolveTemplateDir(template);
     const substitutions = buildSubstitutions(name);
 
     try {
@@ -88,15 +102,21 @@ export const createCommand: Command = {
       return 1;
     }
 
+    const appsNote =
+      template === 'research'
+        ? '  run and runs inside your app. The lloyal/corpus + lloyal/web apps are\n' +
+          '  preinstalled (grounded multi-agent research);\n'
+        : '  run and runs inside your app. The lloyal/wikipedia app is preinstalled;\n';
+
     process.stdout.write(
-      `scaffolded ${name} at ${dest}\n` +
+      `scaffolded ${name} (${template}) at ${dest}\n` +
         '  next steps:\n' +
         `    cd ${name}\n` +
         '    npm install\n' +
         '    npm start\n' +
         '\n' +
         '  No API key needed — the model is fetched + digest-verified on first\n' +
-        '  run and runs inside your app. The lloyal/wikipedia app is preinstalled;\n' +
+        appsNote +
         '  add more via: npx harness.dev install <publisher>/<name>\n',
     );
     return 0;
@@ -109,7 +129,7 @@ export const createCommand: Command = {
  * `<pkg-root>/dist/commands/create.js`, so the templates are at
  * `<pkg-root>/templates/<kind>`.
  */
-function resolveTemplateDir(kind: 'app' | 'harness' | 'blank'): string {
+function resolveTemplateDir(kind: 'app' | 'harness' | 'blank' | 'research'): string {
   const here = __dirname;
   const candidates = [
     resolve(here, '..', '..', 'templates', kind),

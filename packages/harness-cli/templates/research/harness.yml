@@ -1,0 +1,18 @@
+# harness.yml — the deployment manifest. Your program lives in harness/harness.ts.
+# Every surface listed explicitly; only the fields you chose are shown.
+#
+#   cli      a terminal app       (npm start)
+#   desktop  a native window      (npm run dev:desktop)
+#   web      a browser app + host (npm run serve · npm run dev:web)
+#
+# One harness over a binding, folding the one reduce in harness/state.ts.
+targets: [cli, desktop, web]
+
+model:
+  llm:
+    id: "reasoning-4b"          # kvCache: q4_0 · gpu: auto · branches: from capacity
+    context: 32768
+  # The corpus + web apps score retrievals with a reranker. It's resolved +
+  # digest-verified into models/reranker/ on first run, then created per-boot.
+  reranker:
+    id: "qwen3-reranker-0.6b-q8"

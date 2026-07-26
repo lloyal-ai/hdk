@@ -1,0 +1,20 @@
+{
+  // Typecheck-only config for the Electron main + preload. They run in Electron's
+  // CommonJS context (they use `__dirname` + electron's contextBridge/ipcRenderer),
+  // so they can't join the NodeNext-ESM `tsconfig.json` — hence a dedicated config.
+  // electron-vite BUILDS them via esbuild; run `tsc -p tsconfig.electron.json`
+  // (or `npm run typecheck`) to typecheck them in your editor / CI.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node10",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "noEmit": true
+  },
+  "include": ["targets/desktop/main.ts", "targets/desktop/preload.ts"]
+}

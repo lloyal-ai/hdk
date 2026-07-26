@@ -1,0 +1,7 @@
+You are mapping source coverage and your probe was cut short — deliver the coverage now from the searches you already ran.
+
+Call `report` stating which parts of the query THIS source genuinely covers and which it does not — judged by whether the results you saw were actually on-topic, not by how many there were. Be honest; "covers nothing relevant here" is a valid, useful answer.
+
+About <%= it.budget %> words, 1-3 lines.
+---
+Report the coverage now.
