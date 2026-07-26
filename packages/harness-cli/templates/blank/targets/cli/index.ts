@@ -22,7 +22,10 @@ import { ipc, ndjson } from "@lloyal-labs/binding/node";
 import { createContext } from "@lloyal-labs/lloyal.node";
 import { resolveModel, provisionAppModels } from "@lloyal-labs/rig/node";
 import { harness, apps } from "../../harness/harness.js";
+import { RunnerCtx } from "../../harness/runner-ctx.js";
+import { makeEdgeRunner } from "../../harness/served-runtime.js";
 import type { Command, WorkflowEvent } from "../../harness/protocol.js";
+import type { Config } from "../../harness/config-types.js";
 import { renderCli } from "./view.js";
 
 interface ModelEntry {
@@ -100,6 +103,9 @@ main(function* () {
       apps,
       projectRoot: process.cwd(),
       reranker: config.model?.reranker,
+      // No-op for the default wikipedia app; sizes the reranker the instant a
+      // reranker-using app (corpus/web) is added to `apps`.
+      rerankerLoad: { nSeqMax: 10, nCtx: 16384 },
       onProgress: (got, total) => {
         fetchingReranker = true;
         const pct = total > 0 ? Math.round((100 * got) / total) : 0;
@@ -111,6 +117,16 @@ main(function* () {
     process.exit(1);
   }
   if (fetchingReranker) process.stderr.write("\n");
+
+  // The live, in-memory config the harness reads via RunnerCtx — the edge
+  // substrate (config, trace sink, wind-down / cancel signals) every harness gets.
+  const cfg: Config = {
+    version: 1,
+    sources: {},
+    apps: {},
+    model: { path: modelPath, nCtx: context },
+  };
+  yield* RunnerCtx.set(makeEdgeRunner(cfg));
 
   const events = createBus<WorkflowEvent>();
   const commands = createSignal<Command, void>();

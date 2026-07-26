@@ -27,6 +27,8 @@ import {
   renderTemplate,
   DefaultAgentPolicy,
   AppRegistryCtx,
+  WindDown,
+  CancelAgent,
 } from "@lloyal-labs/lloyal-agents";
 import type { App, AppFactory, AgentRenderCtx } from "@lloyal-labs/lloyal-agents";
 import {
@@ -37,6 +39,7 @@ import {
   renderAgentPreamble,
 } from "@lloyal-labs/rig";
 import { createWikipediaApp } from "@lloyal-labs/wikipedia-app";
+import { RunnerCtx } from "./runner-ctx.js";
 import type { Command, WorkflowEvent } from "./protocol.js";
 
 /**
@@ -86,10 +89,22 @@ export function* harness(
   events: EventBus<WorkflowEvent>,
   commands: Signal<Command, void>,
 ): Operation<void> {
-  // Agent runtime over the resident model. `agentEvents` is the pool's own
-  // channel — forward it to the surface so every spawn / token / return streams
-  // live into the renderer. The spawned fiber auto-halts when this scope ends.
-  const { session, events: agentEvents } = yield* initAgents<WorkflowEvent>(ctx);
+  // The Runner — your harness's edge substrate (the boot set it on RunnerCtx
+  // before calling us). It carries the live config, the observability trace sink,
+  // and the persistent wind-down / cancel signals. Reading it here is the ONE
+  // platform contract every harness shares — the reference `research` template
+  // reads the exact same shape, so growing into config persistence or tracing
+  // never means migrating to a different seam.
+  const runner = yield* RunnerCtx.expect();
+
+  // Agent runtime over the resident model, threading the Runner's trace sink so
+  // an observability run captures every spawn / token. `agentEvents` is the pool's
+  // own channel — forward it to the surface so every spawn / token / return
+  // streams live into the renderer. The spawned fiber auto-halts when this scope
+  // ends.
+  const { session, events: agentEvents } = yield* initAgents<WorkflowEvent>(ctx, {
+    traceWriter: runner.traceWriter,
+  });
   yield* spawn(function* () {
     for (const ev of yield* each(agentEvents)) {
       events.send(ev as WorkflowEvent);
@@ -97,12 +112,22 @@ export function* harness(
     }
   });
 
-  // Compose your AgentApps. Wikipedia needs no reranker, config, or auth, so the
-  // config store stays empty. The boot has already provisioned any model these
-  // apps declare (see `apps` above); here we just enable each one.
-  const registry = yield* createAppRegistry({
-    configStore: createInMemoryConfigStore(),
-  });
+  // Republish the Runner's persistent lifecycle signals so the framework's
+  // graceful wind-down / per-agent cancel machinery can read them. blank's simple
+  // command loop doesn't trigger them, but the seam is here for a pipeline that
+  // grows a stop/cancel command (`runner.windDown.send()` / `runner.cancelAgent.send()`).
+  yield* WindDown.set(runner.windDown);
+  yield* CancelAgent.set(runner.cancelAgent);
+
+  // Compose your AgentApps. Seed the config store from the Runner's live config so
+  // each app reads its own entry on enable (empty for the default wikipedia — it
+  // needs no reranker, config, or auth). The boot has already provisioned any
+  // model these apps declare (see `apps` above); here we just enable each one.
+  const configStore = createInMemoryConfigStore();
+  for (const [name, cfg] of Object.entries(runner.config().apps)) {
+    yield* configStore.set(name, cfg);
+  }
+  const registry = yield* createAppRegistry({ configStore });
   for (const app of apps) yield* registry.enable(app);
 
   events.send({ type: "ready" });
