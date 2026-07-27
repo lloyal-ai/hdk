@@ -99,6 +99,13 @@ export function createServedHostDriver(
 
     function serveConnection(socket: WsServerSocket): void {
       const sessionId = randomUUID();
+      // Defensive: an unhandled 'error' on a Node socket is thrown as an exception
+      // — which would take the WHOLE serving process down (every other live Session
+      // with it). The driver owns the wss binding, so it installs a no-op 'error'
+      // handler here — every call site is protected by default, not just ones that
+      // remember to attach one. (`WsServerSocket` doesn't declare 'error'; the real
+      // `ws` socket has it — narrow-cast + optional-call.)
+      (socket as unknown as { on?: (event: "error", cb: () => void) => void }).on?.("error", () => {});
       try {
         const { uiChannel, commands } = createServedChannels();
         pending.set(sessionId, { uiChannel, commands });
