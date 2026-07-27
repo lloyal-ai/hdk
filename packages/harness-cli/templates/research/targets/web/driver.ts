@@ -120,10 +120,13 @@ export function createServedHostDriver(
         // Client disconnect at ANY phase → release (queued=drop, warming=discard, live=halt).
         // `release()` returns the harness's halt promise, which CAN reject (a teardown
         // failure) — swallow it (matching the host's own internal fire-and-forget cancel)
-        // so a disconnect can't surface as an unhandled rejection.
+        // so a disconnect can't surface as an unhandled rejection. Do NOT delete `pending`
+        // here: if the disconnect races the `warming` phase the host still completes
+        // `materialise`, and a deleted stash would make it throw "no channels" → the host
+        // reports `died` instead of a clean `reaped`. The stash is claimed by `materialise`,
+        // or dropped by the terminal `reaped`/`died` in `onState` below.
         socket.on("close", () => {
           host.release(sessionId).catch(() => {});
-          pending.delete(sessionId);
         });
         host.admit({
           sessionId,

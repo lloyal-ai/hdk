@@ -150,10 +150,8 @@ main(function* () {
     process.exit(1);
   });
   server.on("connection", (socket) => {
-    // The `ws` socket structurally satisfies binding's `WsServerSocket` (send + on
-    // message/close), but binding doesn't attach a `ws` 'error' handler — an unhandled
-    // 'error' on a Node EventEmitter throws, so the host must.
-    socket.on("error", () => {});
+    // The driver installs the socket's no-op 'error' handler itself (an unhandled
+    // 'error' on a Node EventEmitter throws), so the boot just hands the socket off.
     driver.serveConnection(socket as unknown as WsServerSocket);
   });
   // Plaintext ws:// — TLS terminates upstream (reverse proxy / the managed front door),

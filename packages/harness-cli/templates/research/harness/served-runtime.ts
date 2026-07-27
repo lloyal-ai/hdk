@@ -126,7 +126,7 @@ export function makeServedRunner(cfg: Config): Runner {
         origin: EPHEMERAL_ORIGIN,
       };
     },
-    reloadRuntime() {
+    reloadRuntime(_patch: Partial<Config>) {
       // No-op — the model is a fixed host residency; it can't rebuild per Session.
     },
     windDown,
@@ -168,7 +168,7 @@ export function makeEdgeRunner(cfg: Config): Runner {
         origin: EPHEMERAL_ORIGIN,
       };
     },
-    reloadRuntime() {
+    reloadRuntime(_patch: Partial<Config>) {
       // No-op — the CLI boot owns the SessionContext lifetime; a /model or /gpu
       // change can't rebuild it mid-run. The harness `return`s right after
       // calling this, ending the current run cleanly.
