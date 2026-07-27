@@ -7,7 +7,7 @@ dispatches a pool of agents that gather evidence in parallel (or in a dependency
 chain), then synthesizes one cited answer.
 
 > **SNAPSHOT: reasoning.run @ 0.8.0.** This template is a curated separate copy of
-> reasoning.run's RACE/DRB-tuned pipeline, conforming to the `harness.dev create`
+> reasoning.run's RACE/DRB-tuned pipeline, conforming to the `harness.dev new`
 > conventions — a real, editable starter, not a dependency. Drift from upstream is
 > expected.
 
