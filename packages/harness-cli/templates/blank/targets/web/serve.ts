@@ -24,6 +24,7 @@ import type { EventBus } from "@lloyal-labs/binding";
 import { resolveModel } from "@lloyal-labs/rig/node";
 import { parse } from "yaml";
 import { createServedHostDriver } from "./driver.js";
+import { apps } from "../../harness/harness.js";
 import { runServedSession } from "../../harness/served-session.js";
 import type { WorkflowEvent, Command } from "../../harness/protocol.js";
 import type { Config } from "../../harness/config-types.js";
@@ -46,6 +47,7 @@ function loadConfig(): { model?: { llm?: ModelEntry; reranker?: ModelEntry } } {
 
 const config = loadConfig();
 const llm: ModelEntry = config.model?.llm ?? {};
+const reranker: ModelEntry = config.model?.reranker ?? {};
 const PORT = Number(process.env.PORT) || 8787;
 const HOST = process.env.HOST ?? "127.0.0.1";
 const MAX_SESSIONS = Number(process.env.MAX_SESSIONS) || 4;
@@ -65,15 +67,36 @@ main(function* () {
     }),
   );
 
+  // Resolve the reranker to a concrete path ONLY if an enabled app declares the
+  // service — the default wikipedia app needs none, so we skip the ~630 MB fetch.
+  // resolveModel honors a harness.yml pin (id or path) and digest-verifies on
+  // first run, so `cfg.model.reranker` is then always a resolved PATH (never a
+  // bare id) — the per-session provisioning below uses it as-is.
+  let rerankerPath: string | undefined;
+  const needsReranker = apps.some((a) => (a.manifest?.services ?? []).includes("reranker"));
+  if (needsReranker) {
+    rerankerPath = yield* call(() =>
+      resolveModel({
+        projectRoot: process.cwd(),
+        role: "reranker",
+        spec: { id: reranker.id, path: reranker.path },
+        onProgress: (got, total) => {
+          const pct = total > 0 ? Math.round((100 * got) / total) : 0;
+          process.stderr.write(`\rfetching reranker — ${pct}%   `);
+        },
+      }),
+    );
+  }
+
   // The live config the harness reads via RunnerCtx (built into a per-session
-  // Runner inside runServedSession). blank resolves only the llm here; the
-  // reranker is provisioned lazily inside runServedSession iff an enabled app
-  // declares it (the default wikipedia app needs none).
+  // Runner inside runServedSession). Every Session's context is created over the
+  // one resident model; the reranker (if any) is loaded per-session by
+  // provisionAppModels from this resolved path.
   const cfg: Config = {
     version: 1,
     sources: {},
     apps: {},
-    model: { path: modelPath, nCtx: llm.context ?? 32768 },
+    model: { path: modelPath, reranker: rerankerPath, nCtx: llm.context ?? 32768 },
   };
 
   // Hand the harness to the host through the driver. The host is payload-opaque
