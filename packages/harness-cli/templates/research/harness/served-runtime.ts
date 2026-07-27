@@ -29,8 +29,8 @@ import type { Config, ConfigOrigin } from "./config-types.js";
  * via `process.env.LLOYAL_GPU` (rig's `createReranker` exposes no loadOptions
  * passthrough). A configured backend is an EXPLICIT deploy request → fail loud on
  * an unavailable variant (`LLOYAL_NO_FALLBACK`, never overriding a user-set one)
- * instead of silently loading on CPU. With no gpu configured (Metal), any
- * inherited `LLOYAL_GPU` is CLEARED — config stays the sole source of truth.
+ * instead of silently loading on CPU. With no gpu configured, any inherited
+ * `LLOYAL_GPU` is CLEARED — config stays the sole source of truth.
  */
 export function applyServedGpuEnv(cfg: Config): void {
   const gpu = cfg.model.gpu;
