@@ -1,7 +1,7 @@
 import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline/promises';
-import type { Command } from '../command';
-import { ensureFreshToken } from '../cf-access-oauth';
+import type { Command } from '../command.js';
+import { ensureFreshToken } from '../cf-access-oauth.js';
 
 const API_BASE = 'https://api.lloyal.ai';
 const REGISTER_ENDPOINT = `${API_BASE}/v1/publishers/register`;

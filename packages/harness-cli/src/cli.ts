@@ -17,11 +17,12 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { DEFAULT_COMMAND, findCommand } from './commands';
+import { join, dirname } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { findCommand } from './commands/index.js';
 
 function version(): string {
-  const pkgPath = join(__dirname, '..', 'package.json');
+  const pkgPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json');
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { version: string };
   return pkg.version;
 }
@@ -32,7 +33,8 @@ function printHelp(): void {
       'harness.dev — Harness Development Kit CLI',
       '',
       'Usage:',
-      '  npx harness.dev <name>               Scaffold a new harness',
+      '  npx harness.dev create [name]        Scaffold a new harness (interactive if no name)',
+      '  npx harness.dev create --template research   Use the tuned research template',
       '  npx harness.dev app <name>           Scaffold a new app',
       '  npx harness.dev install <name>       Install a signed app from apps.lloyal.ai',
       '  npx harness.dev publish              Submit an app for review + signing',
@@ -53,7 +55,7 @@ function printHelp(): void {
   );
 }
 
-async function main(argv: readonly string[]): Promise<number> {
+export async function main(argv: readonly string[]): Promise<number> {
   const [first, ...rest] = argv;
 
   if (first === '--version' || first === '-v') {
@@ -70,17 +72,26 @@ async function main(argv: readonly string[]): Promise<number> {
     return named.run(rest);
   }
 
-  // Not a recognized subcommand → default action (scaffold a harness),
-  // treating `first` as the harness name.
-  return DEFAULT_COMMAND.run([...argv]);
+  // Unknown command → error, NOT a silent scaffold. Scaffolding now requires the
+  // explicit `create` verb (a bare `harness.dev my-harness` used to make a
+  // directory, so a mistyped subcommand silently scaffolded one).
+  const suggestion = first.startsWith('-') ? '' : ` Did you mean \`harness.dev create ${first}\`?`;
+  process.stderr.write(
+    `harness.dev: unknown command "${first}".${suggestion} Run \`harness.dev --help\` for usage.\n`,
+  );
+  return 1;
 }
 
-void main(process.argv.slice(2)).then(
-  (code) => {
-    process.exitCode = code;
-  },
-  (err: unknown) => {
-    process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
-    process.exitCode = 1;
-  },
-);
+// Auto-run only when invoked as the CLI entrypoint — importing this module (e.g.
+// from a test) must NOT dispatch on the importer's argv.
+if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+  void main(process.argv.slice(2)).then(
+    (code) => {
+      process.exitCode = code;
+    },
+    (err: unknown) => {
+      process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+      process.exitCode = 1;
+    },
+  );
+}

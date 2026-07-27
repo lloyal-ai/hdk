@@ -1,8 +1,8 @@
 import { parseArgs } from 'node:util';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import type { Command } from '../command';
-import { ensureFreshToken } from '../cf-access-oauth';
+import type { Command } from '../command.js';
+import { ensureFreshToken } from '../cf-access-oauth.js';
 
 const API_BASE = 'https://api.lloyal.ai';
 const REVIEW_BASE = `${API_BASE}/v1/review`;

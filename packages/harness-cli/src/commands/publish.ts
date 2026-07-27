@@ -3,10 +3,10 @@ import { readFile, writeFile, mkdtemp, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
-import type { Command } from '../command';
-import { ensureFreshToken } from '../cf-access-oauth';
-import { buildAttentionSurface } from '../describe';
-import { readTarEntry, isGzipReadable } from '../tar-read';
+import type { Command } from '../command.js';
+import { ensureFreshToken } from '../cf-access-oauth.js';
+import { buildAttentionSurface } from '../describe.js';
+import { readTarEntry, isGzipReadable } from '../tar-read.js';
 
 const API_BASE = 'https://api.lloyal.ai';
 const DEFAULT_PUBLISH_ENDPOINT = `${API_BASE}/v1/publish`;

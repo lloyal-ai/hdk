@@ -1,10 +1,10 @@
-import type { Command } from '../command';
-import { createCommand } from './create';
-import { appCommand } from './app';
-import { installCommand } from './install';
-import { publishCommand } from './publish';
-import { publishersCommand } from './publishers';
-import { reviewCommand } from './review';
+import type { Command } from '../command.js';
+import { createCommand } from './create.js';
+import { appCommand } from './app.js';
+import { installCommand } from './install.js';
+import { publishCommand } from './publish.js';
+import { publishersCommand } from './publishers.js';
+import { reviewCommand } from './review.js';
 
 /**
  * The default command — runs when no recognized subcommand is given

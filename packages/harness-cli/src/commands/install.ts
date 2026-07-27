@@ -3,7 +3,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { spawn } from 'node:child_process';
-import type { Command } from '../command';
+import type { Command } from '../command.js';
 import {
   fetchAndVerifyCatalog,
   resolveAppVersion,
@@ -11,9 +11,9 @@ import {
   verifyBundle,
   sha512Integrity,
   BundleVerificationError,
-} from '../verify';
-import { readTarEntry, isGzipReadable } from '../tar-read';
-import type { AttentionSurface } from '../describe';
+} from '../verify.js';
+import { readTarEntry, isGzipReadable } from '../tar-read.js';
+import type { AttentionSurface } from '../describe.js';
 
 const USAGE = [
   'harness.dev install — install a signed HDK app from apps.lloyal.ai into the current project',

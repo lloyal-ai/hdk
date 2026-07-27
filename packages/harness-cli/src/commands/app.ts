@@ -1,7 +1,8 @@
 import { parseArgs } from 'node:util';
 import { readdirSync, readFileSync, mkdirSync, writeFileSync, statSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
-import type { Command } from '../command';
+import { fileURLToPath } from 'node:url';
+import type { Command } from '../command.js';
 
 const USAGE = [
   'harness.dev app — scaffold a new HDK app',
@@ -121,7 +122,7 @@ export const appCommand: Command = {
  * `<pkg-root>/templates/<kind>`.
  */
 function resolveTemplateDir(kind: 'app' | 'harness'): string {
-  const here = __dirname;
+  const here = dirname(fileURLToPath(import.meta.url));
   const candidates = [
     resolve(here, '..', '..', 'templates', kind),
     resolve(here, '..', 'templates', kind),
