@@ -18,22 +18,22 @@ function captureStdout(): { restore: () => void } {
 afterEach(() => vi.restoreAllMocks());
 
 describe('dispatcher — unknown command', () => {
-  it('errors (exit 1) and suggests create, does NOT scaffold', async () => {
+  it('errors (exit 1) and suggests `new`, does NOT scaffold', async () => {
     const err = captureStderr();
     const code = await main(['approve']);
     err.restore();
     expect(code).toBe(1);
     expect(err.output()).toContain('unknown command "approve"');
-    expect(err.output()).toContain('harness.dev create approve');
+    expect(err.output()).toContain('harness.dev new approve');
   });
 
-  it('does not suggest `create` for a flag-like token', async () => {
+  it('does not suggest `new` for a flag-like token', async () => {
     const err = captureStderr();
     const code = await main(['--frobnicate']);
     err.restore();
     expect(code).toBe(1);
     expect(err.output()).toContain('unknown command "--frobnicate"');
-    expect(err.output()).not.toContain('create --frobnicate');
+    expect(err.output()).not.toContain('new --frobnicate');
   });
 });
 
@@ -61,13 +61,16 @@ describe('dispatcher — help + version', () => {
 });
 
 describe('findCommand', () => {
-  it('resolves the explicit create verb + named subcommands', () => {
-    expect(findCommand('create')?.name).toBe('create');
-    expect(findCommand('app')?.name).toBe('app');
+  it('resolves the `new` verb + named subcommands', () => {
+    expect(findCommand('new')?.name).toBe('new');
+    expect(findCommand('app:new')?.name).toBe('app:new');
     expect(findCommand('install')?.name).toBe('install');
   });
 
-  it('returns undefined for an unknown token (so the dispatcher errors)', () => {
+  it('returns undefined for retired/unknown tokens (so the dispatcher errors)', () => {
+    // `create` and `app` were renamed — no backward-compat alias.
+    expect(findCommand('create')).toBeUndefined();
+    expect(findCommand('app')).toBeUndefined();
     expect(findCommand('approve')).toBeUndefined();
     expect(findCommand('bogus')).toBeUndefined();
   });

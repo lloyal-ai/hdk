@@ -3,24 +3,43 @@
  *
  * A targeted line edit — NOT a YAML parse/re-serialize — so every guidance
  * comment in the template's `harness.yml` (the `kvCache`/`gpu`/`branches` hints,
- * the reranker note) survives untouched. Only the llm `id:` value (and, when
- * given, `context:`) inside the `model.llm:` block is rewritten.
+ * the reranker note) survives untouched. Only the llm entry (and, when given,
+ * `context:`) inside the `model.llm:` block is rewritten.
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export interface ModelChoice {
-  /** Catalog id (or path) for the trunk llm — replaces `model.llm.id`. */
-  llmId: string;
+  /**
+   * The trunk llm — either a catalog `id` (rig fetches + digest-verifies,
+   * fail-closed) or a local `path` to a `.gguf` you already have (BYO, trusted
+   * by possession). Path-shaped values are written as `path:`, everything else
+   * as `id:` — see {@link isModelPath}.
+   */
+  llm: string;
   /** Optional `model.llm.context` (nCtx). Omit to leave the template default. */
   context?: number;
 }
 
 /**
- * Rewrite `model.llm.id` (+ optional `context`) in `<projectDir>/harness.yml`.
- * Throws if the file has no `model.llm:` block. The reranker is NOT written
- * here — apps declare it and it auto-provisions from the catalog default; the
- * template's reranker note documents how to pin one.
+ * A model value is a BYO **path** (not a catalog id) if it looks like a
+ * filesystem path: it contains a slash, ends in `.gguf`, or starts with `~`.
+ * Catalog ids are bare slugs (`reasoning-4b`) and stay ids even when unknown to
+ * the vendored catalog, so the picker survives catalog drift. This is the fix
+ * for the bug where a BYO `./x.gguf` was written as `id:` and rig then looked
+ * for `models/llm/./x.gguf.gguf`.
+ */
+export function isModelPath(value: string): boolean {
+  return /[\\/]/.test(value) || value.endsWith('.gguf') || value.startsWith('~');
+}
+
+/**
+ * Rewrite the llm entry (+ optional `context`) in `<projectDir>/harness.yml`.
+ * A catalog id keeps the `id:` key and swaps the value; a BYO path swaps BOTH
+ * the key → `path:` and the value (a model entry is `{ id | path }`, never
+ * both). Throws if the file has no `model.llm:` block. The reranker is NOT
+ * written here — apps declare it and it auto-provisions from the catalog
+ * default; the template's reranker note documents how to pin one.
  */
 export function applyModelChoice(projectDir: string, choice: ModelChoice): void {
   const ymlPath = join(projectDir, 'harness.yml');
@@ -31,15 +50,21 @@ export function applyModelChoice(projectDir: string, choice: ModelChoice): void 
     throw new Error(`applyModelChoice: no \`model.llm:\` block in ${ymlPath}`);
   }
 
-  // Scan forward from `llm:` and rewrite the FIRST `id:` (the llm's) — a value-
-  // only replace so any trailing comment stays. `context:` appears only in the
-  // llm block, so the first match is unambiguous. Replace each at most once.
-  let idDone = false;
+  const asPath = isModelPath(choice.llm);
+  // Scan forward from `llm:` and rewrite the FIRST entry line — the template
+  // ships either `id:` or `path:`; we normalize to the right one for this
+  // choice. `context:` appears only in the llm block, so the first match is
+  // unambiguous. Both preserve any trailing guidance comment. Replace once.
+  const key = asPath ? 'path' : 'id';
+  let keyDone = false;
   let ctxDone = choice.context == null;
-  for (let i = llmIdx + 1; i < lines.length && !(idDone && ctxDone); i++) {
-    if (!idDone && /^\s+id:\s*"[^"]*"/.test(lines[i])) {
-      lines[i] = lines[i].replace(/"[^"]*"/, `"${choice.llmId}"`);
-      idDone = true;
+  for (let i = llmIdx + 1; i < lines.length && !(keyDone && ctxDone); i++) {
+    if (!keyDone && /^\s+(?:id|path):\s*"[^"]*"/.test(lines[i])) {
+      lines[i] = lines[i].replace(
+        /^(\s+)(?:id|path):(\s*)"[^"]*"/,
+        `$1${key}:$2"${choice.llm}"`,
+      );
+      keyDone = true;
       continue;
     }
     if (!ctxDone && /^\s+context:\s*\d+/.test(lines[i])) {
@@ -47,8 +72,8 @@ export function applyModelChoice(projectDir: string, choice: ModelChoice): void 
       ctxDone = true;
     }
   }
-  if (!idDone) {
-    throw new Error(`applyModelChoice: no \`id:\` under \`model.llm:\` in ${ymlPath}`);
+  if (!keyDone) {
+    throw new Error(`applyModelChoice: no \`id:\`/\`path:\` under \`model.llm:\` in ${ymlPath}`);
   }
 
   writeFileSync(ymlPath, lines.join('\n'));

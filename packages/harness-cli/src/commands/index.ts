@@ -6,13 +6,6 @@ import { publishCommand } from './publish.js';
 import { publishersCommand } from './publishers.js';
 import { reviewCommand } from './review.js';
 
-/**
- * The default command — runs when no recognized subcommand is given
- * (bare `harness.dev <name>` scaffolds a harness). Also reachable as the
- * explicit `create` verb.
- */
-export const DEFAULT_COMMAND = createCommand;
-
 /** Named subcommands, in help-listing order. */
 export const SUBCOMMANDS: readonly Command[] = [
   appCommand,
@@ -22,7 +15,11 @@ export const SUBCOMMANDS: readonly Command[] = [
   reviewCommand,
 ];
 
-/** Resolve a typed token to a subcommand (or the explicit `create` verb). */
+/**
+ * Resolve a typed token to a command. `new` (harness scaffold) plus the named
+ * subcommands (`app:new`, `install`, …); an unknown token returns undefined so
+ * the dispatcher errors instead of scaffolding.
+ */
 export function findCommand(name: string): Command | undefined {
   if (name === createCommand.name) return createCommand;
   return SUBCOMMANDS.find((c) => c.name === name);

@@ -2,10 +2,9 @@
 /**
  * `harness.dev` — the Harness Development Kit CLI.
  *
- * Thin dispatcher. The first positional selects a named subcommand
- * (currently just `app`); if it isn't one, the whole argv is treated as
- * the default action — scaffolding a harness (`harness.dev <name>`),
- * also reachable as the explicit `create` verb.
+ * Thin dispatcher. The first token selects a command by name (`new`,
+ * `app:new`, `install`, …); an unknown token is an ERROR, never a silent
+ * scaffold. Scaffolding a harness is the explicit `new` verb.
  * Global `--help` / `--version` are handled here; all other flag parsing
  * belongs to the individual command.
  *
@@ -33,9 +32,9 @@ function printHelp(): void {
       'harness.dev — Harness Development Kit CLI',
       '',
       'Usage:',
-      '  npx harness.dev create [name]        Scaffold a new harness (interactive if no name)',
-      '  npx harness.dev create --template research   Use the tuned research template',
-      '  npx harness.dev app <name>           Scaffold a new app',
+      '  npx harness.dev new [name]           Scaffold a new harness (interactive if no name)',
+      '  npx harness.dev new --template research       Start from the tuned research template',
+      '  npx harness.dev app:new <name>       Scaffold a new app',
       '  npx harness.dev install <name>       Install a signed app from apps.lloyal.ai',
       '  npx harness.dev publish              Submit an app for review + signing',
       '  npx harness.dev publish status <id>  Check the status of a submission',
@@ -73,9 +72,9 @@ export async function main(argv: readonly string[]): Promise<number> {
   }
 
   // Unknown command → error, NOT a silent scaffold. Scaffolding now requires the
-  // explicit `create` verb (a bare `harness.dev my-harness` used to make a
+  // explicit `new` verb (a bare `harness.dev my-harness` used to make a
   // directory, so a mistyped subcommand silently scaffolded one).
-  const suggestion = first.startsWith('-') ? '' : ` Did you mean \`harness.dev create ${first}\`?`;
+  const suggestion = first.startsWith('-') ? '' : ` Did you mean \`harness.dev new ${first}\`?`;
   process.stderr.write(
     `harness.dev: unknown command "${first}".${suggestion} Run \`harness.dev --help\` for usage.\n`,
   );

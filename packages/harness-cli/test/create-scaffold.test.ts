@@ -1,11 +1,12 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { cpSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pruneTargets } from '../src/scaffold/prune-targets.js';
-import { applyModelChoice } from '../src/scaffold/apply-model.js';
+import { applyModelChoice, isModelPath } from '../src/scaffold/apply-model.js';
 import { modelsForRole, MODEL_CATALOG } from '../src/scaffold/model-catalog.js';
+import { createCommand } from '../src/commands/create.js';
 
 const BLANK_TEMPLATE = join(dirname(fileURLToPath(import.meta.url)), '..', 'templates', 'blank');
 
@@ -110,26 +111,78 @@ describe('pruneTargets — guards', () => {
   });
 });
 
+describe('isModelPath', () => {
+  it('classifies catalog ids as ids and .gguf/paths as paths', () => {
+    // Bare slugs stay ids — even unknown ones, so the picker survives catalog drift.
+    expect(isModelPath('reasoning-4b')).toBe(false);
+    expect(isModelPath('custom-model')).toBe(false);
+    // Anything path-shaped is BYO.
+    expect(isModelPath('./models/llm/x.gguf')).toBe(true);
+    expect(isModelPath('/abs/path/model.gguf')).toBe(true);
+    expect(isModelPath('models/llm/x.gguf')).toBe(true);
+    expect(isModelPath('bare.gguf')).toBe(true);
+    expect(isModelPath('~/models/x.gguf')).toBe(true);
+  });
+});
+
 describe('applyModelChoice', () => {
   it('rewrites model.llm id + context, preserving comments', () => {
     const dir = freshBlankProject();
-    applyModelChoice(dir, { llmId: 'custom-model', context: 8192 });
+    applyModelChoice(dir, { llm: 'custom-model', context: 8192 });
     const yml = readFileSync(join(dir, 'harness.yml'), 'utf8');
     expect(yml).toMatch(/id:\s*"custom-model"/);
     expect(yml).toMatch(/context:\s*8192/);
     expect(yml).toContain('kvCache'); // the inline guidance comment survives
   });
 
+  it('writes a BYO path as `path:` (not `id:`), keeping the comment', () => {
+    const dir = freshBlankProject();
+    applyModelChoice(dir, { llm: './models/llm/custom.gguf' });
+    const yml = readFileSync(join(dir, 'harness.yml'), 'utf8');
+    expect(yml).toMatch(/path:\s*"\.\/models\/llm\/custom\.gguf"/);
+    // The llm block must NOT still carry an `id:` line — a model entry is id XOR path.
+    const llmBlock = yml.slice(yml.indexOf('llm:'), yml.indexOf('context:'));
+    expect(llmBlock).not.toMatch(/\bid:/);
+    expect(yml).toContain('kvCache'); // guidance comment survives the key swap
+    expect(yml).toMatch(/context:\s*32768/); // context left at the template default
+  });
+
   it('leaves context untouched when not given', () => {
     const dir = freshBlankProject();
-    applyModelChoice(dir, { llmId: 'reasoning-4b' });
+    applyModelChoice(dir, { llm: 'reasoning-4b' });
     expect(readFileSync(join(dir, 'harness.yml'), 'utf8')).toMatch(/context:\s*32768/);
   });
 
   it('throws when there is no model.llm block', () => {
     const dir = freshBlankProject();
     writeFileSync(join(dir, 'harness.yml'), 'targets: [cli]\n');
-    expect(() => applyModelChoice(dir, { llmId: 'x' })).toThrow(/model\.llm/);
+    expect(() => applyModelChoice(dir, { llm: 'x' })).toThrow(/model\.llm/);
+  });
+});
+
+describe('createCommand.run — non-interactive flag path (end-to-end)', () => {
+  it('scaffolds a cli-only blank with a BYO --model path written as `path:`', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'harness-new-'));
+    created.push(parent);
+    const out = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const code = await createCommand.run([
+      'byoproj',
+      '--dir',
+      parent,
+      '--targets',
+      'cli',
+      '--model',
+      './models/llm/mine.gguf',
+    ]);
+    out.mockRestore();
+
+    expect(code).toBe(0);
+    const yml = readFileSync(join(parent, 'byoproj', 'harness.yml'), 'utf8');
+    expect(yml).toMatch(/path:\s*"\.\/models\/llm\/mine\.gguf"/);
+    // cli-only prune landed too — desktop/web are gone.
+    expect(existsSync(join(parent, 'byoproj', 'targets/desktop'))).toBe(false);
+    expect(existsSync(join(parent, 'byoproj', 'targets/web'))).toBe(false);
+    expect(existsSync(join(parent, 'byoproj', 'targets/cli'))).toBe(true);
   });
 });
 

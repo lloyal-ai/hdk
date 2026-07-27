@@ -12,17 +12,18 @@ import type { Command } from '../command.js';
 import { pruneTargets, type Target } from '../scaffold/prune-targets.js';
 import { applyModelChoice } from '../scaffold/apply-model.js';
 import { MODEL_CATALOG, modelsForRole } from '../scaffold/model-catalog.js';
-import { runCreateWizard, type TemplateKind } from './create-wizard.js';
+import { runCreateWizard, type TemplateKind, type WizardPrefill } from './create-wizard.js';
 
 const USAGE = [
-  'harness.dev create — scaffold a new harness project',
+  'harness.dev new — scaffold a new harness project',
   '',
   'Usage:',
-  '  npx harness.dev create                      Interactive: name → targets → model → template',
-  '  npx harness.dev create <name> [options]     Non-interactive (flags below)',
+  '  npx harness.dev new                         Interactive: name → targets → model → template',
+  '  npx harness.dev new <name> [options]        Non-interactive (flags below)',
   '',
   'Arguments:',
-  '  <name>        Harness project name — also the directory created.',
+  '  <name>        Harness project name — also the directory created. Omit it in a',
+  '                terminal to launch the interactive picker.',
   '',
   'Options:',
   '  --template <blank|research>',
@@ -32,16 +33,19 @@ const USAGE = [
   '  --targets <list>',
   '                Comma-separated run surfaces to keep (default: cli,desktop,web).',
   '                cli is always included; the rest are pruned from the scaffold.',
-  '  --model <id>  Trunk model id (default: the catalog default). See the catalog',
-  '                with the interactive picker.',
+  '  --model <id|path>',
+  '                Trunk model — a catalog id (fetched + digest-verified) or a path',
+  '                to a local .gguf you already have. Default: the catalog default.',
   '  --dir <path>  Parent directory to create the harness in (default: cwd)',
+  '  -y, --yes     Skip the picker; accept defaults for anything not given a flag.',
   '  -h, --help    Show this help',
   '',
-  'Emits a runnable harness on the selected surfaces, on a resident model (fetched',
-  '+ verified on first run — no API key). Run `npm install && npm start`.',
+  'Any flags you pass also pre-seed the picker, so it prompts only for what is',
+  'missing. Emits a runnable harness on the selected surfaces, on a resident model',
+  '(fetched + verified on first run — no API key). Run `npm install && npm start`.',
 ].join('\n');
 
-// Same grammar as `harness.dev app`: identifier-safe lowercase that
+// Same grammar as `harness.dev app:new`: identifier-safe lowercase that
 // satisfies both directory and npm package-name conventions.
 const NAME_RE = /^[a-z][a-z0-9_-]{1,63}$/;
 const ALL_TARGETS: Target[] = ['cli', 'desktop', 'web'];
@@ -50,12 +54,16 @@ interface ScaffoldPlan {
   name: string;
   template: TemplateKind;
   targets: Target[];
-  llmId: string;
+  /** Catalog id OR a BYO `.gguf` path (see `applyModelChoice`). */
+  llm: string;
 }
 
+/** Flags shared by both paths — undefined means "not provided" (ask / default). */
+type Flags = WizardPrefill;
+
 export const createCommand: Command = {
-  name: 'create',
-  summary: 'Scaffold a new harness (the default action — name is optional verb)',
+  name: 'new',
+  summary: 'Scaffold a new harness (interactive when run without a name)',
   usage: USAGE,
   async run(argv) {
     const { values, positionals } = parseArgs({
@@ -66,6 +74,7 @@ export const createCommand: Command = {
         template: { type: 'string' },
         targets: { type: 'string' },
         model: { type: 'string' },
+        yes: { type: 'boolean', short: 'y' },
       },
       allowPositionals: true,
     });
@@ -78,18 +87,27 @@ export const createCommand: Command = {
     const parentDir = resolve(values.dir ?? process.cwd());
     const name = positionals[0];
 
-    // Interactive picker: a bare `harness.dev create` in a TTY. A provided name
-    // (or a non-TTY / piped stdin — CI) takes the flag path below.
+    // Validate any flags once — they seed BOTH the wizard (as a prefill) and the
+    // non-interactive plan (with defaults filled in).
+    const flags = validateFlags(values);
+    if ('error' in flags) {
+      process.stderr.write(`${flags.error}\n`);
+      return 1;
+    }
+
+    // Interactive picker: a bare `harness.dev new` in a TTY. A provided name,
+    // `--yes`, or a non-TTY / piped stdin (CI) takes the flag path below. Any
+    // flags already given pre-seed the picker so it asks only for the rest.
     let plan: ScaffoldPlan;
-    if (!name && process.stdin.isTTY) {
-      const result = await runCreateWizard();
+    if (!name && !values.yes && Boolean(process.stdin.isTTY)) {
+      const result = await runCreateWizard(flags);
       if (!result) {
-        process.stderr.write('create cancelled.\n');
+        process.stderr.write('cancelled.\n');
         return 1;
       }
       plan = result;
     } else {
-      const built = planFromFlags(name, values);
+      const built = planFromFlags(name, flags);
       if ('error' in built) {
         process.stderr.write(`${built.error}\n`);
         if (built.usage) process.stderr.write(`\n${USAGE}\n`);
@@ -102,10 +120,34 @@ export const createCommand: Command = {
   },
 };
 
+/** Validate provided flags without filling defaults (undefined = ask/default). */
+function validateFlags(values: {
+  template?: string;
+  targets?: string;
+  model?: string;
+}): Flags | { error: string } {
+  let template: TemplateKind | undefined;
+  if (values.template != null) {
+    if (values.template !== 'blank' && values.template !== 'research') {
+      return { error: `harness.dev: invalid --template "${values.template}" — expected "blank" or "research".` };
+    }
+    template = values.template;
+  }
+
+  let targets: Target[] | undefined;
+  if (values.targets != null) {
+    const parsed = parseTargets(values.targets);
+    if ('error' in parsed) return { error: `harness.dev: ${parsed.error}` };
+    targets = parsed.targets;
+  }
+
+  return { template, targets, llm: values.model };
+}
+
 /** Build a scaffold plan from CLI flags (the non-interactive path). */
 function planFromFlags(
   name: string | undefined,
-  values: { template?: string; targets?: string; model?: string },
+  flags: Flags,
 ): ScaffoldPlan | { error: string; usage?: boolean } {
   if (!name) {
     return { error: 'harness.dev: missing harness <name>', usage: true };
@@ -114,17 +156,12 @@ function planFromFlags(
     return { error: `harness.dev: invalid <name> "${name}" — expected [a-z][a-z0-9_-]{1,63}.` };
   }
 
-  const template = (values.template ?? 'blank') as TemplateKind;
-  if (template !== 'blank' && template !== 'research') {
-    return { error: `harness.dev: invalid --template "${values.template}" — expected "blank" or "research".` };
-  }
-
-  const targets = parseTargets(values.targets);
-  if ('error' in targets) return { error: `harness.dev: ${targets.error}` };
-
-  const llmId = values.model ?? modelsForRole('llm')[0]?.id ?? 'reasoning-4b';
-
-  return { name, template, targets: targets.targets, llmId };
+  return {
+    name,
+    template: flags.template ?? 'blank',
+    targets: flags.targets ?? [...ALL_TARGETS],
+    llm: flags.llm ?? modelsForRole('llm')[0]?.id ?? 'reasoning-4b',
+  };
 }
 
 /** Parse a `--targets cli,web` list; cli is always retained. */
@@ -162,9 +199,9 @@ function performScaffold(plan: ScaffoldPlan, parentDir: string): number {
       pruneTargets(dest, plan.targets);
     }
     const recommendedContext = MODEL_CATALOG.find(
-      (m) => m.role === 'llm' && m.id === plan.llmId,
+      (m) => m.role === 'llm' && m.id === plan.llm,
     )?.recommendedContext;
-    applyModelChoice(dest, { llmId: plan.llmId, context: recommendedContext });
+    applyModelChoice(dest, { llm: plan.llm, context: recommendedContext });
   } catch (err) {
     process.stderr.write(
       `harness.dev: scaffold failed: ${err instanceof Error ? err.message : String(err)}\n`,
@@ -180,7 +217,7 @@ function performScaffold(plan: ScaffoldPlan, parentDir: string): number {
 
   process.stdout.write(
     `scaffolded ${plan.name} (${plan.template}) at ${dest}\n` +
-      `  targets: ${plan.targets.join(', ')} · model: ${plan.llmId}\n` +
+      `  targets: ${plan.targets.join(', ')} · model: ${plan.llm}\n` +
       '  next steps:\n' +
       `    cd ${plan.name}\n` +
       '    npm install\n' +
@@ -199,7 +236,7 @@ function performScaffold(plan: ScaffoldPlan, parentDir: string): number {
  * `<pkg-root>/dist/commands/create.js`, so the templates are at
  * `<pkg-root>/templates/<kind>`.
  */
-function resolveTemplateDir(kind: 'app' | 'harness' | 'blank' | 'research'): string {
+function resolveTemplateDir(kind: TemplateKind): string {
   const here = dirname(fileURLToPath(import.meta.url));
   const candidates = [
     resolve(here, '..', '..', 'templates', kind),
