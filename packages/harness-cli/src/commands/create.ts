@@ -104,9 +104,9 @@ export const createCommand: Command = {
 
     const appsNote =
       template === 'research'
-        ? '  run and runs inside your app. The lloyal/corpus + lloyal/web apps are\n' +
+        ? '  it runs inside your app. The lloyal/corpus + lloyal/web apps are\n' +
           '  preinstalled (grounded multi-agent research);\n'
-        : '  run and runs inside your app. The lloyal/wikipedia app is preinstalled;\n';
+        : '  it runs inside your app. The lloyal/wikipedia app is preinstalled;\n';
 
     process.stdout.write(
       `scaffolded ${name} (${template}) at ${dest}\n` +
@@ -115,7 +115,7 @@ export const createCommand: Command = {
         '    npm install\n' +
         '    npm start\n' +
         '\n' +
-        '  No API key needed — the model is fetched + digest-verified on first\n' +
+        '  No API key needed — the model is fetched + digest-verified on first run;\n' +
         appsNote +
         '  add more via: npx harness.dev install <publisher>/<name>\n',
     );

@@ -7,9 +7,10 @@
  * imports these to speak the protocol without depending on the UI.
  *
  * TYPES ONLY — this surface must stay `node:`-free so a browser/renderer surface
- * can import it for the plan/event types. The config *loaders*
- * (`loadConfig`/`saveConfig`) deliberately stay runner-side in `./tui-ink/config`
- * — they touch `node:fs`, and only the in-package runner (`runMain`) calls them.
+ * can import it for the plan/event types. The config *schema* it re-exports lives
+ * in `./config-types.ts` (also node-free); the runner that resolves + holds that
+ * config (`makeEdgeRunner` / `makeServedRunner` in `./served-runtime.ts`) is
+ * node-side and set on `RunnerCtx` by a target's boot.
  */
 export type { StepEvent, WorkflowEvent } from "./events.js";
 export type { Command } from "./commands.js";

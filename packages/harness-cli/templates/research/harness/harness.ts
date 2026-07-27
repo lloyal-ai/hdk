@@ -6,8 +6,10 @@
  * surface is mounted; `commands` delivers that surface's `Command`s back. This
  * harness runs the RACE/DRB-tuned pipeline — pre-flight recon → planner →
  * parallel/chain research pool → synthesis — over the substrate a target's boot
- * established. It reads `RunnerCtx` (see ./runner.ts) for the edge-shell concerns
- * it can't own: the reranker, the wind-down / cancel signals, the live config.
+ * established. It reads `RunnerCtx` (see ./runner-ctx.ts) for the edge-shell
+ * concerns it can't own: the wind-down / cancel signals, the live config, the
+ * trace sink. (The reranker is NOT a Runner concern — the boot's
+ * `provisionAppModels` publishes it on `RerankerCtx`.)
  *
  * The pipeline itself (`runQuery` / `runResearchPlan` / policies / the 7 tuned
  * `.eta` prompts) lives in ./pipeline.ts — this file is the command loop + app
