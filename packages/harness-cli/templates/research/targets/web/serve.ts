@@ -43,12 +43,23 @@ interface ModelEntry {
 }
 
 function loadYaml(): { model?: { llm?: ModelEntry; reranker?: ModelEntry } } {
+  // Fail loud, like the cli boot: a missing or malformed harness.yml must not be
+  // silently swallowed into `{}` (which would fall through to default model
+  // resolution and serve an unexpected model).
+  let raw: string;
   try {
-    return (parse(readFileSync(join(process.cwd(), "harness.yml"), "utf8")) ?? {}) as {
-      model?: { llm?: ModelEntry; reranker?: ModelEntry };
-    };
+    raw = readFileSync(join(process.cwd(), "harness.yml"), "utf8");
   } catch {
-    return {};
+    process.stderr.write("harness.yml not found — run `npm run serve` from your harness project root.\n");
+    process.exit(1);
+  }
+  try {
+    return (parse(raw) ?? {}) as { model?: { llm?: ModelEntry; reranker?: ModelEntry } };
+  } catch (err) {
+    process.stderr.write(
+      `harness.yml is not valid YAML: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    process.exit(1);
   }
 }
 

@@ -34,9 +34,11 @@ export interface ConfigDefaults {
 }
 
 /** GPU backend variant — mirrors lloyal.node's `GpuVariant` union (config
- *  deliberately takes no lloyal.node dependency). Per the SDK `GpuVariant` docs,
- *  'default' is the portable CPU-capable build (works everywhere); 'cuda' /
- *  'vulkan' request an accelerated build, falling back to CPU if unavailable. */
+ *  deliberately takes no lloyal.node dependency). 'default' is the portable
+ *  CPU-capable build (works everywhere); 'cuda' / 'vulkan' request an accelerated
+ *  build. An explicitly configured variant is a deliberate deploy choice — the
+ *  served boot fails fast on an unavailable one (`LLOYAL_NO_FALLBACK`, see
+ *  `applyServedGpuEnv`) rather than silently dropping to CPU. */
 export type ConfigGpu = 'default' | 'cuda' | 'vulkan';
 
 export const CONFIG_GPU_VALUES: readonly ConfigGpu[] = [

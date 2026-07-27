@@ -44,7 +44,9 @@ harness/
   pipeline.ts    the tuned recon → plan → research → synth pipeline + policies
   protocol.ts    the events (↓) and commands (↑) your harness speaks
   state.ts       node-free reduce(events) → AppState (every view folds it)
-  runner.ts      this harness's edge substrate (the reranker + config seam)
+  runner-ctx.ts  this harness's edge Runner seam (config + lifecycle) — RunnerCtx
+  served-runtime.ts  the edge/served Runner factories + per-session model context
+  served-session.ts  the served (web) per-session boot: provision services → run harness
 prompts/         the 7 RACE/DRB-tuned .eta prompts — edit one to override it
 targets/
   cli/
