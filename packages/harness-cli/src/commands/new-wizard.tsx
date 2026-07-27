@@ -3,7 +3,7 @@
  * name → targets → model → template, then hands the answers back for the pure
  * scaffold logic to act on. Mounted ONLY when `new` runs in a TTY with the
  * name missing; a provided name / `--yes` / non-TTY take the plain path in
- * `create.ts`.
+ * `new.ts`.
  *
  * Any flags the user DID pass (`--template`/`--targets`/`--model`) pre-seed the
  * wizard, so it prompts only for what's missing (flag-compose). Each question
@@ -37,7 +37,7 @@ export interface WizardPrefill {
   llm?: string;
 }
 
-/** Same grammar as the non-interactive path (`create.ts` NAME_RE). */
+/** Same grammar as the non-interactive path (`new.ts` NAME_RE). */
 const NAME_RE = /^[a-z][a-z0-9_-]{1,63}$/;
 const TARGET_ORDER: Target[] = ['cli', 'desktop', 'web'];
 const DEFAULT_TARGETS: Target[] = ['cli', 'desktop', 'web'];
@@ -233,7 +233,7 @@ export function Wizard({
  * user cancels (Ctrl-C / the Ink app exits before completing). Any `prefill`
  * (flags already provided) narrows the questions asked.
  */
-export function runCreateWizard(prefill: WizardPrefill = {}): Promise<WizardResult | null> {
+export function runNewWizard(prefill: WizardPrefill = {}): Promise<WizardResult | null> {
   return new Promise((resolve) => {
     let settled = false;
     const done = (result: WizardResult | null): void => {

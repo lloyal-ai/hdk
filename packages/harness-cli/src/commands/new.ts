@@ -12,7 +12,7 @@ import type { Command } from '../command.js';
 import { pruneTargets, type Target } from '../scaffold/prune-targets.js';
 import { applyModelChoice } from '../scaffold/apply-model.js';
 import { MODEL_CATALOG, modelsForRole } from '../scaffold/model-catalog.js';
-import { runCreateWizard, type TemplateKind, type WizardPrefill } from './create-wizard.js';
+import { runNewWizard, type TemplateKind, type WizardPrefill } from './new-wizard.js';
 
 const USAGE = [
   'harness.dev new — scaffold a new harness project',
@@ -61,7 +61,7 @@ interface ScaffoldPlan {
 /** Flags shared by both paths — undefined means "not provided" (ask / default). */
 type Flags = WizardPrefill;
 
-export const createCommand: Command = {
+export const newCommand: Command = {
   name: 'new',
   summary: 'Scaffold a new harness (interactive when run without a name)',
   usage: USAGE,
@@ -100,7 +100,7 @@ export const createCommand: Command = {
     // flags already given pre-seed the picker so it asks only for the rest.
     let plan: ScaffoldPlan;
     if (!name && !values.yes && Boolean(process.stdin.isTTY)) {
-      const result = await runCreateWizard(flags);
+      const result = await runNewWizard(flags);
       if (!result) {
         process.stderr.write('cancelled.\n');
         return 1;
@@ -233,7 +233,7 @@ function performScaffold(plan: ScaffoldPlan, parentDir: string): number {
 /**
  * Resolve the templates directory by walking up from this module's
  * compiled location. After build, the CLI lives at
- * `<pkg-root>/dist/commands/create.js`, so the templates are at
+ * `<pkg-root>/dist/commands/new.js`, so the templates are at
  * `<pkg-root>/templates/<kind>`.
  */
 function resolveTemplateDir(kind: TemplateKind): string {

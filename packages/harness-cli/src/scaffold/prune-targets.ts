@@ -1,7 +1,7 @@
 /**
  * Prune a scaffolded harness project down to the selected run targets.
  *
- * `create` copies the FULL template (cli + desktop + web), then this removes the
+ * `new` copies the FULL template (cli + desktop + web), then this removes the
  * surfaces the user didn't pick — their `targets/<t>/` dir, their bin shim,
  * their npm scripts + exclusive deps, and their slice of the tsconfig split — so
  * a "cli-only" project doesn't drag in electron/vite. `cli` is mandatory (it

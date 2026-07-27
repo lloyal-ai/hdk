@@ -1,6 +1,6 @@
 /**
  * A minimal, vendored copy of `@lloyal-labs/rig`'s model catalog — just the
- * fields the interactive `create` model picker needs (`id` / `role` / `label` /
+ * fields the interactive `new` model picker needs (`id` / `role` / `label` /
  * `recommendedContext`), NOT the download URLs or digests (rig owns fetching +
  * verification; the CLI only offers the choice).
  *

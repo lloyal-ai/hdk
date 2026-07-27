@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { pruneTargets } from '../src/scaffold/prune-targets.js';
 import { applyModelChoice, isModelPath } from '../src/scaffold/apply-model.js';
 import { modelsForRole, MODEL_CATALOG } from '../src/scaffold/model-catalog.js';
-import { createCommand } from '../src/commands/create.js';
+import { newCommand } from '../src/commands/new.js';
 
 const BLANK_TEMPLATE = join(dirname(fileURLToPath(import.meta.url)), '..', 'templates', 'blank');
 
@@ -160,12 +160,12 @@ describe('applyModelChoice', () => {
   });
 });
 
-describe('createCommand.run — non-interactive flag path (end-to-end)', () => {
+describe('newCommand.run — non-interactive flag path (end-to-end)', () => {
   it('scaffolds a cli-only blank with a BYO --model path written as `path:`', async () => {
     const parent = mkdtempSync(join(tmpdir(), 'harness-new-'));
     created.push(parent);
     const out = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    const code = await createCommand.run([
+    const code = await newCommand.run([
       'byoproj',
       '--dir',
       parent,

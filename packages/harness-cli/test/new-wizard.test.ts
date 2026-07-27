@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { render } from 'ink-testing-library';
 import { createElement } from 'react';
-import { Wizard, orderTargets } from '../src/commands/create-wizard.js';
+import { Wizard, orderTargets } from '../src/commands/new-wizard.js';
 
 // COVERAGE BOUNDARY: the full keystroke-driven flow (name → targets → model →
 // template) is NOT asserted here. Character input to @inkjs/ui's `TextInput`
@@ -11,10 +11,10 @@ import { Wizard, orderTargets } from '../src/commands/create-wizard.js';
 // IS covered: the wizard mounts + renders the name prompt (below); the
 // "cli always kept" invariant it enforces (orderTargets, below); and the pure
 // scaffold logic it hands off to (pruneTargets / applyModelChoice — see
-// create-scaffold.test.ts). The wizard drives the SAME @inkjs/ui TextInput/
+// new-scaffold.test.ts). The wizard drives the SAME @inkjs/ui TextInput/
 // Select components the shipped `targets/cli/view.tsx` templates use.
 
-describe('create wizard — render', () => {
+describe('new wizard — render', () => {
   it('mounts and renders the name prompt first (no crash)', () => {
     const { lastFrame } = render(createElement(Wizard, { onDone: () => {} }));
     expect(lastFrame()).toContain('Scaffold a new harness');

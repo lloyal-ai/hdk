@@ -1,5 +1,5 @@
 import type { Command } from '../command.js';
-import { createCommand } from './create.js';
+import { newCommand } from './new.js';
 import { appCommand } from './app.js';
 import { installCommand } from './install.js';
 import { publishCommand } from './publish.js';
@@ -21,6 +21,6 @@ export const SUBCOMMANDS: readonly Command[] = [
  * the dispatcher errors instead of scaffolding.
  */
 export function findCommand(name: string): Command | undefined {
-  if (name === createCommand.name) return createCommand;
+  if (name === newCommand.name) return newCommand;
   return SUBCOMMANDS.find((c) => c.name === name);
 }
