@@ -1,17 +1,16 @@
 import { parseArgs } from 'node:util';
-import {
-  readdirSync,
-  readFileSync,
-  mkdirSync,
-  writeFileSync,
-  statSync,
-} from 'node:fs';
-import { join, resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import type { Command } from '../command.js';
 import { pruneTargets, type Target } from '../scaffold/prune-targets.js';
 import { applyModelChoice } from '../scaffold/apply-model.js';
 import { MODEL_CATALOG, modelsForRole } from '../scaffold/model-catalog.js';
+import {
+  resolveTemplateDir,
+  copyTreeWithSubstitutions,
+  buildSubstitutions,
+} from '../scaffold/copy-tree.js';
+import { writeProjectMarker } from '../scaffold/write-marker.js';
 import { runNewWizard, type TemplateKind, type WizardPrefill } from './new-wizard.js';
 
 const USAGE = [
@@ -218,6 +217,9 @@ function performScaffold(plan: ScaffoldPlan, parentDir: string): number {
       (m) => m.role === 'llm' && m.id === plan.llm,
     )?.recommendedContext;
     applyModelChoice(dest, { llm: plan.llm, context: recommendedContext });
+    // Provenance: record which template + surfaces this project came from so
+    // `targets:add` knows which template's target subtree to copy back.
+    writeProjectMarker(dest, { template: plan.template, targets: plan.targets });
   } catch (err) {
     process.stderr.write(
       `harness.dev: scaffold failed: ${err instanceof Error ? err.message : String(err)}\n`,
@@ -246,62 +248,3 @@ function performScaffold(plan: ScaffoldPlan, parentDir: string): number {
   return 0;
 }
 
-/**
- * Resolve the templates directory by walking up from this module's
- * compiled location. After build, the CLI lives at
- * `<pkg-root>/dist/commands/new.js`, so the templates are at
- * `<pkg-root>/templates/<kind>`.
- */
-function resolveTemplateDir(kind: TemplateKind): string {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const candidates = [
-    resolve(here, '..', '..', 'templates', kind),
-    resolve(here, '..', 'templates', kind),
-  ];
-  for (const c of candidates) {
-    try {
-      if (statSync(c).isDirectory()) return c;
-    } catch {
-      // try next
-    }
-  }
-  throw new Error(`templates/${kind} not found relative to ${here}`);
-}
-
-function buildSubstitutions(name: string): Record<string, string> {
-  return {
-    __NAME__: name,
-  };
-}
-
-function copyTreeWithSubstitutions(
-  src: string,
-  dest: string,
-  substitutions: Record<string, string>,
-): void {
-  mkdirSync(dest, { recursive: true });
-  for (const entry of readdirSync(src, { withFileTypes: true })) {
-    const fromPath = join(src, entry.name);
-    const toName = applySubstitutions(entry.name, substitutions);
-    const toPath = join(dest, toName);
-
-    if (entry.isDirectory()) {
-      copyTreeWithSubstitutions(fromPath, toPath, substitutions);
-      continue;
-    }
-    if (!entry.isFile()) continue;
-
-    const raw = readFileSync(fromPath, 'utf-8');
-    const rendered = applySubstitutions(raw, substitutions);
-    mkdirSync(dirname(toPath), { recursive: true });
-    writeFileSync(toPath, rendered, 'utf-8');
-  }
-}
-
-function applySubstitutions(s: string, substitutions: Record<string, string>): string {
-  let out = s;
-  for (const [token, value] of Object.entries(substitutions)) {
-    out = out.split(token).join(value);
-  }
-  return out;
-}

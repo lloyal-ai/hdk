@@ -162,10 +162,10 @@ describe('applyModelChoice', () => {
     expect(readFileSync(join(dir, 'harness.yml'), 'utf8')).toMatch(/context:\s*32768/);
   });
 
-  it('throws when there is no model.llm block', () => {
+  it('throws when there is no model: block at all', () => {
     const dir = freshBlankProject();
     writeFileSync(join(dir, 'harness.yml'), 'targets: [cli]\n');
-    expect(() => applyModelChoice(dir, { llm: 'x' })).toThrow(/model\.llm/);
+    expect(() => applyModelChoice(dir, { llm: 'x' })).toThrow(/model:/);
   });
 });
 

@@ -15,29 +15,47 @@
  */
 import { readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { filterJsoncArray } from './jsonc.js';
 
 export type Target = 'cli' | 'desktop' | 'web';
+export type PrunableTarget = Exclude<Target, 'cli'>;
 
-/** Per-target npm entries removed when that target is pruned. */
-const TARGET_SCRIPTS: Record<Exclude<Target, 'cli'>, string[]> = {
+/**
+ * The single source of truth for what each non-cli target OWNS. `pruneTargets`
+ * DELETES these when a target is dropped; `scaffold/add-target.ts` COPIES the
+ * same entries back from the template when a target is added — sharing the
+ * tables is what keeps prune ↔ add from drifting.
+ */
+/** Per-target npm scripts. */
+export const TARGET_SCRIPTS: Record<PrunableTarget, string[]> = {
   desktop: ['dev:desktop', 'build:desktop'],
   web: ['serve', 'dev:web', 'build:web'],
 };
-const TARGET_DEPS: Record<Exclude<Target, 'cli'>, string[]> = {
+/** Per-target runtime deps. */
+export const TARGET_DEPS: Record<PrunableTarget, string[]> = {
   desktop: [], // desktop's exclusive deps are all devDeps
   web: ['@lloyal-labs/host', 'ws'],
 };
-const TARGET_DEV_DEPS: Record<Exclude<Target, 'cli'>, string[]> = {
+/** Per-target devDeps. */
+export const TARGET_DEV_DEPS: Record<PrunableTarget, string[]> = {
   desktop: ['electron', 'electron-vite'],
   web: ['@types/ws'],
+};
+/**
+ * Top-level files (besides `targets/<t>/`) that belong ONLY to a target: its
+ * bin shim / build config. Deleted on prune, copied back on add.
+ */
+export const TARGET_FILES: Record<PrunableTarget, string[]> = {
+  desktop: ['electron.vite.config.ts', 'tsconfig.electron.json'],
+  web: ['bin/serve.js'],
 };
 /**
  * Deps shared by the DOM renderers (web browser + Electron renderer). Kept while
  * EITHER desktop or web survives; removed only for a cli-only project. `vite` is
  * here because `electron-vite` lists it as a peerDependency.
  */
-const SHARED_RENDERER_DEPS = ['react-dom'];
-const SHARED_RENDERER_DEV_DEPS = ['@vitejs/plugin-react', '@types/react-dom', 'vite'];
+export const SHARED_RENDERER_DEPS = ['react-dom'];
+export const SHARED_RENDERER_DEV_DEPS = ['@vitejs/plugin-react', '@types/react-dom', 'vite'];
 
 /**
  * Reduce `<projectDir>` to `keep`. `keep` MUST include `'cli'`. A no-op when all
@@ -53,15 +71,14 @@ export function pruneTargets(projectDir: string, keep: readonly Target[]): void 
 
   const rm = (rel: string): void => rmSync(join(projectDir, rel), { recursive: true, force: true });
 
-  // 1. Dirs + files.
+  // 1. Dirs + files (the target's own dir + its exclusive top-level files).
   if (pruneDesktop) {
     rm('targets/desktop');
-    rm('electron.vite.config.ts');
-    rm('tsconfig.electron.json');
+    for (const f of TARGET_FILES.desktop) rm(f);
   }
   if (pruneWeb) {
     rm('targets/web');
-    rm('bin/serve.js');
+    for (const f of TARGET_FILES.web) rm(f);
   }
 
   // 2. package.json — scripts + deps.
@@ -141,40 +158,8 @@ function isUnderPruned(entry: string, pruneDesktop: boolean, pruneWeb: boolean):
   );
 }
 
-/**
- * Filter a multi-line JSONC string array (`"key": [ ... ]`, one quoted entry per
- * line) in place, keeping only entries for which `keep(entry)` is true, and
- * fixing up trailing commas so the result stays valid JSON. Comments outside the
- * array are untouched. Templates author these arrays one-entry-per-line, so a
- * single-line array is left alone (nothing to prune line-wise).
- */
-function filterJsoncArray(filePath: string, key: string, keep: (entry: string) => boolean): void {
-  const lines = readFileSync(filePath, 'utf8').split('\n');
-  const openRe = new RegExp(`"${key}"\\s*:\\s*\\[\\s*$`);
-  const startIdx = lines.findIndex((l) => openRe.test(l));
-  if (startIdx === -1) return; // key absent or single-line array — nothing to do
-  let endIdx = -1;
-  for (let i = startIdx + 1; i < lines.length; i++) {
-    if (/^\s*\]/.test(lines[i])) {
-      endIdx = i;
-      break;
-    }
-  }
-  if (endIdx === -1) return;
-
-  const kept: string[] = [];
-  for (let i = startIdx + 1; i < endIdx; i++) {
-    const m = lines[i].match(/"([^"]+)"/);
-    if (m && !keep(m[1])) continue;
-    kept.push(lines[i].replace(/,\s*$/, '')); // strip any trailing comma; re-added below
-  }
-  const rebuilt = kept.map((l, idx) => (idx === kept.length - 1 ? l : `${l},`));
-  const out = [...lines.slice(0, startIdx + 1), ...rebuilt, ...lines.slice(endIdx)];
-  writeFileSync(filePath, out.join('\n'));
-}
-
-/** Rewrite the `targets: [...]` line in `harness.yml` to the kept set. */
-function rewriteTargetsLine(projectDir: string, keep: readonly Target[]): void {
+/** Rewrite the `targets: [...]` line in `harness.yml` to the given set. */
+export function rewriteTargetsLine(projectDir: string, keep: readonly Target[]): void {
   const ymlPath = join(projectDir, 'harness.yml');
   if (!existsSync(ymlPath)) return;
   const text = readFileSync(ymlPath, 'utf8');
