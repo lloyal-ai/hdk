@@ -73,9 +73,9 @@ describe('resolveModel — filesystem walk', () => {
   });
 
   it('id with an existing slot → used without a fetch', async () => {
-    put('models/llm/reasoning-4b.gguf');
-    const out = await resolveModel({ projectRoot: root, role: 'llm', spec: { id: 'reasoning-4b' } });
-    expect(out).toBe(path.join(root, 'models/llm/reasoning-4b.gguf'));
+    put('models/llm/qwen3.5-4b.gguf');
+    const out = await resolveModel({ projectRoot: root, role: 'llm', spec: { id: 'qwen3.5-4b' } });
+    expect(out).toBe(path.join(root, 'models/llm/qwen3.5-4b.gguf'));
   });
 
   it('no spec + sole .gguf → adopted', async () => {

@@ -27,9 +27,9 @@ export interface CatalogModel {
 /** Mirrors `@lloyal-labs/rig`'s `MODEL_CATALOG`, minus urls/sha256/sizeBytes. */
 export const MODEL_CATALOG: readonly CatalogModel[] = [
   {
-    id: 'reasoning-4b',
+    id: 'qwen3.5-4b',
     role: 'llm',
-    label: 'Reasoning 4B · Q4_K_M',
+    label: 'Qwen3.5 4B · Q4_K_M',
     recommendedContext: 32768,
   },
   {

@@ -167,7 +167,7 @@ function planFromFlags(
     name,
     template: flags.template ?? 'blank',
     targets: flags.targets ?? [...ALL_TARGETS],
-    llm: flags.llm ?? modelsForRole('llm')[0]?.id ?? 'reasoning-4b',
+    llm: flags.llm ?? modelsForRole('llm')[0]?.id ?? 'qwen3.5-4b',
   };
 }
 

@@ -68,7 +68,7 @@ export function Wizard({
 }): ReactElement {
   const { exit } = useApp();
   const llms = modelsForRole('llm');
-  const defaultLlm = llms[0]?.id ?? 'reasoning-4b';
+  const defaultLlm = llms[0]?.id ?? 'qwen3.5-4b';
   const defaultLlmLabel = llms[0]?.label ?? defaultLlm;
 
   const [queue, setQueue] = useState<StepId[]>(() => initialQueue(prefill));

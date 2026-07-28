@@ -11,9 +11,9 @@ cd my-harness && npm install && npm start
 
 ```text
 first run:
-  scaffolded acme (blank) · targets: cli, desktop, web · model: reasoning-4b
+  scaffolded acme (blank) · targets: cli, desktop, web · model: qwen3.5-4b
   ...
-  Model      reasoning-4b                   ● resident
+  Model      qwen3.5-4b                   ● resident
   Inference  local · no provider endpoint   ● offline
   ready — type to begin, ctrl-c to stop
 ```
@@ -28,7 +28,7 @@ A harness is **one program**. `harness.yml` declares the surfaces it runs on and
 # harness.yml
 targets: [cli, desktop, web]                    # the surfaces this harness runs on
 model:
-  llm: { id: "reasoning-4b", context: 32768 }   # the resident model it thinks with
+  llm: { id: "qwen3.5-4b", context: 32768 }   # the resident model it thinks with
 ```
 
 You write the program once, under `harness/`; the CLI generates a binding per surface under `targets/`:

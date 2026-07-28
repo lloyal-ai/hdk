@@ -34,7 +34,7 @@
     "@lloyal-labs/host": "^0.1.0",
     "@lloyal-labs/lloyal-agents": "^3.4.0",
     "@lloyal-labs/lloyal.node": "^3.1.0",
-    "@lloyal-labs/rig": "^3.7.0",
+    "@lloyal-labs/rig": "^3.8.0",
     "@lloyal-labs/sdk": "^3.0.3",
     "@lloyal-labs/web-app": "https://apps.lloyal.ai/v1/bundles/lloyal__web-1.3.0.tgz",
     "effection": "^4.0.2",

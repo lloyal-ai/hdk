@@ -31,7 +31,7 @@ export interface ModelChoice {
 /**
  * A model value is a BYO **path** (not a catalog id) if it looks like a
  * filesystem path: it contains a slash, ends in `.gguf`, or starts with `~`.
- * Catalog ids are bare slugs (`reasoning-4b`) and stay ids even when unknown to
+ * Catalog ids are bare slugs (`qwen3.5-4b`) and stay ids even when unknown to
  * the vendored catalog, so the picker survives catalog drift. This is the fix
  * for the bug where a BYO `./x.gguf` was written as `id:` and rig then looked
  * for `models/llm/./x.gguf.gguf`.

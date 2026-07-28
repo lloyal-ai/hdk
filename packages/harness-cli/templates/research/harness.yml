@@ -10,7 +10,7 @@ targets: [cli, desktop, web]
 
 model:
   llm:
-    id: "reasoning-4b"          # kvCache: q4_0 · gpu: auto · branches: from capacity
+    id: "qwen3.5-4b"          # kvCache: q4_0 · gpu: auto · branches: from capacity
     context: 32768
   # The corpus + web apps score retrievals with a reranker. It's resolved +
   # digest-verified into models/reranker/ on first run, then created per-boot.

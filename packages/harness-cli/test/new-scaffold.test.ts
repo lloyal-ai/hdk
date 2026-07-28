@@ -114,7 +114,7 @@ describe('pruneTargets — guards', () => {
 describe('isModelPath', () => {
   it('classifies catalog ids as ids and .gguf/paths as paths', () => {
     // Bare slugs stay ids — even unknown ones, so the picker survives catalog drift.
-    expect(isModelPath('reasoning-4b')).toBe(false);
+    expect(isModelPath('qwen3.5-4b')).toBe(false);
     expect(isModelPath('custom-model')).toBe(false);
     // Anything path-shaped is BYO.
     expect(isModelPath('./models/llm/x.gguf')).toBe(true);
@@ -158,7 +158,7 @@ describe('applyModelChoice', () => {
 
   it('leaves context untouched when not given', () => {
     const dir = freshBlankProject();
-    applyModelChoice(dir, { llm: 'reasoning-4b' });
+    applyModelChoice(dir, { llm: 'qwen3.5-4b' });
     expect(readFileSync(join(dir, 'harness.yml'), 'utf8')).toMatch(/context:\s*32768/);
   });
 
@@ -203,7 +203,7 @@ describe('newCommand.run — non-interactive flag path (end-to-end)', () => {
 
     expect(code).toBe(0);
     const yml = readFileSync(join(parent, 'dflt', 'harness.yml'), 'utf8');
-    expect(yml).toMatch(/id:\s*"reasoning-4b"/); // the catalog default, not an empty value
+    expect(yml).toMatch(/id:\s*"qwen3.5-4b"/); // the catalog default, not an empty value
     expect(yml).not.toMatch(/(id|path):\s*""/);
   });
 
@@ -225,7 +225,7 @@ describe('model-catalog (vendored)', () => {
   it('offers the default llm', () => {
     const llms = modelsForRole('llm');
     expect(llms.length).toBeGreaterThan(0);
-    expect(llms[0].id).toBe('reasoning-4b');
+    expect(llms[0].id).toBe('qwen3.5-4b');
     expect(llms[0].recommendedContext).toBe(32768);
   });
 

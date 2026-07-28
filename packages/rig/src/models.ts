@@ -65,14 +65,14 @@ function assertSafeSegment(kind: 'role' | 'id', value: string): void {
 
 /**
  * The platform's default catalog. Extend by adding an entry — no plumbing
- * change. `id`s are the friendly, dx-facing names (`reasoning-4b`), decoupled
- * from the upstream filename.
+ * change. `id`s name the model (`qwen3.5-4b`), matching the on-disk slot
+ * `models/<role>/<id>.gguf`.
  */
 export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
   {
-    id: 'reasoning-4b',
+    id: 'qwen3.5-4b',
     role: 'llm',
-    label: 'Reasoning 4B · Q4_K_M',
+    label: 'Qwen3.5 4B · Q4_K_M',
     urls: [
       'https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf',
       'https://models.lloyal.ai/Qwen3.5-4B-Q4_K_M.gguf',

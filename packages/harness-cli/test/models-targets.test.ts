@@ -46,7 +46,7 @@ async function scaffold(name: string, targets: string, template = 'blank'): Prom
     '--targets',
     targets,
     '--model',
-    'reasoning-4b',
+    'qwen3.5-4b',
     '--yes',
   ]);
   expect(code).toBe(0);
@@ -159,8 +159,8 @@ describe('writeModelField / readModelField', () => {
 describe('models: verbs', () => {
   it('models:use writes id; rejects a path-shaped arg', async () => {
     const dir = await scaffold('u1', 'cli');
-    expect(await runIn(dir, () => modelsUseCommand.run(['reasoning-4b']))).toBe(0);
-    expect(readModelField(dir, 'llm')).toEqual({ id: 'reasoning-4b' });
+    expect(await runIn(dir, () => modelsUseCommand.run(['qwen3.5-4b']))).toBe(0);
+    expect(readModelField(dir, 'llm')).toEqual({ id: 'qwen3.5-4b' });
     // A path belongs to models:add, not models:use.
     expect(await runIn(dir, () => modelsUseCommand.run(['./x.gguf']))).toBe(1);
   });
@@ -177,8 +177,8 @@ describe('models: verbs', () => {
     vi.spyOn(process.stdout, 'write').mockImplementation((s) => (out.push(String(s)), true));
     expect(await runIn(dir, () => modelsListCommand.run([]))).toBe(0);
     const text = out.join('');
-    expect(text).toContain('reasoning-4b');
-    expect(text).toMatch(/llm\s+id: reasoning-4b/);
+    expect(text).toContain('qwen3.5-4b');
+    expect(text).toMatch(/llm\s+id: qwen3.5-4b/);
   });
 
   it('rejects an unknown --role', async () => {

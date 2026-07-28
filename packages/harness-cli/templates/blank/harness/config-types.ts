@@ -37,7 +37,7 @@ export type ConfigApps = Record<string, Record<string, unknown>>;
 export type ConfigGpu = 'default' | 'cuda' | 'vulkan';
 
 export interface ConfigModel {
-  /** Filesystem path OR catalog id (e.g. `reasoning-4b`). Resolution is the
+  /** Filesystem path OR catalog id (e.g. `qwen3.5-4b`). Resolution is the
    *  caller's concern (`rig.resolveModel`) — config just stores whatever the
    *  boot resolved. */
   path?: string;
