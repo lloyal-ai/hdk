@@ -10,7 +10,7 @@
  * is the floor — grow it into your product's UI (or bring your own app).
  */
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { reduce, initialState, type AppState, type AgentView } from "../../harness/state.js";
+import { reduce, initialState, formatSize, type AppState, type AgentView } from "../../harness/state.js";
 import type { WorkflowEvent, Command } from "../../harness/protocol.js";
 
 declare global {
@@ -83,7 +83,12 @@ export function HarnessApp() {
   return (
     <div style={S.page}>
       <div style={S.head}>
-        __NAME__ · {state.phase}
+        __NAME__
+        {/* Measured boot facts (from the `ready` event) — the resident model +
+            surface, not a hardcoded string; falls back to the phase pre-ready. */}
+        {state.boot
+          ? ` · ${state.boot.model.id} · ${formatSize(state.boot.model.sizeBytes)} · ${state.boot.surface}`
+          : ` · ${state.phase}`}
         {state.kv.total > 0 && ` · kv ${Math.round((100 * state.kv.used) / state.kv.total)}%`}
       </div>
       {agents.map((a) => (

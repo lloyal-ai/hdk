@@ -130,7 +130,19 @@ export function* harness(
   const registry = yield* createAppRegistry({ configStore });
   for (const app of apps) yield* registry.enable(app);
 
-  events.send({ type: "ready" });
+  // Boot done — announce it with MEASURED facts, not hardcoded strings: the
+  // model's id + on-disk size (the boot stat'd the weight into the config), the
+  // surface that mounted, and the apps actually enabled (read from the registry).
+  // Every surface folds this one event, so the header is identical everywhere.
+  const cfg = runner.config();
+  events.send({
+    type: "ready",
+    facts: {
+      model: { id: cfg.model.id ?? "model", sizeBytes: cfg.model.sizeBytes ?? 0 },
+      surface: cfg.surface ?? "cli",
+      apps: registry.enabled().map((a) => a.name),
+    },
+  });
 
   // The command loop. Ends on `quit` (or when the Session closes and the scope
   // unwinds). Everything the surface can ask for is a member of `Command`.

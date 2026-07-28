@@ -15,9 +15,16 @@
  * fold immutable (new `Map` + new object only for what changed), and the views
  * update for free.
  */
-import type { WorkflowEvent } from "./protocol.js";
+import type { WorkflowEvent, BootFacts } from "./protocol.js";
 
 export type Phase = "booting" | "ready" | "working" | "answered" | "error";
+
+/** Human-readable file size — the boot header renders the model's measured bytes. */
+export function formatSize(bytes: number): string {
+  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
+  if (bytes >= 1e6) return `${Math.round(bytes / 1e6)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1e3))} KB`;
+}
 
 export type AgentStatus = "active" | "tool" | "done" | "failed";
 
@@ -34,6 +41,8 @@ export interface AgentView {
 
 export interface AppState {
   phase: Phase;
+  /** Measured boot facts for the header — null until `ready` lands. */
+  boot: BootFacts | null;
   /** Insertion-ordered by spawn — the auto-view renders the tree from `parentId`. */
   agents: Map<number, AgentView>;
   answer: string;
@@ -44,6 +53,7 @@ export interface AppState {
 
 export const initialState: AppState = {
   phase: "booting",
+  boot: null,
   agents: new Map(),
   answer: "",
   error: null,
@@ -54,7 +64,8 @@ export function reduce(s: AppState, ev: WorkflowEvent): AppState {
   switch (ev.type) {
     // ── your harness's own events ──
     case "ready":
-      return s.phase === "booting" ? { ...s, phase: "ready" } : s;
+      // Boot facts land here — the view renders the header from `s.boot`.
+      return { ...s, phase: s.phase === "booting" ? "ready" : s.phase, boot: ev.facts };
     case "answer":
       return { ...s, phase: "answered", answer: ev.text, error: null };
     case "error":

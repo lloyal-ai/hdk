@@ -13,7 +13,7 @@ import React, { useEffect, useReducer } from "react";
 import { Box, Text, render, useApp, useInput } from "ink";
 import { TextInput } from "@inkjs/ui";
 import type { EventBus } from "@lloyal-labs/binding";
-import { initialState, reduce } from "../../harness/state.js";
+import { initialState, reduce, formatSize } from "../../harness/state.js";
 import type { AgentView, AppState } from "../../harness/state.js";
 import type { Command, WorkflowEvent } from "../../harness/protocol.js";
 
@@ -71,9 +71,18 @@ function View({
     <Box flexDirection="column" gap={1}>
       <Box flexDirection="column">
         <Text bold>{"__NAME__"}</Text>
-        <Text color="gray">Model      resident · no API key</Text>
-        <Text color="gray">Inference  local · no provider</Text>
-        <Text color="gray">Surface    cli</Text>
+        {/* Measured facts from the `ready` event — the model's real size + the
+            apps actually enabled, never a hardcoded string. */}
+        {state.boot ? (
+          <>
+            <Text color="gray">{`Model      ${state.boot.model.id} · ${formatSize(state.boot.model.sizeBytes)} · resident`}</Text>
+            <Text color="gray">Inference  local · no provider</Text>
+            <Text color="gray">{`Apps       ${state.boot.apps.length ? state.boot.apps.join(", ") : "none installed"}`}</Text>
+            <Text color="gray">{`Surface    ${state.boot.surface}`}</Text>
+          </>
+        ) : (
+          <Text color="gray">booting…</Text>
+        )}
       </Box>
 
       {agents.length > 0 && (

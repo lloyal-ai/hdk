@@ -48,6 +48,11 @@ export interface ConfigModel {
   nCtx?: number;
   /** GPU backend variant. Null/undefined = the platform default backend. */
   gpu?: ConfigGpu;
+  /** The model's display id + its measured on-disk size — the boot stats the
+   *  resolved weight and stores these so the harness can render a *measured*
+   *  boot header (see `BootFacts`), never a hardcoded string. */
+  id?: string;
+  sizeBytes?: number;
 }
 
 export interface Config {
@@ -58,6 +63,9 @@ export interface Config {
    *  an app's entry on `set_app_config`. */
   apps: ConfigApps;
   model: ConfigModel;
+  /** Which surface this process mounted (`cli` · `desktop` · `pipe` · `web`) —
+   *  a boot-time runtime fact the harness echoes into the boot header. */
+  surface?: string;
 }
 
 /** Which layer supplied a given harness-level field — used for composer UI

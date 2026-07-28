@@ -13,7 +13,7 @@
  * the platform (`rig.resolveModel`), with no API key. Drop your own `.gguf`
  * into `models/llm/` (or point `path:` at one) to skip the fetch entirely.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "yaml";
 import { main, call, ensure, createSignal } from "effection";
@@ -118,13 +118,25 @@ main(function* () {
   }
   if (fetchingReranker) process.stderr.write("\n");
 
+  // Which surface is mounting — decided once, here, then echoed into the boot
+  // header (as a measured fact) and used to pick the binding below.
+  const surface = process.env.RR_BRIDGE ? "desktop" : process.stdout.isTTY ? "cli" : "pipe";
+
   // The live, in-memory config the harness reads via RunnerCtx — the edge
   // substrate (config, trace sink, wind-down / cancel signals) every harness gets.
+  // `model.id` + `model.sizeBytes` (stat'd here) + `surface` feed the measured
+  // boot header the harness emits on `ready`.
   const cfg: Config = {
     version: 1,
     sources: {},
     apps: {},
-    model: { path: modelPath, nCtx: context },
+    surface,
+    model: {
+      path: modelPath,
+      nCtx: context,
+      id: llm.id ?? llm.path ?? "model",
+      sizeBytes: statSync(modelPath).size,
+    },
   };
   yield* RunnerCtx.set(makeEdgeRunner(cfg));
 
@@ -138,10 +150,10 @@ main(function* () {
   // Surface pick — the same events/commands, a different binding. Each binding
   // returns a disposer; tie it to the scope so listeners are torn down on exit.
   let dispose: () => void;
-  if (process.env.RR_BRIDGE) {
+  if (surface === "desktop") {
     // A desktop shell forked this bin: stream over the process channel.
     dispose = ipc<WorkflowEvent, Command>()(events, dispatch, bootstrap);
-  } else if (process.stdout.isTTY) {
+  } else if (surface === "cli") {
     // A terminal: mount the Ink view.
     dispose = renderCli(events, dispatch, bootstrap);
   } else {

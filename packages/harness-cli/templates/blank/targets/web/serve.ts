@@ -14,7 +14,7 @@
  * app that talks to it. Config from `harness.yml` + env (PORT / HOST /
  * MAX_SESSIONS). Loopback + no-auth for local dev — TLS/auth terminate upstream.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { main, suspend, call } from "effection";
 import type { Signal } from "effection";
@@ -107,7 +107,16 @@ main(function* () {
     version: 1,
     sources: {},
     apps: {},
-    model: { path: modelPath, reranker: rerankerPath, nCtx: llm.context ?? 32768 },
+    surface: "web",
+    // `id` + `sizeBytes` feed the measured boot header the harness emits on
+    // `ready`; every served session renders the same resident-model facts.
+    model: {
+      path: modelPath,
+      reranker: rerankerPath,
+      nCtx: llm.context ?? 32768,
+      id: llm.id ?? llm.path ?? "model",
+      sizeBytes: statSync(modelPath).size,
+    },
   };
 
   // Hand the harness to the host through the driver. The host is payload-opaque
