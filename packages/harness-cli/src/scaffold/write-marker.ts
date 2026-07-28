@@ -38,11 +38,17 @@ export function readProjectMarker(projectDir: string): ProjectMarker | null {
   return { template: m.template, targets: m.targets as Target[] };
 }
 
-/** Rewrite just `harnessdev.targets` (after a `targets:` verb changes the set). */
+/**
+ * Rewrite just `harnessdev.targets` (after a `targets:` verb changes the set),
+ * preserving the recorded `template`. A NO-OP when no marker exists — we never
+ * fabricate a `template` (that is the one fact `targets:add` relies on; a guess
+ * would later copy surfaces from the wrong template). `targets:add` requires the
+ * marker up front, so only `targets:remove` on a pre-marker project hits this.
+ */
 export function setMarkerTargets(projectDir: string, targets: Target[]): void {
   const pkg = readPkg(projectDir);
-  const existing = pkg.harnessdev;
-  pkg.harnessdev = { template: existing?.template ?? 'blank', targets };
+  if (!pkg.harnessdev || typeof pkg.harnessdev.template !== 'string') return;
+  pkg.harnessdev = { template: pkg.harnessdev.template, targets };
   writePkg(projectDir, pkg);
 }
 

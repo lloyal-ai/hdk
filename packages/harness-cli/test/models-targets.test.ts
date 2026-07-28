@@ -135,6 +135,20 @@ describe('writeModelField / readModelField', () => {
     expect(yml).toContain('path: "C:\\\\models\\\\my \\"best\\".gguf"');
   });
 
+  it('round-trips a value with an embedded quote through write -> read', () => {
+    const dir = freshBlankTree();
+    const weird = 'C:\\models\\my "best".gguf';
+    writeModelField(dir, 'llm', { path: weird });
+    // readModelField must return the REAL value, not truncated at the first \".
+    expect(readModelField(dir, 'llm')).toEqual({ path: weird });
+    // Re-writing OVER the escaped value must not corrupt it (one clean entry).
+    writeModelField(dir, 'llm', { id: 'clean-id' });
+    expect(readModelField(dir, 'llm')).toEqual({ id: 'clean-id' });
+    const yml = readFileSync(join(dir, 'harness.yml'), 'utf8');
+    expect((yml.match(/^ {2}llm:$/gm) ?? []).length).toBe(1);
+    expect(yml).not.toContain('.gguf"".gguf'); // no dangling remnant
+  });
+
   it('throws when there is no model: block', () => {
     const dir = freshBlankTree();
     writeFileSync(join(dir, 'harness.yml'), 'targets: [cli]\n');
@@ -298,6 +312,16 @@ describe('targets:remove + round-trip', () => {
     const dir = await scaffold('rm2', 'cli,web');
     expect(await runIn(dir, () => targetsRemoveCommand.run(['cli', '--yes']))).toBe(1);
     expect(await runIn(dir, () => targetsRemoveCommand.run(['desktop', '--yes']))).toBe(1); // not present
+  });
+
+  it('does not fabricate a template marker for a pre-marker project', async () => {
+    const dir = await scaffold('rm4', 'cli,web');
+    // Simulate a pre-0.6.0 / hand-made project: strip the marker.
+    const p = pkg(dir) as Record<string, unknown>;
+    delete p.harnessdev;
+    writeFileSync(join(dir, 'package.json'), `${JSON.stringify(p, null, 2)}\n`);
+    expect(await runIn(dir, () => targetsRemoveCommand.run(['web', '--yes']))).toBe(0);
+    expect(readProjectMarker(dir)).toBeNull(); // no guessed `template: blank`
   });
 
   it('refuses without --yes in a non-interactive shell', async () => {

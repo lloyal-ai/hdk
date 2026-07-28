@@ -15,7 +15,7 @@ import { parseArgs } from 'node:util';
 import { createWriteStream } from 'node:fs';
 import { mkdir, unlink, stat } from 'node:fs/promises';
 import { readdirSync, existsSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, join, isAbsolute } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createHash } from 'node:crypto';
@@ -122,7 +122,9 @@ export const modelsAddCommand: Command = {
       if (!path) throw new Error('missing <path>. Usage: harness.dev models:add <path> [--role]');
       // Warn (don't block) if the file isn't there yet — trusted by possession,
       // but a typo is worth flagging before the next run fails to load.
-      const abs = path.startsWith('/') || path.startsWith('~') ? path : join(root, path);
+      // `isAbsolute` is platform-aware (handles Windows drive/UNC paths); `~`
+      // isn't "absolute" but points outside the project, so leave it as-is too.
+      const abs = isAbsolute(path) || path.startsWith('~') ? path : join(root, path);
       if (!existsSync(abs)) {
         process.stderr.write(`note: ${path} does not exist yet — the next run will fail to load until it does.\n`);
       }

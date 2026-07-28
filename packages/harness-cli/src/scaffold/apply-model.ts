@@ -126,8 +126,15 @@ export function readModelField(projectDir: string, role: Role): ModelSpec | null
     if (!m) continue;
     const subEnd = subBlockEnd(lines, i, blockEnd, m[1].length);
     for (let j = i + 1; j < subEnd; j++) {
-      const entry = lines[j].match(/^\s+(id|path):\s*"([^"]*)"/);
-      if (entry) return entry[1] === 'id' ? { id: entry[2] } : { path: entry[2] };
+      // Match a full double-quoted token INCLUDING escapes (`\"`, `\\`) so a
+      // value written via JSON.stringify (a Windows path, an embedded quote)
+      // isn't truncated at its first inner quote; JSON.parse un-escapes it back
+      // to the real value (YAML 1.2 double-quoted strings share JSON escapes).
+      const entry = lines[j].match(/^\s+(id|path):\s*("(?:[^"\\]|\\.)*")/);
+      if (entry) {
+        const value = JSON.parse(entry[2]) as string;
+        return entry[1] === 'id' ? { id: value } : { path: value };
+      }
     }
     return null;
   }
@@ -167,13 +174,15 @@ function rewriteEntry(
   let keyDone = false;
   let ctxDone = opts.context == null;
   for (let i = roleIdx + 1; i < subEnd && !(keyDone && ctxDone); i++) {
-    if (!keyDone && /^\s+(?:id|path):\s*"[^"]*"/.test(lines[i])) {
+    if (!keyDone && /^\s+(?:id|path):\s*"(?:[^"\\]|\\.)*"/.test(lines[i])) {
       // JSON.stringify quotes + escapes the value — YAML 1.2 double-quoted
       // strings share JSON's escape sequences, so a Windows path (`C:\x.gguf`),
-      // a `"`, or a newline round-trips correctly. A replacer fn (not a string)
-      // keeps a `$` in the value from being read as a replace token.
+      // a `"`, or a newline round-trips correctly. The value match spans escapes
+      // (`\"`, `\\`) so re-writing OVER an already-escaped value doesn't corrupt
+      // it. A replacer fn (not a string) keeps a `$` in the value from being
+      // read as a replace token.
       lines[i] = lines[i].replace(
-        /^(\s+)(?:id|path):(\s*)"[^"]*"/,
+        /^(\s+)(?:id|path):(\s*)"(?:[^"\\]|\\.)*"/,
         (_m, indent: string, sp: string) => `${indent}${key}:${sp}${JSON.stringify(value)}`,
       );
       keyDone = true;
