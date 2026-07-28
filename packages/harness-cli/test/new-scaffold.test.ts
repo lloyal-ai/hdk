@@ -206,6 +206,19 @@ describe('newCommand.run — non-interactive flag path (end-to-end)', () => {
     expect(yml).toMatch(/id:\s*"reasoning-4b"/); // the catalog default, not an empty value
     expect(yml).not.toMatch(/(id|path):\s*""/);
   });
+
+  it('refuses to scaffold over an existing FILE (not just a directory)', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'harness-new-'));
+    created.push(parent);
+    writeFileSync(join(parent, 'taken'), 'i am a file, not a directory');
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const out = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const code = await newCommand.run(['taken', '--dir', parent, '--yes']);
+    err.mockRestore();
+    out.mockRestore();
+    // Errors cleanly (exit 1) rather than crashing later on mkdirSync EEXIST.
+    expect(code).toBe(1);
+  });
 });
 
 describe('model-catalog (vendored)', () => {

@@ -189,15 +189,23 @@ function parseTargets(csv: string | undefined): { targets: Target[] } | { error:
 function performScaffold(plan: ScaffoldPlan, parentDir: string): number {
   const dest = join(parentDir, plan.name);
 
+  // Refuse to clobber ANY existing path (dir, file, or symlink) — falling
+  // through would fail later with a cryptic mkdirSync EEXIST/ENOTDIR. Only a
+  // missing path (ENOENT) is safe; any other stat error is surfaced, not eaten.
   try {
-    if (statSync(dest).isDirectory()) {
+    statSync(dest);
+    process.stderr.write(
+      `harness.dev: ${dest} already exists. Choose a different name or remove it first.\n`,
+    );
+    return 1;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
       process.stderr.write(
-        `harness.dev: ${dest} already exists. Choose a different name or remove the directory first.\n`,
+        `harness.dev: cannot access ${dest}: ${err instanceof Error ? err.message : String(err)}\n`,
       );
       return 1;
     }
-  } catch {
-    // ENOENT — good
+    // ENOENT — the destination is free.
   }
 
   const templateDir = resolveTemplateDir(plan.template);

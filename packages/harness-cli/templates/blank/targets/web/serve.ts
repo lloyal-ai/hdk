@@ -56,6 +56,15 @@ function loadConfig(): { model?: { llm?: ModelEntry; reranker?: ModelEntry } } {
   }
 }
 
+/** Best-effort file size for the boot header — never blocks the server boot. */
+function fileSize(p: string): number {
+  try {
+    return statSync(p).size;
+  } catch {
+    return 0;
+  }
+}
+
 const config = loadConfig();
 const llm: ModelEntry = config.model?.llm ?? {};
 const reranker: ModelEntry = config.model?.reranker ?? {};
@@ -115,7 +124,7 @@ main(function* () {
       reranker: rerankerPath,
       nCtx: llm.context ?? 32768,
       id: llm.id ?? llm.path ?? "model",
-      sizeBytes: statSync(modelPath).size,
+      sizeBytes: fileSize(modelPath),
     },
   };
 

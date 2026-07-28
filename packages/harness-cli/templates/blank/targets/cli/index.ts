@@ -55,6 +55,16 @@ function loadConfig(): HarnessConfig {
   }
 }
 
+/** Best-effort file size for the boot header — a stat failure never blocks boot
+ *  (the header size is cosmetic; the real model-load error surfaces on its own). */
+function fileSize(p: string): number {
+  try {
+    return statSync(p).size;
+  } catch {
+    return 0;
+  }
+}
+
 const config = loadConfig();
 const llm: ModelEntry = config.model?.llm ?? {};
 const context = llm.context ?? 32768;
@@ -135,7 +145,7 @@ main(function* () {
       path: modelPath,
       nCtx: context,
       id: llm.id ?? llm.path ?? "model",
-      sizeBytes: statSync(modelPath).size,
+      sizeBytes: fileSize(modelPath),
     },
   };
   yield* RunnerCtx.set(makeEdgeRunner(cfg));
