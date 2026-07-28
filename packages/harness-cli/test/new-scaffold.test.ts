@@ -147,6 +147,15 @@ describe('applyModelChoice', () => {
     expect(yml).toMatch(/context:\s*32768/); // context left at the template default
   });
 
+  it('escapes a BYO path with backslashes + quotes into valid double-quoted YAML', () => {
+    const dir = freshBlankProject();
+    // A Windows path with an embedded quote — must not produce invalid YAML.
+    applyModelChoice(dir, { llm: 'C:\\models\\my "best".gguf' });
+    const yml = readFileSync(join(dir, 'harness.yml'), 'utf8');
+    // JSON.stringify escaping: backslashes doubled, inner quotes backslash-escaped.
+    expect(yml).toContain('path: "C:\\\\models\\\\my \\"best\\".gguf"');
+  });
+
   it('leaves context untouched when not given', () => {
     const dir = freshBlankProject();
     applyModelChoice(dir, { llm: 'reasoning-4b' });
@@ -183,6 +192,19 @@ describe('newCommand.run — non-interactive flag path (end-to-end)', () => {
     expect(existsSync(join(parent, 'byoproj', 'targets/desktop'))).toBe(false);
     expect(existsSync(join(parent, 'byoproj', 'targets/web'))).toBe(false);
     expect(existsSync(join(parent, 'byoproj', 'targets/cli'))).toBe(true);
+  });
+
+  it('treats an empty/whitespace --model as not provided (uses the catalog default)', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'harness-new-'));
+    created.push(parent);
+    const out = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const code = await newCommand.run(['dflt', '--dir', parent, '--targets', 'cli', '--model', '   ']);
+    out.mockRestore();
+
+    expect(code).toBe(0);
+    const yml = readFileSync(join(parent, 'dflt', 'harness.yml'), 'utf8');
+    expect(yml).toMatch(/id:\s*"reasoning-4b"/); // the catalog default, not an empty value
+    expect(yml).not.toMatch(/(id|path):\s*""/);
   });
 });
 

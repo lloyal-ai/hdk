@@ -35,7 +35,7 @@ function printHelp(): void {
       '  npx harness.dev new [name]           Scaffold a new harness (interactive if no name)',
       '  npx harness.dev new --template research       Start from the tuned research template',
       '  npx harness.dev app:new <name>       Scaffold a new app',
-      '  npx harness.dev install <name>       Install a signed app from apps.lloyal.ai',
+      '  npx harness.dev install <pub>/<name>[@<semver>]   Install a signed app from apps.lloyal.ai',
       '  npx harness.dev publish              Submit an app for review + signing',
       '  npx harness.dev publish status <id>  Check the status of a submission',
       '  npx harness.dev publishers register  Claim a publisher handle + attest ToS',

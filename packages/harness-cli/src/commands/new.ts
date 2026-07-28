@@ -95,11 +95,15 @@ export const newCommand: Command = {
       return 1;
     }
 
-    // Interactive picker: a bare `harness.dev new` in a TTY. A provided name,
-    // `--yes`, or a non-TTY / piped stdin (CI) takes the flag path below. Any
+    // Interactive picker: a bare `harness.dev new` in a real terminal. A provided
+    // name, `--yes`, or a non-TTY (CI, or stdin/stdout redirected) takes the flag
+    // path below — Ink needs BOTH stdin and stdout to be a TTY, else its
+    // keyboard/render UX is broken (piped output would get ANSI garbage). Any
     // flags already given pre-seed the picker so it asks only for the rest.
+    const interactive =
+      !name && !values.yes && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
     let plan: ScaffoldPlan;
-    if (!name && !values.yes && Boolean(process.stdin.isTTY)) {
+    if (interactive) {
       const result = await runNewWizard(flags);
       if (!result) {
         process.stderr.write('cancelled.\n');
@@ -141,7 +145,11 @@ function validateFlags(values: {
     targets = parsed.targets;
   }
 
-  return { template, targets, llm: values.model };
+  // Trim `--model`; an empty/whitespace value is "not provided" (falls to the
+  // catalog default) — `??` alone would treat `""` as a real id and write an
+  // empty `model.llm`, breaking resolution.
+  const llm = values.model?.trim();
+  return { template, targets, llm: llm || undefined };
 }
 
 /** Build a scaffold plan from CLI flags (the non-interactive path). */

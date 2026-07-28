@@ -60,9 +60,13 @@ export function applyModelChoice(projectDir: string, choice: ModelChoice): void 
   let ctxDone = choice.context == null;
   for (let i = llmIdx + 1; i < lines.length && !(keyDone && ctxDone); i++) {
     if (!keyDone && /^\s+(?:id|path):\s*"[^"]*"/.test(lines[i])) {
+      // JSON.stringify quotes + escapes the value — YAML 1.2 double-quoted
+      // strings share JSON's escape sequences, so a Windows path (`C:\x.gguf`),
+      // a `"`, or a newline round-trips correctly. A replacer fn (not a string)
+      // keeps a `$` in the value from being read as a replace token.
       lines[i] = lines[i].replace(
         /^(\s+)(?:id|path):(\s*)"[^"]*"/,
-        `$1${key}:$2"${choice.llm}"`,
+        (_m, indent: string, sp: string) => `${indent}${key}:${sp}${JSON.stringify(choice.llm)}`,
       );
       keyDone = true;
       continue;
