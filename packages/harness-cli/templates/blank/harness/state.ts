@@ -19,11 +19,15 @@ import type { WorkflowEvent, BootFacts } from "./protocol.js";
 
 export type Phase = "booting" | "ready" | "working" | "answered" | "error";
 
-/** Human-readable file size — the boot header renders the model's measured bytes. */
+/** Human-readable file size — the boot header renders the model's measured bytes.
+ *  `sizeBytes` is best-effort (0 when the stat failed), so 0/unknown reads as
+ *  "unknown" rather than a fabricated "1 KB". */
 export function formatSize(bytes: number): string {
+  if (bytes <= 0) return "unknown";
   if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
   if (bytes >= 1e6) return `${Math.round(bytes / 1e6)} MB`;
-  return `${Math.max(1, Math.round(bytes / 1e3))} KB`;
+  if (bytes >= 1e3) return `${Math.round(bytes / 1e3)} KB`;
+  return `${bytes} B`;
 }
 
 export type AgentStatus = "active" | "tool" | "done" | "failed";

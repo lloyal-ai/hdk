@@ -14,7 +14,7 @@
  * harnesses render in, so the tool eats its own dog food. It stays thin: no
  * scaffolding happens here, only data collection.
  */
-import { useRef, useState } from 'react';
+import { useRef, useState, type ReactElement } from 'react';
 import { Box, Text, render, useApp, useInput } from 'ink';
 import { TextInput, Select, MultiSelect, StatusMessage } from '@inkjs/ui';
 import { modelsForRole } from '../scaffold/model-catalog.js';
@@ -65,7 +65,7 @@ export function Wizard({
 }: {
   onDone: (result: WizardResult | null) => void;
   prefill?: WizardPrefill;
-}): React.ReactElement {
+}): ReactElement {
   const { exit } = useApp();
   const llms = modelsForRole('llm');
   const defaultLlm = llms[0]?.id ?? 'reasoning-4b';
