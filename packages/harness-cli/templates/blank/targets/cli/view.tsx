@@ -13,8 +13,15 @@ import React, { useEffect, useReducer } from "react";
 import { Box, Text, render, useApp, useInput } from "ink";
 import { TextInput } from "@inkjs/ui";
 import type { EventBus } from "@lloyal-labs/binding";
-import { initialState, reduce, formatSize } from "../../harness/state.js";
-import type { AgentView, AppState } from "../../harness/state.js";
+import {
+  initialState,
+  reduce,
+  formatSize,
+  cleanNarration,
+  toolArgSummary,
+  resultMeta,
+} from "../../harness/state.js";
+import type { AgentView, AppState, ToolStep } from "../../harness/state.js";
 import type { Command, WorkflowEvent } from "../../harness/protocol.js";
 
 const seed = (bootstrap: WorkflowEvent[]): AppState =>
@@ -22,6 +29,44 @@ const seed = (bootstrap: WorkflowEvent[]): AppState =>
 
 const glyph = (s: AgentView["status"]): string =>
   s === "active" ? "●" : s === "tool" ? "◍" : s === "done" ? "✓" : "✗";
+
+const statusColor = (s: AgentView["status"]): string =>
+  s === "active" ? "yellow" : s === "tool" ? "cyan" : s === "done" ? "green" : "red";
+
+/** One tool invocation as an atomic chip: `⚒ tool · args → result-meta`. */
+function ToolChip({ step }: { step: ToolStep }): React.ReactElement {
+  const args = toolArgSummary(step.args);
+  return (
+    <Text wrap="truncate-end">
+      <Text color="magenta">⚒ {step.tool}</Text>
+      {args ? <Text dimColor>{`  ${args}`}</Text> : null}
+      <Text color={step.result === null ? "gray" : "green"}>{`  → ${resultMeta(step.result)}`}</Text>
+    </Text>
+  );
+}
+
+/** One agent, as a fixed-width column: header · recent tool chips · a short
+ *  narration preview (the last line of the model's prose, XML stripped). */
+function AgentColumn({ a, width }: { a: AgentView; width: number }): React.ReactElement {
+  const preview = cleanNarration(a.body).split("\n").filter(Boolean).slice(-1)[0] ?? "";
+  return (
+    <Box flexDirection="column" width={width} marginRight={2}>
+      <Text wrap="truncate-end">
+        <Text color={statusColor(a.status)}>{glyph(a.status)}</Text>
+        {` agent ${a.id}`}
+        <Text dimColor>{` · ${a.tokens} tok`}</Text>
+      </Text>
+      {a.tools.slice(-4).map((t, i) => (
+        <ToolChip key={i} step={t} />
+      ))}
+      {preview ? (
+        <Text dimColor wrap="truncate-end">
+          {preview}
+        </Text>
+      ) : null}
+    </Box>
+  );
+}
 
 function Gauge({ used, total }: { used: number; total: number }): React.ReactElement | null {
   if (!total) return null;
@@ -59,13 +104,10 @@ function View({
 
   const working = state.phase === "working";
   const agents = [...state.agents.values()];
-  const streaming =
-    state.answer ||
-    agents
-      .filter((a) => a.status !== "failed")
-      .map((a) => a.body)
-      .join("")
-      .trim();
+  // Lay parallel agents side by side — one column each, sized to the terminal
+  // (falls back to 80 cols when stdout isn't a TTY, e.g. the desktop fork).
+  const cols = process.stdout.columns ?? 80;
+  const colWidth = Math.max(30, Math.min(56, Math.floor((cols - 2) / Math.max(1, agents.length)) - 2));
 
   return (
     <Box flexDirection="column" gap={1}>
@@ -87,17 +129,16 @@ function View({
 
       {agents.length > 0 && (
         <Box flexDirection="column">
-          {agents.map((a) => (
-            <Text key={a.id}>
-              {glyph(a.status)} agent {a.id}
-              {a.currentTool ? ` · ${a.currentTool}` : ""} · {a.tokens} tok
-            </Text>
-          ))}
+          <Box flexWrap="wrap">
+            {agents.map((a) => (
+              <AgentColumn key={a.id} a={a} width={colWidth} />
+            ))}
+          </Box>
           <Gauge used={state.kv.used} total={state.kv.total} />
         </Box>
       )}
 
-      {streaming && <Text color="cyan">{streaming}</Text>}
+      {state.answer && <Text color="cyan">{state.answer}</Text>}
       {state.error && <Text color="red">error: {state.error}</Text>}
 
       {!working && (

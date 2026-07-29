@@ -10,7 +10,16 @@
  * is the floor — grow it into your product's UI (or bring your own app).
  */
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { reduce, initialState, formatSize, type AppState, type AgentView } from "../../harness/state.js";
+import {
+  reduce,
+  initialState,
+  formatSize,
+  cleanNarration,
+  toolArgSummary,
+  resultMeta,
+  type AppState,
+  type AgentView,
+} from "../../harness/state.js";
 import type { WorkflowEvent, Command } from "../../harness/protocol.js";
 
 declare global {
@@ -91,14 +100,34 @@ export function HarnessApp() {
           : ` · ${state.phase}`}
         {state.kv.total > 0 && ` · kv ${Math.round((100 * state.kv.used) / state.kv.total)}%`}
       </div>
-      {agents.map((a) => (
-        <div key={a.id} style={{ ...S.agent, opacity: a.status === "done" ? 0.65 : 1 }}>
-          <div style={S.meta}>
-            agent {a.id} · {a.currentTool ? `⚙ ${a.currentTool}` : a.status} · {a.tokens} tok
-          </div>
-          <div style={S.body}>{a.body}</div>
-        </div>
-      ))}
+      <div style={S.agentRow}>
+        {agents.map((a) => {
+          const narration = cleanNarration(a.body);
+          return (
+            <div key={a.id} style={{ ...S.agent, opacity: a.status === "done" ? 0.72 : 1 }}>
+              <div style={S.meta}>
+                agent {a.id} · {a.status} · {a.tokens.toLocaleString()} tok
+              </div>
+              {/* Atomic tool rows — one per call, paired with its result. Built
+                  from the structured tool events, not by parsing the stream. */}
+              {a.tools.map((t, i) => {
+                const args = toolArgSummary(t.args);
+                return (
+                  <div key={i} style={S.tool}>
+                    <span style={S.toolName}>⚒ {t.tool}</span>
+                    {args && <span style={S.toolArgs}> {args}</span>}
+                    <span style={{ ...S.toolMeta, color: t.result === null ? "#8a90a0" : "#7ee0a6" }}>
+                      {" → "}
+                      {resultMeta(t.result)}
+                    </span>
+                  </div>
+                );
+              })}
+              {narration && <div style={S.body}>{narration}</div>}
+            </div>
+          );
+        })}
+      </div>
       {state.answer && <div style={S.answer}>{state.answer}</div>}
       {state.error && <div style={S.error}>{state.error}</div>}
       <div style={S.composer}>
@@ -120,11 +149,17 @@ export function HarnessApp() {
 }
 
 const S: Record<string, CSSProperties> = {
-  page: { font: "14px/1.55 ui-sans-serif, system-ui, sans-serif", color: "#e6e9ef", padding: 20, maxWidth: 820, margin: "0 auto" },
+  page: { font: "14px/1.55 ui-sans-serif, system-ui, sans-serif", color: "#e6e9ef", padding: 20, maxWidth: 1100, margin: "0 auto" },
   head: { opacity: 0.55, fontSize: 12, marginBottom: 14, letterSpacing: 0.3 },
-  agent: { borderLeft: "2px solid #2b3140", paddingLeft: 12, margin: "10px 0" },
-  meta: { fontSize: 12, opacity: 0.55 },
-  body: { whiteSpace: "pre-wrap" },
+  // Parallel agents side by side; each card wraps to the next row when narrow.
+  agentRow: { display: "flex", flexWrap: "wrap", gap: 14, alignItems: "flex-start" },
+  agent: { flex: "1 1 320px", minWidth: 280, maxWidth: 520, borderLeft: "2px solid #2b3140", paddingLeft: 12 },
+  meta: { fontSize: 12, opacity: 0.55, marginBottom: 6 },
+  tool: { fontSize: 13, margin: "3px 0", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  toolName: { color: "#c9a2ff", fontWeight: 600 },
+  toolArgs: { opacity: 0.6 },
+  toolMeta: {},
+  body: { whiteSpace: "pre-wrap", maxHeight: 220, overflowY: "auto", opacity: 0.8, marginTop: 6 },
   answer: { marginTop: 16, whiteSpace: "pre-wrap", lineHeight: 1.6 },
   error: { marginTop: 16, color: "#ff7a7a" },
   composer: { display: "flex", gap: 8, marginTop: 22 },

@@ -32,15 +32,30 @@ export function formatSize(bytes: number): string {
 
 export type AgentStatus = "active" | "tool" | "done" | "failed";
 
+/** One tool invocation, paired with its result — the atomic unit the view
+ *  renders as a chip (a call in flight has `result: null`). Built from the
+ *  structured `agent:tool_call` / `agent:tool_result` events, NOT by parsing the
+ *  model's `<tool_call>` XML out of the stream. `args` is the raw JSON string
+ *  the event carries; `toolArgSummary` formats it for display. */
+export interface ToolStep {
+  tool: string;
+  args: string;
+  result: string | null;
+}
+
 export interface AgentView {
   id: number;
   parentId: number;
   status: AgentStatus;
-  /** Accumulated streamed text (`agent:produce` deltas). */
+  /** Accumulated streamed text (`agent:produce` deltas). Includes the model's
+   *  `<think>` / `<tool_call>` markup verbatim — `cleanNarration` strips it for
+   *  display (tools render as chips from `tools`, not from this text). */
   body: string;
   tokens: number;
   currentTool: string | null;
   toolCalls: number;
+  /** Tool calls in order, each paired with its result — see `ToolStep`. */
+  tools: ToolStep[];
 }
 
 export interface AppState {
@@ -86,6 +101,7 @@ export function reduce(s: AppState, ev: WorkflowEvent): AppState {
         tokens: 0,
         currentTool: null,
         toolCalls: 0,
+        tools: [],
       });
       // A new query begins — clear the prior answer/error so it doesn't
       // linger while this run produces.
@@ -97,7 +113,9 @@ export function reduce(s: AppState, ev: WorkflowEvent): AppState {
         status: "active",
         currentTool: null,
         body: a.body + ev.text,
-        tokens: a.tokens + ev.tokenCount,
+        // `tokenCount` is the agent's running TOTAL, not a per-delta count —
+        // take the latest, don't sum (summing cumulatives is quadratic).
+        tokens: ev.tokenCount,
       }));
     case "agent:tool_call":
       return patch(s, ev.agentId, (a) => ({
@@ -105,9 +123,16 @@ export function reduce(s: AppState, ev: WorkflowEvent): AppState {
         status: "tool",
         currentTool: ev.tool,
         toolCalls: a.toolCalls + 1,
+        tools: [...a.tools, { tool: ev.tool, args: ev.args, result: null }],
       }));
     case "agent:tool_result":
-      return patch(s, ev.agentId, (a) => ({ ...a, status: "active", currentTool: null }));
+      return patch(s, ev.agentId, (a) => ({
+        ...a,
+        status: "active",
+        currentTool: null,
+        // Fill the most recent in-flight call for this tool with its result.
+        tools: fillResult(a.tools, ev.tool, ev.result),
+      }));
     case "agent:return":
     case "agent:recovered":
       return patch(s, ev.agentId, (a) => ({ ...a, status: "done", body: a.body || ev.result }));
@@ -137,4 +162,62 @@ function patch(
   const agents = new Map(s.agents);
   agents.set(id, fn(cur));
   return { ...s, agents };
+}
+
+/** Fill the last in-flight (`result === null`) call of `tool` with `result`. */
+function fillResult(tools: ToolStep[], tool: string, result: string): ToolStep[] {
+  for (let i = tools.length - 1; i >= 0; i--) {
+    if (tools[i].tool === tool && tools[i].result === null) {
+      const next = tools.slice();
+      next[i] = { ...tools[i], result };
+      return next;
+    }
+  }
+  return tools;
+}
+
+// ── display helpers (pure; the cli + desktop/web views share them) ──
+
+const truncate = (s: string, max: number): string =>
+  s.length > max ? `${s.slice(0, max - 1)}…` : s;
+
+/**
+ * The narration to *show* — the model's prose with its `<tool_call>` blocks and
+ * `<think>` tags stripped. Tool calls render as chips (from `tools`), so their
+ * raw XML is noise here; a trailing unterminated `<tool_call>` (mid-stream) is
+ * dropped too. `<think>` bodies are kept (they're the reasoning) minus the tags.
+ */
+export function cleanNarration(body: string): string {
+  return body
+    .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "")
+    .replace(/<tool_call>[\s\S]*$/g, "")
+    .replace(/<\/?think>/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/** A one-line `key: value · key: value` summary of a tool call's JSON args. */
+export function toolArgSummary(args: string): string {
+  try {
+    const obj = JSON.parse(args) as Record<string, unknown>;
+    return Object.entries(obj)
+      .map(([k, v]) => `${k}: ${truncate(String(v), 40)}`)
+      .join(" · ");
+  } catch {
+    return truncate(args.trim(), 60);
+  }
+}
+
+/** Compact result meta: "…" while in flight, "N results" for a JSON array,
+ *  else an approximate size — the same idea as Artifact's row meta. */
+export function resultMeta(result: string | null): string {
+  if (result === null) return "…";
+  try {
+    const parsed = JSON.parse(result) as unknown;
+    if (Array.isArray(parsed)) return `${parsed.length} result${parsed.length === 1 ? "" : "s"}`;
+  } catch {
+    // not JSON — fall through to a size estimate
+  }
+  const kb = result.length / 1000;
+  return kb >= 1 ? `${kb.toFixed(1)} kb` : `${result.length} chars`;
 }
