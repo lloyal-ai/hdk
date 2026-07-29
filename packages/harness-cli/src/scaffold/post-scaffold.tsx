@@ -10,7 +10,7 @@ import { Spinner, ThemeProvider } from '@inkjs/ui';
 import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { cliTheme, ACCENT, ACCENT_SGR } from './palette.js';
+import { cliTheme, ACCENT_SGR } from './palette.js';
 import type { Target } from './prune-targets.js';
 
 const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
@@ -47,7 +47,7 @@ function InstallScreen({ dir, onDone }: { dir: string; onDone: (ok: boolean) => 
     return (
       <Box gap={1}>
         <Spinner />
-        <Text color={ACCENT}>
+        <Text>
           Installing dependencies <Text dimColor>— vite · ink · electron, ~a minute</Text>
         </Text>
       </Box>
@@ -72,7 +72,11 @@ function InstallScreen({ dir, onDone }: { dir: string; onDone: (ok: boolean) => 
 export function runInstall(dir: string): Promise<boolean> {
   return new Promise((resolve) => {
     let ok = false;
-    const { waitUntilExit } = render(<InstallScreen dir={dir} onDone={(v) => (ok = v)} />);
+    const { waitUntilExit } = render(
+      <ThemeProvider theme={cliTheme}>
+        <InstallScreen dir={dir} onDone={(v) => (ok = v)} />
+      </ThemeProvider>,
+    );
     void waitUntilExit().then(() => resolve(ok));
   });
 }
