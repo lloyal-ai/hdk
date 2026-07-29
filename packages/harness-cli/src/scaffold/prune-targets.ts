@@ -29,7 +29,7 @@ export type PrunableTarget = Exclude<Target, 'cli'>;
 /** Per-target npm scripts. */
 export const TARGET_SCRIPTS: Record<PrunableTarget, string[]> = {
   desktop: ['dev:desktop', 'build:desktop'],
-  web: ['serve', 'dev:web', 'build:web'],
+  web: ['serve', 'dev:web', 'dev:web:client', 'build:web'],
 };
 /** Per-target runtime deps. */
 export const TARGET_DEPS: Record<PrunableTarget, string[]> = {
@@ -39,7 +39,7 @@ export const TARGET_DEPS: Record<PrunableTarget, string[]> = {
 /** Per-target devDeps. */
 export const TARGET_DEV_DEPS: Record<PrunableTarget, string[]> = {
   desktop: ['electron', 'electron-vite'],
-  web: ['@types/ws'],
+  web: ['@types/ws', 'concurrently'],
 };
 /**
  * Top-level files (besides `targets/<t>/`) that belong ONLY to a target: its

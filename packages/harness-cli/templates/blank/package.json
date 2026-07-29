@@ -24,7 +24,8 @@
     "dev:desktop": "tsc && electron-vite dev",
     "build:desktop": "tsc && electron-vite build",
     "serve": "tsc && node bin/serve.js",
-    "dev:web": "vite --config targets/web/vite.web.config.ts",
+    "dev:web": "concurrently -k -n serve,web -c blue,magenta \"npm run serve\" \"vite --config targets/web/vite.web.config.ts\"",
+    "dev:web:client": "vite --config targets/web/vite.web.config.ts",
     "build:web": "vite build --config targets/web/vite.web.config.ts"
   },
   "dependencies": {
@@ -49,6 +50,7 @@
     "@types/react-dom": "^18.3.1",
     "@types/ws": "^8.5.13",
     "@vitejs/plugin-react": "^5.0.0",
+    "concurrently": "^10.0.0",
     "electron": "^42.0.0",
     "electron-vite": "^5.0.0",
     "tsx": "^4.21.0",

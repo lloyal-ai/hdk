@@ -6,10 +6,15 @@ A vertical inference harness. The model lives *inside* the app — no API key, a
 
 ```sh
 npm install
-npm start
 ```
 
-The recommended model is fetched and **digest-verified** into `models/llm/` on first run — no key. (Prefer your own weight? Drop a `.gguf` in `models/llm/`, or point `model.llm.path` in `harness.yml` at one.) `npm start` opens a terminal UI; type a question and watch two agents research it in parallel while a synth combines their notes. For a fast inner loop without a build step, use `npm run dev`.
+Then start a surface — each folds the same harness:
+
+__RUN_STEPS__
+
+The recommended model is fetched and **digest-verified** into `models/llm/` on first run — no key. (Prefer your own weight? Drop a `.gguf` in `models/llm/`, or point `model.llm.path` in `harness.yml` at one.) Type a question and watch two agents research it in parallel while a synth combines their notes.
+
+The **web** surface is two processes — a resident-model **host** and a browser client; `npm run dev:web` starts both (the browser reconnects until the host is up). To run the host on its own (a remote box, or the browser elsewhere), use `npm run serve` + `npm run dev:web:client`. For a fast cli loop without a build step, use `npm run dev`.
 
 ## The shape
 
@@ -19,9 +24,9 @@ harness/
   protocol.ts    the events (↓) and commands (↑) your harness speaks
   state.ts       node-free reduce(events) → AppState (every view folds it)
 targets/
-  cli/
+  <surface>/     one dir per surface — cli · desktop · web
     index.ts     boot: resolve the model, mount a view, run your harness
-    view.tsx     the terminal view (Ink) — swap it, or bring a whole app
+    view.tsx     the view (Ink for cli, React for desktop/web) — or bring a whole app
 models/
   llm/           the resident model (fetched on first run; gitignored)
 harness.yml      targets + model

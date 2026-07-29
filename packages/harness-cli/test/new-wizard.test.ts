@@ -18,7 +18,7 @@ describe('new wizard — render', () => {
   it('mounts and renders the name prompt first (no crash)', () => {
     const { lastFrame } = render(createElement(Wizard, { onDone: () => {} }));
     expect(lastFrame()).toContain('Scaffold a new harness');
-    expect(lastFrame()).toContain('Harness name:');
+    expect(lastFrame()).toContain('Harness name');
   });
 });
 

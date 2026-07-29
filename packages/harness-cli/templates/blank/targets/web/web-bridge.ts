@@ -21,25 +21,54 @@ function resolveWssUrl(): string {
 export function installWebBridge(): void {
   let client: WssClient<Command> | null = null;
   let seq = 0;
+  let active = false; // at least one subscriber wants the stream
+  let retry: ReturnType<typeof setTimeout> | null = null;
   const listeners = new Set<(f: { seq: number; ev: WorkflowEvent }) => void>();
+
+  const clearRetry = (): void => {
+    if (retry !== null) {
+      clearTimeout(retry);
+      retry = null;
+    }
+  };
+
+  // (Re)connect to the host. The browser is a CLIENT — the resident-model host
+  // is `npm run serve`. If it isn't up yet (a fresh `npm run dev:web` boots both
+  // and Vite wins the race, or you start `serve` in another shell after) the
+  // socket closes; retry until it answers, so the view isn't stuck forever.
+  const connect = (): void => {
+    client = connectWss<WorkflowEvent, Command>(resolveWssUrl(), {
+      onEvent: (ev) => {
+        const frame = { seq: ++seq, ev }; // synthesize a monotonic seq the wire doesn't carry
+        for (const l of listeners) l(frame);
+      },
+      onClose: () => {
+        client = null;
+        if (active) {
+          clearRetry();
+          retry = setTimeout(connect, 1000);
+        }
+      },
+    });
+  };
 
   const api = {
     onEvent(cb: (f: { seq: number; ev: WorkflowEvent }) => void): () => void {
       listeners.add(cb);
       // Lazy-connect on first subscription (the view subscribes in its effect).
-      // Synthesize a monotonic seq the wire doesn't carry.
-      client ??= connectWss<WorkflowEvent, Command>(resolveWssUrl(), {
-        onEvent: (ev) => {
-          const frame = { seq: ++seq, ev };
-          for (const l of listeners) l(frame);
-        },
-      });
+      if (!active) {
+        active = true;
+        connect();
+      }
       return () => {
         listeners.delete(cb);
-        // Last listener gone (view unmount / HMR): close the socket so it isn't
-        // leaked, and reset — a later subscription reconnects a fresh session
-        // (which re-seeds from initialState @ 0, matching requestSnapshot).
+        // Last listener gone (view unmount / HMR): stop retrying, close the
+        // socket so it isn't leaked, and reset — a later subscription reconnects
+        // a fresh session (which re-seeds from initialState @ 0, matching
+        // requestSnapshot).
         if (listeners.size === 0) {
+          active = false;
+          clearRetry();
           client?.close();
           client = null;
           seq = 0;

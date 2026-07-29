@@ -11,6 +11,7 @@ import {
   buildSubstitutions,
 } from '../scaffold/copy-tree.js';
 import { writeProjectMarker } from '../scaffold/write-marker.js';
+import { runInstall, printNextSteps, writeReadmeRunSteps } from '../scaffold/post-scaffold.js';
 import { runNewWizard, type TemplateKind, type WizardPrefill } from './new-wizard.js';
 
 const USAGE = [
@@ -36,12 +37,15 @@ const USAGE = [
   '                Trunk model — a catalog id (fetched + digest-verified) or a path',
   '                to a local .gguf you already have. Default: the catalog default.',
   '  --dir <path>  Parent directory to create the harness in (default: cwd)',
+  '  --skip-install',
+  '                Do not run `npm install` after scaffolding (it runs by',
+  '                default in an interactive terminal).',
   '  -y, --yes     Skip the picker; accept defaults for anything not given a flag.',
   '  -h, --help    Show this help',
   '',
   'Any flags you pass also pre-seed the picker, so it prompts only for what is',
   'missing. Emits a runnable harness on the selected surfaces, on a resident model',
-  '(fetched + verified on first run — no API key). Run `npm install && npm start`.',
+  '(fetched + verified on first run — no API key), then prints how to run each one.',
 ].join('\n');
 
 // Same grammar as `harness.dev app:new`: identifier-safe lowercase that
@@ -73,6 +77,7 @@ export const newCommand: Command = {
         template: { type: 'string' },
         targets: { type: 'string' },
         model: { type: 'string' },
+        'skip-install': { type: 'boolean' },
         yes: { type: 'boolean', short: 'y' },
       },
       allowPositionals: true,
@@ -119,7 +124,11 @@ export const newCommand: Command = {
       plan = built;
     }
 
-    return performScaffold(plan, parentDir);
+    // Auto-install by default in a real terminal (the batteries-included flow):
+    // scaffolding a project the user can't run yet is a dead-end. Skipped in
+    // non-TTY (CI installs itself) or with --skip-install.
+    const install = Boolean(process.stdout.isTTY) && !values['skip-install'];
+    return performScaffold(plan, parentDir, { install });
   },
 };
 
@@ -184,8 +193,12 @@ function parseTargets(csv: string | undefined): { targets: Target[] } | { error:
   return { targets: ALL_TARGETS.filter((t) => set.has(t)) };
 }
 
-/** Copy the template, prune to the selected targets, write the model. */
-function performScaffold(plan: ScaffoldPlan, parentDir: string): number {
+/** Copy the template, prune to the selected targets, write the model, then install + report. */
+async function performScaffold(
+  plan: ScaffoldPlan,
+  parentDir: string,
+  opts: { install: boolean },
+): Promise<number> {
   const dest = join(parentDir, plan.name);
 
   // Refuse to clobber ANY existing path (dir, file, or symlink) — falling
@@ -220,6 +233,8 @@ function performScaffold(plan: ScaffoldPlan, parentDir: string): number {
     // Provenance: record which template + surfaces this project came from so
     // `targets:add` knows which template's target subtree to copy back.
     writeProjectMarker(dest, { template: plan.template, targets: plan.targets });
+    // Fill the README's run instructions for exactly the surfaces we kept.
+    writeReadmeRunSteps(dest, plan.targets);
   } catch (err) {
     process.stderr.write(
       `harness.dev: scaffold failed: ${err instanceof Error ? err.message : String(err)}\n`,
@@ -227,24 +242,14 @@ function performScaffold(plan: ScaffoldPlan, parentDir: string): number {
     return 1;
   }
 
-  const appsNote =
-    plan.template === 'research'
-      ? '  it runs inside your app. The lloyal/corpus + lloyal/web apps are\n' +
-        '  preinstalled (grounded multi-agent research);\n'
-      : '  it runs inside your app. The lloyal/wikipedia app is preinstalled;\n';
-
   process.stdout.write(
-    `scaffolded ${plan.name} (${plan.template}) at ${dest}\n` +
-      `  targets: ${plan.targets.join(', ')} · model: ${plan.llm}\n` +
-      '  next steps:\n' +
-      `    cd ${plan.name}\n` +
-      '    npm install\n' +
-      '    npm start\n' +
-      '\n' +
-      '  No API key needed — the model is fetched + digest-verified on first run;\n' +
-      appsNote +
-      '  add more via: npx harness.dev install <publisher>/<name>\n',
+    `scaffolded ${plan.name} (${plan.template}) · targets: ${plan.targets.join(', ')} · model: ${plan.llm}\n`,
   );
+
+  // Batteries-included: install now (behind a spinner) so the project is
+  // runnable, then print how to run each surface. Skipped in non-TTY/CI.
+  const installed = opts.install ? await runInstall(dest) : false;
+  printNextSteps({ name: plan.name, targets: plan.targets, installed });
   return 0;
 }
 
