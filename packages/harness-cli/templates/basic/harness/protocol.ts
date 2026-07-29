@@ -18,7 +18,7 @@ import type { AgentEvent } from "@lloyal-labs/lloyal-agents";
  * mounted, and the AgentApps actually enabled (read from the registry). The
  * harness emits these on `ready`, so the header is identical in a terminal, an
  * Electron window, or a browser tab. (Tools' network-boundness + a trace path
- * are the next facts to surface — blank writes no trace and doesn't yet
+ * are the next facts to surface — basic writes no trace and doesn't yet
  * introspect app entitlements, so it renders neither rather than a lie.)
  */
 export interface BootFacts {

@@ -196,6 +196,26 @@ export function cleanNarration(body: string): string {
     .trim();
 }
 
+/**
+ * The final REPORT to show. A thinking model emits `<think>…reasoning…</think>`
+ * and *then* the report; for the answer we want ONLY the report — take everything
+ * after the last `</think>` (dropping the reasoning entirely, unlike
+ * `cleanNarration`, which keeps it for the live agent cards), strip any stray
+ * tool-call markup, and tidy the whitespace. Used harness-side before the `answer`
+ * event is emitted, so every surface receives a clean report.
+ */
+export function reportBody(raw: string): string {
+  const CLOSE = "</think>";
+  const i = raw.lastIndexOf(CLOSE);
+  const body = i >= 0 ? raw.slice(i + CLOSE.length) : raw;
+  return body
+    .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "")
+    .replace(/<tool_call>[\s\S]*$/g, "")
+    .replace(/<\/?think>/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 /** A one-line `key: value · key: value` summary of a tool call's JSON args. */
 export function toolArgSummary(args: string): string {
   try {
@@ -220,4 +240,133 @@ export function resultMeta(result: string | null): string {
   }
   const kb = result.length / 1000;
   return kb >= 1 ? `${kb.toFixed(1)} kb` : `${result.length} chars`;
+}
+
+// ── domain rendering: the Wikipedia articles the model has read ──
+//
+// The default app (`lloyal/wikipedia`) is the ONE domain this austere view
+// knows how to render richly. The helpers below turn its STRUCTURED tool results
+// (never the model's prose) into cards + activity — so the UI shows the source
+// material flowing through the model. Swap the app and these gracefully return
+// nothing; grow the view with a helper per tool your app exposes.
+
+/** One article the model fetched — a card in the view (thumbnail optional). */
+export interface WikiSource {
+  title: string;
+  snippet: string;
+  url: string;
+  thumbnail?: string;
+}
+
+/** Parse a tool-result JSON string into an object, or null if unparseable/non-object. */
+function parseObject(s: string | null): Record<string, unknown> | null {
+  if (s === null) return null;
+  try {
+    const v = JSON.parse(s) as unknown;
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+
+/**
+ * The Wikipedia articles the agents have READ — one entry per COMPLETED
+ * `wikipedia_fetch`, deduped by URL (then title), in first-seen order. Built
+ * from the structured `wikipedia_fetch` result (`{title, extract, url,
+ * thumbnail}`) the app now returns — not the model's stream. Errors/in-flight
+ * calls are skipped. This is the source material the view streams as cards.
+ */
+export function wikipediaSources(agents: Iterable<AgentView>): WikiSource[] {
+  const out: WikiSource[] = [];
+  const seen = new Set<string>();
+  for (const a of agents) {
+    for (const t of a.tools) {
+      if (t.tool !== "wikipedia_fetch" || t.result === null) continue;
+      const obj = parseObject(t.result);
+      if (!obj || "error" in obj) continue;
+      const url = str(obj.url);
+      const title = str(obj.title);
+      const key = url || title;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        title: title ?? "Untitled",
+        snippet: str(obj.extract) ?? str(obj.description) ?? "",
+        url: url ?? "",
+        thumbnail: str(obj.thumbnail),
+      });
+    }
+  }
+  return out;
+}
+
+/** The distinct search queries the agents have run (a compact activity line). */
+export function searchQueries(agents: Iterable<AgentView>): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const a of agents) {
+    for (const t of a.tools) {
+      if (t.tool !== "wikipedia_search") continue;
+      const q = str(parseObject(t.args)?.query)?.trim();
+      if (q && !seen.has(q)) {
+        seen.add(q);
+        out.push(q);
+      }
+    }
+  }
+  return out;
+}
+
+/** Total tool invocations across all agents — for the activity line. */
+export function toolCount(agents: Iterable<AgentView>): number {
+  let n = 0;
+  for (const a of agents) n += a.tools.length;
+  return n;
+}
+
+/** Research agents (those that use tools) vs the tool-less synth agent. */
+export const isResearchAgent = (a: AgentView): boolean => a.tools.length > 0;
+
+/**
+ * The report body a research agent is WRITING, streamed. The model emits its
+ * terminal `report(...)` call as Hermes XML, and the report markdown lives
+ * between `<parameter=result>` and `</parameter>` in the raw stream — so we can
+ * show it token-by-token instead of waiting for the structured result. Returns
+ * null until the open marker arrives (so a half-written tool call never flashes
+ * as a report). Ported from reasoning.run; verified against basic's own stream.
+ * (The synth agent is different — it writes the answer as free text; use
+ * `reportBody` for that.)
+ */
+export function extractStreamingReport(buffer: string): string | null {
+  const OPEN = "<parameter=result>";
+  const i = buffer.indexOf(OPEN);
+  if (i === -1) return null;
+  let body = buffer.slice(i + OPEN.length);
+  const c = body.indexOf("</parameter>");
+  if (c !== -1) body = body.slice(0, c);
+  return body.replace(/^\n/, "");
+}
+
+/** A URL-safe anchor slug — the Contents link and the heading id share it. */
+export function slugify(s: string): string {
+  return (
+    s
+      .toLowerCase()
+      .trim()
+      .replace(/[^\w\s-]/g, "")
+      .replace(/\s+/g, "-")
+      .slice(0, 64) || "section"
+  );
+}
+
+/** The `##`/`###` headings of a markdown report → the Contents (TOC) entries. */
+export function reportHeadings(md: string): { text: string; level: number; slug: string }[] {
+  const out: { text: string; level: number; slug: string }[] = [];
+  for (const line of md.split("\n")) {
+    const m = /^(#{2,3})\s+(.+?)\s*$/.exec(line);
+    if (m) out.push({ level: m[1].length, text: m[2], slug: slugify(m[2]) });
+  }
+  return out;
 }

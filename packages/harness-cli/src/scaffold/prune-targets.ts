@@ -54,7 +54,7 @@ export const TARGET_FILES: Record<PrunableTarget, string[]> = {
  * EITHER desktop or web survives; removed only for a cli-only project. `vite` is
  * here because `electron-vite` lists it as a peerDependency.
  */
-export const SHARED_RENDERER_DEPS = ['react-dom'];
+export const SHARED_RENDERER_DEPS = ['react-dom', 'react-markdown', 'remark-gfm'];
 export const SHARED_RENDERER_DEV_DEPS = ['@vitejs/plugin-react', '@types/react-dom', 'vite'];
 
 /**

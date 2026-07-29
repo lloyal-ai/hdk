@@ -4,7 +4,7 @@
  * The `Runner` ({@link ./runner-ctx}) hands the harness its live config; this is
  * that config's shape. NO `node:fs`/`node:path` — a browser/renderer surface and
  * the served-runner factory both import these types, so the file must stay
- * runtime-free. `blank`'s runner (`makeEdgeRunner`) holds config in memory, so
+ * runtime-free. `basic`'s runner (`makeEdgeRunner`) holds config in memory, so
  * there are no on-disk loaders to carve out — this is the whole config surface.
  *
  * It's deliberately lean: `apps` (per-app config the harness seeds the config
@@ -15,7 +15,7 @@
 
 export interface ConfigSources {
   /** Where a harness that writes run artifacts (reports, traces) puts them.
-   *  `blank` writes none; the field is here so the `saveConfig` seam is complete
+   *  `basic` writes none; the field is here so the `saveConfig` seam is complete
    *  for a harness that grows one. Default = process.cwd() at boot. */
   outputDir?: string;
 }
@@ -69,7 +69,7 @@ export interface Config {
 }
 
 /** Which layer supplied a given harness-level field — used for composer UI
- *  hints. `blank`'s in-memory runner reports everything as `default`. */
+ *  hints. `basic`'s in-memory runner reports everything as `default`. */
 export interface ConfigOrigin {
   modelPath: 'cli' | 'file' | 'default';
   reranker: 'cli' | 'file' | 'default';
@@ -81,7 +81,7 @@ export interface ConfigOrigin {
 export interface SaveResult {
   path: string;
   /** true iff this save appended a config file to `.gitignore` during this call.
-   *  Always false for `blank`'s in-memory runner. */
+   *  Always false for `basic`'s in-memory runner. */
   gitignored: boolean;
   /** Fields that were IN the patch but deliberately skipped (env won). */
   skipped: string[];

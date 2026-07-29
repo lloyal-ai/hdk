@@ -8,12 +8,12 @@ import { applyModelChoice, isModelPath } from '../src/scaffold/apply-model.js';
 import { modelsForRole, MODEL_CATALOG } from '../src/scaffold/model-catalog.js';
 import { newCommand } from '../src/commands/new.js';
 
-const BLANK_TEMPLATE = join(dirname(fileURLToPath(import.meta.url)), '..', 'templates', 'blank');
+const BASIC_TEMPLATE = join(dirname(fileURLToPath(import.meta.url)), '..', 'templates', 'basic');
 
 const created: string[] = [];
 function freshBlankProject(): string {
   const dir = mkdtempSync(join(tmpdir(), 'harness-scaffold-'));
-  cpSync(BLANK_TEMPLATE, dir, { recursive: true });
+  cpSync(BASIC_TEMPLATE, dir, { recursive: true });
   created.push(dir);
   return dir;
 }
@@ -170,7 +170,7 @@ describe('applyModelChoice', () => {
 });
 
 describe('newCommand.run — non-interactive flag path (end-to-end)', () => {
-  it('scaffolds a cli-only blank with a BYO --model path written as `path:`', async () => {
+  it('scaffolds a cli-only basic with a BYO --model path written as `path:`', async () => {
     const parent = mkdtempSync(join(tmpdir(), 'harness-new-'));
     created.push(parent);
     const out = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);

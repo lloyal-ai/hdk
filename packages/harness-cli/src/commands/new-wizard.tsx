@@ -24,7 +24,7 @@ import type { Target } from '../scaffold/prune-targets.js';
 
 const VERSION = (createRequire(import.meta.url)('../../package.json') as { version: string }).version;
 
-export type TemplateKind = 'blank' | 'research';
+export type TemplateKind = 'basic' | 'research';
 
 export interface WizardResult {
   name: string;
@@ -264,7 +264,7 @@ export function Wizard({
         name: collected.current.name ?? '',
         targets: collected.current.targets ?? prefill.targets ?? DEFAULT_TARGETS,
         llm: collected.current.llm ?? prefill.llm ?? defaultLlm,
-        template: collected.current.template ?? prefill.template ?? 'blank',
+        template: collected.current.template ?? prefill.template ?? 'basic',
       });
       exit();
       return;
@@ -406,7 +406,7 @@ export function Wizard({
             <Field label="Template" hint="the starting point — you own the code either way" />
             <Select
               options={[
-                { label: 'blank — minimal 2-agent pipeline', value: 'blank' },
+                { label: 'basic — Wikipedia research harness', value: 'basic' },
                 { label: 'research — tuned recon → plan → agents → synth', value: 'research' },
               ]}
               onChange={submitTemplate}

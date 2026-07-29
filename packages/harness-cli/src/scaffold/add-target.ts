@@ -5,7 +5,7 @@
  * (VERSIONS sourced from the originating template's `package.json`), and its
  * slice of the tsconfig split. The template is read from the `harnessdev.template`
  * marker so a `web` surface added to a `research` project folds research's own
- * views — not blank's.
+ * views — not basic's.
  *
  * Shares the per-target tables with `prune-targets.ts` (so add-copy ↔
  * prune-delete can't drift) and the JSONC array editing with `jsonc.ts`.

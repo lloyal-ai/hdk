@@ -52,7 +52,7 @@ export function specFromValue(value: string): ModelSpec {
  * states are handled:
  *   - the `<role>:` block is present (llm always; research's reranker) → the
  *     first entry line is rewritten in place, preserving its trailing comment;
- *   - the block is absent or commented (blank ships its `reranker:` commented)
+ *   - the block is absent or commented (basic ships its `reranker:` commented)
  *     → a fresh `  <role>:` block is inserted into `model:`.
  * `opts.context` updates the llm's `context:` line (only meaningful for llm).
  * Throws if there is no `model:` block at all.

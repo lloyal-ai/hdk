@@ -23,18 +23,18 @@ import {
 } from '../src/commands/models.js';
 import { targetsAddCommand, targetsRemoveCommand, targetsListCommand } from '../src/commands/targets.js';
 
-const BLANK_TEMPLATE = join(dirname(fileURLToPath(import.meta.url)), '..', 'templates', 'blank');
+const BASIC_TEMPLATE = join(dirname(fileURLToPath(import.meta.url)), '..', 'templates', 'basic');
 
 const created: string[] = [];
 function freshBlankTree(): string {
   const dir = mkdtempSync(join(tmpdir(), 'mt-tree-'));
-  cpSync(BLANK_TEMPLATE, dir, { recursive: true });
+  cpSync(BASIC_TEMPLATE, dir, { recursive: true });
   created.push(dir);
   return dir;
 }
 
 /** Scaffold a real project (template copied, pruned, model + marker written). */
-async function scaffold(name: string, targets: string, template = 'blank'): Promise<string> {
+async function scaffold(name: string, targets: string, template = 'basic'): Promise<string> {
   const parent = mkdtempSync(join(tmpdir(), 'mt-proj-'));
   created.push(parent);
   const code = await newCommand.run([
@@ -109,7 +109,7 @@ describe('writeModelField / readModelField', () => {
 
   it('INSERTS a live reranker block when the template ships it commented', () => {
     const dir = freshBlankTree();
-    // Precondition: blank ships no LIVE reranker (it is commented).
+    // Precondition: basic ships no LIVE reranker (it is commented).
     expect(readModelField(dir, 'reranker')).toBeNull();
     writeModelField(dir, 'reranker', { id: 'qwen3-reranker-0.6b-q8' });
     expect(readModelField(dir, 'reranker')).toEqual({ id: 'qwen3-reranker-0.6b-q8' });
@@ -284,13 +284,13 @@ describe('targets:add (inverse of prune)', () => {
     expect(await runIn(dir, () => targetsAddCommand.run(['web']))).toBe(1);
   });
 
-  it('folds the ORIGINATING template (research web is research’s, not blank’s)', async () => {
+  it('folds the ORIGINATING template (research web is research’s, not basic’s)', async () => {
     const dir = await scaffold('t5', 'cli,desktop,web', 'research');
     await runIn(dir, () => targetsRemoveCommand.run(['web', '--yes']));
     expect(await runIn(dir, () => targetsAddCommand.run(['web']))).toBe(0);
     // research's web serve.ts is byte-identical to the research template's.
     const restored = readFileSync(join(dir, 'targets/web/serve.ts'), 'utf8');
-    const tpl = readFileSync(join(BLANK_TEMPLATE, '..', 'research', 'targets/web/serve.ts'), 'utf8')
+    const tpl = readFileSync(join(BASIC_TEMPLATE, '..', 'research', 'targets/web/serve.ts'), 'utf8')
       .split('__NAME__')
       .join('t5');
     expect(restored).toBe(tpl);
@@ -321,7 +321,7 @@ describe('targets:remove + round-trip', () => {
     delete p.harnessdev;
     writeFileSync(join(dir, 'package.json'), `${JSON.stringify(p, null, 2)}\n`);
     expect(await runIn(dir, () => targetsRemoveCommand.run(['web', '--yes']))).toBe(0);
-    expect(readProjectMarker(dir)).toBeNull(); // no guessed `template: blank`
+    expect(readProjectMarker(dir)).toBeNull(); // no guessed `template: basic`
   });
 
   it('refuses without --yes in a non-interactive shell', async () => {
@@ -357,7 +357,7 @@ describe('targets:list', () => {
     vi.spyOn(process.stdout, 'write').mockImplementation((s) => (out.push(String(s)), true));
     expect(await runIn(dir, () => targetsListCommand.run([]))).toBe(0);
     const text = out.join('');
-    expect(text).toContain('template: blank');
+    expect(text).toContain('template: basic');
     expect(text).toMatch(/● cli/);
     expect(text).toMatch(/● web/);
     expect(text).toMatch(/○ desktop/);
@@ -366,8 +366,8 @@ describe('targets:list', () => {
 
 describe('marker', () => {
   it('new stamps harnessdev { template, targets }', async () => {
-    const dir = await scaffold('mk1', 'cli,web', 'blank');
-    expect(pkg(dir).harnessdev).toEqual({ template: 'blank', targets: ['cli', 'web'] });
+    const dir = await scaffold('mk1', 'cli,web', 'basic');
+    expect(pkg(dir).harnessdev).toEqual({ template: 'basic', targets: ['cli', 'web'] });
   });
 });
 

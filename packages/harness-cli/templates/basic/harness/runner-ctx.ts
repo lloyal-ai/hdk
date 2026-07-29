@@ -46,7 +46,7 @@ export interface Runner {
   cancelAgent: Signal<{ agentId: number }, void>;
   /** Observability sink threaded into `initAgents`. */
   traceWriter: TraceWriter;
-  /** Replay-mode spine checkpoint; null normally + served. `blank`'s pipeline
+  /** Replay-mode spine checkpoint; null normally + served. `basic`'s pipeline
    *  doesn't implement trace-replay — the field is part of the uniform Runner
    *  contract so a harness that grows one reads it here. */
   replayCheckpoint: BranchCheckpoint | null;
@@ -61,4 +61,4 @@ export interface Runner {
   isFirstIteration: boolean;
 }
 
-export const RunnerCtx = createContext<Runner>("blank.harness.runner");
+export const RunnerCtx = createContext<Runner>("basic.harness.runner");

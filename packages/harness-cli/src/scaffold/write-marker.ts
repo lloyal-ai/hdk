@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import type { Target } from './prune-targets.js';
 
 export interface ProjectMarker {
-  /** Template this project was scaffolded from (`blank` | `research`). */
+  /** Template this project was scaffolded from (`basic` | `research`). */
   template: string;
   /** Run surfaces present, kept in sync by `targets:add`/`targets:remove`. */
   targets: Target[];

@@ -62,7 +62,7 @@ export const targetsAddCommand: Command = {
       if (!marker) {
         throw new Error(
           'no `harnessdev.template` marker in package.json — cannot tell which template to copy the ' +
-            'surface from. Add `"harnessdev": { "template": "blank" }` (or "research") to package.json.',
+            'surface from. Add `"harnessdev": { "template": "basic" }` (or "research") to package.json.',
         );
       }
       const after = addTarget(root, target, marker.template);

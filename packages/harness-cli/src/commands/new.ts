@@ -26,10 +26,10 @@ const USAGE = [
   '                terminal to launch the interactive picker.',
   '',
   'Options:',
-  '  --template <blank|research>',
-  '                Starting point (default: blank). blank = a minimal parallel',
-  '                pool + synth; research = the tuned recon→plan→agents→synth',
-  '                pipeline (grounded multi-agent research).',
+  '  --template <basic|research>',
+  '                Starting point (default: basic). basic = a Wikipedia research',
+  '                harness (2-agent pipeline + article UI); research = the tuned',
+  '                recon→plan→agents→synth pipeline (grounded multi-agent research).',
   '  --targets <list>',
   '                Comma-separated run surfaces to keep (default: cli,desktop,web).',
   '                cli is always included; the rest are pruned from the scaffold.',
@@ -140,8 +140,8 @@ function validateFlags(values: {
 }): Flags | { error: string } {
   let template: TemplateKind | undefined;
   if (values.template != null) {
-    if (values.template !== 'blank' && values.template !== 'research') {
-      return { error: `harness.dev: invalid --template "${values.template}" — expected "blank" or "research".` };
+    if (values.template !== 'basic' && values.template !== 'research') {
+      return { error: `harness.dev: invalid --template "${values.template}" — expected "basic" or "research".` };
     }
     template = values.template;
   }
@@ -174,7 +174,7 @@ function planFromFlags(
 
   return {
     name,
-    template: flags.template ?? 'blank',
+    template: flags.template ?? 'basic',
     targets: flags.targets ?? [...ALL_TARGETS],
     llm: flags.llm ?? modelsForRole('llm')[0]?.id ?? 'qwen3.5-4b',
   };

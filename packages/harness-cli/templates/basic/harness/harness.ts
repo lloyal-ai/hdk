@@ -8,7 +8,7 @@
  * the bindings, the targets, and the trust plumbing are conventions handled
  * for you — this file is where you program what your intelligence does.
  *
- * `blank` is deliberately the floor: two agents research a query in parallel
+ * `basic` is deliberately the floor: two agents research a query in parallel
  * over a shared spine, a synth agent combines their notes. That's the whole
  * grammar in miniature — topology (`parallel`), a shared spine (`withSpine`),
  * a terminal tool (`report`), a reduce step (the synth). Replace it with your
@@ -40,6 +40,7 @@ import {
 } from "@lloyal-labs/rig";
 import { createWikipediaApp } from "@lloyal-labs/wikipedia-app";
 import { RunnerCtx } from "./runner-ctx.js";
+import { reportBody } from "./state.js";
 import type { Command, WorkflowEvent } from "./protocol.js";
 
 /**
@@ -53,21 +54,48 @@ export const apps: AppFactory[] = [createWikipediaApp];
 const MAX_TURNS = 8;
 
 /** The whole "plan": two fixed research angles. A real harness would *compute*
- *  these (an LLM planner, a routing rule, a workflow); blank keeps them static
+ *  these (an LLM planner, a routing rule, a workflow); basic keeps them static
  *  so the file reads top-to-bottom. Grow this into whatever your domain needs. */
 const ANGLES = [
   "Gather the core facts, dates, and definitions.",
   "Gather context, significance, and differing viewpoints.",
 ];
 
-const SYNTH_SYSTEM =
-  "You combine several research notes into one clear, accurate answer. " +
-  "Quote sources where the notes do. No preamble.";
-const SYNTH_USER =
-  "Question: <%= it.query %>\n\nResearch notes:\n<%= it.notes %>\n\nWrite the answer.";
+// The synth prompt is where "note-dump" becomes "report". These few lines are a
+// trimmed distillation of the RACE/DRB-tuned report discipline: commit to a
+// thesis, structure by argument, ground every claim, cite inline. `research`
+// ships the full benchmark-tuned versions as editable `.eta` files; basic keeps
+// it inline (plain-`tsc` build) — edit it to shape how your intelligence writes.
+const SYNTH_SYSTEM = [
+  "You are a research synthesist. You are given several numbered research notes and",
+  "must write ONE grounded markdown report that answers the question. Rules:",
+  "",
+  "- Open with a single-sentence **thesis** that directly answers the question — not a",
+  "  restatement of the question, not a list of findings.",
+  "- Structure the body into `##` sections named by their role in the argument (e.g.",
+  '  "## What the sources establish", "## Where they disagree", "## What follows") —',
+  "  never by note number or by source.",
+  "- Write fluent prose. Use a bulleted list only for genuinely parallel items.",
+  "- Ground every claim in the notes. Cite inline as [short title](url) using the exact",
+  "  URLs that appear in the notes, placed right at the claim each supports.",
+  "- Never invent a source, URL, or fact the notes don't contain. If the notes are thin,",
+  "  say so in a sentence rather than padding.",
+  "- End with a short `## Bottom line`. Do NOT append a Sources list — the interface",
+  "  shows the sources separately.",
+  "",
+  "Output the markdown report directly — no preamble, no tool call.",
+].join("\n");
+const SYNTH_USER = [
+  "Question: <%= it.query %>",
+  "",
+  "Research notes (cite by the URLs inside them):",
+  "<%= it.notes %>",
+  "",
+  "Write the grounded markdown report.",
+].join("\n");
 
 /**
- * The one place blank subclasses `AgentPolicy`. A pool consults ONE policy per
+ * The one place basic subclasses `AgentPolicy`. A pool consults ONE policy per
  * role; the synth agent has no tools, so its free text IS the result — but the
  * default policy gates a free-text return behind ≥1 tool call. This overrides
  * that single hook. (Every other decision uses the stock `DefaultAgentPolicy`.)
@@ -113,7 +141,7 @@ export function* harness(
   });
 
   // Republish the Runner's persistent lifecycle signals so the framework's
-  // graceful wind-down / per-agent cancel machinery can read them. blank's simple
+  // graceful wind-down / per-agent cancel machinery can read them. basic's simple
   // command loop doesn't trigger them, but the seam is here for a pipeline that
   // grows a stop/cancel command (`runner.windDown.send()` / `runner.cancelAgent.send()`).
   yield* WindDown.set(runner.windDown);
@@ -238,7 +266,11 @@ function* runQuery(
     maxTurns: MAX_TURNS,
   });
 
-  const answer = synth.result?.trim() || notes.join("\n\n");
+  // `reportBody` drops the model's `<think>` reasoning and any stray markup, so the
+  // committed turn + the `answer` event carry the clean markdown report — not the
+  // raw stream. (The live agent cards keep `<think>` via `cleanNarration`; the final
+  // answer does not.)
+  const answer = reportBody(synth.result ?? "") || notes.join("\n\n");
   yield* call(() => session.commitTurn(query, answer));
   return answer;
 }

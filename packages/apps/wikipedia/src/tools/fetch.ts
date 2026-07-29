@@ -77,6 +77,11 @@ export class WikipediaFetchTool extends Tool<{ title: string }> {
 
     const p = payload as Record<string, unknown>;
     const contentUrls = (p.content_urls ?? {}) as Record<string, Record<string, string>>;
+    // The REST `page/summary` payload already carries the article's lead image —
+    // `thumbnail` (~320px) for cards, `originalimage` at full resolution. Surface
+    // both so a view can render the article visually; absent for image-less pages.
+    const thumbnail = p.thumbnail as { source?: unknown } | undefined;
+    const originalimage = p.originalimage as { source?: unknown } | undefined;
 
     return {
       title: typeof p.title === "string" ? p.title : title,
@@ -86,6 +91,8 @@ export class WikipediaFetchTool extends Tool<{ title: string }> {
       extract: typeof p.extract === "string" ? p.extract : "",
       type: typeof p.type === "string" ? p.type : undefined,
       url: contentUrls.desktop?.page ?? contentUrls.mobile?.page ?? "",
+      thumbnail: typeof thumbnail?.source === "string" ? thumbnail.source : undefined,
+      image: typeof originalimage?.source === "string" ? originalimage.source : undefined,
       lang: typeof p.lang === "string" ? p.lang : "en",
     };
   }

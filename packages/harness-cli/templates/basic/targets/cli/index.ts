@@ -7,7 +7,7 @@
  * `harness(ctx, events, commands)` mounts on Ink (a terminal), `ipc` (when a
  * desktop shell forks this bin), or `ndjson` (a pipe), all over one binding.
  *
- * `blank`'s edge is a single boot: no config-reload / model-restart loop
+ * `basic`'s edge is a single boot: no config-reload / model-restart loop
  * (that's a product's elaboration). The model is a file in `models/<role>/`,
  * resolved from `harness.yml` and — on first run — fetched + digest-verified by
  * the platform (`rig.resolveModel`), with no API key. Drop your own `.gguf`

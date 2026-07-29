@@ -32,7 +32,7 @@ models/
 harness.yml      targets + model
 ```
 
-Everything under `targets/` is convention handled for you — the boot mounts a view over a binding; a view is a sink that folds `reduce`. The center — `harness/harness.ts` — is where you program what your intelligence does: which agents exist, how they collaborate, what they trust, when work is done. `blank` runs a `parallel` pool + synth; `chain` is a one-line swap.
+Everything under `targets/` is convention handled for you — the boot mounts a view over a binding; a view is a sink that folds `reduce`. The center — `harness/harness.ts` — is where you program what your intelligence does: which agents exist, how they collaborate, what they trust, when work is done. `basic` runs a `parallel` pool + synth; `chain` is a one-line swap.
 
 ## Add capabilities
 
