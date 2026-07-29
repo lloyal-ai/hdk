@@ -361,12 +361,28 @@ export function slugify(s: string): string {
   );
 }
 
+/** Strip inline markdown (links, bold/italic, code) from a heading so the TOC
+ *  shows clean text AND its slug matches the id the renderer derives from the
+ *  *rendered* heading (which flattens `[Title](url)` to `Title`). Keeps the two
+ *  in sync so Contents links actually resolve. */
+function stripInlineMarkdown(s: string): string {
+  return s
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1") // [text](url) → text
+    .replace(/(\*\*|__)(.*?)\1/g, "$2") // **bold** / __bold__ → bold
+    .replace(/(\*|_)(.*?)\1/g, "$2") // *italic* / _italic_ → italic
+    .replace(/`([^`]+)`/g, "$1") // `code` → code
+    .trim();
+}
+
 /** The `##`/`###` headings of a markdown report → the Contents (TOC) entries. */
 export function reportHeadings(md: string): { text: string; level: number; slug: string }[] {
   const out: { text: string; level: number; slug: string }[] = [];
   for (const line of md.split("\n")) {
     const m = /^(#{2,3})\s+(.+?)\s*$/.exec(line);
-    if (m) out.push({ level: m[1].length, text: m[2], slug: slugify(m[2]) });
+    if (m) {
+      const text = stripInlineMarkdown(m[2]);
+      out.push({ level: m[1].length, text, slug: slugify(text) });
+    }
   }
   return out;
 }
