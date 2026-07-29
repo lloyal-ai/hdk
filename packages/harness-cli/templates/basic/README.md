@@ -29,6 +29,7 @@ targets/
     view.tsx     the view (Ink for cli, React for desktop/web) — or bring a whole app
 models/
   llm/           the resident model (fetched on first run; gitignored)
+vendor/          signed AgentApps — Ed25519-verified tarballs, committed
 harness.yml      targets + model
 ```
 
@@ -41,3 +42,9 @@ npx harness.dev install <publisher>/<name>   # a signed AgentApp from apps.lloya
 ```
 
 Enable it in `harness/harness.ts` alongside `createWikipediaApp`.
+
+Apps are **Ed25519-verified and vendored locally** — `harness.dev` fetches the
+signed tarball, checks its signature, and writes it to `vendor/` with a `file:`
+dependency (never a remote-URL install). Commit `vendor/` so `npm ci` reproduces
+the exact bytes offline. If you scaffolded with `--skip-install`, fetch the
+default app with `npx harness.dev install lloyal/wikipedia` before the first run.

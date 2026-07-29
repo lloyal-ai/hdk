@@ -112,7 +112,17 @@ export function writeReadmeRunSteps(dir: string, targets: Target[]): void {
 }
 
 /** Print the "you're set — here's how to run it" panel (ANSI-colored on a TTY). */
-export function printNextSteps(opts: { name: string; targets: Target[]; installed: boolean }): void {
+export function printNextSteps(opts: {
+  name: string;
+  targets: Target[];
+  installed: boolean;
+  /**
+   * Default app specs that were NOT vendored (scaffolded with --skip-install /
+   * non-TTY, or the fetch failed). Printed as explicit `harness.dev install`
+   * hints so the harness's default app can be fetched + verified afterwards.
+   */
+  pendingApps?: string[];
+}): void {
   const tty = Boolean(process.stdout.isTTY);
   const c = (code: string, s: string): string => (tty ? `\x1b[${code}m${s}\x1b[0m` : s);
   const amber = (s: string): string => c(ACCENT_SGR, s); // matches ACCENT everywhere else
@@ -130,6 +140,13 @@ export function printNextSteps(opts: { name: string; targets: Target[]; installe
   }
   lines.push('');
   lines.push(`  ${dim('First run fetches + digest-verifies the model — no API key.')}`);
+  const pending = opts.pendingApps ?? [];
+  if (pending.length) {
+    // The default app wasn't vendored (skip-install / non-TTY / fetch failed) —
+    // fetch + Ed25519-verify it before the first run.
+    lines.push(`  ${bold(`Fetch the default app${pending.length > 1 ? 's' : ''}:`)}`);
+    for (const spec of pending) lines.push(`    ${amber(`npx harness.dev install ${spec}`)}`);
+  }
   lines.push(`  ${dim('Add apps:  npx harness.dev install <publisher>/<name>')}`);
   lines.push('');
   process.stdout.write(`${lines.join('\n')}\n`);

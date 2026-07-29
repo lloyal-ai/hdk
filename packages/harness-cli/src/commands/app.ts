@@ -121,7 +121,7 @@ export const appCommand: Command = {
  * `<pkg-root>/dist/commands/app.js`, so the templates are at
  * `<pkg-root>/templates/<kind>`.
  */
-function resolveTemplateDir(kind: 'app' | 'harness'): string {
+function resolveTemplateDir(kind: 'app'): string {
   const here = dirname(fileURLToPath(import.meta.url));
   const candidates = [
     resolve(here, '..', '..', 'templates', kind),

@@ -12,6 +12,7 @@ import {
 } from '../scaffold/copy-tree.js';
 import { writeProjectMarker } from '../scaffold/write-marker.js';
 import { runInstall, printNextSteps, writeReadmeRunSteps } from '../scaffold/post-scaffold.js';
+import { verifyAndVendorApp, parseAppSpec } from '../scaffold/vendor-app.js';
 import { runNewWizard, type TemplateKind, type WizardPrefill } from './new-wizard.js';
 
 const USAGE = [
@@ -52,6 +53,19 @@ const USAGE = [
 // satisfies both directory and npm package-name conventions.
 const NAME_RE = /^[a-z][a-z0-9_-]{1,63}$/;
 const ALL_TARGETS: Target[] = ['cli', 'desktop', 'web'];
+
+/**
+ * The signed AgentApp(s) each template runs by default, as `harness.dev install`
+ * specs (pinned for reproducibility). `new` fetches + Ed25519-verifies these and
+ * vendors them as local `file:` deps — the SAME verified path as an explicitly
+ * added app. The app is NOT a remote-URL npm dependency in the template
+ * package.json (npm 12 blocks those, and a plain dep would skip verification);
+ * it is written into package.json only after it is verified + vendored here.
+ */
+const DEFAULT_APPS: Record<TemplateKind, string[]> = {
+  basic: ['lloyal/wikipedia@1.2.0'],
+  research: ['lloyal/corpus@1.3.0', 'lloyal/web@1.3.0'],
+};
 
 interface ScaffoldPlan {
   name: string;
@@ -246,10 +260,33 @@ async function performScaffold(
     `scaffolded ${plan.name} (${plan.template}) · targets: ${plan.targets.join(', ')} · model: ${plan.llm}\n`,
   );
 
-  // Batteries-included: install now (behind a spinner) so the project is
-  // runnable, then print how to run each surface. Skipped in non-TTY/CI.
+  // Batteries-included: fetch + Ed25519-verify the template's default app(s) and
+  // vendor them as local `file:` deps (npm never fetches a remote URL — npm-12
+  // clean, and the default app gets the SAME signature verification as any added
+  // app), then `npm install` so the project is runnable. Both are skipped in
+  // non-TTY/CI or with --skip-install; a default-app network/verify failure warns
+  // + continues (the framework install still runs; the app can be added later
+  // via `harness.dev install`).
+  const defaultApps = DEFAULT_APPS[plan.template] ?? [];
+  const pendingApps: string[] = [];
+  if (opts.install) {
+    for (const rawSpec of defaultApps) {
+      try {
+        const v = await verifyAndVendorApp(dest, parseAppSpec(rawSpec), { disclose: false });
+        process.stdout.write(`  vendored ${v.name}@${v.version} → ${v.vendorRelPath}\n`);
+      } catch (err) {
+        process.stderr.write(
+          `harness.dev: could not fetch default app ${rawSpec}: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+        pendingApps.push(rawSpec);
+      }
+    }
+  } else {
+    pendingApps.push(...defaultApps);
+  }
+
   const installed = opts.install ? await runInstall(dest) : false;
-  printNextSteps({ name: plan.name, targets: plan.targets, installed });
+  printNextSteps({ name: plan.name, targets: plan.targets, installed, pendingApps });
   return 0;
 }
 

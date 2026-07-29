@@ -58,6 +58,7 @@ targets/
 models/
   llm/           the resident reasoning model (fetched on first run; gitignored)
   reranker/      the resident cross-encoder      (fetched on first run; gitignored)
+vendor/          signed AgentApps — Ed25519-verified tarballs, committed
 harness.yml      targets + models
 ```
 
