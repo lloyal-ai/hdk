@@ -1,9 +1,9 @@
 {
   "name": "harness.dev",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "The Harness Development Kit CLI — scaffold HDK harnesses and apps.",
   "bin": {
-    "harness.dev": "dist/cli.js"
+    "harness.dev": "bin/run.js"
   },
   "publishConfig": {
     "access": "public"
@@ -44,6 +44,7 @@
     "ink-testing-library": "^4.0.0"
   },
   "files": [
+    "bin/run.js",
     "dist/**/*.js",
     "templates/**/*",
     "LICENSE"

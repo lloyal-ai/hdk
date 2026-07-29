@@ -17,7 +17,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { findCommand } from './commands/index.js';
 
 function version(): string {
@@ -94,16 +94,19 @@ export async function main(argv: readonly string[]): Promise<number> {
   return 1;
 }
 
-// Auto-run only when invoked as the CLI entrypoint — importing this module (e.g.
-// from a test) must NOT dispatch on the importer's argv.
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  void main(process.argv.slice(2)).then(
-    (code) => {
-      process.exitCode = code;
-    },
-    (err: unknown) => {
-      process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
-      process.exitCode = 1;
-    },
-  );
+/**
+ * Process entrypoint — turn argv into an exit code. Called by the `bin/run.js`
+ * shim, which is the CLI's only executable. Keeping this here (not in the shim)
+ * means all logic and its types live in one place and the shim stays a dumb
+ * loader; keeping it OFF module top-level means importing `cli.ts` (from a test,
+ * say) has no side effects. `main` stays pure — it returns a code — while `run`
+ * owns the process glue.
+ */
+export async function run(): Promise<void> {
+  try {
+    process.exitCode = await main(process.argv.slice(2));
+  } catch (err) {
+    process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+    process.exitCode = 1;
+  }
 }

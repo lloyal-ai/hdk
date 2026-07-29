@@ -2,7 +2,7 @@
 
 **`rails new` for agentic AI apps — the model lives inside, no API key.**
 
-`harness.dev` is the CLI for the [lloyal HDK](https://github.com/lloyal-ai/hdk). It scaffolds a **harness** — a runnable vertical-inference application in ordinary TypeScript — and runs it on a **resident** model: execution needs no network and no inference-provider service. Every agent scaffold starts with `API_KEY=`. A harness starts with a model.
+`harness.dev` is the CLI for the [lloyal HDK](https://github.com/lloyal-ai/hdk). It scaffolds a **harness** — a runnable vertical-inference app in ordinary TypeScript — and runs it on a model **you own**: resident in your process on a laptop, or served from your own GPU host. Every agent scaffold starts with `API_KEY=`; a harness starts with a model.
 
 ```bash
 npx harness.dev new              # interactive: name → surfaces → model → template
@@ -18,20 +18,26 @@ first run:
   ready — type to begin, ctrl-c to stop
 ```
 
-The recommended model is downloaded + digest-verified into `models/llm/` on first run (no key).
+The recommended model is downloaded + digest-verified into `models/llm/` on first run.
 
 ## One harness, many surfaces
 
-A harness is **one program**. `harness.yml` declares the surfaces it runs on and the model it thinks with — the one place "many surfaces" is spelled out:
+A harness is **one program** that ships as many apps. `harness.yml` lists its **targets** — each scaffolded into a full-stack app (a frontend *and* the deploy that runs it) — and the model it thinks with:
 
 ```yaml
 # harness.yml
-targets: [cli, desktop, web]                    # the surfaces this harness runs on
+targets: [cli, desktop, web]                    # each scaffolds a full-stack app
 model:
   llm: { id: "qwen3.5-4b", context: 32768 }   # the resident model it thinks with
 ```
 
-You write the program once, under `harness/`; the CLI generates a binding per surface under `targets/`:
+| target    | you get                    | run                                 |
+| --------- | -------------------------- | ----------------------------------- |
+| `cli`     | a terminal app             | `npm start`                         |
+| `desktop` | a native Mac / Windows app | `npm run dev:desktop`               |
+| `web`     | a browser app (served)     | `npm run serve` → `npm run dev:web` |
+
+You write the program once, under `harness/`; the CLI generates the full stack per target under `targets/` — each a thin wiring layer over your shared `harness.ts`:
 
 ```text
 my-harness/
@@ -41,10 +47,10 @@ my-harness/
 │   ├── protocol.ts        the commands (↑) and events (↓) it speaks
 │   └── state.ts           reduce(state, event) — the state every surface folds
 ├── models/              resident, digest-verified weights (gitignored)
-└── targets/             generated bindings — cli · desktop · web
+└── targets/             one full-stack app per target — cli · desktop · web
 ```
 
-The line that makes it click: `harness.dev targets:add web` adds a browser surface **without touching `harness.ts`**. Same program, one more transport. It's MVC with a live model as the Model — `harness.ts` is the Controller, your surfaces are the Views, the resident model holds the live generative state. The same contract is what lets that program scale from your laptop to a served GPU fleet: *where* it runs is a deployment decision, not an application one. [You already know this architecture — it shipped in Rails in 2007.](https://lloyal.ai/blog/you-already-know-this-architecture/)
+`harness.dev targets:add web` adds a browser app **without touching `harness.ts`** — it's MVC with a live model as the Model: your harness is the Controller, surfaces are Views. [You already know this architecture — it shipped in Rails in 2007.](https://lloyal.ai/blog/you-already-know-this-architecture/)
 
 ## Commands
 
@@ -104,17 +110,28 @@ npx harness.dev review                           # (reviewers) inspect + approve
 
 ## Where it sits
 
-Most "AI for TypeScript" tools are a **client to an inference endpoint**: the Vercel AI SDK calls a provider's API; LangGraph orchestrates a graph of calls over one — even "local," through Ollama, the model runs as a separate daemon you POST to. The model is a service behind a boundary, so every agent, every turn, re-ships its context and pays per token.
+> **Most "AI for TypeScript" is a *client to an inference endpoint*. Lloyal *embeds the model* — the way your app embeds SQLite, not a database server.**
 
-Lloyal isn't a client — it's a **runtime that embeds the model**, the way an app embeds SQLite instead of reaching a database over the network. The weights are resident in your process, and your harness — ordinary TypeScript — governs the model's *live* reasoning state as it runs. That's the difference between renting behaviour request-by-request and owning it as code.
+|                    | Endpoint SDK · Vercel AI / LangGraph / Ollama      | **Lloyal HDK**                                                            |
+| ------------------ | -------------------------------------------------- | ------------------------------------------------------------------------- |
+| The model is       | a service behind an HTTP boundary                  | resident in the process you run — laptop or your own GPU host             |
+| Each sub-agent     | a fresh request that re-ships its context          | a zero-copy `fork()` of the parent's live attention                       |
+| Ten agents cost    | 10× context · 10× dispatches · per-token billing   | one GPU dispatch per tick — cost tracks KV *fullness*, not agent count    |
+| Prefix sharing     | a token-keyed KV cache, LRU-evicted, over an API   | a structural back-reference, pruned by *your* policy when the reasoning is done |
+| API key            | required, billed per token                         | none on the reasoning path                                                |
 
-It's also why concurrent agents are cheap. Endpoint tools coordinate agents like **VMs** — each is a full, isolated context you stand up and re-feed. Lloyal runs them like **containers on one kernel**: every agent is a zero-copy *branch* of one resident model state, forked for free and decoded in the same pass. Cost tracks how much context is live, not how many agents run.
+Endpoint tools run agents like **VMs** — each a full context you stand up and re-feed. Lloyal runs them like **containers on one kernel**: every agent is a branch of one resident model state, forked for free and decoded in the same pass.
 
-If you know the serving stack: vLLM and SGLang already reuse prefixes (RadixAttention) and fork parallel decodes — but as a **server**, where the shared prefix is a token-keyed KV *cache* (radix-matched, LRU-evicted; a miss recomputes) reached over an API. Lloyal puts that tree *inside your application*. A branch is a `fork()` — a structural **back-reference** into its parent's live cells, shared by construction (nothing to match, cache, or evict) — and it's pruned **semantically and topologically**: your harness retires a branch when the *reasoning* is done or a subtree is a dead-end, governed by policy, not evicted when a cache runs cold. The KV math is the same; the tree is yours, in-process, and institutional — not a throughput optimization you rent from a server.
+And the model is a **dial** — the *same* harness runs across compute tiers, key-free at each:
 
-- **No key on the inference path.** Model execution never depends on a third-party API — `grep API_KEY` in a scaffolded project finds nothing. Apps use the network only when a capability calls for it (a search token, an OAuth grant); that never touches the reasoning path.
-- **Continuous context.** Agents are zero-copy KV branches over one live model state — fan-out, chains and DAGs without serialising or summarising context between them.
-- **Apps arrive signed.** First- and third-party ride the same Ed25519-verified path from a curated, reviewed catalog.
+| tier      | runs on                       | model                                           | sessions                       |
+| --------- | ----------------------------- | ----------------------------------------------- | ------------------------------ |
+| **Edge**  | a laptop / the user's machine | a 4B, resident in-process                       | one, local                     |
+| **Host**  | your own GPU box              | a frontier model (GLM-5.2), sharded across GPUs | many, over wss — FIFO-admitted |
+| **Fleet** | a host per GPU cluster        | frontier, per host                              | each host admits its own       |
+
+- **Apps reach the network only for their own capabilities** — a search token, an OAuth grant — never the reasoning path itself.
+- **Apps arrive signed.** First- and third-party ride the same Ed25519-verified path from a curated, reviewed catalog — an App's *attention surface* (protocol · tools · config · skills) shown from the verified bytes before install.
 
 **[Docs →](https://docs.lloyal.ai/cli)** · **[Build an App →](https://docs.lloyal.ai/build-an-app/what-is-an-app)** · **[The HDK →](https://github.com/lloyal-ai/hdk)**
 

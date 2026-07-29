@@ -13,7 +13,7 @@
 
 An inference endpoint makes a model **callable** — you send text, you get text, and the reasoning lives behind an HTTP boundary you can't reach. HDK makes it **programmable**: the model runs inside your Node process, and your application addresses its *live attention state* directly — forking lines of reasoning, admitting evidence mid-generation, deciding what becomes a durable result. Same process, same memory, same data structures as the rest of your code. No inference server, no vector DB, no embedding pipeline, no per-token bill.
 
-You write the reasoning once as an ordinary TypeScript program — a **harness** — and run it as a terminal app, a desktop app, or a served browser app off that one program. Every agent scaffold starts with `API_KEY=`. **A harness starts with a model.** Nothing on the reasoning path touches a third-party API; `grep API_KEY` in a scaffolded project finds nothing.
+You write the reasoning once as an ordinary TypeScript program — a **harness** — and run it as a terminal app, a desktop app, or a served browser app off that one program. Every agent scaffold starts with `API_KEY=`. **A harness starts with a model.**
 
 Free to use, embed, ship, and sell — commercial, private, internal, all of it. The one carve-out — forking the runtime to compete — is the [trust boundary](#why-fsl-instead-of-mit) that keeps capability-bearing apps installable safely. Converts to Apache 2.0 on a rolling two-year schedule.
 
@@ -27,7 +27,7 @@ Free to use, embed, ship, and sell — commercial, private, internal, all of it.
 
 ## Get started
 
-Scaffold your own harness — no API key, the model runs in-process:
+Scaffold your own harness — the model runs in your process:
 
 ```bash
 npx harness.dev new              # interactive: name → surfaces → model → template
@@ -64,17 +64,17 @@ Full command surface → [`harness.dev`](./packages/harness-cli/README.md).
 
 ## The shift
 
-The unit you build moves from *an inference endpoint your app calls* to *an application your app is*. When the model is remote, every agent is a fresh conversation you re-feed context to, and concurrency multiplies cost linearly. When the model is embedded, agents fork a shared line of reasoning for free, correct each other in real time, and synthesize — coordination patterns that simply aren't expressible over API calls.
+> **The unit you build moves from *an inference endpoint your app calls* to *an application your app is*.**
 
-That difference isn't faster inference. It's a different *kind* of capability, and it's a cross-product, not one API: your application composes **topology** (which lines of reasoning exist and how they relate) × **observation** (watching a generation as it runs) × **evidence** (what gets admitted into context, and when) × **lifecycle** (when output becomes an accepted result) × **authority** (which capabilities a step may use) × **continuity** (the same program, preserved across turns, models, surfaces, and deployments). The model runs inside the harness — governed, forkable, and yours.
+When the model is remote, every agent is a fresh conversation you re-feed and bill per token. When it's embedded, agents fork one shared line of reasoning for free, correct each other in real time, and synthesize — coordination that isn't expressible over API calls. It's not faster inference; it's a different *kind* of capability: your app composes **topology, live observation, evidence admission, lifecycle, and authority** over the model's reasoning, not just its output. [The full capability grammar →](https://hdk.lloyal.ai)
 
 ## What you get
 
 - **A programming model, not an SDK.** A harness is *a tree of owned lifetimes over a tree of live inference state.* Agents bind to parent scopes via [Effection](https://frontside.com/effection) structured concurrency — cancellation propagates, teardown runs in reverse, cleanup is inseparable from ownership. Loops, conditions, and lexical scope **are** your orchestration; there's no graph DSL to learn.
-- **Continuous-context agents.** Sub-agents fork the parent's full attention at zero tensor copy — one shared model context, N branches, **one GPU dispatch per tick regardless of branch count.** A fork is a bitset flip, not a recompute; cost tracks KV *fullness*, not agent count, so two vs. ten concurrent agents decode at the same per-tick speed. *(Code-confirmed against the vendored llama.cpp build — see [Why in-process](#why-in-process-is-a-different-capability).)* The result: **4.4× fewer tokens processed** than a prompt-rebuilding pipeline.
+- **Continuous-context agents.** Sub-agents fork the parent's full attention at zero copy — N branches, **one GPU dispatch per tick**, cost tracking KV *fullness* not agent count. **4.4× fewer tokens** than a prompt-rebuilding pipeline. [The code-confirmed receipts ↓](#why-in-process-is-a-different-capability)
 - **Retrieval-interleaved generation.** Agents assemble context _during_ generation — searching, reading, and reranking across your app's own data. One `Source` shape for files, SQL, the web, or user records. A cross-encoder focal lens admits only verbatim top-K chunks — never summarized.
 - **A signed App platform.** Capabilities — web search, browser automation, payment connectors, your company's data — install as **Apps** from a curated channel at [`apps.lloyal.ai`](https://apps.lloyal.ai). Every bundle is Ed25519-signed and verified against an embedded trust root *before it runs*; the CLI shows an App's *attention surface* — protocol, tools, config, skill lines — from the verified bytes first. What you install is what was reviewed.
-- **One harness, every surface, every tier.** Write the program once; each surface — terminal, desktop, browser — is a binding over the same events, all folding one `reduce`. The same contract runs it on a laptop, a shared GPU box, or a served fleet. *Where* it runs is a deployment decision, not an application one.
+- **One harness, every surface, every tier.** Write the program once; each surface — terminal, desktop, browser — is a binding over the same events, all folding one `reduce`. *Where* it runs — a laptop, a GPU box, a served fleet — is a deployment decision, not an application one. [You already know this architecture — it shipped in Rails in 2007.](https://lloyal.ai/blog/you-already-know-this-architecture/)
 
 Mechanics, receipts, and the case for the architecture at [hdk.lloyal.ai](https://hdk.lloyal.ai).
 
@@ -164,17 +164,33 @@ npx harness.dev publish                        # ship through the signed channel
 
 ## Why in-process is a different capability
 
-Most "AI for TypeScript" tools are a **client to an inference endpoint** — the Vercel AI SDK calls a provider's API; LangGraph orchestrates a graph of calls over one; even "local," through Ollama, the model is a separate daemon you POST to. The model is a service behind a boundary, so every agent, every turn, re-ships its context and pays per token.
+> **Most "AI for TypeScript" is a *client to an inference endpoint*. HDK *embeds the model* — like SQLite in your app, not a database over the network.**
 
-HDK isn't a client — it's a **runtime that embeds the model**, the way an app embeds SQLite instead of reaching a database over the network. The weights are resident in your process, and your harness governs the model's *live* reasoning state as it runs. That's the difference between renting behaviour request-by-request and owning it as code — and it's why concurrent agents are cheap. Endpoint tools coordinate agents like **VMs**: each a full, isolated context you stand up and re-feed. HDK runs them like **containers on one kernel**: every agent is a zero-copy *branch* of one resident model state.
+|                    | Endpoint SDK · Vercel AI / LangGraph / Ollama      | **HDK**                                                                   |
+| ------------------ | -------------------------------------------------- | ------------------------------------------------------------------------- |
+| The model is       | a service behind an HTTP boundary                  | resident in the process you run — laptop or your own GPU host             |
+| Each sub-agent     | a fresh request that re-ships its context          | a zero-copy `fork()` of the parent's live attention                       |
+| Ten agents cost    | 10× context · 10× dispatches · per-token billing   | one GPU dispatch per tick — cost tracks KV *fullness*, not agent count    |
+| Prefix sharing     | a token-keyed KV cache, LRU-evicted, over an API   | a structural back-reference, pruned by *your* policy when the reasoning is done |
+| API key            | required, billed per token                         | none on the reasoning path                                                |
 
-The mechanism is verifiable, not marketing — the numbers below are **code-confirmed against the vendored llama.cpp build**, read from source, not reconstructed:
+Endpoint tools run agents like **VMs** — each a full context you stand up and re-feed. HDK runs them like **containers on one kernel**: every agent is a branch of one resident model state.
 
-- **N branches, one dispatch.** N branches that fit the micro-batch decode in **one `llama_decode`** — the batch splitter cuts on token rows and never reads `seq_id`. GPU dispatches per tick are **O(1) in branch count**.
-- **Forking is free.** A fork (`seq_cp`) allocates no cells and copies no buffer — it's a single `std::bitset<LLAMA_MAX_SEQ>` write, one cell now owned by two branches. Zero decode, zero attention compute. *This is* prefix sharing, by construction.
-- **Cost is KV fullness, not agent count.** Per-tick wall-time is `O(n_kv × token_rows)` — there is no `× n_seqs` multiplier. **Two vs. ten concurrent agents decode at the same per-tick speed;** concurrency is free on compute and priced only in KV *space*.
+The mechanism is verifiable, not marketing — **code-confirmed against the vendored llama.cpp build**, read from source:
 
-If you know the serving stack: vLLM and SGLang already reuse prefixes (RadixAttention) — but as a **server**, where the shared prefix is a token-keyed KV *cache* (radix-matched, LRU-evicted; a miss recomputes) reached over an API. HDK puts that tree *inside your application*: a branch is a structural **back-reference** into its parent's live cells (nothing to match, cache, or evict), pruned **semantically** when the reasoning is done — governed by policy, not evicted when a cache runs cold. A cloud per-token API structurally cannot replicate this economics.
+- **N branches, one dispatch.** N branches that fit the micro-batch decode in **one `llama_decode`** — the splitter cuts on token rows, never reads `seq_id`. GPU dispatches per tick are **O(1) in branch count**.
+- **Forking is free.** A fork (`seq_cp`) allocates no cells and copies no buffer — a single `std::bitset<LLAMA_MAX_SEQ>` write, one cell now owned by two branches. Zero decode, zero attention. *This is* prefix sharing, by construction.
+- **Cost is KV fullness, not agent count.** Per-tick wall-time is `O(n_kv × token_rows)` — no `× n_seqs` multiplier. **Two vs. ten concurrent agents decode at the same per-tick speed.**
+
+And the model is a **dial** — the *same* harness runs across compute tiers, key-free at each:
+
+| tier      | runs on                | model                                           | sessions                       |
+| --------- | ---------------------- | ----------------------------------------------- | ------------------------------ |
+| **Edge**  | a laptop               | a 4B, resident in-process                       | one, local                     |
+| **Host**  | your own GPU box       | a frontier model (GLM-5.2), sharded across GPUs | many, over wss — FIFO-admitted |
+| **Fleet** | a host per GPU cluster | frontier, per host                              | each host admits its own       |
+
+vLLM and SGLang share prefixes too (RadixAttention) — but as a **server**, over an API, LRU-evicted. HDK puts that tree *inside your app*, pruned by your policy, not a cache. A cloud per-token API can't replicate the economics.
 
 ## Stack vs. imports
 
