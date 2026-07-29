@@ -7,15 +7,18 @@
  * in the system browser via `target="_blank"` (on desktop the Electron main
  * routes it to the OS browser) — the window never navigates away.
  */
-import { memo, type ReactElement, type ReactNode } from "react";
+import { isValidElement, memo, type ReactElement, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { slugify } from "../../harness/state.js";
 
-/** Flatten a heading's children to text, for the anchor slug. */
+/** Flatten a heading's children to text, for the anchor slug — recursing into
+ *  inline elements (`**bold**`, `` `code` ``, links) so a heading with markup
+ *  still yields its full text, not an empty slug that collides with others. */
 function textOf(node: ReactNode): string {
   if (typeof node === "string" || typeof node === "number") return String(node);
   if (Array.isArray(node)) return node.map(textOf).join("");
+  if (isValidElement(node)) return textOf((node.props as { children?: ReactNode }).children);
   return "";
 }
 
