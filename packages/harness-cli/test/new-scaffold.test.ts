@@ -103,8 +103,8 @@ describe('desktop target — the three things electron-vite needs', () => {
       // electron 42 dropped `postinstall: node install.js`, so `npm install`
       // never fetches the binary and electron-vite dies with "Electron uninstall".
       const pkgJson = JSON.parse(readFileSync(join(TEMPLATES, template, 'package.json'), 'utf8'));
-      expect(pkgJson.scripts['predev:desktop']).toBe('node bin/ensure-electron.js');
-      expect(pkgJson.scripts['prebuild:desktop']).toBe('node bin/ensure-electron.js');
+      expect(pkgJson.scripts['predev:desktop']).toContain('node bin/ensure-electron.js');
+      expect(pkgJson.scripts['prebuild:desktop']).toContain('node bin/ensure-electron.js');
       expect(existsSync(join(TEMPLATES, template, 'bin/ensure-electron.js'))).toBe(true);
       // The pin must stay on a version whose binary this guard can fetch.
       expect(pkgJson.devDependencies.electron).toMatch(/\^4[2-9]\./);
@@ -126,8 +126,36 @@ describe('desktop target — the three things electron-vite needs', () => {
     pruneTargets(dir, ['cli', 'desktop']);
     const p = pkg(dir) as { main?: string; scripts: Record<string, string> };
     expect(p.main).toBe('out/main/main.js');
-    expect(p.scripts['prebuild:desktop']).toBe('node bin/ensure-electron.js');
+    expect(p.scripts['prebuild:desktop']).toContain('node bin/ensure-electron.js');
     expect(existsSync(join(dir, 'bin/ensure-electron.js'))).toBe(true);
+  });
+});
+
+describe('preflight-apps — the app guard runs before the compiler', () => {
+  const TEMPLATES = join(dirname(fileURLToPath(import.meta.url)), '..', 'templates');
+
+  it.each(['basic', 'research'] as const)(
+    '%s: prestart and both desktop pre-hooks run the guard first',
+    (template) => {
+      // `harness/harness.ts` imports its apps at the top level, so a scaffold
+      // missing them fails inside tsc with TS2307 — the compiler complaining
+      // about a supply problem. The guard has to run AHEAD of the build step.
+      const pkgJson = JSON.parse(readFileSync(join(TEMPLATES, template, 'package.json'), 'utf8'));
+      for (const s of ['prestart', 'predev:desktop', 'prebuild:desktop']) {
+        expect(pkgJson.scripts[s].startsWith('node bin/preflight-apps.js &&')).toBe(true);
+      }
+      expect(existsSync(join(TEMPLATES, template, 'bin/preflight-apps.js'))).toBe(true);
+    },
+  );
+
+  it('is cli-owned: a cli-only prune keeps the guard and prestart', () => {
+    // Unlike ensure-electron.js it must NOT be in TARGET_FILES — `prestart`
+    // belongs to the cli target, which is never pruned.
+    const dir = freshBlankProject();
+    pruneTargets(dir, ['cli']);
+    const p = pkg(dir) as { scripts: Record<string, string> };
+    expect(existsSync(join(dir, 'bin/preflight-apps.js'))).toBe(true);
+    expect(p.scripts.prestart).toContain('node bin/preflight-apps.js');
   });
 });
 
