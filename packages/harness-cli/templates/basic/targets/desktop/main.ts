@@ -80,7 +80,11 @@ function createWindow(): void {
     backgroundColor: "#ffffff",
     title: "__NAME__",
     webPreferences: {
-      preload: join(__dirname, "../preload/index.js"),
+      // electron-vite names the preload bundle after its entry (preload.ts) and
+      // emits ESM as .mjs — `out/preload/preload.mjs`, NOT `index.js`. A wrong
+      // path here fails SILENTLY: the bridge never loads, `window.harness` is
+      // undefined, and the renderer dies on first paint leaving a blank window.
+      preload: join(__dirname, "../preload/preload.mjs"),
       contextIsolation: true,
       sandbox: false,
     },

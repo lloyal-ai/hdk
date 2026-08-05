@@ -8,6 +8,7 @@
   "bin": {
     "__NAME__": "bin/run.js"
   },
+  "main": "out/main/main.js",
   "files": [
     "bin/",
     "dist/",
@@ -21,7 +22,9 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.web.json && tsc -p tsconfig.electron.json",
     "prestart": "npm run build",
     "start": "node bin/run.js",
+    "predev:desktop": "node bin/ensure-electron.js",
     "dev:desktop": "npm run build && electron-vite dev",
+    "prebuild:desktop": "node bin/ensure-electron.js",
     "build:desktop": "npm run build && electron-vite build",
     "serve": "esbuild targets/web/serve.ts --bundle --platform=node --format=esm --packages=external --loader:.eta=text --outfile=dist/targets/web/serve.mjs && node bin/serve.js",
     "dev:web": "vite --config targets/web/vite.web.config.ts",

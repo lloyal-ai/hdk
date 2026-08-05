@@ -19,6 +19,7 @@ import {
   TARGET_DEPS,
   TARGET_DEV_DEPS,
   TARGET_FILES,
+  TARGET_PKG_FIELDS,
   SHARED_RENDERER_DEPS,
   SHARED_RENDERER_DEV_DEPS,
   rewriteTargetsLine,
@@ -109,6 +110,10 @@ function restorePackageJson(
 
   for (const s of TARGET_SCRIPTS[target]) {
     if (tpl.scripts?.[s] != null && pkg.scripts[s] == null) pkg.scripts[s] = tpl.scripts[s];
+  }
+  // Top-level fields the target owns (desktop's Electron `main` entry point).
+  for (const f of TARGET_PKG_FIELDS[target]) {
+    if (tpl[f] != null && pkg[f] == null) pkg[f] = tpl[f];
   }
   addFromTemplate(pkg.dependencies, tpl.dependencies, TARGET_DEPS[target]);
   addFromTemplate(pkg.devDependencies, tpl.devDependencies, TARGET_DEV_DEPS[target]);

@@ -1,11 +1,15 @@
 /**
  * The `harnessdev` provenance marker in a scaffolded project's `package.json`.
  *
- * `{ template, targets }` records the ONE un-derivable fact `targets:add` needs
- * — which template's target subtree to copy back — plus the surfaces present.
- * The filesystem `targets/<t>/` dirs stay the runtime truth; this marker is the
- * declared record, stamped by `new` and kept in sync by the `targets:` verbs
- * (they already rewrite `package.json`). npm ignores the extra top-level key.
+ * `{ template, targets, apps }` records the facts nothing else in the project
+ * carries: which template's target subtree `targets:add` should copy back, which
+ * surfaces are present, and the `harness.dev install` specs of the AgentApps the
+ * template's `harness/harness.ts` imports. The filesystem `targets/<t>/` dirs
+ * stay the runtime truth; this marker is the declared record, stamped by `new`
+ * and kept in sync by the `targets:` verbs (they already rewrite `package.json`).
+ * `apps` is what `bin/run.js` names back to the user when an app is missing at
+ * boot — the vendored `file:` deps are the install truth. npm ignores the extra
+ * top-level key.
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -16,12 +20,22 @@ export interface ProjectMarker {
   template: string;
   /** Run surfaces present, kept in sync by `targets:add`/`targets:remove`. */
   targets: Target[];
+  /**
+   * `harness.dev install` specs of the AgentApps this harness imports (e.g.
+   * `lloyal/web@1.3.0`). Empty on a pre-`apps` marker — treated as "unknown",
+   * never as "none", so nothing infers that a harness needs no apps.
+   */
+  apps: string[];
 }
 
-/** Stamp `harnessdev: { template, targets }` into `<projectDir>/package.json`. */
+/** Stamp `harnessdev: { template, targets, apps }` into `<projectDir>/package.json`. */
 export function writeProjectMarker(projectDir: string, marker: ProjectMarker): void {
   const pkg = readPkg(projectDir);
-  pkg.harnessdev = { template: marker.template, targets: marker.targets };
+  pkg.harnessdev = {
+    template: marker.template,
+    targets: marker.targets,
+    apps: marker.apps,
+  };
   writePkg(projectDir, pkg);
 }
 
@@ -35,7 +49,10 @@ export function readProjectMarker(projectDir: string): ProjectMarker | null {
   }
   const m = pkg.harnessdev;
   if (!m || typeof m.template !== 'string' || !Array.isArray(m.targets)) return null;
-  return { template: m.template, targets: m.targets as Target[] };
+  // `apps` post-dates `{ template, targets }`; a marker without it is still a
+  // valid marker (that is the one fact `targets:add` needs), so degrade to [].
+  const apps = Array.isArray(m.apps) ? m.apps.filter((a): a is string => typeof a === 'string') : [];
+  return { template: m.template, targets: m.targets as Target[], apps };
 }
 
 /**
@@ -48,12 +65,15 @@ export function readProjectMarker(projectDir: string): ProjectMarker | null {
 export function setMarkerTargets(projectDir: string, targets: Target[]): void {
   const pkg = readPkg(projectDir);
   if (!pkg.harnessdev || typeof pkg.harnessdev.template !== 'string') return;
-  pkg.harnessdev = { template: pkg.harnessdev.template, targets };
+  // `apps` is orthogonal to the surface set — carry it through untouched rather
+  // than dropping it, or a `targets:` verb would silently erase the boot hint.
+  const { template, apps } = pkg.harnessdev;
+  pkg.harnessdev = { template, targets, ...(Array.isArray(apps) ? { apps } : {}) };
   writePkg(projectDir, pkg);
 }
 
 interface PkgWithMarker {
-  harnessdev?: { template?: unknown; targets?: unknown };
+  harnessdev?: { template?: unknown; targets?: unknown; apps?: unknown };
   [k: string]: unknown;
 }
 

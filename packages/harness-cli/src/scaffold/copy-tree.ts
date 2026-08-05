@@ -37,6 +37,19 @@ export function buildSubstitutions(name: string): Record<string, string> {
   };
 }
 
+/**
+ * Template filenames that must land in the scaffold as dotfiles.
+ *
+ * npm silently drops a nested `.gitignore` from the published tarball — even
+ * when it is named explicitly in `files` — so a template that stores one under
+ * its real name ships it to anyone running from a git checkout and to NOBODY
+ * running `npx harness.dev`. Store it undotted in the template and restore the
+ * dot here, so the published CLI and the repo emit the same tree.
+ */
+const DOTFILES: Record<string, string> = {
+  gitignore: '.gitignore',
+};
+
 /** Recursively copy `src` → `dest`, applying `substitutions` to paths + text. */
 export function copyTreeWithSubstitutions(
   src: string,
@@ -46,7 +59,7 @@ export function copyTreeWithSubstitutions(
   mkdirSync(dest, { recursive: true });
   for (const entry of readdirSync(src, { withFileTypes: true })) {
     const fromPath = join(src, entry.name);
-    const toName = applySubstitutions(entry.name, substitutions);
+    const toName = DOTFILES[entry.name] ?? applySubstitutions(entry.name, substitutions);
     const toPath = join(dest, toName);
 
     if (entry.isDirectory()) {

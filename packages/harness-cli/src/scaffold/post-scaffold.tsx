@@ -117,9 +117,10 @@ export function printNextSteps(opts: {
   targets: Target[];
   installed: boolean;
   /**
-   * Default app specs that were NOT vendored (scaffolded with --skip-install /
-   * non-TTY, or the fetch failed). Printed as explicit `harness.dev install`
-   * hints so the harness's default app can be fetched + verified afterwards.
+   * Default app specs that were NOT vendored (`--skip-apps`, or the fetch
+   * failed). The harness imports these, so until they are added the project
+   * neither typechecks nor boots — they are printed FIRST, as a required step,
+   * ahead of the run commands they gate.
    */
   pendingApps?: string[];
 }): void {
@@ -129,9 +130,31 @@ export function printNextSteps(opts: {
   const dim = (s: string): string => c('2', s);
   const bold = (s: string): string => c('1', s);
 
-  const lines: string[] = ['', `${bold(opts.name)} is ready.`, ''];
+  const pending = opts.pendingApps ?? [];
+  const ready = pending.length === 0;
+
+  const lines: string[] = [
+    '',
+    ready
+      ? `${bold(opts.name)} is ready.`
+      : `${bold(opts.name)} is scaffolded — ${bold('one step left')}.`,
+    '',
+  ];
   lines.push(`  ${dim(`cd ${opts.name}`)}`);
-  if (!opts.installed) lines.push(`  ${dim('npm install')}`);
+  if (pending.length) {
+    // The harness imports these apps at the top level, so `npm start` and
+    // `npm run typecheck` both FAIL until they are fetched + Ed25519-verified.
+    // That makes this a prerequisite, not an optional extra — it goes above the
+    // run commands, and it runs `npm install` for you.
+    lines.push(
+      '',
+      `  ${c(`${ACCENT_SGR};1`, `Required — this harness imports ${pending.length > 1 ? 'these apps' : 'this app'}:`)}`,
+    );
+    for (const spec of pending) lines.push(`    ${amber(`npx harness.dev install ${spec}`)}`);
+    lines.push(`  ${dim('Until then the project will not typecheck or start.')}`);
+  } else if (!opts.installed) {
+    lines.push(`  ${dim('npm install')}`);
+  }
   lines.push('', `  ${c(`${ACCENT_SGR};1`, 'Run it')}`);
   for (const t of opts.targets) {
     const step = RUN[t];
@@ -140,13 +163,6 @@ export function printNextSteps(opts: {
   }
   lines.push('');
   lines.push(`  ${dim('First run fetches + digest-verifies the model — no API key.')}`);
-  const pending = opts.pendingApps ?? [];
-  if (pending.length) {
-    // The default app wasn't vendored (skip-install / non-TTY / fetch failed) —
-    // fetch + Ed25519-verify it before the first run.
-    lines.push(`  ${bold(`Fetch the default app${pending.length > 1 ? 's' : ''}:`)}`);
-    for (const spec of pending) lines.push(`    ${amber(`npx harness.dev install ${spec}`)}`);
-  }
   lines.push(`  ${dim('Add apps:  npx harness.dev install <publisher>/<name>')}`);
   lines.push('');
   process.stdout.write(`${lines.join('\n')}\n`);

@@ -28,8 +28,20 @@ export type PrunableTarget = Exclude<Target, 'cli'>;
  */
 /** Per-target npm scripts. */
 export const TARGET_SCRIPTS: Record<PrunableTarget, string[]> = {
-  desktop: ['dev:desktop', 'build:desktop'],
+  // The `pre*` hooks fetch the Electron binary on demand — see
+  // `templates/*/bin/ensure-electron.js` for why that is not npm's job any more.
+  desktop: ['predev:desktop', 'dev:desktop', 'prebuild:desktop', 'build:desktop'],
   web: ['serve', 'dev:web', 'dev:web:client', 'build:web'],
+};
+/**
+ * Per-target TOP-LEVEL package.json fields. `main` is Electron's entry point —
+ * electron-vite refuses to launch without it ("No entry point found for electron
+ * app") — and it names a path under `out/`, which only a desktop build produces.
+ * So it belongs to desktop and is dropped with it, exactly like a script or dep.
+ */
+export const TARGET_PKG_FIELDS: Record<PrunableTarget, string[]> = {
+  desktop: ['main'],
+  web: [],
 };
 /** Per-target runtime deps. */
 export const TARGET_DEPS: Record<PrunableTarget, string[]> = {
@@ -46,7 +58,7 @@ export const TARGET_DEV_DEPS: Record<PrunableTarget, string[]> = {
  * bin shim / build config. Deleted on prune, copied back on add.
  */
 export const TARGET_FILES: Record<PrunableTarget, string[]> = {
-  desktop: ['electron.vite.config.ts', 'tsconfig.electron.json'],
+  desktop: ['electron.vite.config.ts', 'tsconfig.electron.json', 'bin/ensure-electron.js'],
   web: ['bin/serve.js'],
 };
 /**
@@ -116,6 +128,7 @@ function prunePackageJson(
     scripts?: Record<string, string>;
     dependencies?: Record<string, string>;
     devDependencies?: Record<string, string>;
+    [k: string]: unknown;
   };
 
   const drop = (obj: Record<string, string> | undefined, keys: string[]): void => {
@@ -127,11 +140,13 @@ function prunePackageJson(
     drop(pkg.scripts, TARGET_SCRIPTS.desktop);
     drop(pkg.dependencies, TARGET_DEPS.desktop);
     drop(pkg.devDependencies, TARGET_DEV_DEPS.desktop);
+    for (const f of TARGET_PKG_FIELDS.desktop) delete pkg[f];
   }
   if (pruneWeb) {
     drop(pkg.scripts, TARGET_SCRIPTS.web);
     drop(pkg.dependencies, TARGET_DEPS.web);
     drop(pkg.devDependencies, TARGET_DEV_DEPS.web);
+    for (const f of TARGET_PKG_FIELDS.web) delete pkg[f];
   }
   if (pruneDesktop && pruneWeb) {
     drop(pkg.dependencies, SHARED_RENDERER_DEPS);

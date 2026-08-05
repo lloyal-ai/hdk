@@ -41,6 +41,10 @@ const USAGE = [
   '  --skip-install',
   '                Do not run `npm install` after scaffolding (it runs by',
   '                default in an interactive terminal).',
+  '  --skip-apps   Do not fetch the template\'s default AgentApp(s). The scaffold',
+  '                then does NOT typecheck or run until you add them with',
+  '                `npx harness.dev install <spec>` — use it only for an offline',
+  '                or hermetic scaffold.',
   '  -y, --yes     Skip the picker; accept defaults for anything not given a flag.',
   '  -h, --help    Show this help',
   '',
@@ -61,8 +65,14 @@ const ALL_TARGETS: Target[] = ['cli', 'desktop', 'web'];
  * added app. The app is NOT a remote-URL npm dependency in the template
  * package.json (npm 12 blocks those, and a plain dep would skip verification);
  * it is written into package.json only after it is verified + vendored here.
+ *
+ * These are NOT optional extras: each template's `harness/harness.ts` imports
+ * these packages at the top level and lists their factories in `export const
+ * apps`. A scaffold without them does not typecheck (TS2307) and cannot boot
+ * (ERR_MODULE_NOT_FOUND) — so vendoring is gated ONLY on the explicit
+ * `--skip-apps` escape hatch, never on `--skip-install` or on being a TTY.
  */
-const DEFAULT_APPS: Record<TemplateKind, string[]> = {
+export const DEFAULT_APPS: Record<TemplateKind, string[]> = {
   basic: ['lloyal/wikipedia@1.2.0'],
   research: ['lloyal/corpus@1.3.0', 'lloyal/web@1.3.0'],
 };
@@ -92,6 +102,7 @@ export const newCommand: Command = {
         targets: { type: 'string' },
         model: { type: 'string' },
         'skip-install': { type: 'boolean' },
+        'skip-apps': { type: 'boolean' },
         yes: { type: 'boolean', short: 'y' },
       },
       allowPositionals: true,
@@ -142,7 +153,13 @@ export const newCommand: Command = {
     // scaffolding a project the user can't run yet is a dead-end. Skipped in
     // non-TTY (CI installs itself) or with --skip-install.
     const install = Boolean(process.stdout.isTTY) && !values['skip-install'];
-    return performScaffold(plan, parentDir, { install });
+    // Vendoring the template's default apps is a SEPARATE decision from running
+    // `npm install`. The template's harness.ts imports them at the top level, so
+    // skipping them emits a project that cannot typecheck or boot — that must
+    // never be an implicit consequence of a pipe, of CI, or of --skip-install.
+    // Only the explicit --skip-apps opts out.
+    const vendorApps = !values['skip-apps'];
+    return performScaffold(plan, parentDir, { install, vendorApps });
   },
 };
 
@@ -211,7 +228,7 @@ function parseTargets(csv: string | undefined): { targets: Target[] } | { error:
 async function performScaffold(
   plan: ScaffoldPlan,
   parentDir: string,
-  opts: { install: boolean },
+  opts: { install: boolean; vendorApps: boolean },
 ): Promise<number> {
   const dest = join(parentDir, plan.name);
 
@@ -234,6 +251,8 @@ async function performScaffold(
     // ENOENT — the destination is free.
   }
 
+  const defaultApps = DEFAULT_APPS[plan.template] ?? [];
+
   const templateDir = resolveTemplateDir(plan.template);
   try {
     copyTreeWithSubstitutions(templateDir, dest, buildSubstitutions(plan.name));
@@ -245,8 +264,14 @@ async function performScaffold(
     )?.recommendedContext;
     applyModelChoice(dest, { llm: plan.llm, context: recommendedContext });
     // Provenance: record which template + surfaces this project came from so
-    // `targets:add` knows which template's target subtree to copy back.
-    writeProjectMarker(dest, { template: plan.template, targets: plan.targets });
+    // `targets:add` knows which template's target subtree to copy back, and
+    // which app specs the harness needs so `bin/run.js` can name them if one is
+    // missing at boot.
+    writeProjectMarker(dest, {
+      template: plan.template,
+      targets: plan.targets,
+      apps: defaultApps,
+    });
     // Fill the README's run instructions for exactly the surfaces we kept.
     writeReadmeRunSteps(dest, plan.targets);
   } catch (err) {
@@ -260,16 +285,17 @@ async function performScaffold(
     `scaffolded ${plan.name} (${plan.template}) · targets: ${plan.targets.join(', ')} · model: ${plan.llm}\n`,
   );
 
-  // Batteries-included: fetch + Ed25519-verify the template's default app(s) and
-  // vendor them as local `file:` deps (npm never fetches a remote URL — npm-12
-  // clean, and the default app gets the SAME signature verification as any added
-  // app), then `npm install` so the project is runnable. Both are skipped in
-  // non-TTY/CI or with --skip-install; a default-app network/verify failure warns
-  // + continues (the framework install still runs; the app can be added later
-  // via `harness.dev install`).
-  const defaultApps = DEFAULT_APPS[plan.template] ?? [];
+  // Fetch + Ed25519-verify the template's default app(s) and vendor them as
+  // local `file:` deps (npm never fetches a remote URL — npm-12 clean, and the
+  // default app gets the SAME signature verification as any added app). This
+  // runs whether or not we go on to `npm install`, because the template's
+  // harness.ts imports these packages: without the `file:` deps in package.json
+  // the user's OWN `npm install` still leaves a project that fails typecheck and
+  // cannot boot. Only --skip-apps opts out. A network/verify failure warns +
+  // continues (an offline scaffold is still a scaffold) and the spec is reported
+  // as pending so the user can add it with `harness.dev install`.
   const pendingApps: string[] = [];
-  if (opts.install) {
+  if (opts.vendorApps) {
     for (const rawSpec of defaultApps) {
       try {
         const v = await verifyAndVendorApp(dest, parseAppSpec(rawSpec), { disclose: false });

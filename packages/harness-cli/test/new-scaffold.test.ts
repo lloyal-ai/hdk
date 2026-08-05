@@ -70,6 +70,67 @@ describe('pruneTargets — cli-only', () => {
   });
 });
 
+describe('desktop target — the three things electron-vite needs', () => {
+  const TEMPLATES = join(dirname(fileURLToPath(import.meta.url)), '..', 'templates');
+
+  it.each(['basic', 'research'] as const)(
+    '%s: package.json declares the Electron entry point',
+    (template) => {
+      // electron-vite refuses to launch without it: "No entry point found for
+      // electron app, please add a 'main' field to package.json".
+      const pkgJson = JSON.parse(readFileSync(join(TEMPLATES, template, 'package.json'), 'utf8'));
+      expect(pkgJson.main).toBe('out/main/main.js');
+    },
+  );
+
+  it.each(['basic', 'research'] as const)(
+    '%s: the preload path matches what electron-vite emits',
+    (template) => {
+      // electron-vite names the bundle after its entry and emits ESM as .mjs, so
+      // `out/preload/preload.mjs`. Pointing at `index.js` fails SILENTLY — no
+      // bridge, blank window.
+      const main = readFileSync(join(TEMPLATES, template, 'targets/desktop/main.ts'), 'utf8');
+      const entry = readFileSync(join(TEMPLATES, template, 'electron.vite.config.ts'), 'utf8');
+      expect(entry).toContain('targets/desktop/preload.ts');
+      expect(main).toContain('"../preload/preload.mjs"');
+      expect(main).not.toContain('"../preload/index.js"');
+    },
+  );
+
+  it.each(['basic', 'research'] as const)(
+    '%s: the desktop scripts guard the Electron binary first',
+    (template) => {
+      // electron 42 dropped `postinstall: node install.js`, so `npm install`
+      // never fetches the binary and electron-vite dies with "Electron uninstall".
+      const pkgJson = JSON.parse(readFileSync(join(TEMPLATES, template, 'package.json'), 'utf8'));
+      expect(pkgJson.scripts['predev:desktop']).toBe('node bin/ensure-electron.js');
+      expect(pkgJson.scripts['prebuild:desktop']).toBe('node bin/ensure-electron.js');
+      expect(existsSync(join(TEMPLATES, template, 'bin/ensure-electron.js'))).toBe(true);
+      // The pin must stay on a version whose binary this guard can fetch.
+      expect(pkgJson.devDependencies.electron).toMatch(/\^4[2-9]\./);
+    },
+  );
+
+  it('cli-only prunes `main`, the guard script, and both pre* hooks', () => {
+    const dir = freshBlankProject();
+    pruneTargets(dir, ['cli']);
+    const p = pkg(dir) as { main?: string; scripts: Record<string, string> };
+    expect(p.main).toBeUndefined(); // out/ is desktop-only — a dangling entry point
+    expect(p.scripts['predev:desktop']).toBeUndefined();
+    expect(p.scripts['prebuild:desktop']).toBeUndefined();
+    expect(existsSync(join(dir, 'bin/ensure-electron.js'))).toBe(false);
+  });
+
+  it('keeping desktop keeps all three', () => {
+    const dir = freshBlankProject();
+    pruneTargets(dir, ['cli', 'desktop']);
+    const p = pkg(dir) as { main?: string; scripts: Record<string, string> };
+    expect(p.main).toBe('out/main/main.js');
+    expect(p.scripts['prebuild:desktop']).toBe('node bin/ensure-electron.js');
+    expect(existsSync(join(dir, 'bin/ensure-electron.js'))).toBe(true);
+  });
+});
+
 describe('pruneTargets — cli + web (desktop pruned)', () => {
   it('keeps web deps/scripts, drops only desktop, trims tsconfig.web include', () => {
     const dir = freshBlankProject();
@@ -182,6 +243,7 @@ describe('newCommand.run — non-interactive flag path (end-to-end)', () => {
       'cli',
       '--model',
       './models/llm/mine.gguf',
+      '--skip-apps',
     ]);
     out.mockRestore();
 
@@ -198,13 +260,36 @@ describe('newCommand.run — non-interactive flag path (end-to-end)', () => {
     const parent = mkdtempSync(join(tmpdir(), 'harness-new-'));
     created.push(parent);
     const out = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    const code = await newCommand.run(['dflt', '--dir', parent, '--targets', 'cli', '--model', '   ']);
+    const code = await newCommand.run([
+      'dflt',
+      '--dir',
+      parent,
+      '--targets',
+      'cli',
+      '--model',
+      '   ',
+      '--skip-apps',
+    ]);
     out.mockRestore();
 
     expect(code).toBe(0);
     const yml = readFileSync(join(parent, 'dflt', 'harness.yml'), 'utf8');
     expect(yml).toMatch(/id:\s*"qwen3.5-4b"/); // the catalog default, not an empty value
     expect(yml).not.toMatch(/(id|path):\s*""/);
+  });
+
+  it('emits a real .gitignore (the template stores it undotted so npm ships it)', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'harness-new-'));
+    created.push(parent);
+    const out = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const code = await newCommand.run(['ign', '--dir', parent, '--targets', 'cli', '--skip-apps']);
+    out.mockRestore();
+
+    expect(code).toBe(0);
+    const dir = join(parent, 'ign');
+    expect(existsSync(join(dir, '.gitignore'))).toBe(true);
+    expect(existsSync(join(dir, 'gitignore'))).toBe(false); // the undotted name must not leak
+    expect(readFileSync(join(dir, '.gitignore'), 'utf8')).toMatch(/^node_modules\/$/m);
   });
 
   it('refuses to scaffold over an existing FILE (not just a directory)', async () => {
