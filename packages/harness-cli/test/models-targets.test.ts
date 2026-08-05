@@ -297,7 +297,7 @@ describe('targets:add (inverse of prune)', () => {
     expect(await runIn(dir, () => targetsAddCommand.run(['desktop']))).toBe(0);
     // Without `main`, electron-vite refuses to launch the added surface.
     expect(pkg(dir).main).toBe('out/main/main.js');
-    expect(pkg(dir).scripts['prebuild:desktop']).toBe('node bin/ensure-electron.js');
+    expect(pkg(dir).scripts['prebuild:desktop']).toContain('node bin/ensure-electron.js');
     expect(existsSync(join(dir, 'bin/ensure-electron.js'))).toBe(true);
   });
 

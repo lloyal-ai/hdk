@@ -44,7 +44,11 @@ describe('bin/run.js entrypoint (invoked via a bin symlink)', () => {
   it('new <name> --yes scaffolds through the symlink', () => {
     const bin = symlinkedBin();
     const dest = mkdtempSync(join(tmpdir(), 'hd-scaffold-'));
-    const out = execFileSync('node', [bin, 'new', 'symapp', '--yes', '--dir', dest], {
+    // `--skip-apps` keeps this hermetic. `new` otherwise fetches the template's
+    // default AgentApps from apps.lloyal.ai on every path (it is no longer gated
+    // on a TTY), and no fetch in the CLI carries an AbortSignal — so a runner
+    // with blackholed egress would hang this test rather than fail it.
+    const out = execFileSync('node', [bin, 'new', 'symapp', '--yes', '--skip-apps', '--dir', dest], {
       encoding: 'utf8',
     });
     expect(out).toContain('scaffolded symapp');

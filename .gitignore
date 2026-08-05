@@ -7,3 +7,15 @@ tmp/
 docs/
 trace-*.jsonl
 harness.json
+
+# The scaffold templates store their ignore file undotted (`gitignore`) because
+# npm strips a nested `.gitignore` from the published tarball; copy-tree.ts
+# restores the dot at scaffold time. That leaves the template subtree unignored
+# in THIS repo, so its build/run artifacts are listed here. Keep them at the
+# root, NOT in packages/harness-cli/ — npm consults ignore files inside the
+# package and would exclude template files from the tarball.
+packages/harness-cli/templates/*/out/
+packages/harness-cli/templates/*/dist-web/
+packages/harness-cli/templates/*/traces/
+packages/harness-cli/templates/*/*.log
+packages/harness-cli/templates/*/models/**/*.gguf
