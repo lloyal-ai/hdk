@@ -70,6 +70,26 @@ describe('httpFetch', () => {
     expect(await res.text()).toBe('first-last');
   });
 
+  it('honours a caller signal, and does not relabel that abort as a timeout', async () => {
+    // The wrapper used to overwrite init.signal outright, so a caller's abort was
+    // silently a no-op. Flagged in review on #74.
+    const url = await serve(() => {
+      /* never responds */
+    });
+    const caller = new AbortController();
+    setTimeout(() => caller.abort(), 50);
+    // Deadline is 10s, so only the caller's abort can end this.
+    const err = await httpFetch(url, { signal: caller.signal }, 10_000).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(FetchTimeoutError);
+  });
+
+  it('aborts immediately when the caller signal is already aborted', async () => {
+    const url = await serve((_req, res) => res.end('never reached'));
+    const err = await httpFetch(url, { signal: AbortSignal.abort() }).catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(FetchTimeoutError);
+  });
+
   it('passes init through and rethrows non-timeout errors untouched', async () => {
     const url = await serve((req, res) => {
       res.writeHead(200);

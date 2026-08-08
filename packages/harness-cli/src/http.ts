@@ -66,11 +66,18 @@ export class FetchTimeoutError extends Error {
 
 /**
  * Fetch `url`, aborting if the response headers do not arrive within
- * `timeoutMs`. Throws a message that names the host and the recovery, so it can
- * be surfaced verbatim to someone running the CLI for the first time.
+ * `timeoutMs`. Throws a {@link FetchTimeoutError} whose message names the host
+ * and the recovery, so it can be surfaced verbatim to someone running the CLI
+ * for the first time.
  *
- * No caller passes its own `signal` today; if one ever needs to, combine it here
- * rather than bypassing this wrapper.
+ * A caller-supplied `init.signal` is HONOURED, not replaced: aborting it aborts
+ * the request, and the resulting error propagates untouched rather than being
+ * relabelled as a timeout. No CLI call site passes one today, but silently
+ * dropping it would make a future cancel a no-op with no hint as to why.
+ *
+ * Note this differs from rig's `cancellableFetch`, which deliberately STRIPS a
+ * caller signal because its Effection scope owns cancellation. There is no such
+ * scope here, so the caller's signal is the only cancel source there is.
  */
 export async function httpFetch(
   url: string | URL,
@@ -78,13 +85,28 @@ export async function httpFetch(
   timeoutMs: number = HEADERS_TIMEOUT_MS,
 ): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // Which abort fired decides the error, and a flag is the honest way to know:
+  // once a caller signal is chained in, `controller.signal.aborted` is true for
+  // BOTH causes and cannot tell a deadline from a user cancel.
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  // Chain the caller's signal rather than AbortSignal.any(), which needs Node
+  // 20.3 while this package declares `engines.node >= 20`.
+  const caller = init.signal;
+  const onCallerAbort = (): void => controller.abort(caller?.reason);
+  if (caller) {
+    if (caller.aborted) controller.abort(caller.reason);
+    else caller.addEventListener('abort', onCallerAbort, { once: true });
+  }
+
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } catch (err) {
-    // Distinguish OUR deadline from a caller-visible network error: the abort we
-    // fired is the only reason this signal can be aborted (see the doc note).
-    if (controller.signal.aborted) {
+    if (timedOut) {
       throw new FetchTimeoutError(
         `timed out after ${humanMs(timeoutMs)} waiting for ${hostOf(url)} to respond — ` +
           'check your network or proxy, then re-run.',
@@ -93,8 +115,11 @@ export async function httpFetch(
     throw err;
   } finally {
     // Runs as soon as headers land (or the request fails), which is what makes
-    // this a headers deadline rather than a whole-request one.
+    // this a headers deadline rather than a whole-request one. The listener is
+    // dropped with it so a long-lived caller signal does not accumulate one per
+    // request.
     clearTimeout(timer);
+    caller?.removeEventListener('abort', onCallerAbort);
   }
 }
 
