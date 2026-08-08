@@ -1,7 +1,7 @@
 /**
  * The browser side of the web target — installs a `window.harness` bridge backed
  * by `connectWss`, the SAME shape the desktop preload exposes over IPC. That's
- * why the shared React view (`../desktop/App.tsx`) is transport-agnostic: it only
+ * why the shared React view (`../_shared/App.tsx`) is transport-agnostic: it only
  * reads `window.harness`, whether that's IPC (desktop) or wss (web).
  */
 import { connectWss, type WssClient } from "@lloyal-labs/binding/web";

@@ -1,9 +1,9 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { cpSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { pruneTargets } from '../src/scaffold/prune-targets.js';
+import { pruneTargets, type Target } from '../src/scaffold/prune-targets.js';
 import { applyModelChoice, isModelPath } from '../src/scaffold/apply-model.js';
 import { modelsForRole, MODEL_CATALOG } from '../src/scaffold/model-catalog.js';
 import { newCommand } from '../src/commands/new.js';
@@ -157,6 +157,61 @@ describe('preflight-apps — the app guard runs before the compiler', () => {
     expect(existsSync(join(dir, 'bin/preflight-apps.js'))).toBe(true);
     expect(p.scripts.prestart).toContain('node bin/preflight-apps.js');
   });
+});
+
+describe('the shared React view outlives either DOM target alone', () => {
+  const TEMPLATES = join(dirname(fileURLToPath(import.meta.url)), '..', 'templates');
+  const SHARED = 'targets/_shared/App.tsx';
+
+  /** Entries of a JSONC array field, comments stripped. */
+  function jsoncArray(file: string, key: string): string[] {
+    const raw = readFileSync(file, 'utf8').replace(/\/\/.*/g, '');
+    return (JSON.parse(raw) as Record<string, string[]>)[key] ?? [];
+  }
+
+  it.each([
+    ['cli,web (desktop pruned)', ['cli', 'web']],
+    ['cli,desktop (web pruned)', ['cli', 'desktop']],
+  ] as const)('%s keeps it — the surviving target still mounts it', (_label, keep) => {
+    const dir = freshBlankProject();
+    pruneTargets(dir, keep as unknown as Target[]);
+    expect(existsSync(join(dir, SHARED))).toBe(true);
+    // …and typecheck still covers it.
+    expect(jsoncArray(join(dir, 'tsconfig.web.json'), 'include')).toContain(SHARED);
+  });
+
+  it('cli-only drops it, and takes its dangling Node exclude entry with it', () => {
+    const dir = freshBlankProject();
+    pruneTargets(dir, ['cli']);
+    expect(existsSync(join(dir, 'targets/_shared'))).toBe(false);
+    expect(jsoncArray(join(dir, 'tsconfig.json'), 'exclude')).not.toContain('targets/_shared');
+  });
+
+  it.each(['basic', 'research'] as const)(
+    '%s: no target imports across into another target',
+    (template) => {
+      // THE INVARIANT. web/main.tsx used to import ../desktop/App.js, so pruning
+      // desktop stranded it — broken since 0.6.4 and caught by nothing, because
+      // the all-three default scaffold resolves fine. Any future shared file
+      // parked inside one target trips this.
+      const root = join(TEMPLATES, template, 'targets');
+      const offenders: string[] = [];
+      const walk = (dir: string, owner: string): void => {
+        for (const e of readdirSync(dir, { withFileTypes: true })) {
+          const p = join(dir, e.name);
+          if (e.isDirectory()) walk(p, owner);
+          else if (/\.(ts|tsx)$/.test(e.name)) {
+            for (const m of readFileSync(p, 'utf8').matchAll(/from ["']\.\.\/([\w-]+)\//g)) {
+              const other = m[1];
+              if (other !== '_shared' && other !== owner) offenders.push(`${owner}/${e.name} → ${other}`);
+            }
+          }
+        }
+      };
+      for (const t of ['cli', 'desktop', 'web']) walk(join(root, t), t);
+      expect(offenders).toEqual([]);
+    },
+  );
 });
 
 describe('pruneTargets — cli + web (desktop pruned)', () => {

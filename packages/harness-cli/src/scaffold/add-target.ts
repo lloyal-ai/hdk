@@ -21,6 +21,7 @@ import {
   TARGET_FILES,
   TARGET_PKG_FIELDS,
   SHARED_RENDERER_DEPS,
+  SHARED_RENDERER_DIR,
   SHARED_RENDERER_DEV_DEPS,
   rewriteTargetsLine,
 } from './prune-targets.js';
@@ -74,6 +75,18 @@ export function addTarget(projectDir: string, target: PrunableTarget, template: 
   // Both `web` and `desktop` contribute DOM (React) sources to tsconfig.web.json.
   const domBefore = before.has('web') || before.has('desktop');
   const hasDesktopAfter = target === 'desktop' || before.has('desktop');
+
+  // 2b. The shared React view, which a cli-only prune removed. It comes back
+  // with the FIRST DOM target, exactly as SHARED_RENDERER_DEPS do below — if one
+  // is already present the dir is there and must not be overwritten (the user
+  // owns that file; it is their view).
+  if (!domBefore) {
+    copyTreeWithSubstitutions(
+      join(templateDir, SHARED_RENDERER_DIR),
+      join(projectDir, SHARED_RENDERER_DIR),
+      subs,
+    );
+  }
 
   // 3. package.json — restore scripts + deps (add-if-absent, versions from template).
   restorePackageJson(projectDir, templateDir, target, { domBefore, hasDesktopAfter });
@@ -150,12 +163,17 @@ function restoreTsconfig(
   domBefore: boolean,
 ): void {
   const underTarget = (entry: string): boolean => entry.startsWith(`targets/${target}`);
+  // The shared view's entries belong to whichever DOM target arrives FIRST — it
+  // is not under `targets/<target>/`, so `underTarget` alone would leave it out
+  // and the Node build would then try to compile the React view.
+  const wanted = (entry: string): boolean =>
+    underTarget(entry) || (!domBefore && entry.startsWith(SHARED_RENDERER_DIR));
 
   // Root tsconfig.json: merge this target's EXCLUDE entries (it always exists;
   // its `include` is a glob that already covers the new dir).
   const rootCfg = join(projectDir, 'tsconfig.json');
   if (existsSync(rootCfg)) {
-    const excludeToAdd = readJsoncArray(join(templateDir, 'tsconfig.json'), 'exclude').filter(underTarget);
+    const excludeToAdd = readJsoncArray(join(templateDir, 'tsconfig.json'), 'exclude').filter(wanted);
     mergeJsoncArray(rootCfg, 'exclude', excludeToAdd);
   }
 
@@ -167,9 +185,12 @@ function restoreTsconfig(
     mergeJsoncArray(webCfg, 'include', includeToAdd);
   } else {
     // cli-only → prune deleted tsconfig.web.json; restore from the template, then
-    // keep only harness/* + THIS target's entries (drop the other DOM target's).
+    // keep harness/* + THIS target's entries + the shared view (dropping only
+    // the other DOM target's). Without the `wanted` widening the shared view's
+    // entry is silently dropped and typecheck stops covering the file both
+    // surviving targets mount.
     copyFileWithSubstitutions(join(templateDir, 'tsconfig.web.json'), webCfg, {});
-    filterJsoncArray(webCfg, 'include', (entry) => !entry.startsWith('targets/') || underTarget(entry));
+    filterJsoncArray(webCfg, 'include', (entry) => !entry.startsWith('targets/') || wanted(entry));
   }
 }
 
