@@ -14,7 +14,7 @@
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { createServer, type Server } from 'node:http';
-import { httpFetch } from '../src/http.js';
+import { httpFetch, FetchTimeoutError } from '../src/http.js';
 
 const servers: Server[] = [];
 
@@ -49,6 +49,10 @@ describe('httpFetch', () => {
     const url = await serve(() => {
       /* deliberately never responds */
     });
+    // The TYPE matters as much as the message: the class name is deliberately
+    // shared with rig's `FetchTimeoutError`, so one failure keeps one word on
+    // both sides of a boundary the code itself cannot cross.
+    await expect(httpFetch(url, {}, 100)).rejects.toThrow(FetchTimeoutError);
     await expect(httpFetch(url, {}, 100)).rejects.toThrow(
       /timed out after 100ms waiting for 127\.0\.0\.1:\d+ to respond — check your network or proxy/,
     );

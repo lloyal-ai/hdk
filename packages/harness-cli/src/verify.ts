@@ -30,6 +30,11 @@
  * not hang. `http.ts` is original Apache-2.0 CLI code, so it carries no
  * FSL provenance into a future `@lloyal-labs/channel-verify` extraction
  * (task #465) — that package would take it along or accept a `fetch`.
+ *
+ * `http.ts` is in fact a SECOND instance of this file's own story: a rig
+ * primitive (`rig/src/cancellable-fetch.ts`) re-authored here because the
+ * native-dep chain makes importing it impossible. Same cause, same remedy
+ * — #465 should extract both, not just the verify surface.
  */
 import { httpFetch } from './http.js';
 
