@@ -11,7 +11,7 @@ cd my-harness && npm install && npm start
 
 ```text
 first run:
-  scaffolded acme (blank) · targets: cli, desktop, web · model: qwen3.5-4b
+  scaffolded acme (basic) · targets: cli, desktop, web · model: qwen3.5-4b
   ...
   Model      qwen3.5-4b                   ● resident
   Inference  local · no provider endpoint   ● offline
@@ -65,7 +65,9 @@ npx harness.dev new my-app --template research   # a production research harness
 npx harness.dev app:new <name>                   # scaffold an App (a portable capability package)
 ```
 
-`new` flags (any also pre-seed the picker): `--targets cli,desktop,web` · `--model <id|path>` · `--template <blank|research>` · `--yes` (CI) · `--dir <path>`.
+`new` flags (any also pre-seed the picker): `--targets cli,desktop,web` · `--model <id|path>` · `--template <basic|research>` · `--yes` (CI) · `--dir <path>`.
+
+Two more, for controlling what `new` does after it writes the tree: `--skip-install` (don't run `npm install`) and `--skip-apps` (don't fetch the template's default AgentApp). They are independent — the harness imports its apps at the top level, so a scaffold made with `--skip-apps` neither typechecks nor starts until you add them with `harness.dev install`. Use it only for an offline or hermetic scaffold.
 
 **Manage a scaffolded project** (run from its root)
 
