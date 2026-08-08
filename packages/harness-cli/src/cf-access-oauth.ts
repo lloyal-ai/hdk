@@ -48,6 +48,7 @@ import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { AddressInfo } from 'node:net';
+import { httpFetch } from './http.js';
 
 // ── Constants ───────────────────────────────────────────────────────
 
@@ -141,7 +142,7 @@ export async function ensureFreshToken(resourceUrl: string): Promise<string> {
  */
 export async function discoverEndpoints(resourceUrl: string): Promise<AuthServerEndpoints> {
   // Step 1: HEAD the resource; expect 401 with www-authenticate header.
-  const head = await fetch(resourceUrl, { method: 'HEAD' });
+  const head = await httpFetch(resourceUrl, { method: 'HEAD' });
   const wwwAuth = head.headers.get('www-authenticate');
   if (!wwwAuth) {
     throw new Error(
@@ -159,7 +160,7 @@ export async function discoverEndpoints(resourceUrl: string): Promise<AuthServer
   const resourceMetadataUrl = rmMatch[1];
 
   // Step 2: Fetch the resource-metadata document (RFC 9728).
-  const rmResp = await fetch(resourceMetadataUrl);
+  const rmResp = await httpFetch(resourceMetadataUrl);
   if (!rmResp.ok) {
     throw new Error(
       `Cloudflare Access OAuth discovery: resource-metadata fetch ${resourceMetadataUrl} returned HTTP ${rmResp.status}.`,
@@ -176,7 +177,7 @@ export async function discoverEndpoints(resourceUrl: string): Promise<AuthServer
 
   // Step 3: Fetch the authorization-server-metadata document (RFC 8414).
   const wkUrl = `${authServer.replace(/\/$/, '')}/.well-known/oauth-authorization-server`;
-  const wkResp = await fetch(wkUrl);
+  const wkResp = await httpFetch(wkUrl);
   if (!wkResp.ok) {
     throw new Error(
       `Cloudflare Access OAuth discovery: authorization-server-metadata fetch ${wkUrl} returned HTTP ${wkResp.status}.`,
@@ -221,7 +222,7 @@ export async function registerClient(
   endpoints: AuthServerEndpoints,
   redirectUri: string,
 ): Promise<string> {
-  const resp = await fetch(endpoints.registration_endpoint, {
+  const resp = await httpFetch(endpoints.registration_endpoint, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -348,7 +349,7 @@ export async function refreshAccessToken(
   body.set('refresh_token', existing.refresh_token);
   body.set('client_id', existing.client_id);
 
-  const resp = await fetch(endpoints.token_endpoint, {
+  const resp = await httpFetch(endpoints.token_endpoint, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: body.toString(),
@@ -383,7 +384,7 @@ async function exchangeCodeForTokens(
   body.set('client_id', params.client_id);
   body.set('redirect_uri', params.redirect_uri);
 
-  const resp = await fetch(endpoints.token_endpoint, {
+  const resp = await httpFetch(endpoints.token_endpoint, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: body.toString(),

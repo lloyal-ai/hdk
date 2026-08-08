@@ -2,6 +2,7 @@ import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline/promises';
 import type { Command } from '../command.js';
 import { ensureFreshToken } from '../cf-access-oauth.js';
+import { httpFetch } from '../http.js';
 
 const API_BASE = 'https://api.lloyal.ai';
 const REGISTER_ENDPOINT = `${API_BASE}/v1/publishers/register`;
@@ -120,7 +121,7 @@ async function runRegister(argv: readonly string[]): Promise<number> {
     return 1;
   }
 
-  const res = await fetch(REGISTER_ENDPOINT, {
+  const res = await httpFetch(REGISTER_ENDPOINT, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -183,7 +184,7 @@ async function runMe(argv: readonly string[]): Promise<number> {
     }
   }
 
-  const res = await fetch(ME_ENDPOINT, { headers });
+  const res = await httpFetch(ME_ENDPOINT, { headers });
   if (res.status === 404) {
     process.stderr.write(
       'harness.dev publishers me: no publisher account for this identity. ' +
