@@ -7,6 +7,7 @@ import type { Command } from '../command.js';
 import { ensureFreshToken } from '../cf-access-oauth.js';
 import { buildAttentionSurface } from '../describe.js';
 import { readTarEntry, isGzipReadable } from '../tar-read.js';
+import { httpFetch } from '../http.js';
 
 const API_BASE = 'https://api.lloyal.ai';
 const DEFAULT_PUBLISH_ENDPOINT = `${API_BASE}/v1/publish`;
@@ -321,7 +322,7 @@ export const publishCommand: Command = {
       `harness.dev publish: submitting ${stub.name}@${stub.version} (${stub.sizeBytes} bytes) to ${endpoint}...\n`,
     );
 
-    const res = await fetch(endpoint, { method: 'POST', headers, body: form });
+    const res = await httpFetch(endpoint, { method: 'POST', headers, body: form });
     if (!res.ok) {
       const body = await res.text();
       process.stderr.write(`harness.dev publish: HTTP ${res.status} ${res.statusText}\n${body}\n`);
@@ -384,7 +385,7 @@ async function runStatus(argv: readonly string[]): Promise<number> {
     process.stderr.write(`harness.dev publish status: ${asMessage(err)}\n`);
     return 1;
   }
-  const res = await fetch(endpoint, { headers });
+  const res = await httpFetch(endpoint, { headers });
   if (!res.ok) {
     const body = await res.text();
     process.stderr.write(`harness.dev publish status: HTTP ${res.status}\n${body}\n`);
@@ -420,7 +421,7 @@ async function runStatus(argv: readonly string[]): Promise<number> {
 async function lookupPublisherHandle(
   headers: Record<string, string>,
 ): Promise<string> {
-  const res = await fetch(DEFAULT_PUBLISHERS_ME_ENDPOINT, { headers });
+  const res = await httpFetch(DEFAULT_PUBLISHERS_ME_ENDPOINT, { headers });
   if (res.status === 404) {
     const body = (await res.json().catch(() => ({}))) as PublisherMeResponse;
     throw new Error(

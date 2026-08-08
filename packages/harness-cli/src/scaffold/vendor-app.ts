@@ -32,6 +32,7 @@ import {
 } from '../verify.js';
 import { readTarEntry, isGzipReadable } from '../tar-read.js';
 import type { AttentionSurface } from '../describe.js';
+import { httpFetch } from '../http.js';
 
 /**
  * Spec grammar: `<publisher>/<name>[@<semver>]` (post-W) or back-compat
@@ -127,7 +128,7 @@ export async function verifyAndVendorApp(
   const { manifest, trustKey } = await fetchAndVerifyManifest(entry, spec.name);
 
   // 4. Tarball fetch + Ed25519 verify over the raw bytes.
-  const response = await fetch(entry.tarballUrl);
+  const response = await httpFetch(entry.tarballUrl);
   if (!response.ok) {
     throw new BundleVerificationError(
       `Tarball fetch from ${entry.tarballUrl} returned HTTP ${response.status} ${response.statusText}.`,

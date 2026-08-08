@@ -3,6 +3,7 @@ import { writeFile, mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { Command } from '../command.js';
 import { ensureFreshToken } from '../cf-access-oauth.js';
+import { httpFetch } from '../http.js';
 
 const API_BASE = 'https://api.lloyal.ai';
 const REVIEW_BASE = `${API_BASE}/v1/review`;
@@ -226,7 +227,7 @@ async function runInspect(argv: readonly string[]): Promise<number> {
       return 1;
     }
 
-    const tgz = await fetch(inspectUrl);
+    const tgz = await httpFetch(inspectUrl);
     if (!tgz.ok) return errorOut('review inspect (tarball download)', tgz);
     const buf = new Uint8Array(await tgz.arrayBuffer());
     await writeFile(outPath, buf);
@@ -345,12 +346,12 @@ async function authedHeaders(endpoint: string): Promise<Record<string, string>> 
 
 async function authedGet(url: string): Promise<Response> {
   const headers = await authedHeaders(url);
-  return fetch(url, { headers });
+  return httpFetch(url, { headers });
 }
 
 async function authedFetch(url: string, init: RequestInit): Promise<Response> {
   const headers = { ...(await authedHeaders(url)), ...(init.headers as Record<string, string> | undefined ?? {}) };
-  return fetch(url, { ...init, headers });
+  return httpFetch(url, { ...init, headers });
 }
 
 async function errorOut(label: string, res: Response): Promise<number> {

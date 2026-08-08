@@ -28,6 +28,7 @@ import {
   type Role,
 } from '../scaffold/apply-model.js';
 import { MODEL_CATALOG, modelsForRole } from '../scaffold/model-catalog.js';
+import { httpFetch } from '../http.js';
 
 const ROLES: readonly Role[] = ['llm', 'reranker'];
 
@@ -285,7 +286,7 @@ function fileNameFromUrl(url: string): string {
  * (delete + throw) on a mismatch. On any failure the partial file is removed.
  */
 async function streamToFile(url: string, dest: string, expectedSha: string | undefined): Promise<void> {
-  const res = await fetch(url);
+  const res = await httpFetch(url);
   if (!res.ok || !res.body) {
     throw new Error(`fetch ${url} returned HTTP ${res.status} ${res.statusText}`);
   }

@@ -23,7 +23,20 @@
  * rig/harness-cli both must reproduce the exact signed bytes to verify,
  * and the on-the-wire signed catalog is the cross-check. Bytes-level
  * tests would belong here if the surface expands.
+ *
+ * The one import below is the sole exception to this file's otherwise
+ * total self-containment: the catalog + manifest fetches are the FIRST
+ * network calls on the vendoring path, so they are the ones that must
+ * not hang. `http.ts` is original Apache-2.0 CLI code, so it carries no
+ * FSL provenance into a future `@lloyal-labs/channel-verify` extraction
+ * (task #465) — that package would take it along or accept a `fetch`.
+ *
+ * `http.ts` is in fact a SECOND instance of this file's own story: a rig
+ * primitive (`rig/src/cancellable-fetch.ts`) re-authored here because the
+ * native-dep chain makes importing it impossible. Same cause, same remedy
+ * — #465 should extract both, not just the verify surface.
  */
+import { httpFetch } from './http.js';
 
 // ── Framework-vendored constants ──────────────────────────────────────
 
@@ -212,7 +225,7 @@ function catalogSignedBytes(
  */
 export async function fetchAndVerifyCatalog(): Promise<SignedCatalog> {
   const url = CHANNEL_CATALOG_URL;
-  const response = await fetch(url);
+  const response = await httpFetch(url);
   if (!response.ok) {
     throw new BundleVerificationError(
       `Catalog fetch from ${url} returned HTTP ${response.status} ${response.statusText}.`,
@@ -308,7 +321,7 @@ export async function fetchAndVerifyManifest(
   entry: CatalogVersion,
   name: string,
 ): Promise<{ manifest: AppBundleManifest; trustKey: Uint8Array }> {
-  const response = await fetch(entry.manifestUrl);
+  const response = await httpFetch(entry.manifestUrl);
   if (!response.ok) {
     throw new BundleVerificationError(
       `Manifest fetch from ${entry.manifestUrl} returned HTTP ${response.status} ${response.statusText}.`,

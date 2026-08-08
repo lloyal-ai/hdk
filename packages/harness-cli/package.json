@@ -1,6 +1,6 @@
 {
   "name": "harness.dev",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "The Harness Development Kit CLI — scaffold HDK harnesses and apps.",
   "bin": {
     "harness.dev": "bin/run.js"
