@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { cpSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve, relative, sep, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pruneTargets, type Target } from '../src/scaffold/prune-targets.js';
 import { applyModelChoice, isModelPath } from '../src/scaffold/apply-model.js';
@@ -187,6 +187,26 @@ describe('the shared React view outlives either DOM target alone', () => {
     expect(jsoncArray(join(dir, 'tsconfig.json'), 'exclude')).not.toContain('targets/_shared');
   });
 
+  /**
+   * Every module specifier in a file, across all three import forms — `from "x"`,
+   * side-effect `import "x"`, and dynamic `import("x")` (which also covers
+   * `export … from`). Matching the SPECIFIER rather than the import syntax is
+   * what makes this depth- and form-agnostic; the earlier version only saw
+   * `from "../x/"` and would have missed a side-effect CSS import outright.
+   */
+  function specifiers(file: string): string[] {
+    const src = readFileSync(file, 'utf8');
+    return [...src.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)["']([^"']+)["']/g)].map((m) => m[1]);
+  }
+
+  function walkSources(dir: string, fn: (file: string) => void): void {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walkSources(p, fn);
+      else if (/\.(ts|tsx)$/.test(e.name)) fn(p);
+    }
+  }
+
   it.each(['basic', 'research'] as const)(
     '%s: no target imports across into another target',
     (template) => {
@@ -196,19 +216,37 @@ describe('the shared React view outlives either DOM target alone', () => {
       // parked inside one target trips this.
       const root = join(TEMPLATES, template, 'targets');
       const offenders: string[] = [];
-      const walk = (dir: string, owner: string): void => {
-        for (const e of readdirSync(dir, { withFileTypes: true })) {
-          const p = join(dir, e.name);
-          if (e.isDirectory()) walk(p, owner);
-          else if (/\.(ts|tsx)$/.test(e.name)) {
-            for (const m of readFileSync(p, 'utf8').matchAll(/from ["']\.\.\/([\w-]+)\//g)) {
-              const other = m[1];
-              if (other !== '_shared' && other !== owner) offenders.push(`${owner}/${e.name} → ${other}`);
-            }
+      for (const owner of ['cli', 'desktop', 'web']) {
+        walkSources(join(root, owner), (file) => {
+          for (const spec of specifiers(file)) {
+            if (!spec.startsWith('.')) continue;
+            // Resolve rather than pattern-match, so `../../desktop/x` and
+            // `../desktop/x` are judged the same way.
+            const rel = relative(root, resolve(dirname(file), spec));
+            const [dir] = rel.split(sep);
+            if (rel.startsWith('..') || dir === owner || dir === '_shared') continue;
+            offenders.push(`${owner}/${basename(file)} → ${dir}`);
           }
-        }
-      };
-      for (const t of ['cli', 'desktop', 'web']) walk(join(root, t), t);
+        });
+      }
+      expect(offenders).toEqual([]);
+    },
+  );
+
+  it.each(['basic', 'research'] as const)(
+    '%s: the harness runtime path has no dynamic import()',
+    (template) => {
+      // Metro needs a statically analysable module graph, so a dynamic import
+      // under harness/ or targets/ forecloses a future React Native target.
+      // `bin/` is exempt on purpose — those are boot shims, not runtime.
+      const offenders: string[] = [];
+      for (const sub of ['harness', 'targets']) {
+        walkSources(join(TEMPLATES, template, sub), (file) => {
+          if (/\bimport\s*\(/.test(readFileSync(file, 'utf8'))) {
+            offenders.push(relative(join(TEMPLATES, template), file));
+          }
+        });
+      }
       expect(offenders).toEqual([]);
     },
   );

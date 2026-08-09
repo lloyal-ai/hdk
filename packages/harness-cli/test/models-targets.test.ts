@@ -332,6 +332,27 @@ describe('targets:add (inverse of prune)', () => {
     expect(exclude(dir)).toContain('targets/_shared');
   });
 
+  it('refuses a pre-0.9 layout loudly, without touching the project', async () => {
+    // 0.9 is a clean break with no migration — but breaking loudly and breaking
+    // silently are different. Without the guard, targets:add writes a
+    // web/main.tsx importing ../_shared/App.js into a project with no _shared,
+    // and reports SUCCESS.
+    const dir = await scaffold('t8', 'cli,desktop');
+    // Rewind to the old shape: view back inside desktop/, no _shared.
+    cpSync(join(dir, 'targets/_shared'), join(dir, 'targets/desktop'), { recursive: true });
+    rmSync(join(dir, 'targets/_shared'), { recursive: true, force: true });
+
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    expect(await runIn(dir, () => targetsAddCommand.run(['web']))).toBe(1);
+    const said = err.mock.calls.map((c) => String(c[0])).join('');
+    err.mockRestore();
+
+    expect(said).toMatch(/predates harness\.dev 0\.9/);
+    expect(said).toMatch(/targets\/_shared/);
+    expect(existsSync(join(dir, 'targets/web'))).toBe(false); // nothing written
+    expect(existsSync(join(dir, 'targets/desktop'))).toBe(true); // nothing destroyed
+  });
+
   it('folds the ORIGINATING template (research web is research’s, not basic’s)', async () => {
     const dir = await scaffold('t5', 'cli,desktop,web', 'research');
     await runIn(dir, () => targetsRemoveCommand.run(['web', '--yes']));

@@ -81,6 +81,33 @@ export const SHARED_RENDERER_DEV_DEPS = ['@vitejs/plugin-react', '@types/react-d
 export const SHARED_RENDERER_DIR = 'targets/_shared';
 
 /**
+ * Refuse to operate on a project laid out the pre-0.9 way (React view still
+ * inside `targets/desktop/`).
+ *
+ * 0.9 is a clean break — there is deliberately no migration. But breaking
+ * loudly and breaking silently are different things, and without this check the
+ * `targets:` verbs do the latter: `targets:add web` writes a `web/main.tsx`
+ * importing `../_shared/App.js` into a project that has no `_shared`, then
+ * reports success. Say so instead.
+ *
+ * A cli-only project legitimately has no `_shared` — nothing mounts the view —
+ * so the check keys off a DOM target being present.
+ */
+export function assertSharedViewLayout(projectDir: string): void {
+  const hasDom = (['desktop', 'web'] as const).some((t) =>
+    existsSync(join(projectDir, 'targets', t)),
+  );
+  if (!hasDom || existsSync(join(projectDir, SHARED_RENDERER_DIR))) return;
+  throw new Error(
+    'this project predates harness.dev 0.9 — its React view is still inside ' +
+      '`targets/desktop/`, but the `targets:` verbs now expect `targets/_shared/`.\n' +
+      '  0.9 moved the shared view so that removing desktop stops breaking the web build.\n' +
+      '  There is no migration path. Scaffold a fresh project with `npx harness.dev new` ' +
+      'and copy your `harness/` (and your view) across.',
+  );
+}
+
+/**
  * Reduce `<projectDir>` to `keep`. `keep` MUST include `'cli'`. A no-op when all
  * three targets are kept (beyond normalizing the `harness.yml` `targets:` line).
  */

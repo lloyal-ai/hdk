@@ -12,7 +12,12 @@ import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline/promises';
 import type { Command } from '../command.js';
 import { harnessProjectRoot } from '../scaffold/project.js';
-import { pruneTargets, type PrunableTarget, type Target } from '../scaffold/prune-targets.js';
+import {
+  pruneTargets,
+  assertSharedViewLayout,
+  type PrunableTarget,
+  type Target,
+} from '../scaffold/prune-targets.js';
 import { addTarget, presentTargets } from '../scaffold/add-target.js';
 import { readProjectMarker, setMarkerTargets } from '../scaffold/write-marker.js';
 
@@ -58,6 +63,7 @@ export const targetsAddCommand: Command = {
     try {
       const root = harnessProjectRoot();
       const target = parsePrunable(positionals[0]);
+      assertSharedViewLayout(root);
       const marker = readProjectMarker(root);
       if (!marker) {
         throw new Error(
@@ -105,6 +111,7 @@ export const targetsRemoveCommand: Command = {
     try {
       const root = harnessProjectRoot();
       const target = parsePrunable(positionals[0]);
+      assertSharedViewLayout(root);
       const present = presentTargets(root);
       if (!present.includes(target)) {
         throw new Error(`target "${target}" is not present — nothing to remove.`);
