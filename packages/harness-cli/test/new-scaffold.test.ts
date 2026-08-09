@@ -1,9 +1,9 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { cpSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve, relative, sep, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { pruneTargets } from '../src/scaffold/prune-targets.js';
+import { pruneTargets, type Target } from '../src/scaffold/prune-targets.js';
 import { applyModelChoice, isModelPath } from '../src/scaffold/apply-model.js';
 import { modelsForRole, MODEL_CATALOG } from '../src/scaffold/model-catalog.js';
 import { newCommand } from '../src/commands/new.js';
@@ -157,6 +157,99 @@ describe('preflight-apps — the app guard runs before the compiler', () => {
     expect(existsSync(join(dir, 'bin/preflight-apps.js'))).toBe(true);
     expect(p.scripts.prestart).toContain('node bin/preflight-apps.js');
   });
+});
+
+describe('the shared React view outlives either DOM target alone', () => {
+  const TEMPLATES = join(dirname(fileURLToPath(import.meta.url)), '..', 'templates');
+  const SHARED = 'targets/_shared/App.tsx';
+
+  /** Entries of a JSONC array field, comments stripped. */
+  function jsoncArray(file: string, key: string): string[] {
+    const raw = readFileSync(file, 'utf8').replace(/\/\/.*/g, '');
+    return (JSON.parse(raw) as Record<string, string[]>)[key] ?? [];
+  }
+
+  it.each([
+    ['cli,web (desktop pruned)', ['cli', 'web']],
+    ['cli,desktop (web pruned)', ['cli', 'desktop']],
+  ] as const)('%s keeps it — the surviving target still mounts it', (_label, keep) => {
+    const dir = freshBlankProject();
+    pruneTargets(dir, keep as unknown as Target[]);
+    expect(existsSync(join(dir, SHARED))).toBe(true);
+    // …and typecheck still covers it.
+    expect(jsoncArray(join(dir, 'tsconfig.web.json'), 'include')).toContain(SHARED);
+  });
+
+  it('cli-only drops it, and takes its dangling Node exclude entry with it', () => {
+    const dir = freshBlankProject();
+    pruneTargets(dir, ['cli']);
+    expect(existsSync(join(dir, 'targets/_shared'))).toBe(false);
+    expect(jsoncArray(join(dir, 'tsconfig.json'), 'exclude')).not.toContain('targets/_shared');
+  });
+
+  /**
+   * Every module specifier in a file, across all three import forms — `from "x"`,
+   * side-effect `import "x"`, and dynamic `import("x")` (which also covers
+   * `export … from`). Matching the SPECIFIER rather than the import syntax is
+   * what makes this depth- and form-agnostic; the earlier version only saw
+   * `from "../x/"` and would have missed a side-effect CSS import outright.
+   */
+  function specifiers(file: string): string[] {
+    const src = readFileSync(file, 'utf8');
+    return [...src.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)["']([^"']+)["']/g)].map((m) => m[1]);
+  }
+
+  function walkSources(dir: string, fn: (file: string) => void): void {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walkSources(p, fn);
+      else if (/\.(ts|tsx)$/.test(e.name)) fn(p);
+    }
+  }
+
+  it.each(['basic', 'research'] as const)(
+    '%s: no target imports across into another target',
+    (template) => {
+      // THE INVARIANT. web/main.tsx used to import ../desktop/App.js, so pruning
+      // desktop stranded it — broken since 0.6.4 and caught by nothing, because
+      // the all-three default scaffold resolves fine. Any future shared file
+      // parked inside one target trips this.
+      const root = join(TEMPLATES, template, 'targets');
+      const offenders: string[] = [];
+      for (const owner of ['cli', 'desktop', 'web']) {
+        walkSources(join(root, owner), (file) => {
+          for (const spec of specifiers(file)) {
+            if (!spec.startsWith('.')) continue;
+            // Resolve rather than pattern-match, so `../../desktop/x` and
+            // `../desktop/x` are judged the same way.
+            const rel = relative(root, resolve(dirname(file), spec));
+            const [dir] = rel.split(sep);
+            if (rel.startsWith('..') || dir === owner || dir === '_shared') continue;
+            offenders.push(`${owner}/${basename(file)} → ${dir}`);
+          }
+        });
+      }
+      expect(offenders).toEqual([]);
+    },
+  );
+
+  it.each(['basic', 'research'] as const)(
+    '%s: the harness runtime path has no dynamic import()',
+    (template) => {
+      // Metro needs a statically analysable module graph, so a dynamic import
+      // under harness/ or targets/ forecloses a future React Native target.
+      // `bin/` is exempt on purpose — those are boot shims, not runtime.
+      const offenders: string[] = [];
+      for (const sub of ['harness', 'targets']) {
+        walkSources(join(TEMPLATES, template, sub), (file) => {
+          if (/\bimport\s*\(/.test(readFileSync(file, 'utf8'))) {
+            offenders.push(relative(join(TEMPLATES, template), file));
+          }
+        });
+      }
+      expect(offenders).toEqual([]);
+    },
+  );
 });
 
 describe('pruneTargets — cli + web (desktop pruned)', () => {

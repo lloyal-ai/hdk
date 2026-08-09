@@ -301,6 +301,58 @@ describe('targets:add (inverse of prune)', () => {
     expect(existsSync(join(dir, 'bin/ensure-electron.js'))).toBe(true);
   });
 
+  it('the shared view survives losing ONE DOM target, and returns with the first one back', async () => {
+    // The mutation path no scaffold covers. `targets:remove desktop` used to
+    // delete the React view out from under a WORKING web build — the sharpest
+    // form of this bug, because nothing about it looks destructive.
+    const shared = 'targets/_shared/App.tsx';
+    const include = (d: string): string[] =>
+      JSON.parse(readFileSync(join(d, 'tsconfig.web.json'), 'utf8').replace(/\/\/.*/g, '')).include;
+    const exclude = (d: string): string[] =>
+      JSON.parse(readFileSync(join(d, 'tsconfig.json'), 'utf8').replace(/\/\/.*/g, '')).exclude;
+
+    const dir = await scaffold('t7', 'cli,desktop,web');
+    expect(existsSync(join(dir, shared))).toBe(true);
+
+    // 1. Drop desktop — web still mounts the view, so it must stay.
+    expect(await runIn(dir, () => targetsRemoveCommand.run(['desktop', '--yes']))).toBe(0);
+    expect(existsSync(join(dir, shared))).toBe(true);
+    expect(include(dir)).toContain(shared);
+
+    // 2. Drop web too — now nothing mounts it, so it goes, exclude entry included.
+    expect(await runIn(dir, () => targetsRemoveCommand.run(['web', '--yes']))).toBe(0);
+    expect(existsSync(join(dir, 'targets/_shared'))).toBe(false);
+    expect(exclude(dir)).not.toContain('targets/_shared');
+
+    // 3. Add web back — the dir AND both tsconfig entries must return, or the
+    // Node build tries to compile the React view and typecheck fails.
+    expect(await runIn(dir, () => targetsAddCommand.run(['web']))).toBe(0);
+    expect(existsSync(join(dir, shared))).toBe(true);
+    expect(include(dir)).toContain(shared);
+    expect(exclude(dir)).toContain('targets/_shared');
+  });
+
+  it('refuses a pre-0.9 layout loudly, without touching the project', async () => {
+    // 0.9 is a clean break with no migration — but breaking loudly and breaking
+    // silently are different. Without the guard, targets:add writes a
+    // web/main.tsx importing ../_shared/App.js into a project with no _shared,
+    // and reports SUCCESS.
+    const dir = await scaffold('t8', 'cli,desktop');
+    // Rewind to the old shape: view back inside desktop/, no _shared.
+    cpSync(join(dir, 'targets/_shared'), join(dir, 'targets/desktop'), { recursive: true });
+    rmSync(join(dir, 'targets/_shared'), { recursive: true, force: true });
+
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    expect(await runIn(dir, () => targetsAddCommand.run(['web']))).toBe(1);
+    const said = err.mock.calls.map((c) => String(c[0])).join('');
+    err.mockRestore();
+
+    expect(said).toMatch(/predates harness\.dev 0\.9/);
+    expect(said).toMatch(/targets\/_shared/);
+    expect(existsSync(join(dir, 'targets/web'))).toBe(false); // nothing written
+    expect(existsSync(join(dir, 'targets/desktop'))).toBe(true); // nothing destroyed
+  });
+
   it('folds the ORIGINATING template (research web is research’s, not basic’s)', async () => {
     const dir = await scaffold('t5', 'cli,desktop,web', 'research');
     await runIn(dir, () => targetsRemoveCommand.run(['web', '--yes']));

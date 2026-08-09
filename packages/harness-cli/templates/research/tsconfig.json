@@ -29,6 +29,7 @@
   // Electron target (main/preload are CJS, App/view are DOM-React) and the web
   // browser sources.
   "exclude": [
+    "targets/_shared",
     "targets/desktop",
     "targets/web/main.tsx",
     "targets/web/boot.ts",

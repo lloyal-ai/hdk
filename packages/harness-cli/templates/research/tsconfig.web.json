@@ -20,7 +20,7 @@
   "include": [
     "harness/protocol.ts",
     "harness/state.ts",
-    "targets/desktop/App.tsx",
+    "targets/_shared/App.tsx",
     "targets/desktop/view.tsx",
     "targets/web/main.tsx",
     "targets/web/boot.ts",

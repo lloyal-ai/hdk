@@ -2,6 +2,6 @@
 // `window.harness` (the wss bridge) before the shared view mounts and subscribes.
 import "./boot.js";
 import { createRoot } from "react-dom/client";
-import { HarnessApp } from "../desktop/App.js";
+import { HarnessApp } from "../_shared/App.js";
 
 createRoot(document.getElementById("root")!).render(<HarnessApp />);
