@@ -5,6 +5,9 @@
   "description": "A vertical inference harness scaffolded by `harness.dev`.",
   "license": "Apache-2.0",
   "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
   "bin": {
     "__NAME__": "bin/run.js"
   },

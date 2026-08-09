@@ -18,7 +18,7 @@ import { createRequire } from 'node:module';
 import { useRef, useState, type ReactElement } from 'react';
 import { Box, Text, render, useApp, useInput } from 'ink';
 import { TextInput, Select, MultiSelect, ThemeProvider } from '@inkjs/ui';
-import { modelsForRole } from '../scaffold/model-catalog.js';
+import { modelsForRole, MODEL_FOOTPRINT_HINT } from '../scaffold/model-catalog.js';
 import { cliTheme, ACCENT } from '../scaffold/palette.js';
 import type { Target } from '../scaffold/prune-targets.js';
 
@@ -376,6 +376,11 @@ export function Wizard({
         {step === 'model' && (
           <Box flexDirection="column">
             <Field label="Trunk model" hint="fetched + digest-verified on first run — no key" />
+            {/* The hardware floor belongs HERE, at the moment the choice is
+                committed — not only in the docs, which a wizard user may never
+                have opened. Concurrent agents share one context, so they do not
+                multiply this; memory tracks KV fullness, not agent count. */}
+            <Text dimColor>{`  ${MODEL_FOOTPRINT_HINT}`}</Text>
             <Select
               options={[
                 { label: `Recommended — ${defaultLlmLabel}`, value: 'recommended' },

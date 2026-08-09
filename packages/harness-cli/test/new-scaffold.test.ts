@@ -234,6 +234,21 @@ describe('the shared React view outlives either DOM target alone', () => {
   );
 
   it.each(['basic', 'research'] as const)(
+    '%s: declares a Node floor, so an old runtime fails at install not inside vite',
+    (template) => {
+      // The templates declared NO engines at all, so a scaffold asserted nothing
+      // and Node 18 surfaced as an opaque vite failure. The floor must also
+      // match the CLI's own, or the docs and the two package.jsons disagree.
+      const tpl = JSON.parse(readFileSync(join(TEMPLATES, template, 'package.json'), 'utf8'));
+      const cli = JSON.parse(
+        readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'),
+      );
+      expect(tpl.engines?.node).toBe('>=24');
+      expect(tpl.engines.node).toBe(cli.engines.node);
+    },
+  );
+
+  it.each(['basic', 'research'] as const)(
     '%s: the harness runtime path has no dynamic import()',
     (template) => {
       // Metro needs a statically analysable module graph, so a dynamic import

@@ -39,6 +39,23 @@ export const MODEL_CATALOG: readonly CatalogModel[] = [
   },
 ];
 
+/**
+ * One-line hardware floor, shown at the moment the model is chosen.
+ *
+ * Grounded, not guessed: `qwen3.5-4b` Q4_K_M is 2.6 GB of weights and the
+ * `research` template adds the 0.6B reranker at 630 MB (`sizeBytes` in rig's
+ * `MODEL_CATALOG`, packages/rig/src/models.ts). The rest of the 16 GB covers KV
+ * at the recommended 32k context plus the OS and whichever surface is running —
+ * 8 GB does not survive Electron or a browser on top. 16 GB is the machine the
+ * `research` template was verified end-to-end on (Apple M2, 16 GB).
+ *
+ * The second sentence is the counter-intuitive part and the reason this exists:
+ * readers assume four agents means four times the model. They share one
+ * context, so the cost tracks KV FULLNESS, not agent count.
+ */
+export const MODEL_FOOTPRINT_HINT =
+  '~2.6 GB download · 16 GB RAM recommended. Concurrent agents share one context — they do not multiply it.';
+
 /** The catalog entries for one role, in listing order. */
 export function modelsForRole(role: ModelRole): readonly CatalogModel[] {
   return MODEL_CATALOG.filter((m) => m.role === role);
