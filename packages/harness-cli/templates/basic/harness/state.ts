@@ -120,7 +120,10 @@ export function reduce(s: AppState, ev: WorkflowEvent): AppState {
     case "answer":
       return { ...s, phase: "answered", answer: ev.text, error: null };
     case "error":
-      return { ...s, phase: "error", error: ev.message, answer: "" };
+      // Keep `answer`. On a follow-up it is the article being deepened, and a
+      // failed turn is no reason to blank the page the reader already has; on a
+      // fresh turn the preceding `query` already cleared it.
+      return { ...s, phase: "error", error: ev.message };
 
     // ── framework agent events (shared across every harness) ──
     case "agent:spawn": {
@@ -362,6 +365,12 @@ export function toolCount(agents: Iterable<AgentView>): number {
 
 /** Research agents (those that use tools) vs the tool-less synth agent. */
 export const isResearchAgent = (a: AgentView): boolean => a.tools.length > 0;
+
+/** Still working — generating, or waiting on a tool call. Both count as live:
+ *  an agent spends most of its run in `tool`, so treating only `active` as
+ *  working would read as "finished" for most of the research. */
+export const isLiveAgent = (a: AgentView): boolean =>
+  a.status === "active" || a.status === "tool";
 
 /**
  * The report body a research agent is WRITING, streamed. The model emits its

@@ -25,6 +25,7 @@ import {
   wikipediaSources,
   reportHeadings,
   isResearchAgent,
+  isLiveAgent,
   type AppState,
   type AgentView,
   type WikiSource,
@@ -77,7 +78,7 @@ function AgentEntry({ a }: { a: AgentView }): ReactElement {
   const bodyRef = useRef<HTMLDivElement>(null);
   const reasoning = cleanNarration(a.body);
   const report = extractStreamingReport(a.body); // null until the report tool call starts
-  const live = a.status === "active" || a.status === "tool";
+  const live = isLiveAgent(a);
   const lastLine = (t: string): string => t.split("\n").filter(Boolean).slice(-1)[0] ?? "";
   const preview = report !== null ? lastLine(report) || "writing report…" : lastLine(reasoning) || "thinking…";
   const status =
@@ -194,7 +195,7 @@ export function HarnessApp(): ReactElement {
   // the real synth once it exists and is harmless before then.
   const thisTurn = agents.filter((a) => a.turn === state.turn);
   const synth = [...thisTurn].reverse().find((a) => !isResearchAgent(a));
-  const live = thisTurn.filter((a) => a.status === "active" && isResearchAgent(a));
+  const live = thisTurn.filter((a) => isLiveAgent(a) && isResearchAgent(a));
   // The log keeps every turn's agents as the record of how this page was
   // composed — but calling the finished ones "reading" is false the moment a
   // follow-up starts, so the present tense counts only what is live.

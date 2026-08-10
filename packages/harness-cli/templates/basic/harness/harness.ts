@@ -326,7 +326,17 @@ function* runQuery(
   // trunk, `commitTurn` takes its cold path — fresh branch, prefill, promote —
   // and promote's `retainOnly` reclaims the old one. Append instead and the
   // trunk ends up holding every revision of the page.
+  //
+  // Restore on failure: until `promote` lands there is no new trunk, so leaving
+  // it null would silently drop the article and open the NEXT question on a
+  // blank page. Better to lose the turn than the page.
+  const superseded = session.trunk;
   session.trunk = null;
-  yield* call(() => session.commitTurn(query, answer));
+  try {
+    yield* call(() => session.commitTurn(query, answer));
+  } catch (err) {
+    session.trunk = superseded;
+    throw err;
+  }
   return answer;
 }
