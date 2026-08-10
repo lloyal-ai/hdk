@@ -32,6 +32,13 @@ export type WorkflowEvent =
   | AgentEvent
   // Boot finished — the surface may accept a query. Carries the measured facts.
   | { type: "ready"; facts: BootFacts }
+  // A turn began. Emitted BEFORE any work, so the surface knows a new turn
+  // started without having to infer it from the first `agent:spawn` — which is
+  // both late and unable to tell a new turn's first agent from an extra agent
+  // spawned inside the current one. `warm` is true when the session already has
+  // a trunk, i.e. this turn DEEPENS the existing article rather than starting a
+  // fresh one; the view uses it to decide between replacing and extending.
+  | { type: "query"; text: string; warm: boolean }
   // The answer for the last query.
   | { type: "answer"; text: string }
   // A recoverable error to show; the surface returns to accepting input.

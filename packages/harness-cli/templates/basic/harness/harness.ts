@@ -94,6 +94,48 @@ const SYNTH_USER = [
   "Write the grounded markdown report.",
 ].join("\n");
 
+// The follow-up variants. A second question DEEPENS the same article rather than
+// starting a new one — each turn is another pass over one accreting page.
+//
+// Nothing re-sends the article: synth forks `session.trunk`, and `commitTurn`
+// put the previous turn there, so the current article is already in this agent's
+// KV prefix. These prompts only point at it. Re-injecting it as text would pay
+// for the same tokens twice and grow with every turn.
+const SYNTH_EXTEND_SYSTEM = [
+  "You are extending an existing research article. The current article is above this",
+  "message — it is the assistant side of the previous exchange. New research notes",
+  "for a follow-up question are below. Rules:",
+  "",
+  "- Output the COMPLETE updated article, not a diff and not just the new part.",
+  "- Preserve the existing sections and their inline citations. Change a claim only",
+  "  where the new notes actually correct it.",
+  "- Fold the new material into the section where it belongs. Add a new `##` section",
+  "  only for genuinely new ground the article does not yet cover.",
+  "- The result is ONE article about the whole subject, not two reports stitched",
+  "  together. A reader arriving fresh should not be able to tell where one turn",
+  "  ended and the next began.",
+  "- Keep the opening thesis accurate for the article as it now stands, and update",
+  "  `## Bottom line` to cover the whole page rather than only the latest question.",
+  "- Same grounding rules as before: cite inline as [short title](url) using exact",
+  "  URLs from the notes, and never invent a source, URL, or fact.",
+  "",
+  "Output the markdown article directly — no preamble, no tool call.",
+].join("\n");
+const SYNTH_EXTEND_USER = [
+  "Follow-up question: <%= it.query %>",
+  "",
+  "New research notes (cite by the URLs inside them):",
+  "<%= it.notes %>",
+  "",
+  "Extend the article above to cover this as well, and output the complete article.",
+].join("\n");
+
+/** Synthesis has two modes: open a page, or deepen the one already written. */
+const SYNTH = {
+  fresh: { system: SYNTH_SYSTEM, user: SYNTH_USER },
+  deepen: { system: SYNTH_EXTEND_SYSTEM, user: SYNTH_EXTEND_USER },
+} as const;
+
 /**
  * The one place basic subclasses `AgentPolicy`. A pool consults ONE policy per
  * role; the synth agent has no tools, so its free text IS the result — but the
@@ -178,6 +220,9 @@ export function* harness(
     if (cmd.type === "quit") return;
     if (cmd.type === "submit_query") {
       try {
+        // Announce the turn before any work. A warm trunk means this turn
+        // deepens the article already on the page rather than starting one.
+        events.send({ type: "query", text: cmd.query, warm: !!session.trunk });
         const answer = yield* runQuery(cmd.query, session, events);
         events.send({ type: "answer", text: answer });
       } catch (err) {
@@ -214,6 +259,9 @@ function* runQuery(
       "No AgentApp is enabled — enable one in harness.ts (e.g. `yield* registry.enable(createWikipediaApp)`).",
     );
   }
+  // Read BEFORE the turn is committed: a trunk here means an article already
+  // exists, so this run deepens it instead of opening a new one.
+  const mode = session.trunk ? "deepen" : "fresh";
   const tools = [...apps.flatMap((a) => [...a.tools]), reportTool];
   const spinePrompt = renderSpine({ apps });
 
@@ -253,11 +301,12 @@ function* runQuery(
     return "No findings — the research agents returned nothing.";
   }
 
-  // Synth: one agent, no tools, combines the notes. Committed to the session
-  // trunk so a follow-up query can build on it.
+  // Synth: one agent, no tools, combines the notes. It forks the trunk, which
+  // already holds the article, so `deepen` can point at it rather than restate
+  // it — the page grows turn by turn instead of being replaced by a new one.
   const synth = yield* useAgent({
-    systemPrompt: SYNTH_SYSTEM,
-    task: renderTemplate(SYNTH_USER, {
+    systemPrompt: SYNTH[mode].system,
+    task: renderTemplate(SYNTH[mode].user, {
       query,
       notes: notes.map((n, i) => `[${i + 1}] ${n}`).join("\n\n"),
     }),
@@ -271,6 +320,23 @@ function* runQuery(
   // raw stream. (The live agent cards keep `<think>` via `cleanNarration`; the final
   // answer does not.)
   const answer = reportBody(synth.result ?? "") || notes.join("\n\n");
-  yield* call(() => session.commitTurn(query, answer));
+
+  // The page IS the state, so re-base the trunk on the article as it now stands
+  // rather than appending another copy beside the drafts it supersedes. With no
+  // trunk, `commitTurn` takes its cold path — fresh branch, prefill, promote —
+  // and promote's `retainOnly` reclaims the old one. Append instead and the
+  // trunk ends up holding every revision of the page.
+  //
+  // Restore on failure: until `promote` lands there is no new trunk, so leaving
+  // it null would silently drop the article and open the NEXT question on a
+  // blank page. Better to lose the turn than the page.
+  const superseded = session.trunk;
+  session.trunk = null;
+  try {
+    yield* call(() => session.commitTurn(query, answer));
+  } catch (err) {
+    session.trunk = superseded;
+    throw err;
+  }
   return answer;
 }

@@ -46,6 +46,11 @@ export interface ToolStep {
 export interface AgentView {
   id: number;
   parentId: number;
+  /** Which turn spawned this agent. Agents accumulate across turns as the
+   *  composition history of the page, so "which agents are working NOW" and
+   *  "which agent is THIS turn's synth" both need the turn, not insertion
+   *  order — ids are not comparable across pools. */
+  turn: number;
   status: AgentStatus;
   /** Accumulated streamed text (`agent:produce` deltas). Includes the model's
    *  `<think>` / `<tool_call>` markup verbatim — `cleanNarration` strips it for
@@ -62,12 +67,18 @@ export interface AppState {
   phase: Phase;
   /** Measured boot facts for the header — null until `ready` lands. */
   boot: BootFacts | null;
-  /** Insertion-ordered by spawn — the auto-view renders the tree from `parentId`. */
+  /** Insertion-ordered by spawn — the auto-view renders the tree from `parentId`.
+   *  Agents from earlier turns are KEPT on purpose: they are the record of how
+   *  the article was composed. Use `turn` to tell history from live work. */
   agents: Map<number, AgentView>;
   answer: string;
   error: string | null;
   /** KV pressure for the gauge (from `agent:tick`). */
   kv: { used: number; total: number };
+  /** Turn counter, incremented by `query`. Agents carry the turn they belong to. */
+  turn: number;
+  /** The question being answered right now. */
+  topic: string;
 }
 
 export const initialState: AppState = {
@@ -77,6 +88,8 @@ export const initialState: AppState = {
   answer: "",
   error: null,
   kv: { used: 0, total: 0 },
+  turn: 0,
+  topic: "",
 };
 
 export function reduce(s: AppState, ev: WorkflowEvent): AppState {
@@ -85,10 +98,32 @@ export function reduce(s: AppState, ev: WorkflowEvent): AppState {
     case "ready":
       // Boot facts land here — the view renders the header from `s.boot`.
       return { ...s, phase: s.phase === "booting" ? "ready" : s.phase, boot: ev.facts };
+    case "query":
+      // A turn began. Bump the turn so agents spawned from here are
+      // distinguishable from the previous turn's, which stay in the map as the
+      // record of how the page was composed.
+      //
+      // The answer is deliberately NOT cleared on a warm turn: the article on
+      // screen is the one being extended, and blanking it would leave the page
+      // empty for the minutes the new synthesis takes.
+      return {
+        ...s,
+        phase: "working",
+        turn: s.turn + 1,
+        // The page keeps the subject it was opened on. A follow-up deepens that
+        // article, so retitling it to the latest question would misname a page
+        // that is now about more than the question just asked.
+        topic: ev.warm ? s.topic : ev.text,
+        error: null,
+        answer: ev.warm ? s.answer : "",
+      };
     case "answer":
       return { ...s, phase: "answered", answer: ev.text, error: null };
     case "error":
-      return { ...s, phase: "error", error: ev.message, answer: "" };
+      // Keep `answer`. On a follow-up it is the article being deepened, and a
+      // failed turn is no reason to blank the page the reader already has; on a
+      // fresh turn the preceding `query` already cleared it.
+      return { ...s, phase: "error", error: ev.message };
 
     // ── framework agent events (shared across every harness) ──
     case "agent:spawn": {
@@ -96,6 +131,7 @@ export function reduce(s: AppState, ev: WorkflowEvent): AppState {
       agents.set(ev.agentId, {
         id: ev.agentId,
         parentId: ev.parentAgentId,
+        turn: s.turn,
         status: "active",
         body: "",
         tokens: 0,
@@ -103,9 +139,10 @@ export function reduce(s: AppState, ev: WorkflowEvent): AppState {
         toolCalls: 0,
         tools: [],
       });
-      // A new query begins — clear the prior answer/error so it doesn't
-      // linger while this run produces.
-      return { ...s, phase: "working", agents, answer: "", error: null };
+      // Turn boundaries are marked by `query`, which arrives before any agent —
+      // this case no longer has to infer one (and must not clear `answer`, or a
+      // warm turn would blank the article it is extending).
+      return { ...s, phase: "working", agents };
     }
     case "agent:produce":
       return patch(s, ev.agentId, (a) => ({
@@ -328,6 +365,12 @@ export function toolCount(agents: Iterable<AgentView>): number {
 
 /** Research agents (those that use tools) vs the tool-less synth agent. */
 export const isResearchAgent = (a: AgentView): boolean => a.tools.length > 0;
+
+/** Still working — generating, or waiting on a tool call. Both count as live:
+ *  an agent spends most of its run in `tool`, so treating only `active` as
+ *  working would read as "finished" for most of the research. */
+export const isLiveAgent = (a: AgentView): boolean =>
+  a.status === "active" || a.status === "tool";
 
 /**
  * The report body a research agent is WRITING, streamed. The model emits its

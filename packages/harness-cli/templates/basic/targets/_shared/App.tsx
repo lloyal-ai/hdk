@@ -25,6 +25,7 @@ import {
   wikipediaSources,
   reportHeadings,
   isResearchAgent,
+  isLiveAgent,
   type AppState,
   type AgentView,
   type WikiSource,
@@ -77,7 +78,7 @@ function AgentEntry({ a }: { a: AgentView }): ReactElement {
   const bodyRef = useRef<HTMLDivElement>(null);
   const reasoning = cleanNarration(a.body);
   const report = extractStreamingReport(a.body); // null until the report tool call starts
-  const live = a.status === "active" || a.status === "tool";
+  const live = isLiveAgent(a);
   const lastLine = (t: string): string => t.split("\n").filter(Boolean).slice(-1)[0] ?? "";
   const preview = report !== null ? lastLine(report) || "writing report…" : lastLine(reasoning) || "thinking…";
   const status =
@@ -186,7 +187,23 @@ export function HarnessApp(): ReactElement {
 
   const agents: AgentView[] = [...state.agents.values()];
   const research = agents.filter(isResearchAgent);
-  const synth = agents.find((a) => !isResearchAgent(a));
+  // Agents accumulate across turns (they are the composition history), so the
+  // synth must be picked from THIS turn — `find` over the whole map would pin it
+  // to the first turn's synth forever, and a follow-up would never render.
+  // `isResearchAgent` is "has recorded a tool call", so a research agent looks
+  // synth-like until its first call: take the LAST match in this turn, which is
+  // the real synth once it exists and is harmless before then.
+  const thisTurn = agents.filter((a) => a.turn === state.turn);
+  const synth = [...thisTurn].reverse().find((a) => !isResearchAgent(a));
+  const live = thisTurn.filter((a) => isLiveAgent(a) && isResearchAgent(a));
+  // The log keeps every turn's agents as the record of how this page was
+  // composed — but calling the finished ones "reading" is false the moment a
+  // follow-up starts, so the present tense counts only what is live.
+  const plural = (n: number): string => (n === 1 ? "" : "s");
+  const researchNote =
+    live.length > 0
+      ? `${live.length} agent${plural(live.length)} reading Wikipedia in parallel.`
+      : `${research.length} agent${plural(research.length)} researched this page.`;
   const sources = wikipediaSources(agents);
   const working = state.phase === "working";
   // The article prose = the final answer, or the synth's report streaming in
@@ -197,7 +214,9 @@ export function HarnessApp(): ReactElement {
   // reasoning streaming so the report pane is alive, not a static spinner.
   const synthThinking = synth && !report ? cleanNarration(synth.body) : "";
   const headings = report ? reportHeadings(report) : [];
-  const title = topic || "__NAME__";
+  // `state.topic` is authoritative (it survives a reload and is the same on
+  // every surface); the local one only covers the instant before `query` lands.
+  const title = state.topic || topic || "__NAME__";
 
   return (
     <div className="wiki">
@@ -303,8 +322,7 @@ export function HarnessApp(): ReactElement {
             <section id="research" className="wiki-log">
               <h2>Research</h2>
               <p className="wiki-log-note">
-                {research.length} agent{research.length === 1 ? "" : "s"} reading Wikipedia in parallel. Expand an agent
-                to follow its reasoning and findings.
+                {researchNote} Expand an agent to follow its reasoning and findings.
               </p>
               {research.map((a) => (
                 <AgentEntry key={a.id} a={a} />
