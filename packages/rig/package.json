@@ -40,6 +40,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
+    "@lloyal-labs/channel-verify": "^0.1.0",
     "@lloyal-labs/lloyal-agents": "^3.4.0",
     "@lloyal-labs/sdk": "^3.0.0",
     "@mozilla/readability": "^0.6.0",
