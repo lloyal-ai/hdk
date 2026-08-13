@@ -337,8 +337,14 @@ export async function verifyBundle(
  * Not a full RFC 8785 implementation — explicitly. The catalog schema
  * is constrained to JSON types this helper handles correctly, and an
  * RFC 8785 dep would be overkill for the surface area.
+ *
+ * Exported **only so the drift gate can assert its output against frozen
+ * bytes** (`test/catalog-golden.test.ts`). It is not re-exported from
+ * `index.ts`, so this widens nothing for consumers of the package.
+ *
+ * @internal
  */
-function canonicalJson(value: unknown): string {
+export function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== 'object') {
     return JSON.stringify(value);
   }
@@ -357,8 +363,12 @@ function canonicalJson(value: unknown): string {
  * Compute the signed payload bytes for a catalog: canonical-JSON of
  * `{ signedAt, entries, publisherKeyId }`, UTF-8 encoded. Used by both
  * the verifier (here) and the signer (out-of-repo publish tooling).
+ *
+ * Exported for the drift gate only — see {@link canonicalJson}.
+ *
+ * @internal
  */
-function catalogSignedBytes(
+export function catalogSignedBytes(
   signedAt: string,
   entries: readonly CatalogEntry[],
   publisherKeyId: string,

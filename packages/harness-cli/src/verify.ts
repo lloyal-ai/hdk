@@ -196,8 +196,17 @@ export async function sha512Integrity(bytes: Uint8Array): Promise<string> {
  * output to the Worker's `canonicalJson` (which signs) and rig's
  * `canonicalJson` (which verifies in-process). Sorted object keys, no
  * whitespace; insertion-ordered arrays.
+ *
+ * Exported **only so the drift gate can assert its output against frozen
+ * bytes** (`test/catalog-golden.test.ts`). While it was private the sole way
+ * to reach it was `fetchAndVerifyCatalog`, which the tests deliberately skip —
+ * so every assertion in this package would still have passed after an edit
+ * that silently broke every install in the field. Not part of the CLI's
+ * surface; do not call it from commands.
+ *
+ * @internal
  */
-function canonicalJson(value: unknown): string {
+export function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   const entries = Object.entries(value as Record<string, unknown>).sort(
@@ -208,7 +217,13 @@ function canonicalJson(value: unknown): string {
     .join(',')}}`;
 }
 
-function catalogSignedBytes(
+/**
+ * The exact bytes the platform signs for a catalog. Exported for the drift
+ * gate only — see {@link canonicalJson}.
+ *
+ * @internal
+ */
+export function catalogSignedBytes(
   signedAt: string,
   entries: readonly CatalogEntry[],
   publisherKeyId: string,

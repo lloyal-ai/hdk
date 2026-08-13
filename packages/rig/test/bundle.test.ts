@@ -29,6 +29,7 @@ import { run } from 'effection';
 import {
   verifyBundle,
   resolveAppEntry,
+  catalogSignedBytes,
   BundleVerificationError,
   AppNotFoundError,
   setTestTrustRoot,
@@ -69,28 +70,13 @@ async function signBytes(key: CryptoKey, bytes: Uint8Array): Promise<string> {
   return btoa(s);
 }
 
-// Mirror of the internal helper in bundle.ts — test must produce
-// identical bytes to what loadBundle's verifier consumes.
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
-    a < b ? -1 : a > b ? 1 : 0,
-  );
-  return `{${entries
-    .map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`)
-    .join(',')}}`;
-}
-
-function catalogSignedBytes(
-  signedAt: string,
-  entries: readonly CatalogEntry[],
-  publisherKeyId: string,
-): Uint8Array {
-  return new TextEncoder().encode(
-    canonicalJson({ signedAt, entries, publisherKeyId }),
-  );
-}
+// `catalogSignedBytes` is imported from bundle.ts, not mirrored here. This
+// file used to carry its own copy of it and of `canonicalJson` — a fourth
+// copy of the encoding, and one that made this suite unable to detect the
+// failure it most needed to: a test whose oracle is a duplicate of the code
+// under test passes happily when both are wrong together. The frozen-byte
+// assertions live in `catalog-golden.test.ts`; this suite signs with the real
+// encoder so its catalogs are the ones the verifier would actually accept.
 
 // ── Bundle source authoring ─────────────────────────────────────
 
