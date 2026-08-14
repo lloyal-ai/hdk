@@ -51,7 +51,12 @@ jobs:
       - name: Publish packages
         if: success() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.skip_publish))
         run: |
-          for pkg in packages/sdk packages/agents packages/rig packages/channel-verify packages/harness-cli packages/binding packages/relay packages/host; do
+          # channel-verify FIRST: rig and harness-cli both depend on it, and a
+          # failure partway through would otherwise leave an already-published
+          # rig pointing at a version that does not exist on the registry —
+          # breaking fresh installs until someone repaired the partial release.
+          # It has no dependencies of its own, so it is safe at the head.
+          for pkg in packages/channel-verify packages/sdk packages/agents packages/rig packages/harness-cli packages/binding packages/relay packages/host; do
             name=$(node -p "require('./$pkg/package.json').name")
             version=$(node -p "require('./$pkg/package.json').version")
             if npm view "$name@$version" version >/dev/null 2>&1; then

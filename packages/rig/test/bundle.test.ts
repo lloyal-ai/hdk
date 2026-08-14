@@ -7,7 +7,7 @@
  * 1. **verifyBundle happy path / tamper / malformed input** — Ed25519
  *    verification primitive.
  * 2. **Catalog signature pass / fail** — the catalog must be signed by a
- *    key in `CHANNEL_TRUST_ROOTS`; tampered bytes flip the result.
+ *    vendored trust root; tampered bytes flip the result.
  * 3. **Semver resolution** — highest matching version wins; no match →
  *    {@link AppNotFoundError}; unknown name → `AppNotFoundError`.
  * 4. **MITM detection** — a mutated catalog (entries swapped) fails
@@ -381,7 +381,7 @@ describe('resolveAppEntry', () => {
       run(function* () {
         return yield* resolveAppEntry('web');
       }),
-    ).rejects.toThrow(/not in CHANNEL_TRUST_ROOTS/);
+    ).rejects.toThrow(/not a vendored trust root/);
   });
 
   it('caches the verified catalog within a scope (one fetch for two resolves)', async () => {

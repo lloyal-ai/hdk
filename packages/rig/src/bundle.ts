@@ -5,7 +5,7 @@
  * channel at {@link CHANNEL_CATALOG_URL}. The `harness.dev install` CLI
  * uses the primitives here ({@link verifyBundle}, {@link resolveAppEntry})
  * to fetch + signature-verify a tarball against
- * {@link CHANNEL_TRUST_ROOTS}, then shells out to `npm install <URL>` so
+ * the vendored trust roots, then shells out to `npm install <URL>` so
  * the app lands in the harness's `node_modules` like any other npm
  * dependency. The harness boots and imports each app with a plain static
  * `import`; the framework provides no runtime "load app by name" verb.
@@ -19,7 +19,7 @@
  *
  * **Channel-canonical resolution.** {@link resolveAppEntry} fetches the
  * catalog from {@link CHANNEL_CATALOG_URL}, verifies its Ed25519
- * signature against {@link CHANNEL_TRUST_ROOTS}, and resolves a name +
+ * signature against the vendored trust roots, and resolves a name +
  * semver range to a {@link CatalogVersion} descriptor (manifestUrl +
  * tarballUrl + sizeBytes). The caller never supplies a URL or a trust
  * map — to use a different channel, fork `@lloyal-labs/rig` and edit
@@ -40,11 +40,14 @@ import { call } from 'effection';
 import type { Operation } from 'effection';
 import { satisfies, rcompare } from 'semver';
 import { cancellableFetch } from './cancellable-fetch';
-import { CHANNEL_CATALOG_URL, CHANNEL_TRUST_ROOTS } from './protocol';
+import { CHANNEL_CATALOG_URL } from './protocol';
 import {
   verifyBundle,
   canonicalJson,
   catalogSignedBytes,
+  verifyCatalogSignature,
+  isWellFormedCatalog,
+  trustRootFor,
   BundleVerificationError,
   AppNotFoundError,
 } from '@lloyal-labs/channel-verify';
@@ -77,7 +80,7 @@ export { BundleVerificationError, AppNotFoundError };
 
 // ── Test-only injection (NODE_ENV=test) ─────────────────────────────
 //
-// bundle.test.ts overrides the framework-vendored CHANNEL_TRUST_ROOTS +
+// bundle.test.ts overrides the framework-vendored trust roots +
 // CHANNEL_CATALOG_URL via the helpers below so it can exercise the
 // verification flow against a fresh test keypair + a local HTTP / file://
 // catalog fixture. The overrides are inert outside NODE_ENV=test —
@@ -88,7 +91,7 @@ let testTrustRoots: Map<string, Uint8Array> | undefined;
 let testCatalogUrl: string | undefined;
 
 /**
- * Test-only: override {@link CHANNEL_TRUST_ROOTS} with a map containing
+ * Test-only: override the vendored trust roots with a map containing
  * exactly the (keyId, publicKey) pair given. Subsequent
  * {@link resolveAppEntry} calls (and the internal catalog-verification
  * path) use this override instead of the framework-vendored constant.
@@ -131,9 +134,9 @@ function isTestEnv(): boolean {
   );
 }
 
-function getTrustRoots(): ReadonlyMap<string, Uint8Array> {
-  if (isTestEnv() && testTrustRoots) return testTrustRoots;
-  return CHANNEL_TRUST_ROOTS;
+function getTrustRoot(keyId: string): Uint8Array | undefined {
+  if (isTestEnv() && testTrustRoots) return testTrustRoots.get(keyId);
+  return trustRootFor(keyId);
 }
 
 function getCatalogUrl(): string {
@@ -187,7 +190,7 @@ export { verifyBundle, canonicalJson, catalogSignedBytes };
 
 /**
  * Fetch the catalog from {@link CHANNEL_CATALOG_URL}, verify its
- * signature against {@link CHANNEL_TRUST_ROOTS}, and return the verified
+ * signature against the vendored trust roots, and return the verified
  * structure. Memoized per-process per effective URL.
  */
 function* fetchAndVerifyCatalog(): Operation<SignedCatalog> {
@@ -212,22 +215,21 @@ function* fetchAndVerifyCatalog(): Operation<SignedCatalog> {
     );
   }
 
-  if (
-    typeof catalog.signedAt !== 'string' ||
-    !Array.isArray(catalog.entries) ||
-    typeof catalog.publisherKeyId !== 'string' ||
-    typeof catalog.signature !== 'string'
-  ) {
+  // Shape and signature checks come from channel-verify so the SIGNED FIELD
+  // SET has one definition — adding a field to the payload must be one edit,
+  // since missing it here would mean verifying over bytes this file never
+  // reconstructs. The wording below stays rig's own.
+  if (!isWellFormedCatalog(catalog)) {
     throw new BundleVerificationError(
       `Catalog at ${url} is missing required fields (signedAt, entries, publisherKeyId, signature).`,
     );
   }
 
-  const trustKey = getTrustRoots().get(catalog.publisherKeyId);
+  const trustKey = getTrustRoot(catalog.publisherKeyId);
   if (!trustKey) {
     throw new BundleVerificationError(
       `Catalog at ${url} is signed by publisherKeyId="${catalog.publisherKeyId}" ` +
-        `which is not in CHANNEL_TRUST_ROOTS. The framework refuses to trust ` +
+        `which is not a vendored trust root. The framework refuses to trust ` +
         `keys it does not vendor.`,
     );
   }
@@ -237,7 +239,7 @@ function* fetchAndVerifyCatalog(): Operation<SignedCatalog> {
     catalog.entries,
     catalog.publisherKeyId,
   );
-  const ok = yield* call(() => verifyBundle(signedBytes, catalog.signature, trustKey));
+  const ok = yield* call(() => verifyCatalogSignature(catalog, trustKey));
   if (!ok) {
     throw new BundleVerificationError(
       `Catalog at ${url} failed Ed25519 signature verification ` +

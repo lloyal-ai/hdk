@@ -51,7 +51,8 @@ export {
   APP_PROTOCOL_VERSION,
   SUPPORTED_APP_PROTOCOL_VERSIONS,
   CHANNEL_CATALOG_URL,
-  CHANNEL_TRUST_ROOTS,
+  trustRootFor,
+  trustedKeyIds,
 } from './protocol';
 export { defineApp } from './define-app';
 export type { AppSetup } from './define-app';

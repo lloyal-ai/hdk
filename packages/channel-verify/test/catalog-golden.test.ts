@@ -23,8 +23,8 @@
  *
  * The fixture is FROZEN. It is not the current catalog and must never be
  * refreshed to match one — a fixture that tracks production proves nothing. If
- * the platform key rotates, add the new key to `CHANNEL_TRUST_ROOTS` and add a
- * second fixture; do not replace this one.
+ * the platform key rotates, add the new key to `TRUST_ROOTS` in `src/index.ts`
+ * and add a second fixture; do not replace this one.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -41,7 +41,8 @@ import {
   sha512Integrity,
   base64ToBytes,
   bytesToBase64,
-  CHANNEL_TRUST_ROOTS,
+  trustRootFor,
+  trustedKeyIds,
   CHANNEL_CATALOG_URL,
   type SignedCatalog,
 } from '../src/index';
@@ -104,8 +105,13 @@ describe('canonicalJson — golden vectors', () => {
 
   it('leaves non-ASCII raw rather than \\u-escaping it', () => {
     // Load-bearing: the fixture's descriptions contain U+2014 EM DASH, so a
-    // canonicaliser that ASCII-escapes (as a strict RFC 8785 implementation
-    // would) fails to verify the real catalog.
+    // canonicaliser that ASCII-escapes fails to verify the real catalog.
+    //
+    // Note this is NOT a divergence from RFC 8785, as an earlier version of
+    // this comment claimed. RFC 8785 §3.2.2.2 serialises strings as ECMAScript
+    // JSON.stringify does, which emits non-ASCII raw — so a conforming
+    // implementation agrees with us here. The failure mode guarded against is
+    // a hand-rolled canonicaliser that escapes for "safety".
     expect(canonicalJson({ d: 'a—b' })).toBe('{"d":"a—b"}');
     // {"d":"—"} = 8 ASCII chars + a 3-byte em dash = 11. The count IS the
     // assertion: escaping would make it 14.
@@ -133,14 +139,14 @@ describe('frozen production catalog', () => {
   });
 
   it('vendors the trust root the catalog was signed with', () => {
-    const key = CHANNEL_TRUST_ROOTS.get(KEY_ID);
+    const key = trustRootFor(KEY_ID);
     expect(key).toBeDefined();
     expect(key!.length).toBe(32);
     expect(sha256(key!)).toBe(KEY_SHA256);
   });
 
   it('verifies under the vendored trust root', async () => {
-    const key = CHANNEL_TRUST_ROOTS.get(KEY_ID)!;
+    const key = trustRootFor(KEY_ID)!;
     await expect(verifyCatalogSignature(catalog, key)).resolves.toBe(true);
   });
 
@@ -155,7 +161,7 @@ describe('frozen production catalog', () => {
         publisherKeyId: catalog.publisherKeyId,
       }).replace(',', ', '),
     );
-    const key = CHANNEL_TRUST_ROOTS.get(KEY_ID)!;
+    const key = trustRootFor(KEY_ID)!;
     await expect(verifyBundle(drifted, catalog.signature, key)).resolves.toBe(
       false,
     );
@@ -172,7 +178,7 @@ describe('frozen production catalog', () => {
         signature: catalog.signature,
       }),
     );
-    const key = CHANNEL_TRUST_ROOTS.get(KEY_ID)!;
+    const key = trustRootFor(KEY_ID)!;
     await expect(verifyBundle(withExtra, catalog.signature, key)).resolves.toBe(
       false,
     );
@@ -185,12 +191,12 @@ describe('frozen production catalog', () => {
         i === 0 ? { ...e, name: `${e.name}-evil` } : e,
       ),
     };
-    const key = CHANNEL_TRUST_ROOTS.get(KEY_ID)!;
+    const key = trustRootFor(KEY_ID)!;
     await expect(verifyCatalogSignature(tampered, key)).resolves.toBe(false);
   });
 
   it('fails under any key but the right one', async () => {
-    const wrong = new Uint8Array(CHANNEL_TRUST_ROOTS.get(KEY_ID)!);
+    const wrong = new Uint8Array(trustRootFor(KEY_ID)!);
     wrong[0] ^= 0xff;
     await expect(verifyCatalogSignature(catalog, wrong)).resolves.toBe(false);
   });
@@ -241,14 +247,14 @@ describe('isWellFormedCatalog', () => {
 
 describe('verifyBundle — rejection paths', () => {
   it('returns false rather than throwing on malformed base64', async () => {
-    const key = CHANNEL_TRUST_ROOTS.get(KEY_ID)!;
+    const key = trustRootFor(KEY_ID)!;
     await expect(verifyBundle(new Uint8Array([1]), '!!!!', key)).resolves.toBe(
       false,
     );
   });
 
   it('returns false for a wrong-length key or signature', async () => {
-    const key = CHANNEL_TRUST_ROOTS.get(KEY_ID)!;
+    const key = trustRootFor(KEY_ID)!;
     await expect(
       verifyBundle(new Uint8Array([1]), catalog.signature, new Uint8Array(31)),
     ).resolves.toBe(false);
@@ -282,8 +288,44 @@ describe('vendored constants', () => {
     expect(CHANNEL_CATALOG_URL).toBe('https://apps.lloyal.ai/v1/catalog.json');
   });
 
-  it('freezes the trust roots against mutation', () => {
-    expect(Object.isFrozen(CHANNEL_TRUST_ROOTS)).toBe(true);
+  it('lists the trusted key ids without exposing a live collection', () => {
+    expect(trustedKeyIds()).toEqual([KEY_ID]);
+    // A fresh array each call, so mutating the result cannot affect the next.
+    const first = trustedKeyIds() as string[];
+    first.push('evil');
+    expect(trustedKeyIds()).toEqual([KEY_ID]);
+  });
+});
+
+describe('the trust anchor cannot be replaced at runtime', () => {
+  // This replaces an earlier assertion that checked `Object.isFrozen` on an
+  // exported Map. It passed, and it was worthless: `Object.freeze` seals an
+  // object's own properties, but a Map's entries live in internal slots it
+  // cannot reach, so `set`/`delete`/`clear` still work and the `ReadonlyMap`
+  // type is erased at runtime. Any module in the process could have installed
+  // its own key and had a catalog it signed itself verify. These assertions
+  // check the property that actually matters instead of a proxy for it.
+
+  it('hands out a COPY of the key bytes, not the live anchor', async () => {
+    const a = trustRootFor(KEY_ID)!;
+    const b = trustRootFor(KEY_ID)!;
+    expect(a).not.toBe(b);
+
+    // Corrupting a returned copy must not affect anyone else's lookup.
+    a.fill(0);
+    expect(sha256(trustRootFor(KEY_ID)!)).toBe(KEY_SHA256);
+
+    // ...and the real catalog still verifies afterwards.
+    const key = trustRootFor(KEY_ID)!;
+    await expect(verifyCatalogSignature(catalog, key)).resolves.toBe(true);
+  });
+
+  it('offers no way to add a key id', () => {
+    expect(trustRootFor('attacker-key-2026')).toBeUndefined();
+    // There is no exported collection to mutate: the only reader is a function
+    // over a module-private Map. This asserts the surface, since a future
+    // refactor re-exporting the Map would silently reopen the hole.
+    expect(trustedKeyIds()).not.toContain('attacker-key-2026');
   });
 });
 

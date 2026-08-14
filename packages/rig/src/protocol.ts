@@ -159,7 +159,7 @@ export const SUPPORTED_APP_PROTOCOL_VERSIONS: readonly string[] = ['3.0'];
  *
  * The `harness.dev install` CLI uses {@link resolveAppEntry} to look up
  * a name + semver range against this catalog, verifies the catalog's
- * Ed25519 signature against {@link CHANNEL_TRUST_ROOTS}, then fetches +
+ * Ed25519 signature against the vendored trust roots, then fetches +
  * verifies the resolved manifest and tarball bytes before shelling out
  * to `npm install <tarballUrl>`. The CLI never supplies a URL.
  *
@@ -195,4 +195,4 @@ export { CHANNEL_CATALOG_URL } from '@lloyal-labs/channel-verify';
  * To use a different set, fork `@lloyal-labs/channel-verify`, edit the
  * constant there, and republish under a different name.
  */
-export { CHANNEL_TRUST_ROOTS } from '@lloyal-labs/channel-verify';
+export { trustRootFor, trustedKeyIds } from '@lloyal-labs/channel-verify';

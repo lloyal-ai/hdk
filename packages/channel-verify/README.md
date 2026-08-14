@@ -56,10 +56,17 @@ served, committed as a fixture and verified against the vendored trust root.
 Not a round-trip — signing and verifying with the same helper cannot detect a
 change applied to both sides at once, which is the failure mode that matters.
 
-It is deliberately **not RFC 8785**. The key sort happens to agree with §3.2.3
-(UTF-16 code unit order), but non-ASCII is emitted raw rather than escaped, and
-the live catalog contains U+2014 — so an RFC 8785 implementation would fail to
-verify it.
+It is **not a general RFC 8785 implementation**, though it agrees with one on
+the catalog's schema: keys sort by UTF-16 code unit (§3.2.3) and strings
+serialise as ECMAScript `JSON.stringify` does (§3.2.2.2), which emits non-ASCII
+raw. The live catalog's U+2014 is compatible with RFC 8785, not a divergence
+from it.
+
+What is missing is the validation half — no I-JSON checking, and non-finite
+numbers silently become `null` where RFC 8785 requires rejection. That is safe
+here because the input is always `JSON.parse` output over a constrained schema,
+which can produce neither. Don't reuse it on arbitrary input expecting RFC 8785
+guarantees.
 
 ## What stays with each consumer
 

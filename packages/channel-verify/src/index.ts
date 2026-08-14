@@ -72,9 +72,10 @@ export const CHANNEL_CATALOG_URL = 'https://apps.lloyal.ai/v1/catalog.json';
  * the single vendored copy is the point: it previously appeared verbatim in two
  * packages, and the key-rotation runbook named only one of them.
  *
- * @internal
+ * Module-private, and deliberately not exported: handing out the live
+ * `Uint8Array` would hand out a writable view of the trust anchor.
  */
-export const LLOYAL_PLATFORM_KEY_2026_Q2: Uint8Array = new Uint8Array([
+const LLOYAL_PLATFORM_KEY_2026_Q2 = new Uint8Array([
   109, 76, 246, 72, 41, 8, 75, 54, 243, 15, 143, 214, 126, 213, 48, 224, 218,
   46, 217, 178, 98, 198, 206, 142, 98, 31, 249, 150, 137, 144, 202, 82,
 ]);
@@ -83,12 +84,48 @@ export const LLOYAL_PLATFORM_KEY_2026_Q2: Uint8Array = new Uint8Array([
  * Trust roots — `publisherKeyId` to raw Ed25519 public key bytes. Multi-entry
  * to support rotation: the new revision is added alongside the old, which stays
  * valid through its deprecation window, and is dropped in a later major.
+ *
+ * Module-private. Reached only through {@link trustRootFor}; see there for why
+ * this is not exported as a `ReadonlyMap`.
  */
-export const CHANNEL_TRUST_ROOTS: ReadonlyMap<string, Uint8Array> = Object.freeze(
-  new Map<string, Uint8Array>([
-    ['lloyal-platform-2026-q2', LLOYAL_PLATFORM_KEY_2026_Q2],
-  ]),
-);
+const TRUST_ROOTS = new Map<string, Uint8Array>([
+  ['lloyal-platform-2026-q2', LLOYAL_PLATFORM_KEY_2026_Q2],
+]);
+
+/**
+ * The verifying key for a `publisherKeyId`, or `undefined` if that id is not
+ * trusted. **Returns a fresh copy on every call.**
+ *
+ * This replaces the exported `CHANNEL_TRUST_ROOTS` map that rig and the CLI
+ * each used to vendor, which was `Object.freeze`d and typed `ReadonlyMap` —
+ * and was neither. Measured, not assumed:
+ *
+ * ```
+ * Object.isFrozen(map)      : true
+ * map.set("evil", attacker) : SUCCEEDED
+ * map.delete("lloyal-…")    : SUCCEEDED
+ * ```
+ *
+ * `Object.freeze` seals an object's own properties, but a `Map`'s entries live
+ * in internal slots it cannot reach, so `set`/`delete`/`clear` all still work.
+ * The `ReadonlyMap` type is erased at runtime and stops nothing. Any module in
+ * the process could therefore install its own trust anchor and have a catalog
+ * it signed itself verify — in a package whose entire job is deciding what to
+ * trust. The key bytes were mutable too, and cannot be protected in place:
+ * `Object.freeze` on a `Uint8Array` with elements throws.
+ *
+ * A copy-returning function is the only shape that actually holds: there is no
+ * live collection to mutate and no shared buffer to write through.
+ */
+export function trustRootFor(keyId: string): Uint8Array | undefined {
+  const key = TRUST_ROOTS.get(keyId);
+  return key === undefined ? undefined : new Uint8Array(key);
+}
+
+/** The trusted `publisherKeyId`s, in vendoring order. Fresh array per call. */
+export function trustedKeyIds(): readonly string[] {
+  return [...TRUST_ROOTS.keys()];
+}
 
 // ── Schemas ───────────────────────────────────────────────────────────
 
@@ -222,11 +259,18 @@ export async function sha512Integrity(bytes: Uint8Array): Promise<string> {
  * rather than by a round-trip, because a round-trip cannot detect a change
  * applied to signer and verifier together.
  *
- * Deliberately **not** RFC 8785. The key sort happens to agree with §3.2.3
- * (UTF-16 code unit order), but non-ASCII is emitted raw rather than escaped,
- * and the live catalog contains U+2014 — so an RFC 8785 implementation would
- * fail to verify it. The catalog schema is constrained to the JSON types this
- * handles correctly, and the dependency would be a liability, not a safeguard.
+ * Not a general RFC 8785 implementation — but closer to one than an earlier
+ * version of this comment claimed. Its output agrees with RFC 8785 on the
+ * catalog's schema: keys sort by UTF-16 code unit (§3.2.3), and strings
+ * serialise as ECMAScript `JSON.stringify` does (§3.2.2.2), which emits
+ * non-ASCII raw. The live catalog's U+2014 is therefore *compatible* with
+ * RFC 8785, not a divergence from it.
+ *
+ * What is missing is the validation half: no I-JSON checking, and non-finite
+ * numbers silently become `null` via `JSON.stringify` where RFC 8785 requires
+ * rejection. Safe here only because the input is always `JSON.parse` output
+ * over a constrained schema, which can produce neither. Do not reuse this on
+ * arbitrary input expecting RFC 8785 guarantees.
  *
  * One hazard it cannot defend against, recorded because the guard lives
  * elsewhere: `Object.entries` KEEPS a key whose value is `undefined` while
