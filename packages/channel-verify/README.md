@@ -44,8 +44,13 @@ The CLI's copy existed for a real reason this package also resolves. Importing
 the rig pulls in the App runtime, which chain-imports the native
 `@lloyal-labs/lloyal.node`; a CLI that scaffolds projects must not require a
 native binary on the user's platform. This package costs neither side anything
-— pure WebCrypto and string manipulation, so it runs unmodified in Node, in a
-browser, and on workerd.
+— pure WebCrypto and string manipulation with no `node:*` imports, so it is
+portable to any runtime that provides WebCrypto.
+
+It ships **both ESM and CommonJS**, which is not a nicety: portable source is
+not portable output, and a CommonJS-only artifact fails to load in a browser or
+on workerd at all — `ReferenceError: exports is not defined in ES module scope`.
+`import` resolves to `dist/esm`, `require` to `dist/cjs`.
 
 ## `canonicalJson` defines the signature
 
@@ -65,10 +70,12 @@ raw. The live catalog's U+2014 is compatible with RFC 8785, not a divergence
 from it.
 
 What is missing is the validation half — no I-JSON checking, and non-finite
-numbers silently become `null` where RFC 8785 requires rejection. That is safe
-here because the input is always `JSON.parse` output over a constrained schema,
-which can produce neither. Don't reuse it on arbitrary input expecting RFC 8785
-guarantees.
+numbers silently become `null` where RFC 8785 requires rejection. `JSON.parse`
+can produce one (`JSON.parse('{"sizeBytes":1e999}')` is `Infinity`), so
+`1e999`, `-1e999` and `null` share signed bytes. Reaching that would need a
+legitimately signed catalog carrying `null` somewhere a consumer acts on it,
+and every field they act on is a string, where the encoding is injective. Don't
+reuse it on arbitrary input expecting RFC 8785 guarantees.
 
 ## What stays with each consumer
 

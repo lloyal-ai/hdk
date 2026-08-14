@@ -28,8 +28,14 @@
  * `@lloyal-labs/lloyal.node`. A CLI that scaffolds projects must not require a
  * native binary on the user's platform, so it duplicated the surface instead.
  * This package is the shared home that costs neither side anything: pure
- * WebCrypto and string manipulation, so it runs unmodified in Node, in a
- * browser, and on workerd.
+ * WebCrypto and string manipulation with no `node:*` imports, so it is portable
+ * to any runtime that provides WebCrypto.
+ *
+ * It ships a dual ESM/CommonJS build for that reason. Portable SOURCE is not
+ * portable OUTPUT: a CommonJS-only artifact does not merely inconvenience a
+ * browser or workerd, it fails to load there at all, with `ReferenceError:
+ * exports is not defined in ES module scope`. `import` resolves to `dist/esm`,
+ * `require` to `dist/cjs`.
  *
  * ## What deliberately stays with each consumer
  *
@@ -85,8 +91,8 @@ const LLOYAL_PLATFORM_KEY_2026_Q2 = new Uint8Array([
  * to support rotation: the new revision is added alongside the old, which stays
  * valid through its deprecation window, and is dropped in a later major.
  *
- * Module-private. Reached only through {@link trustRootFor}; see there for why
- * this is not exported as a `ReadonlyMap`.
+ * Module-private. Reached only through {@link CHANNEL_TRUST_ROOTS}, which is
+ * the exported read-only view over it.
  */
 const TRUST_ROOTS = new Map<string, Uint8Array>([
   ['lloyal-platform-2026-q2', LLOYAL_PLATFORM_KEY_2026_Q2],
@@ -324,9 +330,17 @@ export async function sha512Integrity(bytes: Uint8Array): Promise<string> {
  *
  * What is missing is the validation half: no I-JSON checking, and non-finite
  * numbers silently become `null` via `JSON.stringify` where RFC 8785 requires
- * rejection. Safe here only because the input is always `JSON.parse` output
- * over a constrained schema, which can produce neither. Do not reuse this on
- * arbitrary input expecting RFC 8785 guarantees.
+ * rejection.
+ *
+ * That second gap is a real, if narrow, non-injectivity, and an earlier version
+ * of this comment wrongly claimed it was unreachable. `JSON.parse` CAN produce
+ * a non-finite number — `JSON.parse('{"sizeBytes":1e999}')` yields `Infinity` —
+ * so `1e999`, `-1e999` and `null` share signed bytes. Exploiting it would need
+ * a legitimately signed catalog carrying `null` where reinterpreting it as
+ * ±Infinity changes a decision, and every field a consumer acts on
+ * (`manifestUrl`, `tarballUrl`, `importName`, `version`, `name`) is a string,
+ * where the encoding is injective. Do not reuse this on arbitrary input
+ * expecting RFC 8785 guarantees.
  *
  * One hazard it cannot defend against, recorded because the guard lives
  * elsewhere: `Object.entries` KEEPS a key whose value is `undefined` while

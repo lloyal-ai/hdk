@@ -2,12 +2,18 @@
   "name": "@lloyal-labs/channel-verify",
   "version": "0.1.0",
   "description": "Apache-2.0, zero-dependency verification primitives for the Lloyal app channel — canonical-JSON signing payloads and Ed25519 verification",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/cjs/index.js",
+  "types": "dist/cjs/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
+      "import": {
+        "types": "./dist/esm/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      }
     }
   },
   "publishConfig": {
@@ -35,10 +41,11 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "tsc -b"
+    "build": "tsc -b && tsc -p tsconfig.esm.json && node ./scripts/emit-module-markers.mjs"
   },
   "files": [
-    "dist/",
+    "dist/cjs/",
+    "dist/esm/",
     "LICENSE"
   ]
 }

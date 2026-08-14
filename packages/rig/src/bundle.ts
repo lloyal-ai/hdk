@@ -22,8 +22,11 @@
  * signature against the vendored trust roots, and resolves a name +
  * semver range to a {@link CatalogVersion} descriptor (manifestUrl +
  * tarballUrl + sizeBytes). The caller never supplies a URL or a trust
- * map — to use a different channel, fork `@lloyal-labs/rig` and edit
- * the constants in `protocol.ts`.
+ * map — to use a different channel, fork `@lloyal-labs/channel-verify`,
+ * edit the constants there, and have the rig fork depend on it. Editing
+ * `protocol.ts` no longer changes the channel: that file re-exports the
+ * URL and the trust roots from the shared package rather than declaring
+ * them.
  *
  * **Verification is the entire trust boundary.** `verifyBundle` runs
  * before `harness.dev install` invokes `npm install <tarball-URL>`, so
@@ -219,7 +222,9 @@ function* fetchAndVerifyCatalog(): Operation<SignedCatalog> {
   // reconstructs. The wording below stays rig's own.
   if (!isWellFormedCatalog(catalog)) {
     throw new BundleVerificationError(
-      `Catalog at ${url} is missing required fields (signedAt, entries, publisherKeyId, signature).`,
+      `Catalog at ${url} is malformed: it must carry signedAt, entries, ` +
+        `publisherKeyId and signature, and every entry must have a name and ` +
+        `a versions list of fully-formed version records.`,
     );
   }
 

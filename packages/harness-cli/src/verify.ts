@@ -128,7 +128,9 @@ export async function fetchAndVerifyCatalog(): Promise<SignedCatalog> {
   // reconstructs. The wording below stays the CLI's own.
   if (!isWellFormedCatalog(catalog)) {
     throw new BundleVerificationError(
-      `Catalog at ${url} is missing required fields (signedAt, entries, publisherKeyId, signature).`,
+      `Catalog at ${url} is malformed: it must carry signedAt, entries, ` +
+        `publisherKeyId and signature, and every entry must have a name and ` +
+        `a versions list of fully-formed version records.`,
     );
   }
 

@@ -44,6 +44,15 @@ jobs:
           test -f packages/relay/dist/index.d.ts
           test -f packages/host/dist/index.js
           test -f packages/host/dist/index.d.ts
+          # channel-verify ships a dual build, so BOTH halves must exist —
+          # `files: ["dist/"]` would happily publish a package missing one, and
+          # a consumer only discovers it at import time.
+          test -f packages/channel-verify/dist/cjs/index.js
+          test -f packages/channel-verify/dist/cjs/index.d.ts
+          test -f packages/channel-verify/dist/esm/index.js
+          test -f packages/channel-verify/dist/esm/index.d.ts
+          test -f packages/channel-verify/dist/cjs/package.json
+          test -f packages/channel-verify/dist/esm/package.json
 
       - name: Typecheck
         run: npx tsc -b packages/sdk packages/agents packages/rig packages/channel-verify packages/binding packages/relay packages/host
