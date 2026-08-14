@@ -30,7 +30,7 @@ import {
   verifyBundle,
   type SignedCatalog,
 } from '../src/bundle';
-import { trustRootFor } from '../src/protocol';
+import { CHANNEL_TRUST_ROOTS } from '../src/protocol';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const catalog = JSON.parse(
@@ -62,7 +62,7 @@ describe('rig verifies a real signed catalog', () => {
     // Read through `protocol.ts` — rig's documented public constant — NOT
     // through `getTrustRoots()`, so the test-env override machinery cannot
     // satisfy this.
-    const key = trustRootFor(KEY_ID);
+    const key = CHANNEL_TRUST_ROOTS.get(KEY_ID);
     expect(key).toBeDefined();
     expect(key!.length).toBe(32);
     expect(sha256(key!)).toBe(KEY_SHA256);
@@ -74,7 +74,7 @@ describe('rig verifies a real signed catalog', () => {
       catalog.entries,
       catalog.publisherKeyId,
     );
-    const key = trustRootFor(KEY_ID)!;
+    const key = CHANNEL_TRUST_ROOTS.get(KEY_ID)!;
     await expect(verifyBundle(bytes, catalog.signature, key)).resolves.toBe(
       true,
     );
@@ -89,7 +89,7 @@ describe('rig verifies a real signed catalog', () => {
         publisherKeyId: catalog.publisherKeyId,
       }).replace(',', ', '),
     );
-    const key = trustRootFor(KEY_ID)!;
+    const key = CHANNEL_TRUST_ROOTS.get(KEY_ID)!;
     await expect(verifyBundle(drifted, catalog.signature, key)).resolves.toBe(
       false,
     );

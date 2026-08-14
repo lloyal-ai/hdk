@@ -41,8 +41,7 @@ import {
   sha512Integrity,
   base64ToBytes,
   bytesToBase64,
-  trustRootFor,
-  trustedKeyIds,
+  CHANNEL_TRUST_ROOTS,
   CHANNEL_CATALOG_URL,
   type SignedCatalog,
 } from '../src/index';
@@ -139,14 +138,14 @@ describe('frozen production catalog', () => {
   });
 
   it('vendors the trust root the catalog was signed with', () => {
-    const key = trustRootFor(KEY_ID);
+    const key = CHANNEL_TRUST_ROOTS.get(KEY_ID);
     expect(key).toBeDefined();
     expect(key!.length).toBe(32);
     expect(sha256(key!)).toBe(KEY_SHA256);
   });
 
   it('verifies under the vendored trust root', async () => {
-    const key = trustRootFor(KEY_ID)!;
+    const key = CHANNEL_TRUST_ROOTS.get(KEY_ID)!;
     await expect(verifyCatalogSignature(catalog, key)).resolves.toBe(true);
   });
 
@@ -161,7 +160,7 @@ describe('frozen production catalog', () => {
         publisherKeyId: catalog.publisherKeyId,
       }).replace(',', ', '),
     );
-    const key = trustRootFor(KEY_ID)!;
+    const key = CHANNEL_TRUST_ROOTS.get(KEY_ID)!;
     await expect(verifyBundle(drifted, catalog.signature, key)).resolves.toBe(
       false,
     );
@@ -178,7 +177,7 @@ describe('frozen production catalog', () => {
         signature: catalog.signature,
       }),
     );
-    const key = trustRootFor(KEY_ID)!;
+    const key = CHANNEL_TRUST_ROOTS.get(KEY_ID)!;
     await expect(verifyBundle(withExtra, catalog.signature, key)).resolves.toBe(
       false,
     );
@@ -191,12 +190,12 @@ describe('frozen production catalog', () => {
         i === 0 ? { ...e, name: `${e.name}-evil` } : e,
       ),
     };
-    const key = trustRootFor(KEY_ID)!;
+    const key = CHANNEL_TRUST_ROOTS.get(KEY_ID)!;
     await expect(verifyCatalogSignature(tampered, key)).resolves.toBe(false);
   });
 
   it('fails under any key but the right one', async () => {
-    const wrong = new Uint8Array(trustRootFor(KEY_ID)!);
+    const wrong = new Uint8Array(CHANNEL_TRUST_ROOTS.get(KEY_ID)!);
     wrong[0] ^= 0xff;
     await expect(verifyCatalogSignature(catalog, wrong)).resolves.toBe(false);
   });
@@ -247,14 +246,14 @@ describe('isWellFormedCatalog', () => {
 
 describe('verifyBundle — rejection paths', () => {
   it('returns false rather than throwing on malformed base64', async () => {
-    const key = trustRootFor(KEY_ID)!;
+    const key = CHANNEL_TRUST_ROOTS.get(KEY_ID)!;
     await expect(verifyBundle(new Uint8Array([1]), '!!!!', key)).resolves.toBe(
       false,
     );
   });
 
   it('returns false for a wrong-length key or signature', async () => {
-    const key = trustRootFor(KEY_ID)!;
+    const key = CHANNEL_TRUST_ROOTS.get(KEY_ID)!;
     await expect(
       verifyBundle(new Uint8Array([1]), catalog.signature, new Uint8Array(31)),
     ).resolves.toBe(false);
@@ -288,44 +287,99 @@ describe('vendored constants', () => {
     expect(CHANNEL_CATALOG_URL).toBe('https://apps.lloyal.ai/v1/catalog.json');
   });
 
-  it('lists the trusted key ids without exposing a live collection', () => {
-    expect(trustedKeyIds()).toEqual([KEY_ID]);
-    // A fresh array each call, so mutating the result cannot affect the next.
-    const first = trustedKeyIds() as string[];
-    first.push('evil');
-    expect(trustedKeyIds()).toEqual([KEY_ID]);
+  it('lists exactly the vendored key ids', () => {
+    expect([...CHANNEL_TRUST_ROOTS.keys()]).toEqual([KEY_ID]);
+    expect(CHANNEL_TRUST_ROOTS.size).toBe(1);
+    expect(CHANNEL_TRUST_ROOTS.has(KEY_ID)).toBe(true);
   });
 });
 
 describe('the trust anchor cannot be replaced at runtime', () => {
-  // This replaces an earlier assertion that checked `Object.isFrozen` on an
+  // These replace an earlier assertion that checked `Object.isFrozen` on the
   // exported Map. It passed, and it was worthless: `Object.freeze` seals an
   // object's own properties, but a Map's entries live in internal slots it
-  // cannot reach, so `set`/`delete`/`clear` still work and the `ReadonlyMap`
+  // cannot reach, so `set`/`delete`/`clear` kept working and the `ReadonlyMap`
   // type is erased at runtime. Any module in the process could have installed
-  // its own key and had a catalog it signed itself verify. These assertions
-  // check the property that actually matters instead of a proxy for it.
+  // its own key and had a catalog it signed itself verify. These check the
+  // property that actually matters rather than a proxy for it.
 
-  it('hands out a COPY of the key bytes, not the live anchor', async () => {
-    const a = trustRootFor(KEY_ID)!;
-    const b = trustRootFor(KEY_ID)!;
-    expect(a).not.toBe(b);
-
-    // Corrupting a returned copy must not affect anyone else's lookup.
-    a.fill(0);
-    expect(sha256(trustRootFor(KEY_ID)!)).toBe(KEY_SHA256);
-
-    // ...and the real catalog still verifies afterwards.
-    const key = trustRootFor(KEY_ID)!;
-    await expect(verifyCatalogSignature(catalog, key)).resolves.toBe(true);
+  it('exposes no mutator at all', () => {
+    const m = CHANNEL_TRUST_ROOTS as unknown as Record<string, unknown>;
+    for (const mutator of ['set', 'delete', 'clear']) {
+      expect(m[mutator]).toBeUndefined();
+    }
   });
 
-  it('offers no way to add a key id', () => {
-    expect(trustRootFor('attacker-key-2026')).toBeUndefined();
-    // There is no exported collection to mutate: the only reader is a function
-    // over a module-private Map. This asserts the surface, since a future
-    // refactor re-exporting the Map would silently reopen the hole.
-    expect(trustedKeyIds()).not.toContain('attacker-key-2026');
+  it('hands out a COPY of the key bytes, not the live anchor', async () => {
+    const a = CHANNEL_TRUST_ROOTS.get(KEY_ID)!;
+    const b = CHANNEL_TRUST_ROOTS.get(KEY_ID)!;
+    expect(a).not.toBe(b);
+
+    // Corrupting a returned copy must not affect anyone else's lookup...
+    a.fill(0);
+    expect(sha256(CHANNEL_TRUST_ROOTS.get(KEY_ID)!)).toBe(KEY_SHA256);
+
+    // ...and the real catalog must still verify afterwards.
+    await expect(
+      verifyCatalogSignature(catalog, CHANNEL_TRUST_ROOTS.get(KEY_ID)!),
+    ).resolves.toBe(true);
+  });
+
+  it('copies through every enumeration path, not just get()', () => {
+    // A reader that forgot one of these would leak a writable view of the
+    // anchor just as surely as an exposed `set`.
+    for (const [, v] of CHANNEL_TRUST_ROOTS) v.fill(0);
+    for (const v of CHANNEL_TRUST_ROOTS.values()) v.fill(0);
+    CHANNEL_TRUST_ROOTS.forEach((v) => v.fill(0));
+    expect(sha256(CHANNEL_TRUST_ROOTS.get(KEY_ID)!)).toBe(KEY_SHA256);
+  });
+
+  it('has no key for an id it does not vendor', () => {
+    expect(CHANNEL_TRUST_ROOTS.get('attacker-key-2026')).toBeUndefined();
+    expect(CHANNEL_TRUST_ROOTS.has('attacker-key-2026')).toBe(false);
+  });
+});
+
+describe('isWellFormedCatalog validates entries, not just the top level', () => {
+  // The predicate asserts `value is SignedCatalog` and callers dereference
+  // `entry.name` / `entry.versions` on that promise, so checking only
+  // `Array.isArray(entries)` was unsound.
+  const base = { signedAt: '', publisherKeyId: '', signature: '' };
+
+  it('rejects a null entry', () => {
+    expect(isWellFormedCatalog({ ...base, entries: [null] })).toBe(false);
+  });
+
+  it('rejects an entry missing name or versions', () => {
+    expect(isWellFormedCatalog({ ...base, entries: [{ versions: [] }] })).toBe(false);
+    expect(isWellFormedCatalog({ ...base, entries: [{ name: 'a' }] })).toBe(false);
+  });
+
+  it('rejects a version missing a signed field', () => {
+    const version = {
+      version: '1.0.0',
+      manifestUrl: 'u',
+      tarballUrl: 'u',
+      appProtocolVersion: '3.0',
+      sizeBytes: 1,
+      importName: 'n',
+    };
+    expect(
+      isWellFormedCatalog({ ...base, entries: [{ name: 'a', versions: [version] }] }),
+    ).toBe(true);
+    for (const drop of Object.keys(version)) {
+      const partial: Record<string, unknown> = { ...version };
+      delete partial[drop];
+      expect(
+        isWellFormedCatalog({ ...base, entries: [{ name: 'a', versions: [partial] }] }),
+      ).toBe(false);
+    }
+  });
+
+  it('tolerates unknown fields so a newer catalog still validates', () => {
+    const withExtra = JSON.parse(JSON.stringify(catalog)) as Record<string, unknown>;
+    (withExtra.entries as Record<string, unknown>[])[0].futureField = 'x';
+    expect(isWellFormedCatalog(withExtra)).toBe(true);
   });
 });
 

@@ -34,8 +34,7 @@
 import { httpFetch } from './http.js';
 import {
   CHANNEL_CATALOG_URL,
-  trustRootFor,
-  trustedKeyIds,
+  CHANNEL_TRUST_ROOTS,
   verifyBundle,
   sha512Integrity,
   canonicalJson,
@@ -66,8 +65,7 @@ import type {
  */
 export {
   CHANNEL_CATALOG_URL,
-  trustRootFor,
-  trustedKeyIds,
+  CHANNEL_TRUST_ROOTS,
   BundleVerificationError,
   AppNotFoundError,
 };
@@ -134,7 +132,7 @@ export async function fetchAndVerifyCatalog(): Promise<SignedCatalog> {
     );
   }
 
-  const trustKey = trustRootFor(catalog.publisherKeyId);
+  const trustKey = CHANNEL_TRUST_ROOTS.get(catalog.publisherKeyId);
   if (!trustKey) {
     throw new BundleVerificationError(
       `Catalog at ${url} is signed by publisherKeyId="${catalog.publisherKeyId}" ` +
@@ -228,7 +226,7 @@ export async function fetchAndVerifyManifest(
       `Manifest sizeBytes ${manifest.sizeBytes} does not match catalog entry sizeBytes ${entry.sizeBytes}.`,
     );
   }
-  const trustKey = trustRootFor(manifest.publisherKeyId);
+  const trustKey = CHANNEL_TRUST_ROOTS.get(manifest.publisherKeyId);
   if (!trustKey) {
     throw new BundleVerificationError(
       `Manifest publisherKeyId="${manifest.publisherKeyId}" is not a vendored trust root.`,

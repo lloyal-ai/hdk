@@ -40,14 +40,13 @@ import { call } from 'effection';
 import type { Operation } from 'effection';
 import { satisfies, rcompare } from 'semver';
 import { cancellableFetch } from './cancellable-fetch';
-import { CHANNEL_CATALOG_URL } from './protocol';
+import { CHANNEL_CATALOG_URL, CHANNEL_TRUST_ROOTS } from './protocol';
 import {
   verifyBundle,
   canonicalJson,
   catalogSignedBytes,
   verifyCatalogSignature,
   isWellFormedCatalog,
-  trustRootFor,
   BundleVerificationError,
   AppNotFoundError,
 } from '@lloyal-labs/channel-verify';
@@ -134,9 +133,9 @@ function isTestEnv(): boolean {
   );
 }
 
-function getTrustRoot(keyId: string): Uint8Array | undefined {
-  if (isTestEnv() && testTrustRoots) return testTrustRoots.get(keyId);
-  return trustRootFor(keyId);
+function getTrustRoots(): ReadonlyMap<string, Uint8Array> {
+  if (isTestEnv() && testTrustRoots) return testTrustRoots;
+  return CHANNEL_TRUST_ROOTS;
 }
 
 function getCatalogUrl(): string {
@@ -156,7 +155,6 @@ function getCatalogUrl(): string {
 
 interface CachedCatalog {
   catalog: SignedCatalog;
-  bytes: Uint8Array; // canonical-JSON bytes that were signed, for diagnostics
 }
 
 const catalogCache = new Map<string, CachedCatalog>();
@@ -225,7 +223,7 @@ function* fetchAndVerifyCatalog(): Operation<SignedCatalog> {
     );
   }
 
-  const trustKey = getTrustRoot(catalog.publisherKeyId);
+  const trustKey = getTrustRoots().get(catalog.publisherKeyId);
   if (!trustKey) {
     throw new BundleVerificationError(
       `Catalog at ${url} is signed by publisherKeyId="${catalog.publisherKeyId}" ` +
@@ -234,11 +232,6 @@ function* fetchAndVerifyCatalog(): Operation<SignedCatalog> {
     );
   }
 
-  const signedBytes = catalogSignedBytes(
-    catalog.signedAt,
-    catalog.entries,
-    catalog.publisherKeyId,
-  );
   const ok = yield* call(() => verifyCatalogSignature(catalog, trustKey));
   if (!ok) {
     throw new BundleVerificationError(
@@ -248,7 +241,10 @@ function* fetchAndVerifyCatalog(): Operation<SignedCatalog> {
     );
   }
 
-  catalogCache.set(url, { catalog, bytes: signedBytes });
+  // `bytes` used to be cached alongside "for diagnostics" and was never read;
+  // recomputing it just to store it canonicalised the whole catalog a second
+  // time on every cache miss, since verifyCatalogSignature derives its own.
+  catalogCache.set(url, { catalog });
   return catalog;
 }
 

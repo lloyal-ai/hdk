@@ -195,4 +195,4 @@ export { CHANNEL_CATALOG_URL } from '@lloyal-labs/channel-verify';
  * To use a different set, fork `@lloyal-labs/channel-verify`, edit the
  * constant there, and republish under a different name.
  */
-export { trustRootFor, trustedKeyIds } from '@lloyal-labs/channel-verify';
+export { CHANNEL_TRUST_ROOTS } from '@lloyal-labs/channel-verify';

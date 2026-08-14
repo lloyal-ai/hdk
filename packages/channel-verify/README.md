@@ -16,6 +16,8 @@ if (!isWellFormedCatalog(parsed)) throw new Error('not a catalog');
 const key = CHANNEL_TRUST_ROOTS.get(parsed.publisherKeyId);
 if (!key) throw new Error('untrusted signing key');
 if (!(await verifyCatalogSignature(parsed, key))) throw new Error('bad signature');
+// `parsed` is verified from here on. `get` hands back a copy of the key bytes,
+// so nothing you do with `key` can affect the next caller's lookup.
 ```
 
 ## What it does

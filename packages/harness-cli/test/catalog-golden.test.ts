@@ -29,7 +29,7 @@ import {
   catalogSignedBytes,
   verifyBundle,
   resolveAppVersion,
-  trustRootFor,
+  CHANNEL_TRUST_ROOTS,
   type SignedCatalog,
 } from '../src/verify';
 
@@ -60,7 +60,7 @@ describe('the install path verifies a real signed catalog', () => {
   });
 
   it('reaches the trust root the catalog was signed with', () => {
-    const key = trustRootFor(KEY_ID);
+    const key = CHANNEL_TRUST_ROOTS.get(KEY_ID);
     expect(key).toBeDefined();
     expect(key!.length).toBe(32);
     expect(sha256(key!)).toBe(KEY_SHA256);
@@ -72,7 +72,7 @@ describe('the install path verifies a real signed catalog', () => {
       catalog.entries,
       catalog.publisherKeyId,
     );
-    const key = trustRootFor(KEY_ID)!;
+    const key = CHANNEL_TRUST_ROOTS.get(KEY_ID)!;
     await expect(verifyBundle(bytes, catalog.signature, key)).resolves.toBe(
       true,
     );
@@ -87,7 +87,7 @@ describe('the install path verifies a real signed catalog', () => {
         publisherKeyId: catalog.publisherKeyId,
       }).replace(',', ', '),
     );
-    const key = trustRootFor(KEY_ID)!;
+    const key = CHANNEL_TRUST_ROOTS.get(KEY_ID)!;
     await expect(verifyBundle(drifted, catalog.signature, key)).resolves.toBe(
       false,
     );

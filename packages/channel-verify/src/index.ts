@@ -93,12 +93,10 @@ const TRUST_ROOTS = new Map<string, Uint8Array>([
 ]);
 
 /**
- * The verifying key for a `publisherKeyId`, or `undefined` if that id is not
- * trusted. **Returns a fresh copy on every call.**
+ * A `ReadonlyMap` that is actually read-only, backed by {@link TRUST_ROOTS}.
  *
- * This replaces the exported `CHANNEL_TRUST_ROOTS` map that rig and the CLI
- * each used to vendor, which was `Object.freeze`d and typed `ReadonlyMap` —
- * and was neither. Measured, not assumed:
+ * The previous vendored constant was `Object.freeze(new Map(...))` typed
+ * `ReadonlyMap`, and was neither frozen nor read-only. Measured, not assumed:
  *
  * ```
  * Object.isFrozen(map)      : true
@@ -107,25 +105,64 @@ const TRUST_ROOTS = new Map<string, Uint8Array>([
  * ```
  *
  * `Object.freeze` seals an object's own properties, but a `Map`'s entries live
- * in internal slots it cannot reach, so `set`/`delete`/`clear` all still work.
- * The `ReadonlyMap` type is erased at runtime and stops nothing. Any module in
- * the process could therefore install its own trust anchor and have a catalog
- * it signed itself verify — in a package whose entire job is deciding what to
- * trust. The key bytes were mutable too, and cannot be protected in place:
- * `Object.freeze` on a `Uint8Array` with elements throws.
+ * in internal slots it cannot reach, so the mutators keep working; the
+ * `ReadonlyMap` type is erased at runtime and stops nothing. Any module in the
+ * process could install its own trust anchor and have a catalog it signed
+ * itself verify — in a package whose entire job is deciding what to trust.
  *
- * A copy-returning function is the only shape that actually holds: there is no
- * live collection to mutate and no shared buffer to write through.
+ * This implements the interface over a private `Map` instead of subclassing
+ * `Map`, deliberately: `new Map(entries)` looks up `set` on the *instance*, so
+ * a subclass with a throwing `set` cannot construct itself. There is simply no
+ * exposed mutator here.
+ *
+ * `get` returns a **fresh copy** of the key bytes each call. The bytes cannot
+ * be protected in place — `Object.freeze` on a `Uint8Array` with elements
+ * throws — so handing out the live view would leave the anchor writable
+ * through any reference anyone kept.
  */
-export function trustRootFor(keyId: string): Uint8Array | undefined {
-  const key = TRUST_ROOTS.get(keyId);
-  return key === undefined ? undefined : new Uint8Array(key);
+class ImmutableTrustRoots implements ReadonlyMap<string, Uint8Array> {
+  get size(): number {
+    return TRUST_ROOTS.size;
+  }
+  has(keyId: string): boolean {
+    return TRUST_ROOTS.has(keyId);
+  }
+  get(keyId: string): Uint8Array | undefined {
+    const key = TRUST_ROOTS.get(keyId);
+    return key === undefined ? undefined : new Uint8Array(key);
+  }
+  keys(): MapIterator<string> {
+    return TRUST_ROOTS.keys();
+  }
+  *values(): MapIterator<Uint8Array> {
+    for (const [, v] of TRUST_ROOTS) yield new Uint8Array(v);
+  }
+  *entries(): MapIterator<[string, Uint8Array]> {
+    for (const [k, v] of TRUST_ROOTS) yield [k, new Uint8Array(v)];
+  }
+  [Symbol.iterator](): MapIterator<[string, Uint8Array]> {
+    return this.entries();
+  }
+  forEach(
+    cb: (value: Uint8Array, key: string, map: ReadonlyMap<string, Uint8Array>) => void,
+    thisArg?: unknown,
+  ): void {
+    for (const [k, v] of TRUST_ROOTS) cb.call(thisArg, new Uint8Array(v), k, this);
+  }
 }
 
-/** The trusted `publisherKeyId`s, in vendoring order. Fresh array per call. */
-export function trustedKeyIds(): readonly string[] {
-  return [...TRUST_ROOTS.keys()];
-}
+/**
+ * Framework-vendored trust roots — `publisherKeyId` to raw Ed25519 public key
+ * bytes. Multi-entry to support rotation: a new key is added alongside the old,
+ * which stays valid through its deprecation window and is dropped in a later
+ * major.
+ *
+ * Genuinely immutable, and the shape is unchanged from what rig has always
+ * exported — so closing the hole above costs no consumer a migration. See
+ * {@link ImmutableTrustRoots} for why a plain frozen `Map` did not hold.
+ */
+export const CHANNEL_TRUST_ROOTS: ReadonlyMap<string, Uint8Array> =
+  new ImmutableTrustRoots();
 
 // ── Schemas ───────────────────────────────────────────────────────────
 
@@ -339,14 +376,47 @@ export async function verifyCatalogSignature(
  * signing over bytes that verifier never reconstructs.
  */
 export function isWellFormedCatalog(value: unknown): value is SignedCatalog {
-  const c = value as SignedCatalog | null;
+  if (value === null || typeof value !== 'object') return false;
+  const c = value as SignedCatalog;
   return (
-    c !== null &&
-    typeof c === 'object' &&
     typeof c.signedAt === 'string' &&
-    Array.isArray(c.entries) &&
     typeof c.publisherKeyId === 'string' &&
-    typeof c.signature === 'string'
+    typeof c.signature === 'string' &&
+    Array.isArray(c.entries) &&
+    c.entries.every(isWellFormedEntry)
+  );
+}
+
+/**
+ * Entries are validated too, because {@link isWellFormedCatalog} asserts
+ * `value is SignedCatalog` and callers dereference `entry.name` /
+ * `entry.versions` on that promise. Checking only `Array.isArray(entries)`
+ * made the predicate unsound: `{ entries: [null], … }` satisfied it while
+ * `SignedCatalog` says otherwise.
+ *
+ * Required fields only — unknown properties are ignored so a catalog that
+ * gains a field still validates against an older client. `metadata` is
+ * optional and deliberately unvalidated: nothing here reads it, and the
+ * signature already covers it.
+ */
+function isWellFormedEntry(value: unknown): boolean {
+  if (value === null || typeof value !== 'object') return false;
+  const e = value as CatalogEntry;
+  return (
+    typeof e.name === 'string' &&
+    Array.isArray(e.versions) &&
+    e.versions.every((v) => {
+      if (v === null || typeof v !== 'object') return false;
+      const ver = v as CatalogVersion;
+      return (
+        typeof ver.version === 'string' &&
+        typeof ver.manifestUrl === 'string' &&
+        typeof ver.tarballUrl === 'string' &&
+        typeof ver.appProtocolVersion === 'string' &&
+        typeof ver.sizeBytes === 'number' &&
+        typeof ver.importName === 'string'
+      );
+    })
   );
 }
 
