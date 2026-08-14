@@ -119,6 +119,22 @@ const TRUST_ROOTS = new Map<string, Uint8Array>([
  * be protected in place — `Object.freeze` on a `Uint8Array` with elements
  * throws — so handing out the live view would leave the anchor writable
  * through any reference anyone kept.
+ *
+ * The prototype and the exported instance are both frozen. Without that, the
+ * accessor itself is replaceable and the wrapper buys nothing: assigning
+ * `CHANNEL_TRUST_ROOTS.get = () => attackerKey` shadows the method on the
+ * instance, and patching the prototype does the same for every holder.
+ * Measured — both succeed on an unfrozen class and both throw once frozen,
+ * while the object stays fully functional.
+ *
+ * **Scope, stated honestly.** This makes the object's own immutability claim
+ * true; it does not make the trust anchor tamper-proof against hostile code
+ * running in the same process. Such code can patch `crypto.subtle.verify`
+ * (verified: trivially replaceable), swap the exported functions, or evict the
+ * module from the require cache. No JavaScript object can defend against that,
+ * and pretending otherwise is how the previous `Object.freeze(new Map(...))`
+ * came to look safe. What this does buy is that no *legitimate-looking* API
+ * call silently replaces the anchor, and that the type is not lying.
  */
 class ImmutableTrustRoots implements ReadonlyMap<string, Uint8Array> {
   get size(): number {
@@ -161,8 +177,11 @@ class ImmutableTrustRoots implements ReadonlyMap<string, Uint8Array> {
  * exported — so closing the hole above costs no consumer a migration. See
  * {@link ImmutableTrustRoots} for why a plain frozen `Map` did not hold.
  */
-export const CHANNEL_TRUST_ROOTS: ReadonlyMap<string, Uint8Array> =
-  new ImmutableTrustRoots();
+Object.freeze(ImmutableTrustRoots.prototype);
+
+export const CHANNEL_TRUST_ROOTS: ReadonlyMap<string, Uint8Array> = Object.freeze(
+  new ImmutableTrustRoots(),
+);
 
 // ── Schemas ───────────────────────────────────────────────────────────
 

@@ -310,6 +310,37 @@ describe('the trust anchor cannot be replaced at runtime', () => {
     }
   });
 
+  it('will not let the accessor itself be shadowed on the instance', () => {
+    // Without a frozen instance the wrapper buys nothing: assigning over `get`
+    // substitutes the anchor for every consumer without touching the Map.
+    // Modules are strict mode, so the assignment throws rather than no-oping.
+    expect(() => {
+      (CHANNEL_TRUST_ROOTS as unknown as Record<string, unknown>).get = () =>
+        new Uint8Array(32);
+    }).toThrow(TypeError);
+    expect(sha256(CHANNEL_TRUST_ROOTS.get(KEY_ID)!)).toBe(KEY_SHA256);
+  });
+
+  it('will not let the accessor be patched on the prototype', () => {
+    // The same substitution one level up, which would hit every holder of the
+    // object rather than one reference.
+    const proto = Object.getPrototypeOf(CHANNEL_TRUST_ROOTS) as object;
+    expect(Object.isFrozen(proto)).toBe(true);
+    expect(() => {
+      (proto as Record<string, unknown>).get = () => new Uint8Array(32);
+    }).toThrow(TypeError);
+    expect(sha256(CHANNEL_TRUST_ROOTS.get(KEY_ID)!)).toBe(KEY_SHA256);
+  });
+
+  it('is still a working ReadonlyMap after being frozen', () => {
+    // Freezing must not break the interface it claims to implement — `size` is
+    // a getter on the frozen prototype, and iteration must still yield copies.
+    expect(CHANNEL_TRUST_ROOTS.size).toBe(1);
+    expect(CHANNEL_TRUST_ROOTS.has(KEY_ID)).toBe(true);
+    expect([...CHANNEL_TRUST_ROOTS.keys()]).toEqual([KEY_ID]);
+    expect([...CHANNEL_TRUST_ROOTS.entries()][0][0]).toBe(KEY_ID);
+  });
+
   it('hands out a COPY of the key bytes, not the live anchor', async () => {
     const a = CHANNEL_TRUST_ROOTS.get(KEY_ID)!;
     const b = CHANNEL_TRUST_ROOTS.get(KEY_ID)!;
