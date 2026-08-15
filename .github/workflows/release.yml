@@ -65,7 +65,7 @@ jobs:
           # rig pointing at a version that does not exist on the registry —
           # breaking fresh installs until someone repaired the partial release.
           # It has no dependencies of its own, so it is safe at the head.
-          for pkg in packages/channel-verify packages/sdk packages/agents packages/rig packages/harness-cli packages/binding packages/relay packages/host; do
+          for pkg in packages/channel-verify packages/sdk packages/agents packages/rig packages/binding packages/relay packages/host; do
             name=$(node -p "require('./$pkg/package.json').name")
             version=$(node -p "require('./$pkg/package.json').version")
             if npm view "$name@$version" version >/dev/null 2>&1; then
