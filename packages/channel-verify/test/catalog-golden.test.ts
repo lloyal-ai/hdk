@@ -282,6 +282,58 @@ describe('encoding helpers', () => {
   });
 });
 
+describe('the base64 globals are a stated requirement, not an assumption', () => {
+  // `atob`/`btoa` are HTML globals, not WebCrypto, so a runtime can provide
+  // `crypto.subtle` and lack them. Save/restore rather than mock so the check
+  // exercises the real code path; `finally` keeps the rest of the suite safe.
+  function withoutBase64<T>(fn: () => T): T {
+    const real = { atob: globalThis.atob, btoa: globalThis.btoa };
+    // @ts-expect-error deliberately removing a global to simulate the runtime
+    delete globalThis.atob;
+    // @ts-expect-error deliberately removing a global to simulate the runtime
+    delete globalThis.btoa;
+    try {
+      return fn();
+    } finally {
+      Object.assign(globalThis, real);
+    }
+  }
+
+  it('fails by name, not as a bare ReferenceError', () => {
+    withoutBase64(() => {
+      expect(() => base64ToBytes('AAAA')).toThrow(/no atob\/btoa/);
+      expect(() => bytesToBase64(new Uint8Array(2))).toThrow(/no atob\/btoa/);
+    });
+  });
+
+  it('does not report a broken runtime as a bad signature', async () => {
+    // verifyBundle turns MALFORMED base64 into `false` — a bad signature is not
+    // an exception. A runtime with no base64 at all is a different fact, and
+    // returning `false` for it would hide a broken environment behind a
+    // security verdict.
+    const key = CHANNEL_TRUST_ROOTS.get(KEY_ID)!;
+    await expect(
+      withoutBase64(() => verifyBundle(new Uint8Array([1]), 'AAAA', key)),
+    ).rejects.toThrow(/no atob\/btoa/);
+    // ...while malformed input still resolves false, globals present.
+    await expect(verifyBundle(new Uint8Array([1]), '!!!!', key)).resolves.toBe(
+      false,
+    );
+  });
+
+  it('recovers if the globals appear later — the check is not latched', () => {
+    // A module-load snapshot would answer once at import and refuse forever
+    // afterwards, breaking any runtime that installs a polyfill late. Measured:
+    // that is exactly what an earlier `const HAS_BASE64` did.
+    withoutBase64(() => {
+      expect(() => base64ToBytes('AAAA')).toThrow();
+    });
+    expect([...base64ToBytes(bytesToBase64(new Uint8Array([1, 2, 3])))]).toEqual([
+      1, 2, 3,
+    ]);
+  });
+});
+
 describe('vendored constants', () => {
   it('points at the production channel', () => {
     expect(CHANNEL_CATALOG_URL).toBe('https://apps.lloyal.ai/v1/catalog.json');

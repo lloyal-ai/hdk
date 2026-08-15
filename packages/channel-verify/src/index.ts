@@ -27,9 +27,16 @@
  * `@lloyal-labs/lloyal-agents` → `@lloyal-labs/sdk` → the native
  * `@lloyal-labs/lloyal.node`. A CLI that scaffolds projects must not require a
  * native binary on the user's platform, so it duplicated the surface instead.
- * This package is the shared home that costs neither side anything: pure
- * WebCrypto and string manipulation with no `node:*` imports, so it is portable
- * to any runtime that provides WebCrypto.
+ * This package is the shared home that costs neither side anything: no `node:*`
+ * imports, so it runs anywhere that provides `crypto.subtle` **and** the WHATWG
+ * base64 globals `atob`/`btoa` — which is the WinterCG Minimum Common API, i.e.
+ * Node, Deno, Bun, workerd and browsers.
+ *
+ * That second requirement is stated because it is easy to get wrong: `atob` and
+ * `btoa` are HTML globals, not part of WebCrypto, so "any runtime with
+ * WebCrypto" would be an over-claim. {@link base64ToBytes} fails loudly and by
+ * name where they are absent rather than as a bare `ReferenceError` from inside
+ * a signature check.
  *
  * It ships a dual ESM/CommonJS build for that reason. Portable SOURCE is not
  * portable OUTPUT: a CommonJS-only artifact does not merely inconvenience a
@@ -273,6 +280,12 @@ export async function verifyBundle(
   signatureBase64: string,
   publicKey: Uint8Array,
 ): Promise<boolean> {
+  // Before the try, deliberately. The catch below exists to turn MALFORMED
+  // base64 into `false` (a bad signature is not an exception), and a runtime
+  // with no base64 at all is a different fact — swallowing it as "signature
+  // invalid" would hide a broken environment behind a security verdict.
+  assertBase64();
+
   let signature: Uint8Array;
   try {
     signature = base64ToBytes(signatureBase64);
@@ -455,8 +468,30 @@ function isWellFormedEntry(value: unknown): boolean {
 
 // ── Encoding helpers ──────────────────────────────────────────────────
 
+/**
+ * Assert the WHATWG base64 globals exist. They are HTML APIs, not WebCrypto, so
+ * a runtime can provide `crypto.subtle` and lack them — which would otherwise
+ * surface as a bare `ReferenceError` from inside a signature check.
+ *
+ * Checked per call, NOT cached at module load. A one-time snapshot latches the
+ * answer at import time, so a runtime that installs a polyfill after this module
+ * is evaluated would be refused permanently. Measured: with a module-load
+ * `const`, deleting the globals before import and restoring them after left the
+ * package throwing forever. A `typeof` check costs nothing.
+ */
+function assertBase64(): void {
+  if (typeof atob !== 'function' || typeof btoa !== 'function') {
+    throw new Error(
+      'This runtime provides no atob/btoa. @lloyal-labs/channel-verify needs ' +
+        'the WHATWG base64 globals as well as crypto.subtle (the WinterCG ' +
+        'Minimum Common API: Node, Deno, Bun, workerd, browsers).',
+    );
+  }
+}
+
 /** Standard-alphabet base64 (not base64url) to raw bytes. Throws on invalid input. */
 export function base64ToBytes(b64: string): Uint8Array {
+  assertBase64();
   const bin = atob(b64);
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
@@ -465,6 +500,7 @@ export function base64ToBytes(b64: string): Uint8Array {
 
 /** Raw bytes to standard-alphabet base64 (not base64url). */
 export function bytesToBase64(bytes: Uint8Array): string {
+  assertBase64();
   let s = '';
   for (let i = 0; i < bytes.byteLength; i++) s += String.fromCharCode(bytes[i]);
   return btoa(s);

@@ -1,12 +1,17 @@
 // The ESM half of the dual build. The package is pure WebCrypto + string
-// handling with no Node built-ins, so it is portable to any runtime with
-// WebCrypto — but only if what ships can actually be LOADED there. A
+// handling with no Node built-ins, so it is portable to the runtimes named in
+// src/index.ts — but only if what ships can actually be LOADED there. A
 // CommonJS-only artifact cannot: a browser or workerd ESM loader fails on it
 // with `ReferenceError: exports is not defined in ES module scope`.
 //
 // Not `composite`, and not part of the `tsc -b` graph: rig references this
 // package's CommonJS project, and a second composite project over the same
 // sources would fight it for build info. Built with a plain `tsc -p` after it.
+//
+// No `tsBuildInfoFile` here. It briefly carried `null` to mean "none", which
+// tsc does not reject — it resolves it to the DIRECTORY `./`, which is inert
+// only because this project is non-composite and non-incremental. Omitting it
+// is the way to mean none.
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
@@ -15,8 +20,7 @@
     "moduleResolution": "Bundler",
     "composite": false,
     "declaration": true,
-    "declarationMap": true,
-    "tsBuildInfoFile": null
+    "declarationMap": true
   },
   "include": ["src/**/*.ts"],
   "references": []

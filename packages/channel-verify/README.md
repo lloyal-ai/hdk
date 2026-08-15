@@ -43,9 +43,12 @@ loudly: it makes every published app uninstallable.
 The CLI's copy existed for a real reason this package also resolves. Importing
 the rig pulls in the App runtime, which chain-imports the native
 `@lloyal-labs/lloyal.node`; a CLI that scaffolds projects must not require a
-native binary on the user's platform. This package costs neither side anything
-— pure WebCrypto and string manipulation with no `node:*` imports, so it is
-portable to any runtime that provides WebCrypto.
+native binary on the user's platform. This package costs neither side anything —
+no `node:*` imports, so it runs anywhere that provides `crypto.subtle` **and**
+the WHATWG base64 globals `atob`/`btoa`: the WinterCG Minimum Common API, i.e.
+Node, Deno, Bun, workerd and browsers. (`atob`/`btoa` are HTML globals, not
+WebCrypto, so "any runtime with WebCrypto" would be an over-claim; the package
+fails by name where they are missing.)
 
 It ships **both ESM and CommonJS**, which is not a nicety: portable source is
 not portable output, and a CommonJS-only artifact fails to load in a browser or
