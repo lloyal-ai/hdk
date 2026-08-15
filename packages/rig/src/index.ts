@@ -66,6 +66,12 @@ export {
   BundleVerificationError,
   AppNotFoundError,
 } from './bundle';
-export type { AppBundleManifest, CatalogEntry, CatalogVersion, SignedCatalog } from './bundle';
+export type {
+  AppBundleManifest,
+  CatalogEntry,
+  CatalogEntryMetadata,
+  CatalogVersion,
+  SignedCatalog,
+} from './bundle';
 export { renderSpine, renderAgentPreamble } from './spine-render';
 export type { RenderSpineOptions } from './spine-render';

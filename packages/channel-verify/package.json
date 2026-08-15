@@ -1,0 +1,51 @@
+{
+  "name": "@lloyal-labs/channel-verify",
+  "version": "0.1.0",
+  "description": "Apache-2.0, zero-dependency verification primitives for the Lloyal app channel — canonical-JSON signing payloads and Ed25519 verification",
+  "main": "dist/cjs/index.js",
+  "types": "dist/cjs/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/esm/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      }
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lloyal-ai/hdk.git",
+    "directory": "packages/channel-verify"
+  },
+  "homepage": "https://github.com/lloyal-ai/hdk/tree/main/packages/channel-verify#readme",
+  "bugs": {
+    "url": "https://github.com/lloyal-ai/hdk/issues"
+  },
+  "keywords": [
+    "ed25519",
+    "canonical-json",
+    "signature",
+    "verification",
+    "supply-chain"
+  ],
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -b && tsc -p tsconfig.esm.json && node ./scripts/emit-module-markers.mjs"
+  },
+  "files": [
+    "dist/cjs/",
+    "dist/esm/",
+    "LICENSE"
+  ]
+}

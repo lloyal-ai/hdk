@@ -20,8 +20,8 @@
 #   ./LICENSE-FAQ.md                           <- sync target (lloyal-sdk root)
 #   ./packages/{agents,sdk,rig,apps/corpus,apps/web}/LICENSE-FAQ.md  <- sync targets
 #
-# packages/harness-cli/LICENSE-FAQ.md is NOT synced (that package is Apache 2.0,
-# not FSL — see CONTRIBUTING for the cross-repo licensing policy).
+# packages/harness-cli and packages/channel-verify are NOT synced (both are
+# Apache 2.0, not FSL — see CONTRIBUTING for the cross-repo licensing policy).
 
 set -euo pipefail
 

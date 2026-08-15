@@ -20,6 +20,13 @@ FSL-1.1-Apache-2.0 packages (the HDK 3.0 runtime stack):
 Apache 2.0 packages (scaffolders / adoption surfaces):
 
   - harness.dev CLI                   (packages/harness-cli)
+  - @lloyal-labs/channel-verify       (packages/channel-verify)
+
+@lloyal-labs/channel-verify is Apache 2.0 by design, not by omission: it is
+the public half of an asymmetric signing scheme (signature verification
+only — it holds no private key and cannot mint trust), and any client that
+wishes to verify the channel must be free to do so. It carries no runtime
+dependency on the FSL runtime stack and no native binary.
 
 Each package ships its own LICENSE file. The runtime-stack packages also
 ship NOTICE files crediting transitive native-stack dependencies

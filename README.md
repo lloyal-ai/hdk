@@ -242,6 +242,7 @@ packages/
     corpus/      @lloyal-labs/corpus-app    — first-party local-corpus research App
     wikipedia/   @lloyal-labs/wikipedia-app — first-party Wikipedia demo App
   harness-cli/   harness.dev                — scaffold · install · publish · review CLI (Apache 2.0)
+  channel-verify/ @lloyal-labs/channel-verify — canonical-JSON + Ed25519 channel verification (Apache 2.0, zero-dep)
 
 examples/
   compare/       DAG primer (App-protocol-shaped): parallel research → compare → synthesize
@@ -307,6 +308,6 @@ Safety has to be **upstream and structural**: the canonical channel at [apps.llo
 
 **Commercial use is unrestricted** — build and sell products with HDK, embed it in proprietary software, run it in production. The FSL restriction is narrow: you cannot ship a competing HDK runtime, managed HDK service, or alternative HDK App distribution channel.
 
-HDK runtime packages (`@lloyal-labs/lloyal-agents`, `@lloyal-labs/sdk`, `@lloyal-labs/rig`, `@lloyal-labs/binding`, `@lloyal-labs/host`, `@lloyal-labs/relay`, `@lloyal-labs/web-app`, `@lloyal-labs/corpus-app`, `@lloyal-labs/wikipedia-app`) are Fair Source under FSL-1.1-Apache-2.0 and convert to Apache 2.0 two years after each release. `packages/harness-cli` (the `harness.dev` CLI) is Apache 2.0 from day one — see its own `LICENSE` file.
+HDK runtime packages (`@lloyal-labs/lloyal-agents`, `@lloyal-labs/sdk`, `@lloyal-labs/rig`, `@lloyal-labs/binding`, `@lloyal-labs/host`, `@lloyal-labs/relay`, `@lloyal-labs/web-app`, `@lloyal-labs/corpus-app`, `@lloyal-labs/wikipedia-app`) are Fair Source under FSL-1.1-Apache-2.0 and convert to Apache 2.0 two years after each release. `packages/harness-cli` (the `harness.dev` CLI) and `packages/channel-verify` (`@lloyal-labs/channel-verify`) are Apache 2.0 from day one — see their own `LICENSE` files. `channel-verify` is Apache by design: it is the public half of an asymmetric signing scheme, so anyone who wants to verify the channel must be free to.
 
 See [`LICENSE-FAQ.md`](./LICENSE-FAQ.md) for concrete examples of what's permitted and what's restricted, [`LICENSE`](./LICENSE) for the legal text, and [`NOTICE`](./NOTICE) for attribution.

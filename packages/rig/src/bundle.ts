@@ -5,7 +5,7 @@
  * channel at {@link CHANNEL_CATALOG_URL}. The `harness.dev install` CLI
  * uses the primitives here ({@link verifyBundle}, {@link resolveAppEntry})
  * to fetch + signature-verify a tarball against
- * {@link CHANNEL_TRUST_ROOTS}, then shells out to `npm install <URL>` so
+ * the vendored trust roots, then shells out to `npm install <URL>` so
  * the app lands in the harness's `node_modules` like any other npm
  * dependency. The harness boots and imports each app with a plain static
  * `import`; the framework provides no runtime "load app by name" verb.
@@ -19,11 +19,14 @@
  *
  * **Channel-canonical resolution.** {@link resolveAppEntry} fetches the
  * catalog from {@link CHANNEL_CATALOG_URL}, verifies its Ed25519
- * signature against {@link CHANNEL_TRUST_ROOTS}, and resolves a name +
+ * signature against the vendored trust roots, and resolves a name +
  * semver range to a {@link CatalogVersion} descriptor (manifestUrl +
  * tarballUrl + sizeBytes). The caller never supplies a URL or a trust
- * map — to use a different channel, fork `@lloyal-labs/rig` and edit
- * the constants in `protocol.ts`.
+ * map — to use a different channel, fork `@lloyal-labs/channel-verify`,
+ * edit the constants there, and have the rig fork depend on it. Editing
+ * `protocol.ts` no longer changes the channel: that file re-exports the
+ * URL and the trust roots from the shared package rather than declaring
+ * them.
  *
  * **Verification is the entire trust boundary.** `verifyBundle` runs
  * before `harness.dev install` invokes `npm install <tarball-URL>`, so
@@ -41,164 +44,45 @@ import type { Operation } from 'effection';
 import { satisfies, rcompare } from 'semver';
 import { cancellableFetch } from './cancellable-fetch';
 import { CHANNEL_CATALOG_URL, CHANNEL_TRUST_ROOTS } from './protocol';
+import {
+  verifyBundle,
+  canonicalJson,
+  catalogSignedBytes,
+  verifyCatalogSignature,
+  isWellFormedCatalog,
+  BundleVerificationError,
+  AppNotFoundError,
+} from '@lloyal-labs/channel-verify';
+import type {
+  AppBundleManifest,
+  CatalogVersion,
+  CatalogEntryMetadata,
+  CatalogEntry,
+  SignedCatalog,
+} from '@lloyal-labs/channel-verify';
 
 /**
- * Manifest describing a signed tarball, served at the `manifestUrl`
- * listed in a catalog entry. The manifest is the publisher-of-record
- * payload that ties (tarball bytes ↔ Ed25519 signature ↔ npm-compatible
- * sha512 integrity ↔ identifying metadata) together.
- */
-export interface AppBundleManifest {
-  /** App identifier (matches `App.manifest.name`). */
-  name: string;
-  /** Semver of this release. */
-  version: string;
-  /**
-   * Filename of the tarball relative to the channel's bundle directory
-   * (e.g., `web-1.2.0.tgz`). The canonical record of what was signed —
-   * `signature` is over the bytes of this artifact.
-   */
-  entry: string;
-  /** Base64-encoded Ed25519 signature over the tarball bytes. */
-  signature: string;
-  /**
-   * npm-compatible Subresource Integrity hash over the tarball bytes
-   * (e.g., `sha512-<base64>`). `npm install` verifies this on extract
-   * as defense-in-depth; the Ed25519 `signature` above is the
-   * authoritative trust boundary, but the SRI hash carries trust
-   * forward into the consumer's `package-lock.json` so subsequent
-   * `npm ci` reproduces the install without re-verifying the
-   * signature.
-   */
-  integrity: string;
-  /**
-   * Identifier of the publisher's signing key. Looked up in
-   * {@link CHANNEL_TRUST_ROOTS} to obtain the verifying key.
-   */
-  publisherKeyId: string;
-  /** Tarball size in bytes (sanity check vs. download). */
-  sizeBytes: number;
-  /**
-   * peerDependencies of the app (e.g., `{"@lloyal-labs/rig":
-   * "^3.0.0"}`). Informational; npm enforces these on install.
-   */
-  peerDependencies?: Record<string, string>;
-}
-
-/**
- * One version's entry in the catalog (under an app's `versions` array).
- */
-export interface CatalogVersion {
-  /** Semver of this release. */
-  version: string;
-  /** URL the manifest JSON is served from. */
-  manifestUrl: string;
-  /**
-   * URL the signed tarball (`.tgz`) is served from. This URL is
-   * immutable per version: republishing forces a new semver. The
-   * `harness.dev install` CLI passes this URL straight to
-   * `npm install`, and it lands verbatim in the consumer's
-   * `package.json` and `package-lock.json` so CI can reproduce the
-   * install with plain `npm ci` against no Lloyal tooling.
-   */
-  tarballUrl: string;
-  /** App-protocol version this artifact targets (e.g., `'3.0'`). */
-  appProtocolVersion: string;
-  /** Tarball size in bytes (sanity check vs. download). */
-  sizeBytes: number;
-  /**
-   * npm package name as declared in the tarball's `package.json` (e.g.,
-   * `@lloyal-labs/web-app`). The catalog `name` is the scoped Lloyal
-   * identifier (`lloyal/web`); `importName` is what consumers actually
-   * `import { … } from '<importName>'` once npm has installed the tarball.
-   * Validated server-side at submission time against the tarball's
-   * embedded `package.json`.
-   */
-  importName: string;
-}
-
-/**
- * Optional signed display/disclosure block on a catalog entry. Produced by the
- * publish worker and rendered by the storefront; the rig runtime does not read
- * it. Typed here for parity with the worker's `CatalogEntry` so the one signed
- * shape stays in sync. `schemaVersion` is `number` (not a literal) so a future
- * bump is tolerated rather than a type error.
- */
-export interface CatalogEntryMetadata {
-  /** Block schema revision; consumers ignore an unknown future version. */
-  schemaVersion: number;
-  /** Storefront display title. */
-  title: string;
-  /** One-line storefront description. */
-  shortDesc: string;
-  /** Display category (from the storefront taxonomy). */
-  category: string;
-  /** Optional content-addressed icon URL. */
-  iconUrl?: string;
-  /** Disclosure entitlement keys — display-only (no runtime enforcement). */
-  entitlements: readonly string[];
-}
-
-/**
- * One app's entry in the catalog.
- */
-export interface CatalogEntry {
-  /** App identifier (matches `manifest.name`). */
-  name: string;
-  /** Published versions, unordered. */
-  versions: readonly CatalogVersion[];
-  /** Optional signed display/disclosure block; absent until a publisher submits metadata. */
-  metadata?: CatalogEntryMetadata;
-}
-
-/**
- * The full signed catalog served at {@link CHANNEL_CATALOG_URL}.
+ * The signed-channel schemas and error types, defined in
+ * `@lloyal-labs/channel-verify` and re-exported here unchanged.
  *
- * The signature is over a canonical-JSON encoding of
- * `{ signedAt, entries, publisherKeyId }` (sorted keys, no whitespace).
+ * They were previously declared here AND, verbatim, in the install CLI — which
+ * could not import them: rig's entry chain-imports the App runtime and the
+ * native `@lloyal-labs/lloyal.node`, and a CLI that scaffolds projects must not
+ * drag a native binary onto the user's platform. The shared package removes
+ * the reason for the duplication rather than just the duplication.
  */
-export interface SignedCatalog {
-  /** ISO-8601 timestamp of when the catalog was signed. */
-  signedAt: string;
-  /** All apps published to the channel. */
-  entries: readonly CatalogEntry[];
-  /**
-   * Identifier of the platform key that signed this catalog. Looked up
-   * in {@link CHANNEL_TRUST_ROOTS}.
-   */
-  publisherKeyId: string;
-  /** Base64-encoded Ed25519 signature. */
-  signature: string;
-}
-
-/**
- * Raised when a tarball, manifest, or catalog fails signature, size,
- * or trust-roots verification. Distinct from network errors raised by
- * `cancellableFetch`.
- */
-export class BundleVerificationError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'BundleVerificationError';
-  }
-}
-
-/**
- * Raised when {@link resolveAppEntry} cannot resolve the requested
- * `(name, semver)` tuple against the catalog. Distinct from
- * {@link BundleVerificationError}: the catalog was reached and verified,
- * the name is just not listed (or no version matched the semver range).
- */
-export class AppNotFoundError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'AppNotFoundError';
-  }
-}
+export type {
+  AppBundleManifest,
+  CatalogVersion,
+  CatalogEntryMetadata,
+  CatalogEntry,
+  SignedCatalog,
+};
+export { BundleVerificationError, AppNotFoundError };
 
 // ── Test-only injection (NODE_ENV=test) ─────────────────────────────
 //
-// bundle.test.ts overrides the framework-vendored CHANNEL_TRUST_ROOTS +
+// bundle.test.ts overrides the framework-vendored trust roots +
 // CHANNEL_CATALOG_URL via the helpers below so it can exercise the
 // verification flow against a fresh test keypair + a local HTTP / file://
 // catalog fixture. The overrides are inert outside NODE_ENV=test —
@@ -209,7 +93,7 @@ let testTrustRoots: Map<string, Uint8Array> | undefined;
 let testCatalogUrl: string | undefined;
 
 /**
- * Test-only: override {@link CHANNEL_TRUST_ROOTS} with a map containing
+ * Test-only: override the vendored trust roots with a map containing
  * exactly the (keyId, publicKey) pair given. Subsequent
  * {@link resolveAppEntry} calls (and the internal catalog-verification
  * path) use this override instead of the framework-vendored constant.
@@ -274,7 +158,6 @@ function getCatalogUrl(): string {
 
 interface CachedCatalog {
   catalog: SignedCatalog;
-  bytes: Uint8Array; // canonical-JSON bytes that were signed, for diagnostics
 }
 
 const catalogCache = new Map<string, CachedCatalog>();
@@ -292,84 +175,23 @@ export function clearCatalogCache(): void {
 // ── Verification primitives ────────────────────────────────────────
 
 /**
- * Verify an Ed25519 signature over `bytes` using `publicKey` (32-byte
- * raw key). Returns `true` if the signature is authentic; `false`
- * otherwise. `crypto.subtle.verify` is async so the function returns a
- * `Promise<boolean>`; callers `yield* call(() => verifyBundle(...))` to
- * bridge.
- */
-export async function verifyBundle(
-  bytes: Uint8Array,
-  signatureBase64: string,
-  publicKey: Uint8Array,
-): Promise<boolean> {
-  let signature: Uint8Array;
-  try {
-    signature = base64ToBytes(signatureBase64);
-  } catch {
-    return false;
-  }
-  if (publicKey.byteLength !== 32) return false;
-  if (signature.byteLength !== 64) return false;
-
-  const key = await crypto.subtle.importKey(
-    'raw',
-    toArrayBuffer(publicKey),
-    { name: 'Ed25519' },
-    false,
-    ['verify'],
-  );
-  return crypto.subtle.verify(
-    { name: 'Ed25519' },
-    key,
-    toArrayBuffer(signature),
-    toArrayBuffer(bytes),
-  );
-}
-
-/**
- * Canonical-JSON encoding for signature payloads. Sorts object keys
- * recursively and emits compact (no-whitespace) output. Arrays preserve
- * insertion order. Numbers, booleans, null, and strings round-trip via
- * `JSON.stringify`. Sufficient for `signedAt: ISO8601`, `publisherKeyId:
- * string`, and the `entries` tree (all string / number primitives).
+ * The Ed25519 primitive and the canonical-JSON encoding that defines the
+ * catalog signature. All three live in `@lloyal-labs/channel-verify` and are
+ * re-exported here, unchanged, so rig's public surface is untouched.
  *
- * Not a full RFC 8785 implementation — explicitly. The catalog schema
- * is constrained to JSON types this helper handles correctly, and an
- * RFC 8785 dep would be overkill for the surface area.
+ * Four copies of this encoding used to exist — the publish worker (which
+ * signs), this file, the install CLI, and rig's own test file, which mirrored
+ * the helper to use as its oracle. They were byte-identical, but nothing
+ * enforced it, and a copy that drifts does not fail loudly: it makes every
+ * published app uninstallable. The shared package is pinned against frozen
+ * bytes from a real signed catalog, which is the only check a coordinated
+ * edit to signer and verifier cannot satisfy.
  */
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map(canonicalJson).join(',')}]`;
-  }
-  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
-    a < b ? -1 : a > b ? 1 : 0,
-  );
-  return `{${entries
-    .map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`)
-    .join(',')}}`;
-}
-
-/**
- * Compute the signed payload bytes for a catalog: canonical-JSON of
- * `{ signedAt, entries, publisherKeyId }`, UTF-8 encoded. Used by both
- * the verifier (here) and the signer (out-of-repo publish tooling).
- */
-function catalogSignedBytes(
-  signedAt: string,
-  entries: readonly CatalogEntry[],
-  publisherKeyId: string,
-): Uint8Array {
-  const json = canonicalJson({ signedAt, entries, publisherKeyId });
-  return new TextEncoder().encode(json);
-}
+export { verifyBundle, canonicalJson, catalogSignedBytes };
 
 /**
  * Fetch the catalog from {@link CHANNEL_CATALOG_URL}, verify its
- * signature against {@link CHANNEL_TRUST_ROOTS}, and return the verified
+ * signature against the vendored trust roots, and return the verified
  * structure. Memoized per-process per effective URL.
  */
 function* fetchAndVerifyCatalog(): Operation<SignedCatalog> {
@@ -394,14 +216,15 @@ function* fetchAndVerifyCatalog(): Operation<SignedCatalog> {
     );
   }
 
-  if (
-    typeof catalog.signedAt !== 'string' ||
-    !Array.isArray(catalog.entries) ||
-    typeof catalog.publisherKeyId !== 'string' ||
-    typeof catalog.signature !== 'string'
-  ) {
+  // Shape and signature checks come from channel-verify so the SIGNED FIELD
+  // SET has one definition — adding a field to the payload must be one edit,
+  // since missing it here would mean verifying over bytes this file never
+  // reconstructs. The wording below stays rig's own.
+  if (!isWellFormedCatalog(catalog)) {
     throw new BundleVerificationError(
-      `Catalog at ${url} is missing required fields (signedAt, entries, publisherKeyId, signature).`,
+      `Catalog at ${url} is malformed: it must carry signedAt, entries, ` +
+        `publisherKeyId and signature, and every entry must have a name and ` +
+        `a versions list of fully-formed version records.`,
     );
   }
 
@@ -409,17 +232,12 @@ function* fetchAndVerifyCatalog(): Operation<SignedCatalog> {
   if (!trustKey) {
     throw new BundleVerificationError(
       `Catalog at ${url} is signed by publisherKeyId="${catalog.publisherKeyId}" ` +
-        `which is not in CHANNEL_TRUST_ROOTS. The framework refuses to trust ` +
+        `which is not a vendored trust root. The framework refuses to trust ` +
         `keys it does not vendor.`,
     );
   }
 
-  const signedBytes = catalogSignedBytes(
-    catalog.signedAt,
-    catalog.entries,
-    catalog.publisherKeyId,
-  );
-  const ok = yield* call(() => verifyBundle(signedBytes, catalog.signature, trustKey));
+  const ok = yield* call(() => verifyCatalogSignature(catalog, trustKey));
   if (!ok) {
     throw new BundleVerificationError(
       `Catalog at ${url} failed Ed25519 signature verification ` +
@@ -428,7 +246,10 @@ function* fetchAndVerifyCatalog(): Operation<SignedCatalog> {
     );
   }
 
-  catalogCache.set(url, { catalog, bytes: signedBytes });
+  // `bytes` used to be cached alongside "for diagnostics" and was never read;
+  // recomputing it just to store it canonicalised the whole catalog a second
+  // time on every cache miss, since verifyCatalogSignature derives its own.
+  catalogCache.set(url, { catalog });
   return catalog;
 }
 
@@ -472,24 +293,4 @@ export function* resolveAppEntry(
   }
   matching.sort((a, b) => rcompare(a.version, b.version));
   return matching[0];
-}
-
-// ── Byte helpers ───────────────────────────────────────────────────
-
-function base64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-/**
- * Coerce a `Uint8Array` whose underlying buffer is `ArrayBufferLike`
- * (could be SharedArrayBuffer-backed) into a fresh `ArrayBuffer` copy.
- * WebCrypto's typed signature rejects `SharedArrayBuffer`-backed inputs.
- */
-function toArrayBuffer(view: Uint8Array): ArrayBuffer {
-  const buf = new ArrayBuffer(view.byteLength);
-  new Uint8Array(buf).set(view);
-  return buf;
 }

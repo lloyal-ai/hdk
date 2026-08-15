@@ -44,14 +44,28 @@ jobs:
           test -f packages/relay/dist/index.d.ts
           test -f packages/host/dist/index.js
           test -f packages/host/dist/index.d.ts
+          # channel-verify ships a dual build, so BOTH halves must exist —
+          # `files: ["dist/"]` would happily publish a package missing one, and
+          # a consumer only discovers it at import time.
+          test -f packages/channel-verify/dist/cjs/index.js
+          test -f packages/channel-verify/dist/cjs/index.d.ts
+          test -f packages/channel-verify/dist/esm/index.js
+          test -f packages/channel-verify/dist/esm/index.d.ts
+          test -f packages/channel-verify/dist/cjs/package.json
+          test -f packages/channel-verify/dist/esm/package.json
 
       - name: Typecheck
-        run: npx tsc -b packages/sdk packages/agents packages/rig packages/binding packages/relay packages/host
+        run: npx tsc -b packages/sdk packages/agents packages/rig packages/channel-verify packages/binding packages/relay packages/host
 
       - name: Publish packages
         if: success() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.skip_publish))
         run: |
-          for pkg in packages/sdk packages/agents packages/rig packages/harness-cli packages/binding packages/relay packages/host; do
+          # channel-verify FIRST: rig and harness-cli both depend on it, and a
+          # failure partway through would otherwise leave an already-published
+          # rig pointing at a version that does not exist on the registry —
+          # breaking fresh installs until someone repaired the partial release.
+          # It has no dependencies of its own, so it is safe at the head.
+          for pkg in packages/channel-verify packages/sdk packages/agents packages/rig packages/harness-cli packages/binding packages/relay packages/host; do
             name=$(node -p "require('./$pkg/package.json').name")
             version=$(node -p "require('./$pkg/package.json').version")
             if npm view "$name@$version" version >/dev/null 2>&1; then
