@@ -4,16 +4,16 @@
  * A **grant** authorizes the current session to invoke a `protected` tool
  * (see {@link Tool.protected}). The framework's authGuard denies any
  * protected tool call whose name is not granted. Grants are obtained via
- * consent — a harness consent prompt, or an app's {@link ConfigFlow}
+ * consent — a harness consent prompt, or an ability's {@link ConfigFlow}
  * OAuth-style handoff — and the **credential itself never enters the
  * model's context**: the model only triggers the call; the runtime holds
  * the grant and the tool's `execute` uses the underlying secret.
  *
  * The interface lives in `@lloyal-labs/lloyal-agents` so the framework
- * context ({@link GrantStoreCtx}) and app/harness code share one type
+ * context ({@link GrantStoreCtx}) and ability/harness code share one type
  * without a dependency cycle. The concrete in-memory implementation
  * (`createGrantStore`) and harness-supplied backends live in rig and
- * harness packages — mirroring {@link AppConfigStore} /
+ * harness packages — mirroring {@link AbilityConfigStore} /
  * `createInMemoryConfigStore`.
  *
  * **Semantics:**

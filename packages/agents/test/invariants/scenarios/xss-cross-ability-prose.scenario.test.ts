@@ -1,25 +1,25 @@
 /**
- * Scenario: cross-app prose injection cannot bypass the authGuard.
+ * Scenario: cross-ability prose injection cannot bypass the authGuard.
  *
- * RFC §10.4b: `xss-cross-app-prose` — confirms the M2 security model
+ * RFC §10.4b: `xss-cross-ability-prose` — confirms the M2 security model
  * holds even when a spawn's preamble (`skill.eta` content) attempts to
- * cross-reference another app's tools. Reads are open by design — an
- * appA spawn CAN call appB's read tools — but **protected actions stay
- * protected regardless of who is asking**. Cross-app prose carried in
+ * cross-reference another ability's tools. Reads are open by design — an
+ * abilityA spawn CAN call abilityB's read tools — but **protected actions stay
+ * protected regardless of who is asking**. Cross-ability prose carried in
  * the spawn's preamble doesn't relax the protected gate; the authGuard
  * fires on tool-name lookup against the pool's `protectedTools` set,
  * not on prose content.
  *
  * What this locks:
  *   - Open (non-protected) tools dispatch normally even when called
- *     from a spawn nominally assigned to a different app.
- *   - Protected tools always require a grant — pool-wide, not per-app.
+ *     from a spawn nominally assigned to a different ability.
+ *   - Protected tools always require a grant — pool-wide, not per-ability.
  *   - The pool produces ONE `tool:authReject` per rejected attempt,
  *     attributing the call to the agent (not the prose).
  *
  * Distinct from `authGuard-rejection.scenario.test.ts` (which tests the
  * canonical pool-level wiring): this scenario specifically verifies the
- * cross-app open-reads-but-protected-actions split that M2 mandates.
+ * cross-ability open-reads-but-protected-actions split that M2 mandates.
  */
 import { describe, it, expect } from 'vitest';
 import type { Operation } from 'effection';
@@ -28,10 +28,10 @@ import { DefaultAgentPolicy } from '../../../src/AgentPolicy';
 import type { JsonSchema } from '../../../src/types';
 import { runPool, STOP } from '../harness';
 
-/** Open read tool — belongs to appA in the cross-app framing. */
+/** Open read tool — belongs to abilityA in the cross-ability framing. */
 class OpenSearchTool extends Tool<{ query: string }> {
   readonly name = 'appA_search';
-  readonly description = 'open read — search appA';
+  readonly description = 'open read — search abilityA';
   readonly parameters: JsonSchema = {
     type: 'object',
     properties: { query: { type: 'string' } },
@@ -41,11 +41,11 @@ class OpenSearchTool extends Tool<{ query: string }> {
   }
 }
 
-/** Protected action — belongs to appB. An appA spawn whose prose
+/** Protected action — belongs to abilityB. An abilityA spawn whose prose
  *  attempts to call this must be rejected. */
 class ProtectedActionTool extends Tool<Record<string, unknown>> {
   readonly name = 'appB_transfer';
-  readonly description = 'protected — transfer in appB';
+  readonly description = 'protected — transfer in abilityB';
   readonly parameters: JsonSchema = { type: 'object', properties: {} };
   readonly protected = true as const;
   *execute(): Operation<unknown> {
@@ -53,8 +53,8 @@ class ProtectedActionTool extends Tool<Record<string, unknown>> {
   }
 }
 
-describe('scenario: cross-app prose cannot escalate from open reads to protected actions (§10.4b)', () => {
-  it('open tool from another app dispatches normally (open-reads invariant)', async () => {
+describe('scenario: cross-ability prose cannot escalate from open reads to protected actions (§10.4b)', () => {
+  it('open tool from another ability dispatches normally (open-reads invariant)', async () => {
     const tools = new Map<string, Tool>([
       ['appA_search', new OpenSearchTool() as Tool],
       ['appB_transfer', new ProtectedActionTool() as Tool],
@@ -80,7 +80,7 @@ describe('scenario: cross-app prose cannot escalate from open reads to protected
     expect(dispatched).toBeDefined();
   });
 
-  it('protected tool from another app rejects regardless of which spawn calls it (protected-actions invariant)', async () => {
+  it('protected tool from another ability rejects regardless of which spawn calls it (protected-actions invariant)', async () => {
     const tools = new Map<string, Tool>([
       ['appA_search', new OpenSearchTool() as Tool],
       ['appB_transfer', new ProtectedActionTool() as Tool],
@@ -89,9 +89,9 @@ describe('scenario: cross-app prose cannot escalate from open reads to protected
     const run = await runPool({
       scripts: [{
         tokens: [1, STOP],
-        // The agent's "prose" (system prompt) is appA's — but it
-        // attempts to dispatch appB's protected tool, simulating a
-        // cross-app prose injection.
+        // The agent's "prose" (system prompt) is abilityA's — but it
+        // attempts to dispatch abilityB's protected tool, simulating a
+        // cross-ability prose injection.
         toolCall: { name: 'appB_transfer', arguments: JSON.stringify({ amount: 1000 }) },
       }],
       policy: new DefaultAgentPolicy({ terminalToolName: 'report' }),

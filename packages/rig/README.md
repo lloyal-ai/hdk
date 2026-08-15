@@ -17,7 +17,7 @@ const app = yield* registry.enable(factory);
 const spinePrompt = renderSpine({ apps: registry.enabled() });
 ```
 
-**[Docs →](https://docs.lloyal.ai)** · **[Build an App →](https://docs.lloyal.ai/build-an-app/what-is-an-app)** · **[harness.dev CLI →](https://www.npmjs.com/package/harness.dev)**
+**[Docs →](https://docs.lloyal.ai)** · **[Build an App →](https://docs.lloyal.ai/build-an-app/what-is-an-app)** · **[lloyal-ai CLI →](https://www.npmjs.com/package/lloyal-ai)**
 
 ## Why retrieval lives inside generation
 
@@ -62,12 +62,12 @@ Depth scales with `maxTurns`. At 2 turns, agents do single-shot retrieval. At 6 
 `@lloyal-labs/rig` is the framework layer; concrete `Source` implementations
 ship as separate **apps** under the HDK 3.0 App protocol (RFC §5):
 
-**`@lloyal-labs/corpus-app`** — local files with grep, semantic search,
+**`@lloyal-labs/corpus-ability`** — local files with grep, semantic search,
 read_file, and recursive delegation. Agents investigate a knowledge base by
 pattern matching, reading sections in context, and spawning sub-agents for
 deeper investigation.
 
-**`@lloyal-labs/web-app`** — web search via [Tavily](https://tavily.com) (or
+**`@lloyal-labs/web-ability`** — web search via [Tavily](https://tavily.com) (or
 keyless DuckDuckGo fallback), page fetching with attention-based content
 extraction, and recursive delegation. `BufferingFetchPage` wraps fetch
 results — full content goes to the agent for reasoning, while a parallel
@@ -84,8 +84,8 @@ import {
   createInMemoryConfigStore,
 } from "@lloyal-labs/rig";
 import { RerankerCtx } from "@lloyal-labs/lloyal-agents";
-import { createWebApp } from "@lloyal-labs/web-app";
-import { createCorpusApp } from "@lloyal-labs/corpus-app";
+import { createWebApp } from "@lloyal-labs/web-ability";
+import { createCorpusApp } from "@lloyal-labs/corpus-ability";
 
 yield* RerankerCtx.set(reranker);
 const configStore = createInMemoryConfigStore();
@@ -159,10 +159,10 @@ Full architectural walkthrough: [RIG Pipeline reference](https://docs.lloyal.ai/
 | `DelegateTool` | Generic recursive-delegation tool — agent calls it to spawn a sub-agent pool |
 
 App-scoped tools (`web_search`, `fetch_page`, `search`, `read_file`,
-`grep`) live in their owning app — `@lloyal-labs/web-app`,
-`@lloyal-labs/corpus-app`, and so on — installed via
-`harness.dev install lloyal/<name>`. Build your own app with
-`harness.dev app <name>`.
+`grep`) live in their owning app — `@lloyal-labs/web-ability`,
+`@lloyal-labs/corpus-ability`, and so on — installed via
+`lloyal install lloyal/<name>`. Build your own app with
+`lloyal ability:new <name>`.
 
 ## Search providers
 
@@ -207,19 +207,19 @@ The agent sees `web_research` (or whatever `name` you give it) as a callable too
 ## Building your own App
 
 Apps are the HDK 3.0 unit of distribution. An App bundles a
-`Source` + `Tool[]` + `skill.eta` + `app.json` manifest and gets
+`Source` + `Tool[]` + `skill.eta` + `ability.json` manifest and gets
 shipped to consumers via the signed channel at `apps.lloyal.ai`.
 
 Scaffold one with:
 
 ```bash
-npx harness.dev app my-app
+npx lloyal-ai ability:new my-app
 ```
 
 The scaffold ships with a working source + two tools calling
 Wikipedia's REST API as a runnable demo backend. Replace the tool
 bodies with your real backend, keep the schemas, and you're a
-`harness.dev publish` away from being installable in any HDK
+`lloyal publish` away from being installable in any HDK
 harness.
 
 See [docs.lloyal.ai/build-an-app](https://docs.lloyal.ai/build-an-app)

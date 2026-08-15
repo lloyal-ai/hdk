@@ -1,11 +1,11 @@
-# @lloyal-labs/corpus-app
+# @lloyal-labs/corpus-ability
 
 **Give your agents a knowledge base they can actually read.**
 
-HDK App `lloyal/corpus` — point it at a directory of documents and agents get ranked semantic search, exhaustive grep, and verbatim file reads over it. Two-stage retrieval: BM25 lexical first stage over the full corpus, cross-encoder rerank for the semantics, honest scores (log-odds of a yes/no relevance judgment) so agents know when the corpus *doesn't* have the answer.
+HDK Ability `lloyal/corpus` — point it at a directory of documents and agents get ranked semantic search, exhaustive grep, and verbatim file reads over it. Two-stage retrieval: BM25 lexical first stage over the full corpus, cross-encoder rerank for the semantics, honest scores (log-odds of a yes/no relevance judgment) so agents know when the corpus *doesn't* have the answer.
 
 ```bash
-npx harness.dev install lloyal/corpus
+npx lloyal-ai install lloyal/corpus
 ```
 
 | Tool | What agents get |

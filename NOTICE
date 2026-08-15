@@ -14,8 +14,8 @@ FSL-1.1-Apache-2.0 packages (the HDK 3.0 runtime stack):
   - @lloyal-labs/lloyal-agents       (packages/agents)
   - @lloyal-labs/sdk                  (packages/sdk)
   - @lloyal-labs/rig                  (packages/rig)
-  - @lloyal-labs/corpus-app           (packages/apps/corpus)
-  - @lloyal-labs/web-app              (packages/apps/web)
+  - @lloyal-labs/corpus-ability           (packages/abilities/corpus)
+  - @lloyal-labs/web-ability              (packages/abilities/web)
 
 Apache 2.0 packages (scaffolders / adoption surfaces):
 

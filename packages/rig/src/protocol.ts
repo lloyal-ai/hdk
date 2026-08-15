@@ -1,11 +1,11 @@
 /**
- * Codified App-protocol constants — the bytes-locked strings the model
+ * Codified Ability-protocol constants — the bytes-locked strings the model
  * sees in every spawn's prompt and in every pool's shared spine prefix.
  *
- * These five exports are the entire shape of the HDK 3.0 App protocol.
+ * These five exports are the entire shape of the HDK 3.0 Ability protocol.
  * Every byte the model encounters in framework-controlled prompt content
  * traces back to one of these constants (or to grammar-sanitized
- * `app.json` metadata interpolated through them).
+ * `ability.json` metadata interpolated through them).
  *
  * Lifted verbatim from production (`reasoning.run/src/prompts/playbooks.eta`,
  * `web-worker.eta`, `corpus-worker.eta`) with one substitution at the
@@ -26,12 +26,12 @@
  *
  * Exact rendered shape: `Apply the **<name>** protocol.\n\n`
  * (marker line + blank line). The `<name>` comes from
- * `app.manifest.protocol.name`, grammar-sanitized to
- * `[a-z][a-z0-9_-]{1,63}` at `defineApp` time so it cannot break
+ * `ability.manifest.protocol.name`, grammar-sanitized to
+ * `[a-z][a-z0-9_-]{1,63}` at `defineAbility` time so it cannot break
  * the markdown bold or inject newlines.
  *
- * Framework-prepended by `renderAgentPreamble`. App `skill.eta` source
- * MUST NOT contain the literal `Apply the **` substring — `defineApp`
+ * Framework-prepended by `renderAgentPreamble`. Ability `skill.eta` source
+ * MUST NOT contain the literal `Apply the **` substring — `defineAbility`
  * rejects sources that do.
  */
 export const BOUNDARY_MARKER = (name: string): string =>
@@ -42,7 +42,7 @@ export const BOUNDARY_MARKER = (name: string): string =>
  *
  * Verbatim from `reasoning.run/src/prompts/playbooks.eta:1`, with the noun
  * substituted (three occurrences inside the sentence). Followed at render
- * time by a blank line + `# Protocols` header + the per-app catalog
+ * time by a blank line + `# Protocols` header + the per-ability catalog
  * entries.
  */
 export const FRAMEWORK_INTRO =
@@ -52,7 +52,7 @@ export const FRAMEWORK_INTRO =
   'protocol is requested explicitly in your task instructions.';
 
 /**
- * Tool-selection rule emitted after all per-app catalog entries.
+ * Tool-selection rule emitted after all per-ability catalog entries.
  *
  * Verbatim from `reasoning.run/src/prompts/playbooks.eta:17-19` with the
  * noun substituted and the trailing `palette` → `tools` (palette was
@@ -70,7 +70,7 @@ export const TOOL_SELECTION_RULE =
   "Follow that PROCESS, but constrained to the assigned protocol's tools.";
 
 /**
- * Per-app catalog entry shape emitted under the `# Protocols` header.
+ * Per-ability catalog entry shape emitted under the `# Protocols` header.
  *
  * Exact rendered shape (three lines + trailing blank line):
  * ```
@@ -80,7 +80,7 @@ export const TOOL_SELECTION_RULE =
  *
  * ```
  *
- * `name` is grammar-sanitized at `defineApp` time. `tools` is the
+ * `name` is grammar-sanitized at `defineAbility` time. `tools` is the
  * `protocol.tools` array joined with `, `. `useWhen` is grammar-constrained
  * to a single sentence of printable characters with no chat-role markers,
  * no markdown code fences, no newlines.
@@ -109,7 +109,7 @@ export interface ValidatedModelFamily {
 }
 
 /**
- * Model families against which the HDK 3.0 App protocol has been
+ * Model families against which the HDK 3.0 Ability protocol has been
  * validated via production traces.
  *
  * Off-fleet models are unvalidated: the boundary marker, catalog format,
@@ -133,23 +133,54 @@ export const VALIDATED_MODELS_3_0: readonly ValidatedModelFamily[] = [
 ];
 
 /**
- * The App protocol version this build of `@lloyal-labs/rig` ships.
+ * The Ability protocol version this build of `@lloyal-labs/rig` ships.
  *
- * Apps declare `appProtocolVersion` in `app.json`; `defineApp` and
- * `registry.enable` refuse to enable apps whose declared version is not in
- * {@link SUPPORTED_APP_PROTOCOL_VERSIONS}.
+ * Abilities declare `appProtocolVersion` in `ability.json`; `defineAbility` and
+ * `registry.enable` refuse to enable abilities whose declared version is not in
+ * {@link SUPPORTED_ABILITY_PROTOCOL_VERSIONS}.
  */
-export const APP_PROTOCOL_VERSION = '3.0';
+export const ABILITY_PROTOCOL_VERSION = '3.0';
 
 /**
- * The set of App protocol versions this build of `@lloyal-labs/rig`
- * accepts at app-registration time. Within rig 3.x the only valid value
+ * The set of Ability protocol versions this build of `@lloyal-labs/rig`
+ * accepts at ability-registration time. Within rig 3.x the only valid value
  * is `'3.0'`. A 4.0 protocol would require re-validation across every
  * family in {@link VALIDATED_MODELS_3_0}. Framework semver (rig 3.0 →
- * 3.1) does NOT bump the App protocol; that's the point of the separate
+ * 3.1) does NOT bump the Ability protocol; that's the point of the separate
  * version line.
  */
-export const SUPPORTED_APP_PROTOCOL_VERSIONS: readonly string[] = ['3.0'];
+export const SUPPORTED_ABILITY_PROTOCOL_VERSIONS: readonly string[] = ['3.0'];
+
+/**
+ * The property name the planner emits to route a task, and the only token in
+ * this file the model both READS and WRITES.
+ *
+ * It is a constant rather than a literal because its value is an open question
+ * that only an eval can close. The planner's grammar constrains this property
+ * to an enum of `manifest.protocol.name` values, and the harness looks the
+ * result up in a protocol-keyed map — so the key has never named what it holds:
+ *
+ * - `'app'`      the historical value. Carries a strong unrelated prior
+ *                (mobile/web application) that the model must suppress on every
+ *                planning call.
+ * - `'ability'`  matches the distributable's name and sits in the agentic
+ *                tool-use cluster, but still asks the model to map "ability"
+ *                onto entries the spine labelled protocols.
+ * - `'protocol'` names the `# Protocols` section the value is copied from, so
+ *                the key and the spine heading agree. Consistent with Protocol
+ *                already being the primitive for "when and how it participates".
+ *
+ * Changing it changes the tokens the model emits and the decode grammar, so it
+ * is a behaviour change, not a refactor, and a regression here is SILENT —
+ * tasks route to the wrong ability rather than erroring.
+ *
+ * Whatever this is set to, the planner prompt must name the SAME word: it is
+ * passed to the plan template as `routingKey` for exactly that reason. Rule 6
+ * of `plan.eta` historically said "source" in prose while the key said `app`
+ * and the value was a protocol name — three nouns for one thing, in one
+ * sentence. Keep them in agreement.
+ */
+export const TASK_ROUTING_KEY = 'ability';
 
 // ── Distribution channel ─────────────────────────────────
 
@@ -157,7 +188,7 @@ export const SUPPORTED_APP_PROTOCOL_VERSIONS: readonly string[] = ['3.0'];
  * Canonical channel endpoint — `apps.lloyal.ai/v1/catalog.json`.
  * Framework-vendored compile-time constant; the harness cannot override.
  *
- * The `harness.dev install` CLI uses {@link resolveAppEntry} to look up
+ * The `lloyal install` CLI uses {@link resolveAbilityEntry} to look up
  * a name + semver range against this catalog, verifies the catalog's
  * Ed25519 signature against the vendored trust roots, then fetches +
  * verifies the resolved manifest and tarball bytes before shelling out
@@ -165,8 +196,8 @@ export const SUPPORTED_APP_PROTOCOL_VERSIONS: readonly string[] = ['3.0'];
  *
  * To use a different channel, fork `@lloyal-labs/channel-verify`, edit the
  * constant there, and republish both it and rig under different names. The
- * fork is a maintained source divergence; apps signed by the canonical trust
- * roots will not load in the fork, and apps signed by the fork's trust roots
+ * fork is a maintained source divergence; abilities signed by the canonical trust
+ * roots will not load in the fork, and abilities signed by the fork's trust roots
  * will not load in unmodified upstream rig.
  *
  * Defined in `@lloyal-labs/channel-verify` and re-exported here, so rig's
@@ -183,7 +214,7 @@ export { CHANNEL_CATALOG_URL } from '@lloyal-labs/channel-verify';
  *
  * Multi-entry from day 1 to support key rotation: a new key is added in a
  * minor release while the previous key remains valid for N quarters, then is
- * removed in a future major. Apps signed during the overlap window verify
+ * removed in a future major. Abilities signed during the overlap window verify
  * under either key.
  *
  * The key bytes now live in `@lloyal-labs/channel-verify` and are re-exported

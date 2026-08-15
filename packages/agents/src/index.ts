@@ -5,8 +5,8 @@ export {
   Trace,
   TraceParent,
   RerankerCtx,
-  AppRegistryCtx,
-  AppConfigStoreCtx,
+  AbilityRegistryCtx,
+  AbilityConfigStoreCtx,
   GrantStoreCtx,
   WindDown,
   CancelAgent,
@@ -63,22 +63,22 @@ export type {
 } from './types';
 
 export type {
-  App,
-  AppManifest,
-  AppProtocol,
-  AppHints,
+  Ability,
+  AbilityManifest,
+  AbilityProtocol,
+  AbilityHints,
   Service,
-  AppRegistry,
-  AppFactory,
-  AppState,
+  AbilityRegistry,
+  AbilityFactory,
+  AbilityState,
   AgentRenderCtx,
   ExamplesRenderCtx,
   SkillTemplateFn,
   ExamplesTemplateFn,
   ConfigFlow,
-} from './app-types';
-export { SERVICES } from './app-types';
+} from './ability-types';
+export { SERVICES } from './ability-types';
 
-export type { AppConfigStore } from './app-config';
+export type { AbilityConfigStore } from './ability-config';
 export type { GrantStore } from './grant-store';
 export type { Resource, Chunk, ScoredChunk, ScoredResult, Reranker } from './chunk';

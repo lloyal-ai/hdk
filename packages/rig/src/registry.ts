@@ -1,31 +1,31 @@
 /**
- * `createAppRegistry` — harness-wide app registry with structured,
- * **isolated** per-app lifecycle.
+ * `createAbilityRegistry` — harness-wide ability registry with structured,
+ * **isolated** per-ability lifecycle.
  *
- * `createAppRegistry({ configStore, grantStore? })` returns an **empty**
- * registry; `registry.enable(factory)` is the single way to enable an app —
+ * `createAbilityRegistry({ configStore, grantStore? })` returns an **empty**
+ * registry; `registry.enable(factory)` is the single way to enable an ability —
  * creation is never enablement, so the two paths can't collide.
  *
  * - `registry.enable(factory)` runs the factory in its own **detached**
- *   Effection scope, seeded with the app-facing framework contexts
- *   (`AppConfigStoreCtx`, `RerankerCtx`) so the factory reads config +
+ *   Effection scope, seeded with the ability-facing framework contexts
+ *   (`AbilityConfigStoreCtx`, `RerankerCtx`) so the factory reads config +
  *   reranker. The factory body is setup; a `resource()` factory's
- *   `ensure(...)` is teardown. Every enabled app's scope is torn down on the
+ *   `ensure(...)` is teardown. Every enabled ability's scope is torn down on the
  *   registry's own scope exit, reverse enable-order, **best-effort** — a
  *   throwing teardown is logged but never strands a sibling, and never
- *   crashes the harness. The harness does **not** call a per-app register
- *   verb at boot; it just calls `enable` for each boot app.
+ *   crashes the harness. The harness does **not** call a per-ability register
+ *   verb at boot; it just calls `enable` for each boot ability.
  * - `registry.disable(name)` handles mid-session removal. `enable` →
- *   `'enabled'`, `disable` → `'disabled'` (matching {@link AppState}).
+ *   `'enabled'`, `disable` → `'disabled'` (matching {@link AbilityState}).
  *   `disable` swallows + logs a throwing teardown, so a mid-session
- *   uninstall can't crash the session — possible only because each app
+ *   uninstall can't crash the session — possible only because each ability
  *   owns a detached scope whose teardown errors don't propagate to a
  *   parent.
  *
- * There are no install/uninstall/enable/disable hooks on the App. A
+ * There are no install/uninstall/enable/disable hooks on the Ability. A
  * factory that throws (or whose manifest fails validation) tears down its
- * partial scope and propagates; the app never enters the registry.
- * Per-app independent — one app's failure can't roll back another.
+ * partial scope and propagates; the ability never enters the registry.
+ * Per-ability independent — one ability's failure can't roll back another.
  *
  * @packageDocumentation
  * @category Protocol
@@ -34,36 +34,36 @@
 import { call, createScope, ensure, suspend } from 'effection';
 import type { Operation } from 'effection';
 import {
-  AppRegistryCtx,
-  AppConfigStoreCtx,
+  AbilityRegistryCtx,
+  AbilityConfigStoreCtx,
   GrantStoreCtx,
   RerankerCtx,
 } from '@lloyal-labs/lloyal-agents';
 import type {
-  App,
-  AppFactory,
-  AppRegistry,
-  AppConfigStore,
+  Ability,
+  AbilityFactory,
+  AbilityRegistry,
+  AbilityConfigStore,
   GrantStore,
   Reranker,
 } from '@lloyal-labs/lloyal-agents';
-import { SUPPORTED_APP_PROTOCOL_VERSIONS } from './protocol';
+import { SUPPORTED_ABILITY_PROTOCOL_VERSIONS } from './protocol';
 
 /**
- * Options for {@link createAppRegistry}.
+ * Options for {@link createAbilityRegistry}.
  */
-export interface CreateAppRegistryOpts {
+export interface CreateAbilityRegistryOpts {
   /**
-   * The harness-supplied per-app config store. The registry sets it on
-   * `AppConfigStoreCtx` and seeds it into each app's scope so factories
+   * The harness-supplied per-ability config store. The registry sets it on
+   * `AbilityConfigStoreCtx` and seeds it into each ability's scope so factories
    * read config at construction.
    */
-  configStore: AppConfigStore;
+  configStore: AbilityConfigStore;
   /**
    * The session's protected-tool grant store. The
    * registry seeds it on `GrantStoreCtx` so the agent pool's authGuard can
    * resolve which `protected` tools the session is authorized to call.
-   * Optional — omit it when no app exposes protected tools (the authGuard
+   * Optional — omit it when no ability exposes protected tools (the authGuard
    * is a no-op then). When omitted with protected tools present, the
    * authGuard fails closed (every protected tool denied).
    */
@@ -71,52 +71,52 @@ export interface CreateAppRegistryOpts {
 }
 
 interface RegistryEntry {
-  app: App;
-  /** Halts the app's detached scope, firing its factory `ensure`s. */
+  ability: Ability;
+  /** Halts the ability's detached scope, firing its factory `ensure`s. */
   destroy: () => Promise<void>;
 }
 
 /**
- * Create the harness-wide app registry.
+ * Create the harness-wide ability registry.
  *
- * Sets `AppRegistryCtx` and `AppConfigStoreCtx` in the caller's scope (the
+ * Sets `AbilityRegistryCtx` and `AbilityConfigStoreCtx` in the caller's scope (the
  * `initAgents` pattern). Returns an empty registry — enable the boot set with
- * explicit `registry.enable(factory)` calls. Every enabled app's scope is torn
+ * explicit `registry.enable(factory)` calls. Every enabled ability's scope is torn
  * down on the caller's scope exit (reverse order, best-effort). Creation is not
- * enablement: there is one way to enable an app, so the two paths can't collide.
+ * enablement: there is one way to enable an ability, so the two paths can't collide.
  *
  * @example
  * ```ts
- * import { createWebApp } from '@lloyal-labs/web-app';
- * import { createCorpusApp } from '@lloyal-labs/corpus-app';
+ * import { createWebAbility } from '@lloyal-labs/web-ability';
+ * import { createCorpusAbility } from '@lloyal-labs/corpus-ability';
  *
  * yield* RerankerCtx.set(reranker);          // before, if factories read it
- * const registry = yield* createAppRegistry({ configStore });
- * yield* registry.enable(createWebApp);
- * yield* registry.enable(createCorpusApp);
+ * const registry = yield* createAbilityRegistry({ configStore });
+ * yield* registry.enable(createWebAbility);
+ * yield* registry.enable(createCorpusAbility);
  * // ... pool dispatch ...
- * // registry scope exit tears down every app (factory ensures fire)
+ * // registry scope exit tears down every ability (factory ensures fire)
  * ```
  */
-export function* createAppRegistry(
-  opts: CreateAppRegistryOpts,
-): Operation<AppRegistry> {
+export function* createAbilityRegistry(
+  opts: CreateAbilityRegistryOpts,
+): Operation<AbilityRegistry> {
   const { configStore, grantStore } = opts;
   const entries = new Map<string, RegistryEntry>();
   const order: string[] = [];
 
-  const registry: AppRegistry = {
-    byName(name: string): App | undefined {
-      return entries.get(name)?.app;
+  const registry: AbilityRegistry = {
+    byName(name: string): Ability | undefined {
+      return entries.get(name)?.ability;
     },
-    enabled(): readonly App[] {
-      return order.map((n) => entries.get(n)!.app).filter(Boolean);
+    enabled(): readonly Ability[] {
+      return order.map((n) => entries.get(n)!.ability).filter(Boolean);
     },
     stateOf(name: string): 'enabled' | 'disabled' {
       return entries.has(name) ? 'enabled' : 'disabled';
     },
-    *enable(factory: AppFactory): Operation<App> {
-      // Read the app-facing framework contexts to seed into the app's
+    *enable(factory: AbilityFactory): Operation<Ability> {
+      // Read the ability-facing framework contexts to seed into the ability's
       // detached scope (factories read config + reranker).
       let reranker: Reranker | undefined;
       try {
@@ -130,16 +130,16 @@ export function* createAppRegistry(
       try {
         // Run the factory in a DETACHED scope (so its teardown errors stay
         // isolated and swallowable), seeded with the framework contexts.
-        // It resolves the App out, then suspends — keeping the App and its
+        // It resolves the Ability out, then suspends — keeping the Ability and its
         // ensure() teardown alive until `destroy()`.
-        const app = yield* call(
+        const ability = yield* call(
           () =>
-            new Promise<App>((resolve, reject) => {
+            new Promise<Ability>((resolve, reject) => {
               scope
                 .run(function* () {
                   try {
-                    yield* AppConfigStoreCtx.set(configStore);
-                    yield* AppRegistryCtx.set(registry);
+                    yield* AbilityConfigStoreCtx.set(configStore);
+                    yield* AbilityRegistryCtx.set(registry);
                     if (reranker !== undefined) yield* RerankerCtx.set(reranker);
                     const constructed = yield* factory();
                     resolve(constructed);
@@ -154,46 +154,46 @@ export function* createAppRegistry(
             }),
         );
 
-        const declared = app.manifest.appProtocolVersion ?? '3.0';
-        if (!SUPPORTED_APP_PROTOCOL_VERSIONS.includes(declared)) {
+        const declared = ability.manifest.appProtocolVersion ?? '3.0';
+        if (!SUPPORTED_ABILITY_PROTOCOL_VERSIONS.includes(declared)) {
           throw new Error(
-            `App "${app.manifest.name}" declares appProtocolVersion="${declared}", ` +
-              `but the framework supports [${SUPPORTED_APP_PROTOCOL_VERSIONS.map((v) => `"${v}"`).join(', ')}]. ` +
-              `Upgrade the app or use a framework version that supports this protocol.`,
+            `Ability "${ability.manifest.name}" declares appProtocolVersion="${declared}", ` +
+              `but the framework supports [${SUPPORTED_ABILITY_PROTOCOL_VERSIONS.map((v) => `"${v}"`).join(', ')}]. ` +
+              `Upgrade the ability or use a framework version that supports this protocol.`,
           );
         }
 
-        const existingConfig = yield* configStore.get(app.manifest.name);
-        if (existingConfig !== undefined && app.manifest.configSchema) {
-          validateConfigShape(app.manifest.name, existingConfig, app.manifest.configSchema);
+        const existingConfig = yield* configStore.get(ability.manifest.name);
+        if (existingConfig !== undefined && ability.manifest.configSchema) {
+          validateConfigShape(ability.manifest.name, existingConfig, ability.manifest.configSchema);
         }
 
-        if (entries.has(app.manifest.name)) {
+        if (entries.has(ability.manifest.name)) {
           throw new Error(
-            `App "${app.manifest.name}" is already enabled. ` +
-              `Call registry.disable("${app.manifest.name}") first to replace it.`,
+            `Ability "${ability.manifest.name}" is already enabled. ` +
+              `Call registry.disable("${ability.manifest.name}") first to replace it.`,
           );
         }
 
-        // Namespace-collision guard. The catalog scopes apps by handle
+        // Namespace-collision guard. The catalog scopes abilities by handle
         // (`acme/web` vs `lloyal/web`), but the runtime/model surface is
         // UNSCOPED — `manifest.name` keys this registry, and `protocol.name` +
-        // each tool name address the app in the shared spine the model reads.
-        // Two same-short-named apps from different publishers therefore collide
+        // each tool name address the ability in the shared spine the model reads.
+        // Two same-short-named abilities from different publishers therefore collide
         // here. The `manifest.name` check above catches one face; this catches
         // the model-facing faces (otherwise spine-render emits two CATALOG_ENTRY
         // blocks with the same protocol/tool names — silent routing ambiguity +
-        // a collided BOUNDARY_MARKER). Fail loud, naming both apps, so the
+        // a collided BOUNDARY_MARKER). Fail loud, naming both abilities, so the
         // integrator knows it's a cross-publisher clash — not their bug.
-        const incomingProtocol = app.manifest.protocol.name;
-        const incomingTools = app.manifest.protocol.tools;
-        for (const { app: existing } of entries.values()) {
+        const incomingProtocol = ability.manifest.protocol.name;
+        const incomingTools = ability.manifest.protocol.tools;
+        for (const { ability: existing } of entries.values()) {
           if (existing.manifest.protocol.name === incomingProtocol) {
             throw new Error(
-              `Cannot enable "${app.manifest.name}": its protocol "${incomingProtocol}" ` +
-                `collides with already-enabled "${existing.manifest.name}". Two AgentApps ` +
+              `Cannot enable "${ability.manifest.name}": its protocol "${incomingProtocol}" ` +
+                `collides with already-enabled "${existing.manifest.name}". Two Abilities ` +
                 `can't share a model-facing protocol name in one harness — disable one, or ` +
-                `use apps with distinct protocol names.`,
+                `use abilities with distinct protocol names.`,
             );
           }
           const clashTool = incomingTools.find((t) =>
@@ -201,20 +201,20 @@ export function* createAppRegistry(
           );
           if (clashTool !== undefined) {
             throw new Error(
-              `Cannot enable "${app.manifest.name}": its tool "${clashTool}" collides with ` +
-                `already-enabled "${existing.manifest.name}". Two AgentApps can't share a ` +
-                `tool name in one harness — disable one, or use apps with distinct tool names.`,
+              `Cannot enable "${ability.manifest.name}": its tool "${clashTool}" collides with ` +
+                `already-enabled "${existing.manifest.name}". Two Abilities can't share a ` +
+                `tool name in one harness — disable one, or use abilities with distinct tool names.`,
             );
           }
         }
 
-        entries.set(app.manifest.name, { app, destroy });
-        order.push(app.manifest.name);
+        entries.set(ability.manifest.name, { ability, destroy });
+        order.push(ability.manifest.name);
         added = true;
-        return app;
+        return ability;
       } finally {
         // Factory threw, validation failed, or the caller was halted before
-        // the app entered the registry → tear down its detached scope
+        // the ability entered the registry → tear down its detached scope
         // (best-effort; don't mask the original error).
         if (!added) {
           try {
@@ -235,23 +235,23 @@ export function* createAppRegistry(
         yield* call(() => entry.destroy());
       } catch (err) {
         console.error(
-          `[lloyal-rig] teardown for app "${name}" threw during disable — app removed regardless:`,
+          `[lloyal-rig] teardown for ability "${name}" threw during disable — ability removed regardless:`,
           err,
         );
       }
     },
   };
 
-  yield* AppRegistryCtx.set(registry);
-  yield* AppConfigStoreCtx.set(configStore);
+  yield* AbilityRegistryCtx.set(registry);
+  yield* AbilityConfigStoreCtx.set(configStore);
   // Seed the grant store so the agent pool's authGuard can
   // read the session's protected-tool grants. Absent = fail-closed.
   if (grantStore) yield* GrantStoreCtx.set(grantStore);
 
-  // Tear down every still-enabled app on registry scope exit, reverse
+  // Tear down every still-enabled ability on registry scope exit, reverse
   // register-order, best-effort (a throwing teardown is logged, never
   // strands a sibling, never crashes the harness). Registered before the
-  // boot set so a mid-boot failure still cleans up the apps that enabled.
+  // boot set so a mid-boot failure still cleans up the abilities that enabled.
   yield* ensure(function* () {
     for (let i = order.length - 1; i >= 0; i--) {
       const name = order[i];
@@ -261,7 +261,7 @@ export function* createAppRegistry(
         yield* call(() => entry.destroy());
       } catch (err) {
         console.error(
-          `[lloyal-rig] teardown for app "${name}" threw — continuing teardown:`,
+          `[lloyal-rig] teardown for ability "${name}" threw — continuing teardown:`,
           err,
         );
       }
@@ -279,11 +279,11 @@ export function* createAppRegistry(
  * Minimal structural schema check. Validates that every property in
  * `schema.required` exists on `config` with a type compatible with
  * `schema.properties[name].type`. This is a guardrail — the framework
- * does not ship a full JSON Schema validator. Apps requiring richer
+ * does not ship a full JSON Schema validator. Abilities requiring richer
  * validation should run their own check in the factory body.
  */
 function validateConfigShape(
-  appName: string,
+  abilityName: string,
   config: Record<string, unknown>,
   schema: { type?: string; required?: readonly string[] | string[]; properties?: Record<string, unknown> },
 ): void {
@@ -293,8 +293,8 @@ function validateConfigShape(
   for (const key of schema.required ?? []) {
     if (!(key in config)) {
       throw new Error(
-        `App "${appName}" stored config is missing required key "${key}" ` +
-          `declared in manifest.configSchema. Re-run the app's config flow or clear stale config.`,
+        `Ability "${abilityName}" stored config is missing required key "${key}" ` +
+          `declared in manifest.configSchema. Re-run the ability's config flow or clear stale config.`,
       );
     }
   }
@@ -305,9 +305,9 @@ function validateConfigShape(
     const value = config[key];
     if (!matchesPrimitiveType(value, propSchema.type)) {
       throw new Error(
-        `App "${appName}" stored config key "${key}" has type "${typeof value}" ` +
+        `Ability "${abilityName}" stored config key "${key}" has type "${typeof value}" ` +
           `but manifest.configSchema declares "${propSchema.type}". ` +
-          `Re-run the app's config flow or clear stale config.`,
+          `Re-run the ability's config flow or clear stale config.`,
       );
     }
   }

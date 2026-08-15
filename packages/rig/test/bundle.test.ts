@@ -1,6 +1,6 @@
 /**
- * Tests for {@link verifyBundle} and {@link resolveAppEntry} — the
- * verify primitives that back the `harness.dev install` CLI.
+ * Tests for {@link verifyBundle} and {@link resolveAbilityEntry} — the
+ * verify primitives that back the `lloyal install` CLI.
  *
  * Behaviors verified:
  *
@@ -9,15 +9,15 @@
  * 2. **Catalog signature pass / fail** — the catalog must be signed by a
  *    vendored trust root; tampered bytes flip the result.
  * 3. **Semver resolution** — highest matching version wins; no match →
- *    {@link AppNotFoundError}; unknown name → `AppNotFoundError`.
+ *    {@link AbilityNotFoundError}; unknown name → `AbilityNotFoundError`.
  * 4. **MITM detection** — a mutated catalog (entries swapped) fails
  *    signature before the resolver looks at any name.
- * 5. **Pre-flight cache** — two `resolveAppEntry` calls within the same
+ * 5. **Pre-flight cache** — two `resolveAbilityEntry` calls within the same
  *    scope fetch the catalog exactly once.
  * 6. **Non-200 catalog fetch** — propagates as `BundleVerificationError`.
  *
  * Runtime-load tests for the rejected `loadBundle` model have been
- * removed; install is now the `harness.dev install` CLI shelling out to
+ * removed; install is now the `lloyal install` CLI shelling out to
  * `npm install <tarballUrl>` after Ed25519 verification, exercised by
  * harness-cli's own test suite.
  *
@@ -28,15 +28,15 @@ import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { run } from 'effection';
 import {
   verifyBundle,
-  resolveAppEntry,
+  resolveAbilityEntry,
   catalogSignedBytes,
   BundleVerificationError,
-  AppNotFoundError,
+  AbilityNotFoundError,
   setTestTrustRoot,
   setTestCatalogUrl,
   clearTestOverrides,
   clearCatalogCache,
-  type AppBundleManifest,
+  type AbilityBundleManifest,
   type CatalogEntry,
   type CatalogVersion,
   type SignedCatalog,
@@ -80,14 +80,14 @@ async function signBytes(key: CryptoKey, bytes: Uint8Array): Promise<string> {
 
 // ── Bundle source authoring ─────────────────────────────────────
 
-function makeBundleSource(appName: string, protocolName: string): Uint8Array {
+function makeBundleSource(abilityName: string, protocolName: string): Uint8Array {
   const src = `
 export default function* () {
   return {
-    name: ${JSON.stringify(appName)},
+    name: ${JSON.stringify(abilityName)},
     version: '1.0.0',
     manifest: {
-      name: ${JSON.stringify(appName)},
+      name: ${JSON.stringify(abilityName)},
       version: '1.0.0',
       appProtocolVersion: '3.0',
       protocol: {
@@ -96,7 +96,7 @@ export default function* () {
         tools: ['x'],
       },
     },
-    source: { name: ${JSON.stringify(appName)} },
+    source: { name: ${JSON.stringify(abilityName)} },
     tools: [],
     skill: 'test skill template',
   };
@@ -113,7 +113,7 @@ interface AppFixture {
   tarballBytes: Uint8Array;
   manifestUrl: string;
   tarballUrl: string;
-  manifest: AppBundleManifest;
+  manifest: AbilityBundleManifest;
 }
 
 const CATALOG_URL = 'https://test.example.com/v1/catalog.json';
@@ -128,7 +128,7 @@ async function sha512IntegrityOf(bytes: Uint8Array): Promise<string> {
 }
 
 /**
- * Build one app fixture: a stand-in tarball signed under `signKey`,
+ * Build one ability fixture: a stand-in tarball signed under `signKey`,
  * plus its manifest. Caller is responsible for assembling these into a
  * catalog and signing the catalog. Tests don't need a real npm tarball
  * for the verify-primitive surface — any byte sequence whose Ed25519
@@ -145,7 +145,7 @@ async function buildAppFixture(
   const integrity = await sha512IntegrityOf(tarballBytes);
   const manifestUrl = `https://test.example.com/v1/bundles/${name}-${version}.manifest.json`;
   const tarballUrl = `https://test.example.com/v1/bundles/${name}-${version}.tgz`;
-  const manifest: AppBundleManifest = {
+  const manifest: AbilityBundleManifest = {
     name,
     version,
     entry: `${name}-${version}.tgz`,
@@ -176,7 +176,7 @@ async function buildSignedCatalog(
       tarballUrl: f.tarballUrl,
       appProtocolVersion: '3.0',
       sizeBytes: f.tarballBytes.byteLength,
-      importName: `@lloyal-labs/${f.name}-app`,
+      importName: `@lloyal-labs/${f.name}-ability`,
     });
     byName.set(f.name, arr);
   }
@@ -273,9 +273,9 @@ describe('verifyBundle', () => {
   });
 });
 
-// ── resolveAppEntry ─────────────────────────────────────────────
+// ── resolveAbilityEntry ─────────────────────────────────────────────
 
-describe('resolveAppEntry', () => {
+describe('resolveAbilityEntry', () => {
   it('returns the highest-matching version for a semver range', async () => {
     const { publicKey, signKey } = await generateKeypair();
     setTestTrustRoot('test-pub', publicKey);
@@ -286,13 +286,13 @@ describe('resolveAppEntry', () => {
     installFetchStub(catalog, [v1, v2, v3]);
 
     const picked = await run(function* () {
-      return yield* resolveAppEntry('multi', { semver: '^1.0.0' });
+      return yield* resolveAbilityEntry('multi', { semver: '^1.0.0' });
     });
     expect(picked.version).toBe('1.2.0');
 
     clearCatalogCache();
     const picked2 = await run(function* () {
-      return yield* resolveAppEntry('multi', { semver: '*' });
+      return yield* resolveAbilityEntry('multi', { semver: '*' });
     });
     expect(picked2.version).toBe('2.0.0');
   });
@@ -306,12 +306,12 @@ describe('resolveAppEntry', () => {
     installFetchStub(catalog, [v1, v2]);
 
     const picked = await run(function* () {
-      return yield* resolveAppEntry('plain');
+      return yield* resolveAbilityEntry('plain');
     });
     expect(picked.version).toBe('1.5.0');
   });
 
-  it('throws AppNotFoundError for unknown name', async () => {
+  it('throws AbilityNotFoundError for unknown name', async () => {
     const { publicKey, signKey } = await generateKeypair();
     setTestTrustRoot('test-pub', publicKey);
     const v1 = await buildAppFixture(signKey, 'test-pub', 'web', '1.0.0');
@@ -320,23 +320,23 @@ describe('resolveAppEntry', () => {
 
     await expect(
       run(function* () {
-        return yield* resolveAppEntry('jira');
+        return yield* resolveAbilityEntry('jira');
       }),
-    ).rejects.toBeInstanceOf(AppNotFoundError);
+    ).rejects.toBeInstanceOf(AbilityNotFoundError);
   });
 
-  it('throws AppNotFoundError when no version matches the range', async () => {
+  it('throws AbilityNotFoundError when no version matches the range', async () => {
     const { publicKey, signKey } = await generateKeypair();
     setTestTrustRoot('test-pub', publicKey);
-    const v1 = await buildAppFixture(signKey, 'test-pub', 'app', '1.0.0');
+    const v1 = await buildAppFixture(signKey, 'test-pub', 'ability', '1.0.0');
     const catalog = await buildSignedCatalog(signKey, 'test-pub', [v1]);
     installFetchStub(catalog, [v1]);
 
     await expect(
       run(function* () {
-        return yield* resolveAppEntry('app', { semver: '^2.0.0' });
+        return yield* resolveAbilityEntry('ability', { semver: '^2.0.0' });
       }),
-    ).rejects.toBeInstanceOf(AppNotFoundError);
+    ).rejects.toBeInstanceOf(AbilityNotFoundError);
   });
 
   it('rejects a tampered catalog (MITM detection) before resolving any name', async () => {
@@ -362,7 +362,7 @@ describe('resolveAppEntry', () => {
 
     await expect(
       run(function* () {
-        return yield* resolveAppEntry('web');
+        return yield* resolveAbilityEntry('web');
       }),
     ).rejects.toBeInstanceOf(BundleVerificationError);
   });
@@ -379,7 +379,7 @@ describe('resolveAppEntry', () => {
 
     await expect(
       run(function* () {
-        return yield* resolveAppEntry('web');
+        return yield* resolveAbilityEntry('web');
       }),
     ).rejects.toThrow(/not a vendored trust root/);
   });
@@ -393,8 +393,8 @@ describe('resolveAppEntry', () => {
     const stub = installFetchStub(catalog, [v1, v2]);
 
     await run(function* () {
-      yield* resolveAppEntry('a');
-      yield* resolveAppEntry('b');
+      yield* resolveAbilityEntry('a');
+      yield* resolveAbilityEntry('b');
     });
 
     const catalogCalls = (stub.mock.calls as Array<[string, ...unknown[]]>).filter(
@@ -413,13 +413,13 @@ describe('resolveAppEntry', () => {
 
     await expect(
       run(function* () {
-        return yield* resolveAppEntry('anything');
+        return yield* resolveAbilityEntry('anything');
       }),
     ).rejects.toThrow(/Catalog fetch.*HTTP 403/);
   });
 });
 
 // Removed: describe('loadBundle', ...) and its 9 cases. The runtime
-// `loadBundle` model was replaced with `harness.dev install` shelling
+// `loadBundle` model was replaced with `lloyal install` shelling
 // out to `npm install <tarballUrl>` after Ed25519 verification, which
 // is exercised by harness-cli's own test suite.

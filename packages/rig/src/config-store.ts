@@ -1,9 +1,9 @@
 /**
- * In-memory implementation of {@link AppConfigStore}.
+ * In-memory implementation of {@link AbilityConfigStore}.
  *
- * The `AppConfigStore` interface itself lives in
+ * The `AbilityConfigStore` interface itself lives in
  * `@lloyal-labs/lloyal-agents` (so the framework context
- * `AppConfigStoreCtx` and app factories can share it without a
+ * `AbilityConfigStoreCtx` and ability factories can share it without a
  * dependency cycle). This module supplies the reference impl that dev
  * harnesses, examples, and tests use; harnesses needing durable
  * storage implement the interface themselves.
@@ -13,10 +13,10 @@
  */
 
 import type { Operation } from 'effection';
-import type { AppConfigStore } from '@lloyal-labs/lloyal-agents';
+import type { AbilityConfigStore } from '@lloyal-labs/lloyal-agents';
 
 /**
- * Create an in-memory `AppConfigStore` backed by a `Map`.
+ * Create an in-memory `AbilityConfigStore` backed by a `Map`.
  *
  * Intended for development, tests, and single-process harnesses that
  * don't need cross-restart persistence. Harnesses needing durable
@@ -29,17 +29,17 @@ import type { AppConfigStore } from '@lloyal-labs/lloyal-agents';
  * Callers should treat returned configs as immutable and re-`set` to
  * update.
  */
-export function createInMemoryConfigStore(): AppConfigStore {
+export function createInMemoryConfigStore(): AbilityConfigStore {
   const store = new Map<string, Record<string, unknown>>();
   return {
-    *get(appName: string): Operation<Record<string, unknown> | undefined> {
-      return store.get(appName);
+    *get(abilityName: string): Operation<Record<string, unknown> | undefined> {
+      return store.get(abilityName);
     },
-    *set(appName: string, config: Record<string, unknown>): Operation<void> {
-      store.set(appName, config);
+    *set(abilityName: string, config: Record<string, unknown>): Operation<void> {
+      store.set(abilityName, config);
     },
-    *clear(appName: string): Operation<void> {
-      store.delete(appName);
+    *clear(abilityName: string): Operation<void> {
+      store.delete(abilityName);
     },
   };
 }

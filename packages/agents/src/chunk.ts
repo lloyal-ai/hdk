@@ -2,7 +2,7 @@
  * Chunk / Reranker abstraction types.
  *
  * These interfaces live in `@lloyal-labs/lloyal-agents` (not rig) so that
- * agent-pool code, app factories, and harness contexts can refer to a
+ * agent-pool code, ability factories, and harness contexts can refer to a
  * common Reranker shape without depending on rig's concrete chunking
  * implementation. Concrete chunking utilities (`chunkResources`,
  * `chunkHtml`, `chunkFetchedPages`) and the cross-encoder-backed
@@ -90,7 +90,7 @@ export interface ScoredResult {
 /**
  * Cross-encoder reranker for scoring corpus chunks against a query.
  *
- * Apps obtain the harness-wide reranker via `RerankerCtx.expect()` at
+ * Abilities obtain the harness-wide reranker via `RerankerCtx.expect()` at
  * factory time — `source.bind({reranker})` is no longer the mechanism.
  * Implementations tokenize chunks up front via {@link tokenizeChunks},
  * then stream progressive results from {@link score}.

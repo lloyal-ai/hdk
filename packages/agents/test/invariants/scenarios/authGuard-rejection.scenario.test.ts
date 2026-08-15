@@ -8,7 +8,7 @@
  * pool-level wiring: `useAgentPool` reads `Tool.protected` flags into
  * `PolicyConfig.protectedTools`, the authGuard's `nudge` action with
  * `guard: 'auth_reject'` is converted to a structured `tool:authReject`
- * trace event with the attempted tool name and the agent's `assignedApp`
+ * trace event with the attempted tool name and the agent's `assignedAbility`
  * attribution.
  *
  * What this locks:
@@ -16,7 +16,7 @@
  *   - The authGuard runs INSIDE the pool's tick loop and produces a
  *     trace event distinct from generic nudges.
  *   - The event carries `attemptedTool` (audit attribution) and
- *     `assignedApp` (which app the spawn was tagged with).
+ *     `assignedAbility` (which ability the spawn was tagged with).
  *   - No grant in context = fail-closed (no silent dispatch).
  */
 import { describe, it, expect } from 'vitest';

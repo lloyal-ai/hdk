@@ -2,7 +2,7 @@
  * Tests for `createInMemoryConfigStore()` — RFC §5.6.
  *
  * The in-memory implementation is the reference; harnesses needing
- * durable storage implement {@link AppConfigStore} themselves. These
+ * durable storage implement {@link AbilityConfigStore} themselves. These
  * tests lock the semantics every implementation must preserve:
  * whole-replace `set`, idempotent `clear`, `get` returns the most
  * recent write.
@@ -56,7 +56,7 @@ describe('createInMemoryConfigStore', () => {
     expect(result).toBeUndefined();
   });
 
-  it('clear on a never-set app is a no-op', async () => {
+  it('clear on a never-set ability is a no-op', async () => {
     await expect(
       run(function* () {
         const store = createInMemoryConfigStore();
@@ -65,7 +65,7 @@ describe('createInMemoryConfigStore', () => {
     ).resolves.not.toThrow();
   });
 
-  it('configs for different apps are isolated', async () => {
+  it('configs for different abilities are isolated', async () => {
     const result = await run(function* () {
       const store = createInMemoryConfigStore();
       yield* store.set('web', { tavilyKey: 'web-key' });

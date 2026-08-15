@@ -140,13 +140,13 @@ export interface AgentTaskSpec {
   /** Parent branch to fork from (required by {@link useAgentPool}) */
   parent?: Branch;
   /**
-   * Non-enforcing label naming the App this spawn nominally belongs to
+   * Non-enforcing label naming the Ability this spawn nominally belongs to
    * Carried for trace attribution (`tool:authReject`) and
    * harness UI only — tool access is gated by {@link Tool.protected} +
-   * session grants (the authGuard), not by app membership. Unset for
+   * session grants (the authGuard), not by ability membership. Unset for
    * harness-internal spawns.
    */
-  assignedApp?: string;
+  assignedAbility?: string;
 }
 
 /**

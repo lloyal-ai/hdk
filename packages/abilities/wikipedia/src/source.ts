@@ -22,7 +22,7 @@ export class WikipediaSource extends Source {
   constructor(opts?: WikipediaSourceOpts) {
     super();
     const userAgent =
-      opts?.userAgent ?? "@lloyal-labs/wikipedia-app/1.0 (https://lloyal.ai)";
+      opts?.userAgent ?? "@lloyal-labs/wikipedia-ability/1.0 (https://lloyal.ai)";
     this._tools = [
       new WikipediaSearchTool({ userAgent }),
       new WikipediaFetchTool({ userAgent }),

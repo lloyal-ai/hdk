@@ -8,7 +8,7 @@ import type { Chunk, Reranker, ScoredResult } from "@lloyal-labs/lloyal-agents";
 /**
  * Context-sizing overrides for {@link createReranker}. All optional; each
  * defaults inside `createReranker` (nSeqMax 10 · nCtx 4096 · nBatch derived).
- * Threaded through `provisionAppModels` (its `rerankerLoad`) so a harness can
+ * Threaded through `provisionAbilityModels` (its `rerankerLoad`) so a harness can
  * tune the shared reranker without hand-loading it.
  */
 export interface RerankerLoadOpts {
@@ -32,7 +32,7 @@ export interface RerankerLoadOpts {
  * **Lifecycle.** The reranker owns its underlying `SessionContext` + `Rerank`
  * and disposes them transitively when the yielding scope exits (success,
  * error, or halt). The harness yields it once per process lifecycle and
- * publishes it on `RerankerCtx` so App factories can read it via
+ * publishes it on `RerankerCtx` so Ability factories can read it via
  * `RerankerCtx.expect()`. `dispose()` remains on the interface
  * for callers that manage teardown explicitly; it is idempotent so the
  * resource finally and an explicit call don't double-free.

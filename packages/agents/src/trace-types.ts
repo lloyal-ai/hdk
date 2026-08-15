@@ -229,13 +229,13 @@ export type TraceEvent =
   // injected authGuard: the session held no grant
   // for a `protected` tool. Emitted alongside the ordinary
   // `pool:agentNudge` so security tooling can detect attempted privileged
-  // actions by `assignedApp` × `attemptedTool` correlation without
+  // actions by `assignedAbility` × `attemptedTool` correlation without
   // scanning nudge-message free text.
   | TraceEventBase & {
       type: 'tool:authReject';
       agentId: number;
-      /** Non-enforcing app label (`SpawnSpec.assignedApp`); null for harness-internal spawns. */
-      assignedApp: string | null;
+      /** Non-enforcing ability label (`SpawnSpec.assignedAbility`); null for harness-internal spawns. */
+      assignedAbility: string | null;
       /** The protected tool the model attempted to call without a grant. */
       attemptedTool: string;
       /**
@@ -257,7 +257,7 @@ export type TraceEvent =
       totalTokens: number;
     }
 
-  // ── BM25 first-stage events (corpus app) ─────
+  // ── BM25 first-stage events (corpus ability) ─────
   | TraceEventBase & {
       type: 'bm25:start';
       query: string;

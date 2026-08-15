@@ -1,7 +1,7 @@
 /**
  * §10.4 deterministic verification gates — predicate codification.
  *
- * Each §10.4 structural predicate in the App-protocol RFC has a named
+ * Each §10.4 structural predicate in the Ability-protocol RFC has a named
  * test below (or a cross-reference comment if it lives in another
  * package's test suite). The aim is single-source traceability:
  * grepping for `P-<name>` lands on the canonical assertion.
@@ -14,9 +14,9 @@
  * - `P-catalog-shape`         — `spine-render.test.ts` ("emits catalog block in exact RFC §1.2 shape")
  * - `P-spine-intro`           — `spine-render.test.ts` ("emits FRAMEWORK_INTRO verbatim at the start")
  * - `P-tool-selection-rule`   — `spine-render.test.ts` ("emits TOOL_SELECTION_RULE as the final block")
- * - `P-no-prose-in-spine`     — `spine-render.test.ts` ("output shape is fixed across app.skill / app.examples content")
- * - `P-per-spawn-isolation`   — `spine-render.test.ts` ("does NOT include another app templates")
- * - `P-metadata-grammar`      — `define-app.test.ts` (identifier-regex + useWhen-forbidden-patterns + tools-uniqueness suites)
+ * - `P-no-prose-in-spine`     — `spine-render.test.ts` ("output shape is fixed across ability.skill / ability.examples content")
+ * - `P-per-spawn-isolation`   — `spine-render.test.ts` ("does NOT include another ability templates")
+ * - `P-metadata-grammar`      — `define-ability.test.ts` (identifier-regex + useWhen-forbidden-patterns + tools-uniqueness suites)
  * - `P-appProtocolVersion-compat` — **codified below** (gap closed by this file)
  * - `P-no-ungranted-protected-dispatch` — `@lloyal-labs/lloyal-agents/test/authGuard.test.ts` (lives there because it exercises `DefaultAgentPolicy`)
  *
@@ -28,12 +28,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { defineApp } from '../src/define-app';
-import type { AppSetup } from '../src/define-app';
-import { SUPPORTED_APP_PROTOCOL_VERSIONS } from '../src/protocol';
-import type { AppManifest, Source, Tool } from '@lloyal-labs/lloyal-agents';
+import { defineAbility } from '../src/define-ability';
+import type { AbilitySetup } from '../src/define-ability';
+import { SUPPORTED_ABILITY_PROTOCOL_VERSIONS } from '../src/protocol';
+import type { AbilityManifest, Source, Tool } from '@lloyal-labs/lloyal-agents';
 
-const baseManifest: AppManifest = {
+const baseManifest: AbilityManifest = {
   name: 'gate',
   appProtocolVersion: '3.0',
   protocol: {
@@ -43,7 +43,7 @@ const baseManifest: AppManifest = {
   },
 };
 
-function parts(): AppSetup {
+function parts(): AbilitySetup {
   const tool: Tool = {
     name: 'gate_search',
     description: 'search',
@@ -60,8 +60,8 @@ function parts(): AppSetup {
 }
 
 /** Build the factory — eager manifest validation happens at this call. */
-function build(manifest: AppManifest) {
-  return defineApp(manifest, function* () {
+function build(manifest: AbilityManifest) {
+  return defineAbility(manifest, function* () {
     return parts();
   });
 }
@@ -69,13 +69,13 @@ function build(manifest: AppManifest) {
 // ── P-appProtocolVersion-compat ─────────────────────────────────
 
 describe('P-appProtocolVersion-compat (§10.4)', () => {
-  it('accepts every version in SUPPORTED_APP_PROTOCOL_VERSIONS', () => {
-    for (const version of SUPPORTED_APP_PROTOCOL_VERSIONS) {
+  it('accepts every version in SUPPORTED_ABILITY_PROTOCOL_VERSIONS', () => {
+    for (const version of SUPPORTED_ABILITY_PROTOCOL_VERSIONS) {
       expect(() => build({ ...baseManifest, appProtocolVersion: version })).not.toThrow();
     }
   });
 
-  it('accepts an undefined appProtocolVersion (apps without one default to current)', () => {
+  it('accepts an undefined appProtocolVersion (abilities without one default to current)', () => {
     expect(() => build({ ...baseManifest, appProtocolVersion: undefined })).not.toThrow();
   });
 
