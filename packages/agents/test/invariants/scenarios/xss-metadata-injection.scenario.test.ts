@@ -2,34 +2,34 @@
  * Scenario: metadata-grammar guards reject adversarial `useWhen` strings.
  *
  * RFC §10.4b: `xss-metadata-injection` — M3 prevents prompt-injection
- * payloads from sneaking into the spine catalog via app manifests. The
+ * payloads from sneaking into the spine catalog via ability manifests. The
  * `useWhen` string is rendered into the rendered spine (visible to
- * every agent in the pool); a malicious app author who could smuggle
+ * every agent in the pool); a malicious ability author who could smuggle
  * chat-role markers (`SYSTEM:`, `USER:`), code fences, or newlines into
  * `useWhen` could break the spine's structure or inject instructions
  * into every spawn's context.
  *
- * `defineApp` (packages/rig/src/define-app.ts) rejects these patterns
- * EAGERLY — at the `defineApp` call (import time), before the app is ever
+ * `defineAbility` (packages/rig/src/define-ability.ts) rejects these patterns
+ * EAGERLY — at the `defineAbility` call (import time), before the ability is ever
  * enabled or rendered. This scenario codifies the predicate under the §10.4b
  * naming convention so a grep for `P-metadata-grammar` lands here as well as in
- * `define-app.test.ts`. Duplication is intentional.
+ * `define-ability.test.ts`. Duplication is intentional.
  */
 import { describe, it, expect } from 'vitest';
 import type { Operation } from 'effection';
-import { defineApp } from '../../../../rig/src/define-app';
-import type { AppSetup } from '../../../../rig/src/define-app';
-import type { AppManifest, Source, Tool } from '../../../src';
+import { defineAbility } from '../../../../rig/src/define-ability';
+import type { AbilitySetup } from '../../../../rig/src/define-ability';
+import type { AbilityManifest, Source, Tool } from '../../../src';
 
-function manifestWith(useWhen: string): AppManifest {
+function manifestWith(useWhen: string): AbilityManifest {
   return {
-    name: 'app',
+    name: 'ability',
     appProtocolVersion: '3.0',
     protocol: { name: 'app_research', useWhen, tools: ['app_tool'] },
   };
 }
 
-function parts(): AppSetup {
+function parts(): AbilitySetup {
   const tool: Tool = {
     name: 'app_tool',
     description: 'tool',
@@ -38,12 +38,12 @@ function parts(): AppSetup {
       return {};
     },
   } as unknown as Tool;
-  return { source: { name: 'app' } as Source, tools: { app_tool: tool }, skill: 'body' };
+  return { source: { name: 'ability' } as Source, tools: { app_tool: tool }, skill: 'body' };
 }
 
 /** Build the factory — eager manifest (useWhen) validation happens at this call. */
 function build(useWhen: string) {
-  return defineApp(manifestWith(useWhen), function* () {
+  return defineAbility(manifestWith(useWhen), function* () {
     return parts();
   });
 }

@@ -59,9 +59,9 @@ export abstract class Tool<TArgs = any> {
    *
    * **Open by default** (`false`/unset): any agent may call the tool. This
    * is the right setting for read/gather tools — search, fetch, grep — where
-   * agents discover an app's coverage by *trying*, the frontier-agentic
-   * pattern. The spine loads every app's tools for KV amortization; an open
-   * tool is callable regardless of which app a spawn nominally belongs to.
+   * agents discover an ability's coverage by *trying*, the frontier-agentic
+   * pattern. The spine loads every ability's tools for KV amortization; an open
+   * tool is callable regardless of which ability a spawn nominally belongs to.
    *
    * **Protected** (`true`): the tool mutates state or takes a consequential
    * action (transfer funds, file a ticket, send a message). The framework's
@@ -71,9 +71,9 @@ export abstract class Tool<TArgs = any> {
    * emits `tool:authReject`.
    *
    * Trust changes *which grants a session holds*, never tool behaviour:
-   * execution is identical for trusted and untrusted apps. An app MAY mark
+   * execution is identical for trusted and untrusted abilities. An ability MAY mark
    * an exfiltration-capable "read" (one that fetches arbitrary URLs) as
-   * protected — the binary flag delegates that judgment to the app.
+   * protected — the binary flag delegates that judgment to the ability.
    */
   readonly protected?: boolean;
 

@@ -30,7 +30,7 @@ Package within another:
 
 (together, the **"Software"**, matching the License's defined term for each
 package). Packages Lloyal publishes under Apache 2.0 (for example, the
-`harness.dev` CLI) carry no use restrictions and need no grant.
+`lloyal-ai` CLI) carry no use restrictions and need no grant.
 
 ## 2. Definitions
 

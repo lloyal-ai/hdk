@@ -356,7 +356,7 @@ function dedupResults(results: SearchResult[]): SearchResult[] {
  * ```ts
  * yield* initAgents(ctx);
  * const provider = yield* createKeylessSearchProvider();
- * // Inject into an App factory (e.g. createWebApp) that constructs its
+ * // Inject into an Ability factory (e.g. createWebAbility) that constructs its
  * // Source bound to the provider + reranker.
  * ```
  *

@@ -1,0 +1,33 @@
+{
+  "name": "@lloyal-labs/corpus-ability",
+  "version": "2.0.0",
+  "private": true,
+  "description": "HDK reference app — local-corpus research (Source + tools + contract). Distributed via the signed-bundle channel, never public npm.",
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "ability.json",
+    "skill.eta",
+    "attention-surface.json",
+    "LICENSE",
+    "LICENSE-FAQ.md"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "peerDependencies": {
+    "@lloyal-labs/lloyal-agents": "^4.0.0",
+    "@lloyal-labs/lloyal.node": "^3.1.1",
+    "@lloyal-labs/rig": "^4.0.0",
+    "effection": "^4.0.2"
+  }
+}

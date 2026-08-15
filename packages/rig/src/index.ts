@@ -12,8 +12,8 @@
  */
 
 // Framework tools (consumed by harnesses) + search providers (consumed by
-// apps' Source implementations). App-scoped Tool classes live in their
-// owning app (`@lloyal-labs/{web,corpus,wikipedia}-app`).
+// abilities' Source implementations). Ability-scoped Tool classes live in their
+// owning ability (`@lloyal-labs/{web,corpus,wikipedia}-ability`).
 export {
   reportTool, ReportTool,
   TavilyProvider, createKeylessSearchProvider,
@@ -30,44 +30,45 @@ export type {
   Reranker, ScoredChunk, ScoredResult,
 } from './tools';
 
-// Cross-app Source type re-export (platform-agnostic)
+// Cross-ability Source type re-export (platform-agnostic)
 export type { SourceContext } from './sources/types';
 
 // Chunking helpers (platform-agnostic — linkedom is pure JS).
-// Shared by the web app's source and the rig-resident fetch_page tool.
+// Shared by the web ability's source and the rig-resident fetch_page tool.
 export { chunkFetchedPages, chunkHtml } from './sources/chunking';
 export type { FetchedPage } from './sources/chunking';
 
 // Resource types (pure TS — RN-safe)
 export type { Resource, Chunk } from './resources/types';
 
-// HDK 3.0 App Protocol surfaces
+// HDK 3.0 Ability Protocol surfaces
 export {
   BOUNDARY_MARKER,
   FRAMEWORK_INTRO,
   TOOL_SELECTION_RULE,
   CATALOG_ENTRY,
   VALIDATED_MODELS_3_0,
-  APP_PROTOCOL_VERSION,
-  SUPPORTED_APP_PROTOCOL_VERSIONS,
+  ABILITY_PROTOCOL_VERSION,
+  SUPPORTED_ABILITY_PROTOCOL_VERSIONS,
+  TASK_ROUTING_KEY,
   CHANNEL_CATALOG_URL,
   CHANNEL_TRUST_ROOTS,
 } from './protocol';
-export { defineApp } from './define-app';
-export type { AppSetup } from './define-app';
+export { defineAbility } from './define-ability';
+export type { AbilitySetup } from './define-ability';
 export { cancellableFetch, FetchTimeoutError } from './cancellable-fetch';
 export { createInMemoryConfigStore } from './config-store';
 export { createGrantStore } from './grant-store';
-export { createAppRegistry } from './registry';
-export type { CreateAppRegistryOpts } from './registry';
+export { createAbilityRegistry } from './registry';
+export type { CreateAbilityRegistryOpts } from './registry';
 export {
   verifyBundle,
-  resolveAppEntry,
+  resolveAbilityEntry,
   BundleVerificationError,
-  AppNotFoundError,
+  AbilityNotFoundError,
 } from './bundle';
 export type {
-  AppBundleManifest,
+  AbilityBundleManifest,
   CatalogEntry,
   CatalogEntryMetadata,
   CatalogVersion,

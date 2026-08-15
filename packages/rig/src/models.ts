@@ -7,7 +7,7 @@
  * digest-verified** against the catalog's `sha256`. This lives in the platform
  * (a dep of the generated project), not in user-editable scaffold code, so the
  * integrity check can't be weakened downstream — the same trust bar as the
- * signed app channel, from the opposite direction.
+ * signed ability channel, from the opposite direction.
  *
  * Node-only (node:fs / node:crypto / streaming fetch). Import from
  * `@lloyal-labs/rig/node`.
@@ -21,7 +21,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
-/** The model roles a harness provisions. `llm` always; `reranker` when an app
+/** The model roles a harness provisions. `llm` always; `reranker` when an ability
  *  requires it; `embedding` reserved for the first consumer. */
 export type ModelRole = 'llm' | 'reranker' | 'embedding';
 

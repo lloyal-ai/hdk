@@ -1,7 +1,8 @@
 import type { Operation } from 'effection';
 import { Tool, agent, renderTemplate } from '@lloyal-labs/lloyal-agents';
-import type { JsonSchema, App } from '@lloyal-labs/lloyal-agents';
+import type { JsonSchema, Ability } from '@lloyal-labs/lloyal-agents';
 import { Session } from '@lloyal-labs/sdk';
+import { TASK_ROUTING_KEY } from '../protocol';
 
 /**
  * Configuration for {@link PlanTool}.
@@ -22,18 +23,18 @@ export interface PlanToolOpts {
   /** Sampling temperature for plan generation. @default 0.3 */
   temperature?: number;
   /**
-   * Apps available to route research tasks to. When provided
-   * and non-empty, the plan grammar constrains each task's `app` field to
-   * an enum of these apps' `manifest.protocol.name` values — the names
+   * Abilities available to route research tasks to. When provided
+   * and non-empty, the plan grammar constrains each task's `ability` field to
+   * an enum of these abilities' `manifest.protocol.name` values — the names
    * the planner sees in the spine catalog — so the planner must assign
    * every task to a real protocol. The harness maps each emitted
-   * `task.app` (a protocol name) back to its `manifest.name` to set
-   * `SpawnSpec.assignedApp` when spawning research agents.
+   * `task.ability` (a protocol name) back to its `manifest.name` to set
+   * `SpawnSpec.assignedAbility` when spawning research agents.
    *
-   * Omit for single-app or app-agnostic pipelines: the grammar drops the
-   * `app` field entirely and {@link ResearchTask.app} stays undefined.
+   * Omit for single-ability or ability-agnostic pipelines: the grammar drops the
+   * `ability` field entirely and {@link ResearchTask.ability} stays undefined.
    */
-  availableApps?: readonly App[];
+  availableAbilities?: readonly Ability[];
 }
 
 /**
@@ -48,14 +49,14 @@ export interface ResearchTask {
   /** What to find out — a specific, actionable research assignment. */
   description: string;
   /**
-   * Contract name of the app this task is routed to (matches one of the
-   * planner's `availableApps`' `manifest.protocol.name`). Present only
-   * when the planner ran with {@link PlanToolOpts.availableApps}; the
-   * harness maps it to the App's `manifest.name` for
-   * `SpawnSpec.assignedApp`. Undefined for single-app / app-agnostic
+   * Contract name of the ability this task is routed to (matches one of the
+   * planner's `availableAbilities`' `manifest.protocol.name`). Present only
+   * when the planner ran with {@link PlanToolOpts.availableAbilities}; the
+   * harness maps it to the Ability's `manifest.name` for
+   * `SpawnSpec.assignedAbility`. Undefined for single-ability / ability-agnostic
    * pipelines.
    */
-  app?: string;
+  ability?: string;
 }
 
 /**
@@ -121,6 +122,47 @@ export interface PlanResult {
 }
 
 /**
+ * Build the planner's output schema — which IS the decode grammar.
+ *
+ * Extracted from `execute` so the one model-facing decision in this file is
+ * reachable without a Session and a live model. When abilities are available
+ * the routing property is REQUIRED and enum-constrained to their protocol
+ * names, so the model cannot invent a destination; with none, a task carries
+ * only a description.
+ *
+ * The property is keyed by {@link TASK_ROUTING_KEY} rather than a literal so
+ * an eval can vary it in one place. `plan.test.ts` asserts the schema and the
+ * parse agree on it — desyncing them would not throw, it would silently drop
+ * every routing decision.
+ *
+ * @internal
+ */
+export function buildPlanSchema(protocolNames: readonly string[], maxTasks: number): JsonSchema {
+  const taskProperties: Record<string, JsonSchema> = {
+    description: { type: 'string' },
+  };
+  const taskRequired = ['description'];
+  if (protocolNames.length > 0) {
+    taskProperties[TASK_ROUTING_KEY] = { type: 'string', enum: [...protocolNames] };
+    taskRequired.push(TASK_ROUTING_KEY);
+  }
+
+  return {
+    type: 'object',
+    properties: {
+      intent: { type: 'string', enum: ['clarify', 'passthrough', 'research'] },
+      tasks: {
+        type: 'array',
+        items: { type: 'object', properties: taskProperties, required: taskRequired },
+        maxItems: maxTasks,
+      },
+      clarifyQuestions: { type: 'array', items: { type: 'string' } },
+    },
+    required: ['intent'],
+  };
+}
+
+/**
  * Grammar-constrained query planner.
  *
  * Analyzes the user's query (with prior conversation in KV via warm session fork)
@@ -152,7 +194,7 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
   private _session: Session;
   private _maxTasks: number;
   private _temperature: number;
-  private _appProtocolNames: string[];
+  private _abilityProtocolNames: string[];
 
   constructor(opts: PlanToolOpts) {
     super();
@@ -160,50 +202,21 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
     this._temperature = opts.temperature ?? 0.3;
     this._session = opts.session;
     this._maxTasks = opts.maxTasks;
-    this._appProtocolNames = (opts.availableApps ?? []).map(a => a.manifest.protocol.name);
+    this._abilityProtocolNames = (opts.availableAbilities ?? []).map(a => a.manifest.protocol.name);
   }
 
   *execute(args: { query: string; context?: string }): Operation<unknown> {
     const t = performance.now();
 
-    // When apps are available, force the planner to route every task to
-    // one of their protocol names via a grammar enum. With no
-    // apps the task carries only a description.
-    const hasApps = this._appProtocolNames.length > 0;
-    const taskProperties: Record<string, JsonSchema> = {
-      description: { type: 'string' },
-    };
-    const taskRequired = ['description'];
-    if (hasApps) {
-      taskProperties.app = { type: 'string', enum: this._appProtocolNames };
-      taskRequired.push('app');
-    }
-
-    const schema: JsonSchema = {
-      type: 'object',
-      properties: {
-        intent: { type: 'string', enum: ['clarify', 'passthrough', 'research'] },
-        tasks: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: taskProperties,
-            required: taskRequired,
-          },
-          maxItems: this._maxTasks,
-        },
-        clarifyQuestions: {
-          type: 'array',
-          items: { type: 'string' },
-        },
-      },
-      required: ['intent'],
-    };
+    const schema = buildPlanSchema(this._abilityProtocolNames, this._maxTasks);
 
     const userContent = renderTemplate(this._prompt.user, {
       query: args.query,
       count: this._maxTasks,
       context: args.context || null,
+      // The prompt must name the same property the grammar requires. Passing
+      // it keeps rule 6 from drifting out of step with the schema.
+      routingKey: TASK_ROUTING_KEY,
     });
 
     const planAgent = yield* agent({
@@ -226,7 +239,7 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
     try {
       const parsed = parsePlanJson(planAgent.rawOutput) as {
         intent?: string;
-        tasks?: { description?: string; app?: string }[];
+        tasks?: (Record<string, unknown> & { description?: string })[];
         clarifyQuestions?: string[];
       };
 
@@ -238,9 +251,14 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
       const tasks: ResearchTask[] = (parsed.tasks ?? [])
         .slice(0, this._maxTasks)
         .filter(t => typeof t.description === 'string')
-        .map(t => (typeof t.app === 'string'
-          ? { description: t.description!, app: t.app }
-          : { description: t.description! }));
+        .map(t => {
+            // The wire key is TASK_ROUTING_KEY; the field on ResearchTask stays
+            // `ability` so varying the key is invisible to every consumer.
+            const routed = t[TASK_ROUTING_KEY];
+            return typeof routed === 'string'
+              ? { description: t.description as string, ability: routed }
+              : { description: t.description as string };
+          });
 
       const clarifyQuestions = (parsed.clarifyQuestions ?? []).filter(q => typeof q === 'string');
 

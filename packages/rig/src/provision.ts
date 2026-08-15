@@ -1,18 +1,18 @@
 /**
- * Provision the HDK Services an enabled app set declares.
+ * Provision the HDK Services an enabled ability set declares.
  *
- * An AgentApp declares the auxiliary Services it needs (`reranker`, `embedding`)
- * via its manifest's `services` (carried statically on the `AppFactory`, mirrored
- * from `app.json`) — it declares the *service*, not a model. The harness boot
+ * An Ability declares the auxiliary Services it needs (`reranker`, `embedding`)
+ * via its manifest's `services` (carried statically on the `AbilityFactory`, mirrored
+ * from `ability.json`) — it declares the *service*, not a model. The harness boot
  * passes the same factory list it will enable; this reads the aggregate
- * requirement and — for each service some app needs — resolves + loads the model
- * that backs it and publishes the bound instance on the framework context apps
+ * requirement and — for each service some ability needs — resolves + loads the model
+ * that backs it and publishes the bound instance on the framework context abilities
  * read at construction, BEFORE any factory runs.
  *
  * Today only `reranker` is wired (`RerankerCtx`). The reranker is
  * one-cross-encoder-per-harness, so a single shared instance is loaded IFF some
- * enabled app requires it — a conditional populate of the existing global
- * context, not a per-app instance. `embedding` is reserved (no consumer yet).
+ * enabled ability requires it — a conditional populate of the existing global
+ * context, not a per-ability instance. `embedding` is reserved (no consumer yet).
  *
  * Node-only (`resolveModel` + `createReranker` touch `node:fs` / the native
  * runtime). Import from `@lloyal-labs/rig/node`.
@@ -23,19 +23,19 @@
 import { call } from 'effection';
 import type { Operation } from 'effection';
 import { RerankerCtx } from '@lloyal-labs/lloyal-agents';
-import type { AppFactory, Service } from '@lloyal-labs/lloyal-agents';
+import type { AbilityFactory, Service } from '@lloyal-labs/lloyal-agents';
 import { MODEL_CATALOG, resolveModel } from './models';
 import type { ModelProgress, ModelSpec } from './models';
 import { createReranker } from './reranker';
 import type { RerankerLoadOpts } from './reranker';
 
-/** Options for {@link provisionAppModels}. */
-export interface ProvisionAppModelsOpts {
+/** Options for {@link provisionAbilityModels}. */
+export interface ProvisionAbilityModelsOpts {
   /**
-   * The app factories the harness will enable. Their static `services` is read
+   * The ability factories the harness will enable. Their static `services` is read
    * to decide which auxiliary Services to load — the factories are NOT run here.
    */
-  apps: readonly AppFactory[];
+  abilities: readonly AbilityFactory[];
   /** Project root (where `models/<role>/` lives). */
   projectRoot: string;
   /**
@@ -54,26 +54,26 @@ export interface ProvisionAppModelsOpts {
 }
 
 /**
- * Read the aggregate `services` of `apps`, provision each required Service, and
+ * Read the aggregate `services` of `abilities`, provision each required Service, and
  * publish the bound instance on its framework context — so `registry.enable`
- * injects it. Call once at boot, BEFORE `createAppRegistry`/`enable`, in the
+ * injects it. Call once at boot, BEFORE `createAbilityRegistry`/`enable`, in the
  * scope the harness runs in: the reranker resource + `RerankerCtx` value both
  * attach to that scope (the same "set the context in the caller's scope"
- * pattern as `createAppRegistry`), living for its lifetime.
+ * pattern as `createAbilityRegistry`), living for its lifetime.
  *
- * No-op when no enabled app requires an auxiliary Service (e.g. a wikipedia-only
+ * No-op when no enabled ability requires an auxiliary Service (e.g. a wikipedia-only
  * harness) — nothing is fetched or loaded.
  */
-export function* provisionAppModels(opts: ProvisionAppModelsOpts): Operation<void> {
-  const services = new Set<Service>(opts.apps.flatMap((a) => a.manifest?.services ?? []));
+export function* provisionAbilityModels(opts: ProvisionAbilityModelsOpts): Operation<void> {
+  const services = new Set<Service>(opts.abilities.flatMap((a) => a.manifest?.services ?? []));
 
   // Fail fast on unsupported services BEFORE provisioning anything, so an
   // unimplemented requirement can't leave a half-loaded reranker behind.
   if (services.has('embedding')) {
     throw new Error(
-      "provisionAppModels: an enabled app requires an 'embedding' model, but " +
+      "provisionAbilityModels: an enabled ability requires an 'embedding' model, but " +
         'embedding provisioning is not implemented yet (EmbeddingCtx/Embedder ' +
-        "are reserved). Remove the app, or its 'embedding' requirement, until it lands.",
+        "are reserved). Remove the ability, or its 'embedding' requirement, until it lands.",
     );
   }
 

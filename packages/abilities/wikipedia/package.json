@@ -1,0 +1,31 @@
+{
+  "name": "@lloyal-labs/wikipedia-ability",
+  "version": "2.0.0",
+  "private": true,
+  "description": "HDK reference app — Wikipedia research (search + fetch over Wikipedia's public REST). No auth required. Distributed via the signed-channel, never public npm.",
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "ability.json",
+    "skill.eta",
+    "attention-surface.json",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "peerDependencies": {
+    "@lloyal-labs/lloyal-agents": "^4.0.0",
+    "@lloyal-labs/rig": "^4.0.0",
+    "effection": "^4.0.2"
+  }
+}

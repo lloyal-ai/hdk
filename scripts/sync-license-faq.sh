@@ -18,10 +18,10 @@
 #   ../liblloyal/LICENSE-FAQ.md                <- sync target
 #   ../lloyal-node/LICENSE-FAQ.md              <- sync target
 #   ./LICENSE-FAQ.md                           <- sync target (lloyal-sdk root)
-#   ./packages/{agents,sdk,rig,apps/corpus,apps/web}/LICENSE-FAQ.md  <- sync targets
+#   ./packages/{agents,sdk,rig,abilities/corpus,abilities/web}/LICENSE-FAQ.md  <- sync targets
 #
-# packages/harness-cli and packages/channel-verify are NOT synced (both are
-# Apache 2.0, not FSL — see CONTRIBUTING for the cross-repo licensing policy).
+# packages/channel-verify is NOT synced (Apache 2.0, not FSL — see CONTRIBUTING
+# for the cross-repo licensing policy).
 
 set -euo pipefail
 
@@ -50,8 +50,8 @@ TARGETS=(
   "$SDK_DIR/packages/agents/LICENSE-FAQ.md"
   "$SDK_DIR/packages/sdk/LICENSE-FAQ.md"
   "$SDK_DIR/packages/rig/LICENSE-FAQ.md"
-  "$SDK_DIR/packages/apps/corpus/LICENSE-FAQ.md"
-  "$SDK_DIR/packages/apps/web/LICENSE-FAQ.md"
+  "$SDK_DIR/packages/abilities/corpus/LICENSE-FAQ.md"
+  "$SDK_DIR/packages/abilities/web/LICENSE-FAQ.md"
 )
 
 # Convert .mdx to .md by stripping leading frontmatter block (--- ... ---).

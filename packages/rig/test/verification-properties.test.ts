@@ -8,15 +8,15 @@
  * times by default.
  *
  * Properties:
- *   1. **Catalog ordering** — for any N (1..12) apps with valid
+ *   1. **Catalog ordering** — for any N (1..12) abilities with valid
  *      identifiers, `renderSpine` emits each catalog block in
- *      registration order. Random app permutations.
- *   2. **Boundary marker** — for any valid app + any AgentRenderCtx,
+ *      registration order. Random ability permutations.
+ *   2. **Boundary marker** — for any valid ability + any AgentRenderCtx,
  *      `renderAgentPreamble` starts with the boundary marker. The
- *      marker contains the manifest's `protocol.name`, not the app's
+ *      marker contains the manifest's `protocol.name`, not the ability's
  *      `name`, even for adversarial renderings.
- *   3. **Catalog presence** — every registered app's `protocol.name`
- *      appears in the rendered spine exactly once. No app is silently
+ *   3. **Catalog presence** — every registered ability's `protocol.name`
+ *      appears in the rendered spine exactly once. No ability is silently
  *      dropped; none is duplicated.
  *
  * Properties are intentionally pure-rendering — random enable/disable
@@ -29,11 +29,11 @@
 
 import { describe, it, expect } from 'vitest';
 import fc from 'fast-check';
-import type { App, AppManifest } from '@lloyal-labs/lloyal-agents';
+import type { Ability, AbilityManifest } from '@lloyal-labs/lloyal-agents';
 import { renderSpine, renderAgentPreamble } from '../src/spine-render';
 import { BOUNDARY_MARKER } from '../src/protocol';
 
-/** Arbitrary for a valid app identifier per the M3 regex
+/** Arbitrary for a valid ability identifier per the M3 regex
  *  `[a-z][a-z0-9_-]{1,63}`. */
 const idArb = fc
   .stringMatching(/^[a-z][a-z0-9_-]{1,63}$/)
@@ -45,15 +45,15 @@ const useWhenArb = fc
   .stringMatching(/^[a-zA-Z0-9 ,.;:!?'-]{8,200}$/)
   .map((s) => s.replace(/SYSTEM:|USER:|ASSISTANT:|```/g, 'x'));
 
-/** Arbitrary for a single App fixture. Uses a fresh identifier for
+/** Arbitrary for a single Ability fixture. Uses a fresh identifier for
  *  each of `name`, `protocol.name`, and each tool. */
 const appArb = fc.record({
   name: idArb,
   protocolName: idArb,
   useWhen: useWhenArb,
   tools: fc.array(idArb, { minLength: 1, maxLength: 5 }),
-}).map(({ name, protocolName, useWhen, tools }): App => {
-  const manifest: AppManifest = {
+}).map(({ name, protocolName, useWhen, tools }): Ability => {
+  const manifest: AbilityManifest = {
     name,
     version: '1.0.0',
     appProtocolVersion: '3.0',
@@ -63,7 +63,7 @@ const appArb = fc.record({
     name,
     version: '1.0.0',
     manifest,
-    source: { name } as App['source'],
+    source: { name } as Ability['source'],
     tools: [],
     skill: 'body <%= it.agentCount %>',
   };
@@ -77,24 +77,24 @@ const ctxArb = fc.record({
   taskIndex: fc.integer({ min: 0, max: 10 }),
 });
 
-describe('§10.5 property: P-catalog-order across random app sets', () => {
-  it('renderSpine emits catalog blocks in registration order for any 1..12 apps', () => {
+describe('§10.5 property: P-catalog-order across random ability sets', () => {
+  it('renderSpine emits catalog blocks in registration order for any 1..12 abilities', () => {
     fc.assert(
       fc.property(
-        fc.array(appArb, { minLength: 1, maxLength: 12 }).filter((apps) => {
-          // Distinct protocol.name across apps — required by M3
+        fc.array(appArb, { minLength: 1, maxLength: 12 }).filter((abilities) => {
+          // Distinct protocol.name across abilities — required by M3
           // (registry uniqueness) and to make the order assertion
           // unambiguous.
-          const names = apps.map((a) => a.manifest.protocol.name);
+          const names = abilities.map((a) => a.manifest.protocol.name);
           return new Set(names).size === names.length;
         }),
-        (apps) => {
-          const out = renderSpine({ apps });
+        (abilities) => {
+          const out = renderSpine({ abilities });
           let lastIdx = -1;
-          for (const app of apps) {
-            // Match `## <name>\n` (not `## <name>`) so an app with name
-            // `a` doesn't false-match inside an app `ab` block.
-            const idx = out.indexOf(`## ${app.manifest.protocol.name}\n`);
+          for (const ability of abilities) {
+            // Match `## <name>\n` (not `## <name>`) so an ability with name
+            // `a` doesn't false-match inside an ability `ab` block.
+            const idx = out.indexOf(`## ${ability.manifest.protocol.name}\n`);
             expect(idx).toBeGreaterThan(lastIdx);
             lastIdx = idx;
           }
@@ -107,26 +107,26 @@ describe('§10.5 property: P-catalog-order across random app sets', () => {
 describe('§10.5 property: P-boundary-marker across random AgentRenderCtx', () => {
   it('renderAgentPreamble starts with the protocol-name boundary marker for any context', () => {
     fc.assert(
-      fc.property(appArb, ctxArb, (app, ctx) => {
-        const out = renderAgentPreamble(app, ctx);
-        expect(out.startsWith(BOUNDARY_MARKER(app.manifest.protocol.name))).toBe(true);
+      fc.property(appArb, ctxArb, (ability, ctx) => {
+        const out = renderAgentPreamble(ability, ctx);
+        expect(out.startsWith(BOUNDARY_MARKER(ability.manifest.protocol.name))).toBe(true);
       }),
     );
   });
 });
 
 describe('§10.5 property: catalog presence is exact (no drops, no duplicates)', () => {
-  it('every registered app appears exactly once in the rendered spine', () => {
+  it('every registered ability appears exactly once in the rendered spine', () => {
     fc.assert(
       fc.property(
-        fc.array(appArb, { minLength: 1, maxLength: 12 }).filter((apps) => {
-          const names = apps.map((a) => a.manifest.protocol.name);
+        fc.array(appArb, { minLength: 1, maxLength: 12 }).filter((abilities) => {
+          const names = abilities.map((a) => a.manifest.protocol.name);
           return new Set(names).size === names.length;
         }),
-        (apps) => {
-          const out = renderSpine({ apps });
-          for (const app of apps) {
-            const marker = `## ${app.manifest.protocol.name}\n`;
+        (abilities) => {
+          const out = renderSpine({ abilities });
+          for (const ability of abilities) {
+            const marker = `## ${ability.manifest.protocol.name}\n`;
             const matches = out.split(marker).length - 1;
             expect(matches).toBe(1);
           }

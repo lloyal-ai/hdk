@@ -649,11 +649,11 @@ function* setupAgent(
   let callingAgent: Agent | null = null;
   try { const a = yield* CallingAgent.get(); if (a) callingAgent = a; } catch { /* top-level — no caller */ }
 
-  // The spawn's app membership is now a non-enforcing label:
+  // The spawn's ability membership is now a non-enforcing label:
   // the authGuard gates tools by `Tool.protected` + session grants at the
-  // pool level, not by app-scoped allow-lists. The label is carried for
+  // pool level, not by ability-scoped allow-lists. The label is carried for
   // trace attribution (`tool:authReject`) and harness UI only.
-  const assignedApp: string | null = task.assignedApp ?? null;
+  const assignedAbility: string | null = task.assignedAbility ?? null;
 
   // In shared mode the new agent's parser/grammar/format/triggers come
   // from the spine's pre-computed fmt — those fields know about the tool
@@ -688,7 +688,7 @@ function* setupAgent(
     parent: callingAgent,
     task: task.content,
     fmt: fmtConfig,
-    assignedApp,
+    assignedAbility,
   });
 
   return { agent, suffixTokens, formattedPrompt: fmt.prompt };
@@ -959,7 +959,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           tools: toolsJson,
           seed: spec.seed,
           parent,
-          assignedApp: spec.assignedApp,
+          assignedAbility: spec.assignedAbility,
         };
 
         // Synchronous setup — fork, tokenize suffix, pressure check.
@@ -1729,7 +1729,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
                   traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
                   type: 'tool:authReject',
                   agentId: a.id,
-                  assignedApp: a.assignedApp,
+                  assignedAbility: a.assignedAbility,
                   attemptedTool: parsed.toolCalls[0].name,
                   lineageHistory: a.walkAncestors((x) => x.toolHistory),
                 });

@@ -6,7 +6,7 @@
  * verifies with another copy of the same function. That catches a one-sided
  * edit and nothing else: a change applied to signer and verifier together
  * passes happily, and that is precisely the change that makes every published
- * app uninstallable. The only oracle that cannot be fooled is bytes the
+ * ability uninstallable. The only oracle that cannot be fooled is bytes the
  * platform actually signed, which no test can regenerate.
  *
  * Hence `fixtures/prod-catalog-2026-07-29.json`: the live

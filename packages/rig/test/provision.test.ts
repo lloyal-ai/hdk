@@ -1,7 +1,7 @@
 /**
- * Tests for {@link provisionAppModels} — the boot helper that reads the
+ * Tests for {@link provisionAbilityModels} — the boot helper that reads the
  * aggregate service requirements (`manifest.services`, carried on each
- * `AppFactory`) of an app set and provisions the auxiliary models (today: the
+ * `AbilityFactory`) of an ability set and provisions the auxiliary models (today: the
  * shared reranker, published on `RerankerCtx`).
  *
  * `resolveModel` (verified native fetch) and `createReranker` (loads a model
@@ -13,7 +13,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { run } from 'effection';
 import { RerankerCtx } from '@lloyal-labs/lloyal-agents';
-import type { AppFactory, App, AppManifest, Reranker } from '@lloyal-labs/lloyal-agents';
+import type { AbilityFactory, Ability, AbilityManifest, Reranker } from '@lloyal-labs/lloyal-agents';
 import type { ModelSpec } from '../src/models';
 
 const RERANKER_PATH = '/fake/models/reranker/qwen3-reranker-0.6b-q8.gguf';
@@ -38,19 +38,19 @@ vi.mock('../src/models', async (importOriginal) => {
 vi.mock('../src/reranker', () => ({ createReranker }));
 
 // Import under test AFTER the mocks are registered.
-const { provisionAppModels } = await import('../src/provision');
+const { provisionAbilityModels } = await import('../src/provision');
 
 /** A factory that carries its manifest statically and throws if actually run. */
-function factory(services?: readonly ('reranker' | 'embedding')[]): AppFactory {
-  const f = function* (): Generator<never, App, unknown> {
-    throw new Error('provisionAppModels must NOT run the factory');
+function factory(services?: readonly ('reranker' | 'embedding')[]): AbilityFactory {
+  const f = function* (): Generator<never, Ability, unknown> {
+    throw new Error('provisionAbilityModels must NOT run the factory');
   };
   const manifest = {
     name: 'test',
     protocol: { name: 'test_research', useWhen: 'testing', tools: ['test_tool'] },
     ...(services ? { services } : {}),
-  } as AppManifest;
-  return Object.assign(f as unknown as AppFactory, { manifest });
+  } as AbilityManifest;
+  return Object.assign(f as unknown as AbilityFactory, { manifest });
 }
 
 beforeEach(() => {
@@ -58,11 +58,11 @@ beforeEach(() => {
   createReranker.mockClear();
 });
 
-describe('provisionAppModels', () => {
+describe('provisionAbilityModels', () => {
   it('a reranker requirement → resolves, creates, and sets RerankerCtx', async () => {
     const bound = await run(function* () {
-      yield* provisionAppModels({
-        apps: [factory(['reranker']), factory()],
+      yield* provisionAbilityModels({
+        abilities: [factory(['reranker']), factory()],
         projectRoot: '/proj',
       });
       return yield* RerankerCtx.expect();
@@ -75,7 +75,7 @@ describe('provisionAppModels', () => {
 
   it('no requirements → no-op (nothing resolved, RerankerCtx never set)', async () => {
     const unset = await run(function* () {
-      yield* provisionAppModels({ apps: [factory(), factory()], projectRoot: '/proj' });
+      yield* provisionAbilityModels({ abilities: [factory(), factory()], projectRoot: '/proj' });
       try {
         yield* RerankerCtx.expect();
         return false; // set — unexpected
@@ -88,9 +88,9 @@ describe('provisionAppModels', () => {
     expect(createReranker).not.toHaveBeenCalled();
   });
 
-  it('an empty app set → no-op', async () => {
+  it('an empty ability set → no-op', async () => {
     await run(function* () {
-      yield* provisionAppModels({ apps: [], projectRoot: '/proj' });
+      yield* provisionAbilityModels({ abilities: [], projectRoot: '/proj' });
     });
     expect(resolveModel).not.toHaveBeenCalled();
   });
@@ -98,7 +98,7 @@ describe('provisionAppModels', () => {
   it('an embedding requirement → throws (reserved, not yet implemented)', async () => {
     await expect(
       run(function* () {
-        yield* provisionAppModels({ apps: [factory(['embedding'])], projectRoot: '/proj' });
+        yield* provisionAbilityModels({ abilities: [factory(['embedding'])], projectRoot: '/proj' });
       }),
     ).rejects.toThrow(/embedding/);
   });
@@ -106,8 +106,8 @@ describe('provisionAppModels', () => {
   it('a reranker + reserved embedding requirement fails fast — no reranker is loaded', async () => {
     await expect(
       run(function* () {
-        yield* provisionAppModels({
-          apps: [factory(['reranker']), factory(['embedding'])],
+        yield* provisionAbilityModels({
+          abilities: [factory(['reranker']), factory(['embedding'])],
           projectRoot: '/proj',
         });
       }),
@@ -117,8 +117,8 @@ describe('provisionAppModels', () => {
 
   it('a harness.yml reranker spec is passed through to resolveModel', async () => {
     await run(function* () {
-      yield* provisionAppModels({
-        apps: [factory(['reranker'])],
+      yield* provisionAbilityModels({
+        abilities: [factory(['reranker'])],
         projectRoot: '/proj',
         reranker: { id: 'custom-reranker' },
       });
@@ -128,8 +128,8 @@ describe('provisionAppModels', () => {
 
   it('an id-less reranker spec (only tuning, e.g. context) falls back to the catalog default', async () => {
     await run(function* () {
-      yield* provisionAppModels({
-        apps: [factory(['reranker'])],
+      yield* provisionAbilityModels({
+        abilities: [factory(['reranker'])],
         projectRoot: '/proj',
         // A `reranker:` block that tunes but names no model — must NOT block the fallback.
         reranker: { context: 4096 } as unknown as ModelSpec,
@@ -140,8 +140,8 @@ describe('provisionAppModels', () => {
 
   it('duplicate reranker requirements load the shared reranker once', async () => {
     await run(function* () {
-      yield* provisionAppModels({
-        apps: [factory(['reranker']), factory(['reranker']), factory(['reranker'])],
+      yield* provisionAbilityModels({
+        abilities: [factory(['reranker']), factory(['reranker']), factory(['reranker'])],
         projectRoot: '/proj',
       });
     });
@@ -150,8 +150,8 @@ describe('provisionAppModels', () => {
 
   it('rerankerLoad is threaded into createReranker (tuning the shared reranker)', async () => {
     await run(function* () {
-      yield* provisionAppModels({
-        apps: [factory(['reranker'])],
+      yield* provisionAbilityModels({
+        abilities: [factory(['reranker'])],
         projectRoot: '/proj',
         rerankerLoad: { nCtx: 16384 },
       });

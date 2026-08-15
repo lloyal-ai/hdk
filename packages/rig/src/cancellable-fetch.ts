@@ -17,18 +17,18 @@
  *
  * Three current/planned consumers route through this primitive:
  *
- * - `@lloyal-labs/web-app/src/tools/fetch-page.ts` (post-migration —
+ * - `@lloyal-labs/web-ability/src/tools/fetch-page.ts` (post-migration —
  *   replaces raw `AbortController` + `setTimeout`, closes the latent
  *   socket-leak bug where a halted pool kept fetch-page sockets open).
- * - `@lloyal-labs/web-app/src/tools/keyless-search.ts` (post-migration
+ * - `@lloyal-labs/web-ability/src/tools/keyless-search.ts` (post-migration
  *   — replaces the private `fetchWithTimeout` from which this primitive
  *   was lifted; zero behavior change, just consolidation).
- * - `@lloyal-labs/rig/src/bundle.ts` (`resolveAppEntry`) — fetches the
+ * - `@lloyal-labs/rig/src/bundle.ts` (`resolveAbilityEntry`) — fetches the
  *   signed catalog via `cancellableFetch` so a halted scope during
- *   resolution tears down cleanly. Used by `harness.dev install` to
+ *   resolution tears down cleanly. Used by `lloyal install` to
  *   resolve names against the canonical channel.
  *
- * Third-party apps SHOULD use `cancellableFetch` for any HTTP they do
+ * Third-party abilities SHOULD use `cancellableFetch` for any HTTP they do
  * under structured concurrency, rather than reinventing the
  * `race + useAbortSignal` pattern.
  *

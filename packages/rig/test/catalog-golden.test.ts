@@ -4,12 +4,12 @@
  * The encoding itself lives in `@lloyal-labs/channel-verify` and is pinned
  * there against golden vectors and this same frozen catalog. What THIS file
  * asserts is the seam: that rig's own surface — the symbols `index.ts`
- * re-exports and `resolveAppEntry` verifies with — still resolves to a
+ * re-exports and `resolveAbilityEntry` verifies with — still resolves to a
  * verifier that accepts bytes the platform actually signed.
  *
  * That is not covered by channel-verify's own suite. A broken re-export, a
  * dependency bumped to a version whose encoding drifted, or a stray local
- * redefinition would all leave that suite green while no app would load. It is
+ * redefinition would all leave that suite green while no ability would load. It is
  * worth its few milliseconds precisely because it fails for reasons the
  * dependency's tests cannot see.
  *

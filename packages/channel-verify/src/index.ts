@@ -1,10 +1,10 @@
 /**
- * `@lloyal-labs/channel-verify` — the signature primitives for the Lloyal app
+ * `@lloyal-labs/channel-verify` — the signature primitives for the Lloyal ability
  * channel. Apache-2.0, **zero dependencies, zero native binaries**, and no I/O.
  *
  * ## What this is
  *
- * The channel's trust chain is: a signed catalog names every app and pins each
+ * The channel's trust chain is: a signed catalog names every ability and pins each
  * version's `manifestUrl` / `tarballUrl` / `sizeBytes`; each bundle's manifest
  * carries an Ed25519 signature over the **raw tarball bytes**. A client that
  * can (a) reproduce the exact bytes the platform signed for a catalog and
@@ -20,10 +20,10 @@
  * install time), and rig's own test file, which mirrored the helper to use as
  * its oracle. They were byte-identical — verified by mechanical diff, not by
  * eye — but nothing enforced that, and a copy that drifts does not fail
- * loudly: it makes every published app uninstallable.
+ * loudly: it makes every published ability uninstallable.
  *
  * The CLI's copy existed for a concrete reason, which this package also
- * resolves. Importing rig pulls in the App runtime, which chain-imports
+ * resolves. Importing rig pulls in the Ability runtime, which chain-imports
  * `@lloyal-labs/lloyal-agents` → `@lloyal-labs/sdk` → the native
  * `@lloyal-labs/lloyal.node`. A CLI that scaffolds projects must not require a
  * native binary on the user's platform, so it duplicated the surface instead.
@@ -59,7 +59,7 @@
  * - **Version resolution.** rig uses node-semver; the CLI hand-rolls a matcher
  *   to stay dependency-free, and they genuinely disagree — on `'*'` against a
  *   prerelease, and on `'>=1.0.0'`, which one accepts and the other rejects.
- *   Merging them would silently change which version of an app gets installed.
+ *   Merging them would silently change which version of an ability gets installed.
  *   That is a decision to make deliberately, not a side effect of
  *   de-duplication.
  *
@@ -198,7 +198,7 @@ export const CHANNEL_TRUST_ROOTS: ReadonlyMap<string, Uint8Array> = Object.freez
 
 // ── Schemas ───────────────────────────────────────────────────────────
 
-export interface AppBundleManifest {
+export interface AbilityBundleManifest {
   name: string;
   version: string;
   entry: string;
@@ -218,7 +218,7 @@ export interface CatalogVersion {
   /**
    * npm package name as declared in the tarball's `package.json`. The catalog
    * `name` (e.g. `lloyal/web`) is the scoped Lloyal identifier; `importName`
-   * (e.g. `@lloyal-labs/web-app`) is the actual npm package installed, and the
+   * (e.g. `@lloyal-labs/web-ability`) is the actual npm package installed, and the
    * symbol a harness imports from once it is on disk.
    */
   importName: string;
@@ -259,10 +259,10 @@ export class BundleVerificationError extends Error {
   }
 }
 
-export class AppNotFoundError extends Error {
+export class AbilityNotFoundError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = 'AppNotFoundError';
+    this.name = 'AbilityNotFoundError';
   }
 }
 

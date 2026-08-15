@@ -5,7 +5,7 @@
  * dedup guards and rejects any tool call whose name is `protected`
  * (in `config.protectedTools`) for which the session holds no grant
  * (`config.grants`). Reads/gather tools are OPEN — the boundary moved
- * into the tool, not app membership. Tests verify:
+ * into the tool, not ability membership. Tests verify:
  *
  * 1. **Open tools pass through.** A non-protected tool emerges as a
  *    `tool_call` regardless of grants.
@@ -65,7 +65,7 @@ function cfg(opts?: {
 }
 
 function makeAgent(opts: {
-  assignedApp?: string | null;
+  assignedAbility?: string | null;
   toolHistory?: Array<{ name: string; args: string }>;
 } = {}) {
   const branch = createMockBranch();
@@ -74,7 +74,7 @@ function makeAgent(opts: {
     parentId: 0,
     branch: branch as never,
     fmt: FMT,
-    assignedApp: opts.assignedApp ?? null,
+    assignedAbility: opts.assignedAbility ?? null,
   });
   agent.transition('active');
   for (const h of opts.toolHistory ?? []) {
@@ -108,7 +108,7 @@ function tc(name: string, args: Record<string, unknown> = {}) {
 }
 
 // §10.4 codification: the `P-no-ungranted-protected-dispatch` predicate
-// from the App-protocol RFC lives in this file. Its canonical assertion
+// from the Ability-protocol RFC lives in this file. Its canonical assertion
 // is the named test below ("P-no-ungranted-protected-dispatch (§10.4)"),
 // which mirrors the behaviour test at line ~123 under the predicate name
 // so a grep for `P-no-ungranted-protected-dispatch` lands here.
@@ -116,7 +116,7 @@ function tc(name: string, args: Record<string, unknown> = {}) {
 describe('authGuard (default ToolGuard)', () => {
   it('P-no-ungranted-protected-dispatch (§10.4): protected tool without a grant produces guard=auth_reject', () => {
     const policy = new DefaultAgentPolicy();
-    const agent = makeAgent({ assignedApp: 'bank' });
+    const agent = makeAgent({ assignedAbility: 'bank' });
     const action = policy.onProduced(
       agent,
       { content: null, toolCalls: [tc('bank_transfer', { to: 'attacker' })] },
@@ -128,7 +128,7 @@ describe('authGuard (default ToolGuard)', () => {
 
   it('lets open (non-protected) tool calls through as tool_call actions', () => {
     const policy = new DefaultAgentPolicy();
-    const agent = makeAgent({ assignedApp: 'web' });
+    const agent = makeAgent({ assignedAbility: 'web' });
     const action = policy.onProduced(
       agent,
       { content: null, toolCalls: [tc('web_search', { query: 'hello' })] },
@@ -140,7 +140,7 @@ describe('authGuard (default ToolGuard)', () => {
 
   it('rejects protected tool calls without a grant — guard=auth_reject', () => {
     const policy = new DefaultAgentPolicy();
-    const agent = makeAgent({ assignedApp: 'bank' });
+    const agent = makeAgent({ assignedAbility: 'bank' });
     const action = policy.onProduced(
       agent,
       { content: null, toolCalls: [tc('bank_transfer', { to: 'attacker' })] },
@@ -153,7 +153,7 @@ describe('authGuard (default ToolGuard)', () => {
 
   it('lets a protected tool through when the session holds a grant', () => {
     const policy = new DefaultAgentPolicy();
-    const agent = makeAgent({ assignedApp: 'bank' });
+    const agent = makeAgent({ assignedAbility: 'bank' });
     const action = policy.onProduced(
       agent,
       { content: null, toolCalls: [tc('bank_transfer', { to: 'alice' })] },
@@ -181,7 +181,7 @@ describe('authGuard (default ToolGuard)', () => {
     // the authGuard running first, the dedup guard would reject with the
     // "already searched" message; the authGuard must win.
     const agent = makeAgent({
-      assignedApp: 'web',
+      assignedAbility: 'web',
       toolHistory: [{ name: 'web_search', args: JSON.stringify({ query: 'foo' }) }],
     });
     const action = policy.onProduced(
@@ -197,7 +197,7 @@ describe('authGuard (default ToolGuard)', () => {
     const policy = new DefaultAgentPolicy({ minToolCallsBeforeReturn: 0 });
     // The terminal tool is intercepted before _checkGuards, so the
     // authGuard never gates it — agents can always submit findings.
-    const agent = makeAgent({ assignedApp: 'web' });
+    const agent = makeAgent({ assignedAbility: 'web' });
     const action = policy.onProduced(
       agent,
       { content: null, toolCalls: [tc('report', { result: 'findings' })] },

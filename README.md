@@ -30,7 +30,7 @@ Free to use, embed, ship, and sell — commercial, private, internal, all of it.
 Scaffold your own harness — the model runs in your process:
 
 ```bash
-npx harness.dev new              # interactive: name → surfaces → model → template
+npx lloyal-ai new              # interactive: name → surfaces → model → template
 cd my-harness && npm install
 npm start
 ```
@@ -42,7 +42,7 @@ scaffolded acme (blank) · targets: cli, desktop, web · model: qwen3.5-4b
   ready — type to begin, ctrl-c to stop
 ```
 
-The default **blank** scaffold ships the `lloyal/wikipedia` App (no auth) so the first command works with no key and no setup; `--template research` wires the tuned research pipeline over `lloyal/web` + `lloyal/corpus`.
+The default **blank** scaffold ships the `lloyal/wikipedia` Ability (no auth) so the first command works with no key and no setup; `--template research` wires the tuned research pipeline over `lloyal/web` + `lloyal/corpus`.
 
 **Run any surface** off the same program — same events, different binding:
 
@@ -55,12 +55,12 @@ npm run serve          # web    — boot the local host, then `npm run dev:web`
 **Then, without touching `harness.ts`:**
 
 ```bash
-harness.dev install lloyal/web      # add a signed capability
-harness.dev targets:add web         # add a surface
-harness.dev app:new jira            # scaffold your own capability → publish
+lloyal install lloyal/web      # add a signed capability
+lloyal targets:add web         # add a surface
+lloyal ability:new jira            # scaffold your own capability → publish
 ```
 
-Full command surface → [`harness.dev`](./packages/harness-cli/README.md).
+Full command surface → [`lloyal-ai`](https://github.com/lloyal-ai/lloyal-ai).
 
 ## The shift
 
@@ -73,7 +73,7 @@ When the model is remote, every agent is a fresh conversation you re-feed and bi
 - **A programming model, not an SDK.** A harness is *a tree of owned lifetimes over a tree of live inference state.* Agents bind to parent scopes via [Effection](https://frontside.com/effection) structured concurrency — cancellation propagates, teardown runs in reverse, cleanup is inseparable from ownership. Loops, conditions, and lexical scope **are** your orchestration; there's no graph DSL to learn.
 - **Continuous-context agents.** Sub-agents fork the parent's full attention at zero copy — N branches, **one GPU dispatch per tick**, cost tracking KV *fullness* not agent count. **4.4× fewer tokens** than a prompt-rebuilding pipeline. [The code-confirmed receipts ↓](#why-in-process-is-a-different-capability)
 - **Retrieval-interleaved generation.** Agents assemble context _during_ generation — searching, reading, and reranking across your app's own data. One `Source` shape for files, SQL, the web, or user records. A cross-encoder focal lens admits only verbatim top-K chunks — never summarized.
-- **A signed App platform.** Capabilities — web search, browser automation, payment connectors, your company's data — install as **Apps** from a curated channel at [`apps.lloyal.ai`](https://apps.lloyal.ai). Every bundle is Ed25519-signed and verified against an embedded trust root *before it runs*; the CLI shows an App's *attention surface* — protocol, tools, config, skill lines — from the verified bytes first. What you install is what was reviewed.
+- **A signed Ability platform.** Capabilities — web search, browser automation, payment connectors, your company's data — install as **Abilities** from a curated channel at [`apps.lloyal.ai`](https://apps.lloyal.ai). Every bundle is Ed25519-signed and verified against an embedded trust root *before it runs*; the CLI shows an Ability's *attention surface* — protocol, tools, config, skill lines — from the verified bytes first. What you install is what was reviewed.
 - **One harness, every surface, every tier.** Write the program once; each surface — terminal, desktop, browser — is a binding over the same events, all folding one `reduce`. *Where* it runs — a laptop, a GPU box, a served fleet — is a deployment decision, not an application one. [You already know this architecture — it shipped in Rails in 2007.](https://lloyal.ai/blog/you-already-know-this-architecture/)
 
 Mechanics, receipts, and the case for the architecture at [hdk.lloyal.ai](https://hdk.lloyal.ai).
@@ -115,15 +115,15 @@ Skip the scaffold and wire the runtime into code you already have:
 
 ```bash
 npm i @lloyal-labs/lloyal-agents @lloyal-labs/lloyal.node @lloyal-labs/rig
-npx harness.dev install lloyal/wikipedia   # or lloyal/web, lloyal/corpus, acme/...
+npx lloyal-ai install lloyal/wikipedia   # or lloyal/web, lloyal/corpus, acme/...
 ```
 
 ```typescript
 import { main, call } from "effection";
 import { createContext } from "@lloyal-labs/lloyal.node";
 import { initAgents, useAgent } from "@lloyal-labs/lloyal-agents";
-import { createAppRegistry, createInMemoryConfigStore, reportTool } from "@lloyal-labs/rig";
-import { createWikipediaApp } from "@lloyal-labs/wikipedia-app";
+import { createAbilityRegistry, createInMemoryConfigStore, reportTool } from "@lloyal-labs/rig";
+import { createWikipediaAbility } from "@lloyal-labs/wikipedia-ability";
 
 main(function* () {
   const ctx = yield* call(() =>
@@ -131,8 +131,8 @@ main(function* () {
   );
   yield* initAgents(ctx);
 
-  const registry = yield* createAppRegistry({ configStore: createInMemoryConfigStore() });
-  const wikipedia = yield* registry.enable(createWikipediaApp);
+  const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
+  const wikipedia = yield* registry.enable(createWikipediaAbility);
 
   const a = yield* useAgent({
     systemPrompt: "You are a research assistant.",
@@ -145,21 +145,21 @@ main(function* () {
 });
 ```
 
-## Apps — the signed capability channel
+## Abilities — the signed capability channel
 
-An **App** wraps a Source + Tools + a per-spawn skill template + a manifest, validated by `defineApp`. Three reference Apps ship first-party: `lloyal/web` (web search + page fetch), `lloyal/corpus` (local-doc grep + read + semantic search), and `lloyal/wikipedia` (the auth-free demo backend the **blank** scaffold defaults to).
+An **Ability** wraps a Source + Tools + a per-spawn skill template + a manifest, validated by `defineAbility`. Three reference Abilities ship first-party: `lloyal/web` (web search + page fetch), `lloyal/corpus` (local-doc grep + read + semantic search), and `lloyal/wikipedia` (the auth-free demo backend the **blank** scaffold defaults to).
 
 ```bash
-npx harness.dev install lloyal/web         # install a reviewed capability
-harness.dev targets:add web                # add a surface — never touches harness.ts
-harness.dev models:use <id>                # swap the resident model
+npx lloyal-ai install lloyal/web         # install a reviewed capability
+lloyal targets:add web                # add a surface — never touches harness.ts
+lloyal models:use <id>                # swap the resident model
 ```
 
-Shipping a capability of your own — a vertical API, your company's internal data, a browser-automation runtime — means publishing an App through the channel for other harnesses to install. First- and third-party ride the same Ed25519-verified path:
+Shipping a capability of your own — a vertical API, your company's internal data, a browser-automation runtime — means publishing an Ability through the channel for other harnesses to install. First- and third-party ride the same Ed25519-verified path:
 
 ```bash
-npx harness.dev app:new jira --publisher acme  # scaffold an App
-npx harness.dev publish                        # ship through the signed channel
+npx lloyal-ai ability:new jira --publisher acme  # scaffold an Ability
+npx lloyal-ai publish                        # ship through the signed channel
 ```
 
 ## Why in-process is a different capability
@@ -200,7 +200,7 @@ The honest comparison is full stack against full stack. Each row of the right co
 | --------------------------------------------------------------- | ------------------------------------- |
 | Inference server (vLLM / Ollama / llama-server)                 | `@lloyal-labs/lloyal.node`            |
 | Agent runtime (LangChain / LangGraph / AutoGen / CrewAI)        | `@lloyal-labs/lloyal-agents`          |
-| Vector DB (Pinecone / Weaviate / pgvector) + embedding pipeline | Apps (`@lloyal-labs/web-app`, `@lloyal-labs/corpus-app`, your own) |
+| Vector DB (Pinecone / Weaviate / pgvector) + embedding pipeline | Abilities (`@lloyal-labs/web-ability`, `@lloyal-labs/corpus-ability`, your own) |
 | Retrieval orchestration (Haystack / LlamaIndex)                 | `@lloyal-labs/rig`                    |
 | Process orchestrator (Docker compose / Kubernetes / Airflow)    | TypeScript scopes (Effection)         |
 | Frontend transport + served fanout                              | `@lloyal-labs/binding` + `@lloyal-labs/host` / `@lloyal-labs/relay` |
@@ -217,9 +217,9 @@ import {
   Ctx, Store, Events, AppRegistryCtx, AppConfigStoreCtx, GrantStoreCtx, RerankerCtx,
 } from "@lloyal-labs/lloyal-agents";
 
-// App protocol + framework tools
+// Ability protocol + framework tools
 import {
-  defineApp, createAppRegistry, createInMemoryConfigStore, createGrantStore,
+  defineAbility, createAbilityRegistry, createInMemoryConfigStore, createGrantStore,
   renderSpine, renderAgentPreamble,
   reportTool, PlanTool, DelegateTool, TavilyProvider, createKeylessSearchProvider,
 } from "@lloyal-labs/rig";
@@ -233,21 +233,20 @@ That is essentially the framework.
 packages/
   agents/        @lloyal-labs/lloyal-agents — agent runtime — structured concurrency over shared KV state
   sdk/           @lloyal-labs/sdk           — backend-agnostic inference primitives (Branch, Session, Rerank)
-  rig/           @lloyal-labs/rig           — App protocol helpers + retrieval providers + framework tools
+  rig/           @lloyal-labs/rig           — Ability protocol helpers + retrieval providers + framework tools
   binding/       @lloyal-labs/binding       — the harness's headless interface: the event/command binding + its transports
   host/          @lloyal-labs/host          — the box model-runtime host: one resident model, N native harness sessions
   relay/         @lloyal-labs/relay         — the self-hostable relay: serves a headless harness to remote frontends over wss
   apps/
-    web/         @lloyal-labs/web-app       — first-party web research App
-    corpus/      @lloyal-labs/corpus-app    — first-party local-corpus research App
-    wikipedia/   @lloyal-labs/wikipedia-app — first-party Wikipedia demo App
-  harness-cli/   harness.dev                — scaffold · install · publish · review CLI (Apache 2.0)
+    web/         @lloyal-labs/web-ability       — first-party web research Ability
+    corpus/      @lloyal-labs/corpus-ability    — first-party local-corpus research Ability
+    wikipedia/   @lloyal-labs/wikipedia-ability — first-party Wikipedia demo Ability
   channel-verify/ @lloyal-labs/channel-verify — canonical-JSON + Ed25519 channel verification (Apache 2.0, zero-dep)
 
 examples/
-  compare/       DAG primer (App-protocol-shaped): parallel research → compare → synthesize
-  react-agent/   Pre-App-protocol `useAgent` baseline (mechanism demo, not a 3.0 reference)
-  reflection/    Pre-App-protocol `diverge` primer (research → draft → critique → revise)
+  compare/       DAG primer (Ability-protocol-shaped): parallel research → compare → synthesize
+  react-agent/   Pre-Ability-protocol `useAgent` baseline (mechanism demo, not a 3.0 reference)
+  reflection/    Pre-Ability-protocol `diverge` primer (research → draft → critique → revise)
 ```
 
 `reasoning.run` is the production-grade reference harness — `npx reasoning.run` and read its source. The native binding [`@lloyal-labs/lloyal.node`](https://github.com/lloyal-ai/lloyal.node) lives in a separate repo and is pulled in as a dependency.
@@ -302,12 +301,12 @@ Every PR runs build, typecheck, and unit tests on CI, plus a cross-repo GPU inte
 
 HDK apps are **capability-bearing** — arbitrary code (browser automation, file access, payment connectors) bundled with skill instructions, running in shared inference context. OS sandboxing protects the machine; it does nothing about what an app's content reaches the model's attention. Cloud agent platforms can yank misbehaving extensions with a kill switch; HDK runs on user machines and can't.
 
-Safety has to be **upstream and structural**: the canonical channel at [apps.lloyal.ai](https://apps.lloyal.ai) reviews and Ed25519-signs every App; the runtime verifies that signature against an embedded trust root at install. MIT doesn't preserve that — a fork could strip the trust root and ship to an unreviewed channel. FSL restricts one thing — that fork — to keep the trust root enforceable. It can't stop a determined bad actor; it keeps channel-switching from being the easy path.
+Safety has to be **upstream and structural**: the canonical channel at [apps.lloyal.ai](https://apps.lloyal.ai) reviews and Ed25519-signs every Ability; the runtime verifies that signature against an embedded trust root at install. MIT doesn't preserve that — a fork could strip the trust root and ship to an unreviewed channel. FSL restricts one thing — that fork — to keep the trust root enforceable. It can't stop a determined bad actor; it keeps channel-switching from being the easy path.
 
 ## License
 
-**Commercial use is unrestricted** — build and sell products with HDK, embed it in proprietary software, run it in production. The FSL restriction is narrow: you cannot ship a competing HDK runtime, managed HDK service, or alternative HDK App distribution channel.
+**Commercial use is unrestricted** — build and sell products with HDK, embed it in proprietary software, run it in production. The FSL restriction is narrow: you cannot ship a competing HDK runtime, managed HDK service, or alternative HDK Ability distribution channel.
 
-HDK runtime packages (`@lloyal-labs/lloyal-agents`, `@lloyal-labs/sdk`, `@lloyal-labs/rig`, `@lloyal-labs/binding`, `@lloyal-labs/host`, `@lloyal-labs/relay`, `@lloyal-labs/web-app`, `@lloyal-labs/corpus-app`, `@lloyal-labs/wikipedia-app`) are Fair Source under FSL-1.1-Apache-2.0 and convert to Apache 2.0 two years after each release. `packages/harness-cli` (the `harness.dev` CLI) and `packages/channel-verify` (`@lloyal-labs/channel-verify`) are Apache 2.0 from day one — see their own `LICENSE` files. `channel-verify` is Apache by design: it is the public half of an asymmetric signing scheme, so anyone who wants to verify the channel must be free to.
+HDK runtime packages (`@lloyal-labs/lloyal-agents`, `@lloyal-labs/sdk`, `@lloyal-labs/rig`, `@lloyal-labs/binding`, `@lloyal-labs/host`, `@lloyal-labs/relay`, `@lloyal-labs/web-ability`, `@lloyal-labs/corpus-ability`, `@lloyal-labs/wikipedia-ability`) are Fair Source under FSL-1.1-Apache-2.0 and convert to Apache 2.0 two years after each release. `packages/channel-verify` (`@lloyal-labs/channel-verify`) is Apache 2.0 from day one — see its own `LICENSE` file; so is the CLI, which lives in [`lloyal-ai/lloyal-ai`](https://github.com/lloyal-ai/lloyal-ai). `channel-verify` is Apache by design: it is the public half of an asymmetric signing scheme, so anyone who wants to verify the channel must be free to.
 
 See [`LICENSE-FAQ.md`](./LICENSE-FAQ.md) for concrete examples of what's permitted and what's restricted, [`LICENSE`](./LICENSE) for the legal text, and [`NOTICE`](./NOTICE) for attribution.

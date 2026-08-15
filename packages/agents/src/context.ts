@@ -7,8 +7,8 @@ import type { TraceWriter } from './trace-writer';
 import type { TraceId } from './trace-types';
 import type { Agent, FormatConfig } from './Agent';
 import type { Reranker } from './chunk';
-import type { AppRegistry } from './app-types';
-import type { AppConfigStore } from './app-config';
+import type { AbilityRegistry } from './ability-types';
+import type { AbilityConfigStore } from './ability-config';
 import type { GrantStore } from './grant-store';
 
 /**
@@ -100,8 +100,8 @@ export const SpineFmt = createContext<FormatConfig | null>('lloyal.spineFmt', nu
  * Effection context holding the harness-wide {@link Reranker}.
  *
  * Set by the harness once via `RerankerCtx.set(reranker)` after
- * `createReranker(...)`. App factories (`createWebApp`, `createCorpusApp`,
- * third-party apps) read this via `yield* RerankerCtx.expect()` at
+ * `createReranker(...)`. Ability factories (`createWebAbility`, `createCorpusAbility`,
+ * third-party abilities) read this via `yield* RerankerCtx.expect()` at
  * construction time and pass it to their `Source` / search tools.
  *
  * Replaces the per-source `source.bind({reranker})` pattern — chunks
@@ -114,12 +114,12 @@ export const SpineFmt = createContext<FormatConfig | null>('lloyal.spineFmt', nu
 export const RerankerCtx = createContext<Reranker>('lloyal.reranker');
 
 /**
- * Effection context holding the {@link AppRegistry}.
+ * Effection context holding the {@link AbilityRegistry}.
  *
- * Set by `createAppRegistry(...)` (lives in `@lloyal-labs/rig`). The
+ * Set by `createAbilityRegistry(...)` (lives in `@lloyal-labs/rig`). The
  * scope-guard reads this at tool-dispatch time to resolve
- * the allowed-tools set for an App-assigned spawn — looking up
- * `registry.byName(spawn.assignedApp)` and matching the dispatched
+ * the allowed-tools set for an Ability-assigned spawn — looking up
+ * `registry.byName(spawn.assignedAbility)` and matching the dispatched
  * `toolName` against `manifest.protocol.tools`.
  *
  * The spine renderer also reads this to compose the catalog in
@@ -127,30 +127,30 @@ export const RerankerCtx = createContext<Reranker>('lloyal.reranker');
  *
  * @category Contract
  */
-export const AppRegistryCtx = createContext<AppRegistry>('lloyal.appRegistry');
+export const AbilityRegistryCtx = createContext<AbilityRegistry>('lloyal.abilityRegistry');
 
 /**
- * Effection context holding the harness's {@link AppConfigStore}.
+ * Effection context holding the harness's {@link AbilityConfigStore}.
  *
- * Set by `createAppRegistry({ configStore })` from its `configStore`
- * option, and seeded into each app's detached scope so factories can
- * read it. App factories read their own config via
- * `(yield* AppConfigStoreCtx.expect()).get(manifest.name)` at
+ * Set by `createAbilityRegistry({ configStore })` from its `configStore`
+ * option, and seeded into each ability's detached scope so factories can
+ * read it. Ability factories read their own config via
+ * `(yield* AbilityConfigStoreCtx.expect()).get(manifest.name)` at
  * construction time. The framework validates the stored config against
- * `app.manifest.configSchema` when the app is enabled.
+ * `ability.manifest.configSchema` when the ability is enabled.
  *
  * Whole-replace semantics on `set`; last-write-wins on concurrent
  * writes.
  *
  * @category Contract
  */
-export const AppConfigStoreCtx = createContext<AppConfigStore>('lloyal.appConfigStore');
+export const AbilityConfigStoreCtx = createContext<AbilityConfigStore>('lloyal.abilityConfigStore');
 
 /**
  * Effection context holding the session's {@link GrantStore}.
  *
- * Seeded by `createAppRegistry({ grantStore })` (lives in `@lloyal-labs/rig`)
- * alongside {@link AppConfigStoreCtx}. The authGuard
+ * Seeded by `createAbilityRegistry({ grantStore })` (lives in `@lloyal-labs/rig`)
+ * alongside {@link AbilityConfigStoreCtx}. The authGuard
  * reads it once per pool to resolve which `protected` tools the session is
  * authorized to call — `protected` tools without a grant reject at dispatch
  * time (`tool:authReject`). The store holds the consent decision; the
