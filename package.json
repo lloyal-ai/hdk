@@ -8,7 +8,6 @@
     "packages/channel-verify",
     "packages/relay",
     "packages/host",
-    "packages/harness-cli",
     "packages/apps/*"
   ],
   "scripts": {
