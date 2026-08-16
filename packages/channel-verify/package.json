@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/channel-verify",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Apache-2.0, zero-dependency verification primitives for the Lloyal app channel — canonical-JSON signing payloads and Ed25519 verification",
   "main": "dist/cjs/index.js",
   "types": "dist/cjs/index.d.ts",
