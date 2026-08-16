@@ -1,7 +1,7 @@
 import type { Branch, SessionContext, ParseChatOutputResult } from '@lloyal-labs/sdk';
 import type { GrammarTrigger } from '@lloyal-labs/sdk';
 import { createSignal, type Signal } from 'effection';
-import type { TraceToken } from './types';
+import type { TraceToken, AgentExitReason } from './types';
 
 // ── Status ──────────────────────────────────────────────────
 
@@ -137,6 +137,18 @@ export class Agent {
   private _turns = 0;
   private _result: string | null = null;
   private _resultSource: ResultSource | null = null;
+  /**
+   * Why this agent stopped, when it did not stop of its own accord.
+   *
+   * The pool already computes this at every drop site and writes it to the
+   * trace as `pool:agentDrop.reason`. It is recorded here so it can ride the
+   * AgentResult: a caller holding a `result` string otherwise cannot tell a
+   * considered report from one squeezed out under a critical kill, and every
+   * downstream consumer — a dag dependent especially — treats the two alike.
+   *
+   * `undefined` means the agent finished on its own terms.
+   */
+  exitReason: AgentExitReason | undefined = undefined;
   private _toolHistory: ToolHistoryEntry[] = [];
   private _nestedResults: string[] = [];
   private _traceBuffer: TraceToken[] = [];
