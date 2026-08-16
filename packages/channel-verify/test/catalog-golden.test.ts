@@ -9,7 +9,7 @@
  * ability uninstallable. The only oracle that cannot be fooled is bytes the
  * platform actually signed, which no test can regenerate.
  *
- * Hence `fixtures/prod-catalog-2026-07-29.json`: the live
+ * Hence `fixtures/prod-catalog-2026-08-16.json`: the live
  * `apps.lloyal.ai/v1/catalog.json` as served, verified here against the trust
  * root vendored in `src/index.ts`.
  *
@@ -48,13 +48,13 @@ import {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const catalog = JSON.parse(
-  readFileSync(join(here, 'fixtures', 'prod-catalog-2026-07-29.json'), 'utf8'),
+  readFileSync(join(here, 'fixtures', 'prod-catalog-2026-08-16.json'), 'utf8'),
 ) as SignedCatalog;
 
 /** Frozen facts about the fixture. Every one of these is a signature input. */
-const CANONICAL_BYTE_LENGTH = 4076;
+const CANONICAL_BYTE_LENGTH = 4948;
 const CANONICAL_SHA256 =
-  '291c32d79a180ee2d9e7ba91f60178220e6a13e73aaf67855a13677e26687aa8';
+  '8b69b8a53824777d6eafecf2c023982e0e2008f3800ec1306ad456d7da35e7e0';
 const KEY_ID = 'lloyal-platform-2026-q2';
 const KEY_SHA256 =
   '9e0df3d25b8968a8b2ae9b86cb17a6922368c7cff9674a84b4a2527dd6457ec1';
@@ -123,7 +123,7 @@ describe('canonicalJson — golden vectors', () => {
 describe('frozen production catalog', () => {
   it('is the fixture we think it is', () => {
     expect(catalog.publisherKeyId).toBe(KEY_ID);
-    expect(catalog.signedAt).toBe('2026-07-29T08:11:49.013Z');
+    expect(catalog.signedAt).toBe('2026-08-16T05:01:11.399Z');
     expect(catalog.entries).toHaveLength(4);
   });
 

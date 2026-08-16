@@ -13,7 +13,7 @@
  * worth its few milliseconds precisely because it fails for reasons the
  * dependency's tests cannot see.
  *
- * The fixture is FROZEN — the live catalog as served on 2026-07-29. It must
+ * The fixture is FROZEN — the live catalog as served on 2026-08-16. It must
  * never be refreshed to match current production: a fixture that tracks the
  * thing it checks proves nothing. On key rotation add a second fixture rather
  * than replacing this one.
@@ -34,12 +34,12 @@ import { CHANNEL_TRUST_ROOTS } from '../src/protocol';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const catalog = JSON.parse(
-  readFileSync(join(here, 'fixtures', 'prod-catalog-2026-07-29.json'), 'utf8'),
+  readFileSync(join(here, 'fixtures', 'prod-catalog-2026-08-16.json'), 'utf8'),
 ) as SignedCatalog;
 
-const CANONICAL_BYTE_LENGTH = 4076;
+const CANONICAL_BYTE_LENGTH = 4948;
 const CANONICAL_SHA256 =
-  '291c32d79a180ee2d9e7ba91f60178220e6a13e73aaf67855a13677e26687aa8';
+  '8b69b8a53824777d6eafecf2c023982e0e2008f3800ec1306ad456d7da35e7e0';
 const KEY_ID = 'lloyal-platform-2026-q2';
 const KEY_SHA256 =
   '9e0df3d25b8968a8b2ae9b86cb17a6922368c7cff9674a84b4a2527dd6457ec1';
