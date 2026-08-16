@@ -1,3 +1,4 @@
+import type { AgentExitReason } from '../../src/types';
 import type { PoolRun, NativeCall } from './harness';
 import type { TraceEvent } from '../../src/trace-types';
 
@@ -171,9 +172,6 @@ export function nudgeMessageContainsBudget(
 }
 
 /**
- * Format a PredicateResult for fast-check / expect output.
- */
-/**
  * I30: the trace and the returned value agree about why an agent stopped.
  *
  * The pool has always computed a drop reason and written it to the trace as
@@ -191,7 +189,7 @@ export function nudgeMessageContainsBudget(
  * carried on the agent — they describe a turn being rejected rather than the
  * agent stopping, and folding them in would make `exitReason` mean two things.
  */
-const RECORDED_EXIT_REASONS = new Set([
+const RECORDED_EXIT_REASONS = new Set<AgentExitReason>([
   'pressure_critical',
   'policy_exit',
   'pressure_softcut',
@@ -228,6 +226,9 @@ export function I30_exitReasonMatchesTrace(run: PoolRun): PredicateResult {
   return ok();
 }
 
+/**
+ * Format a PredicateResult for fast-check / expect output.
+ */
 export function formatResult(name: string, r: PredicateResult): string {
   if (r.ok) return `${name}: ok`;
   return `${name}: ${r.violations.map(v => `[${v.invariant}] ${v.detail}`).join('; ')}`;

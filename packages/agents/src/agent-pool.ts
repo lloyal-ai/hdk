@@ -1634,9 +1634,17 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         // catch yields partials.
         const policyExit = policy.shouldExit?.(a, pressure);
         if (!a.extracting && (policyExit ?? pressure.critical)) {
+          // Entry above requires `policyExit ?? pressure.critical` to be truthy, so exactly
+          // two cases reach here: the policy said exit, or it abstained (undefined) and
+          // pressure is critical. A policy returning `false` never enters — `??` falls
+          // through only on null/undefined. The old third branch was unreachable.
+          // Entry requires `policyExit ?? pressure.critical` truthy, so the old third
+          // branch was unreachable: policyExit===false never enters (`??` falls through
+          // only on null/undefined), and policyExit===undefined enters only when
+          // critical. Precedence is kept — when BOTH hold, pressure is the cause and
+          // the policy merely agreed.
           const exitReason = pressure.critical ? 'pressure_critical' as const
-            : policyExit ? 'policy_exit' as const
-            : 'pressure_critical' as const;
+            : 'policy_exit' as const;
           a.exitReason = exitReason;
           tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
             type: 'pool:agentDrop', agentId: a.id, reason: exitReason });
