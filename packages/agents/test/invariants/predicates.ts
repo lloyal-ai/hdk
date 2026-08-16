@@ -173,6 +173,61 @@ export function nudgeMessageContainsBudget(
 /**
  * Format a PredicateResult for fast-check / expect output.
  */
+/**
+ * I30: the trace and the returned value agree about why an agent stopped.
+ *
+ * The pool has always computed a drop reason and written it to the trace as
+ * `pool:agentDrop.reason`, but `AgentResult` carried only `result` — so a
+ * caller holding a report could not tell a considered one from a forced
+ * recovery written to a capped budget under `pressure_critical`. Every
+ * downstream consumer, a `dag` dependent above all, treated the two alike.
+ *
+ * `exitReason` now rides the result. This asserts the two halves agree in
+ * BOTH directions, which is the only form that catches drift: a drop with no
+ * recorded reason, and a recorded reason with no drop.
+ *
+ * Scoped to the reasons the agent records. The pool emits other drop reasons
+ * (`pressure_settle_reject`, `settle_stall_break`) that are deliberately NOT
+ * carried on the agent — they describe a turn being rejected rather than the
+ * agent stopping, and folding them in would make `exitReason` mean two things.
+ */
+const RECORDED_EXIT_REASONS = new Set([
+  'pressure_critical',
+  'policy_exit',
+  'pressure_softcut',
+  'maxTurns',
+]);
+
+export function I30_exitReasonMatchesTrace(run: PoolRun): PredicateResult {
+  const dropped = new Map<number, string>();
+  for (const e of run.traceEvents) {
+    if (e.type !== 'pool:agentDrop') continue;
+    const reason = (e as any).reason as string;
+    if (!RECORDED_EXIT_REASONS.has(reason)) continue;
+    dropped.set((e as any).agentId, reason);
+  }
+
+  for (const agent of run.result.agents) {
+    const traced = dropped.get(agent.agentId);
+    if (traced && agent.exitReason !== traced) {
+      return fail(
+        'I30',
+        `agent ${agent.agentId} was dropped with reason='${traced}' but its AgentResult ` +
+          `carries exitReason=${JSON.stringify(agent.exitReason)} — a caller cannot tell ` +
+          `this result was produced under duress`,
+      );
+    }
+    if (!traced && agent.exitReason !== undefined) {
+      return fail(
+        'I30',
+        `agent ${agent.agentId} carries exitReason='${agent.exitReason}' but no ` +
+          `pool:agentDrop was traced for it — the value is unattributable`,
+      );
+    }
+  }
+  return ok();
+}
+
 export function formatResult(name: string, r: PredicateResult): string {
   if (r.ok) return `${name}: ok`;
   return `${name}: ${r.violations.map(v => `[${v.invariant}] ${v.detail}`).join('; ')}`;

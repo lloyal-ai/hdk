@@ -482,6 +482,7 @@ function* handleIdleDrop(
 ): Operation<void> {
   a.transition('idle');
   if (reason !== 'free_text_stop') {
+    a.exitReason = reason === 'max_turns' ? 'maxTurns' : 'pressure_softcut';
     tw.write({ traceId: tw.nextId(), parentTraceId, ts: performance.now(),
       type: 'pool:agentDrop', agentId: a.id,
       reason: reason === 'max_turns' ? 'maxTurns' : 'pressure_softcut' });
@@ -1636,6 +1637,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           const exitReason = pressure.critical ? 'pressure_critical' as const
             : policyExit ? 'policy_exit' as const
             : 'pressure_critical' as const;
+          a.exitReason = exitReason;
           tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
             type: 'pool:agentDrop', agentId: a.id, reason: exitReason });
           yield* poolChannel.send({ type: 'agent:done', agentId: a.id });
@@ -1990,6 +1992,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           branch: a.branch,
           agent: a,
           result: a.result,
+          exitReason: a.exitReason,
           toolCallCount: a.toolCallCount,
           tokenCount: a.tokenCount,
           ppl: a.branch.disposed ? 0 : a.branch.perplexity,
@@ -2011,7 +2014,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         const partial: AgentPoolResult = {
           agents: agents.map(a => ({
             agentId: a.id, parentAgentId: a.parentId, branch: a.branch, agent: a,
-            result: a.result, toolCallCount: a.toolCallCount, tokenCount: a.tokenCount,
+            result: a.result, exitReason: a.exitReason, toolCallCount: a.toolCallCount, tokenCount: a.tokenCount,
             ppl: a.branch.disposed ? 0 : a.branch.perplexity,
             samplingPpl: a.branch.disposed ? 0 : a.branch.samplingPerplexity,
             trace: trace ? a.traceBuffer : undefined,
