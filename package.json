@@ -8,7 +8,7 @@
     "packages/channel-verify",
     "packages/relay",
     "packages/host",
-    "packages/apps/*"
+    "packages/abilities/*"
   ],
   "scripts": {
     "build": "npm run build --workspaces",

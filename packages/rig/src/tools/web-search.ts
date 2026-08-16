@@ -1,10 +1,10 @@
 /**
  * Tavily search provider — a {@link SearchProvider} implementation
- * consumed by the `lloyal/web` app's `web_search` tool.
+ * consumed by the `lloyal/web` ability's `web_search` tool.
  *
  * The provider is split from the tool: the tool class lives in
- * `@lloyal-labs/web-app` (the App protocol's unit of distribution);
- * this provider stays in rig so apps can swap providers without
+ * `@lloyal-labs/web-ability` (the Ability protocol's unit of distribution);
+ * this provider stays in rig so abilities can swap providers without
  * vendoring the API client.
  */
 

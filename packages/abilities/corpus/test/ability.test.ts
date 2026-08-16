@@ -3,11 +3,11 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { run } from 'effection';
-import { AppConfigStoreCtx, RerankerCtx, Trace, NullTraceWriter } from '@lloyal-labs/lloyal-agents';
+import { AbilityConfigStoreCtx, RerankerCtx, Trace, NullTraceWriter } from '@lloyal-labs/lloyal-agents';
 import type { Reranker, ScoredChunk } from '@lloyal-labs/rig';
 import type { Chunk } from '@lloyal-labs/lloyal-agents';
 import { createInMemoryConfigStore } from '@lloyal-labs/rig';
-import { createCorpusApp } from '../src/index';
+import { createCorpusAbility } from '../src/index';
 import { SearchTool } from '../src/tools/search';
 
 // The factory only calls reranker.tokenizeChunks at construction; search
@@ -21,19 +21,19 @@ beforeAll(() => {
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-describe('createCorpusApp', () => {
-  it('builds the corpus_research app with full tool-map coverage', async () => {
-    const app = await run(function* () {
+describe('createCorpusAbility', () => {
+  it('builds the corpus_research ability with full tool-map coverage', async () => {
+    const ability = await run(function* () {
       const store = createInMemoryConfigStore();
       yield* store.set('corpus', { corpusPath: dir });
-      yield* AppConfigStoreCtx.set(store);
+      yield* AbilityConfigStoreCtx.set(store);
       yield* RerankerCtx.set(mockReranker);
-      return yield* createCorpusApp();
+      return yield* createCorpusAbility();
     });
 
-    expect(app.manifest.protocol.name).toBe('corpus_research');
-    expect(app.source.name).toBe('corpus');
-    expect(app.tools.map((t) => t.name).sort()).toEqual(['grep', 'read_file', 'search']);
+    expect(ability.manifest.protocol.name).toBe('corpus_research');
+    expect(ability.source.name).toBe('corpus');
+    expect(ability.tools.map((t) => t.name).sort()).toEqual(['grep', 'read_file', 'search']);
   });
 
   it('throws a clear error when no reranker is set', async () => {
@@ -41,8 +41,8 @@ describe('createCorpusApp', () => {
       run(function* () {
         const store = createInMemoryConfigStore();
         yield* store.set('corpus', { corpusPath: dir });
-        yield* AppConfigStoreCtx.set(store);
-        return yield* createCorpusApp();
+        yield* AbilityConfigStoreCtx.set(store);
+        return yield* createCorpusAbility();
       }),
     ).rejects.toThrow(/requires a reranker/);
   });
@@ -50,9 +50,9 @@ describe('createCorpusApp', () => {
   it('throws when corpusPath config is missing', async () => {
     await expect(
       run(function* () {
-        yield* AppConfigStoreCtx.set(createInMemoryConfigStore());
+        yield* AbilityConfigStoreCtx.set(createInMemoryConfigStore());
         yield* RerankerCtx.set(mockReranker);
-        return yield* createCorpusApp();
+        return yield* createCorpusAbility();
       }),
     ).rejects.toThrow(/corpusPath/);
   });

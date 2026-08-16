@@ -5,8 +5,8 @@
  * Import from `@lloyal-labs/rig/node` only in Node.js environments.
  *
  * Per-source bundles (web, corpus) live in their own packages
- * (`@lloyal-labs/web-app`, `@lloyal-labs/corpus-app`); rig now owns
- * only cross-app primitives (chunking, types, tools, reranker).
+ * (`@lloyal-labs/web-ability`, `@lloyal-labs/corpus-ability`); rig now owns
+ * only cross-ability primitives (chunking, types, tools, reranker).
  *
  * @packageDocumentation
  * @category Rig
@@ -34,7 +34,7 @@ export type {
   FetchVerifiedOpts,
 } from './models';
 
-// Node-only: provision the auxiliary models an enabled app set requires
+// Node-only: provision the auxiliary models an enabled ability set requires
 // (aggregates each factory's manifest.services → resolveModel + createReranker + RerankerCtx)
-export { provisionAppModels } from './provision';
-export type { ProvisionAppModelsOpts } from './provision';
+export { provisionAbilityModels } from './provision';
+export type { ProvisionAbilityModelsOpts } from './provision';

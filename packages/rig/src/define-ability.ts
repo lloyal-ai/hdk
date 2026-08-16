@@ -1,23 +1,23 @@
 /**
- * `defineApp(manifest, setup): AppFactory` — the one affordance an app author
- * calls. It pairs the declarative {@link AppManifest} (from `app.json`) with an
+ * `defineAbility(manifest, setup): AbilityFactory` — the one affordance an ability author
+ * calls. It pairs the declarative {@link AbilityManifest} (from `ability.json`) with an
  * effectful `setup` that constructs the runtime pieces (`source`, `tools`,
- * `skill`, ...), and returns the {@link AppFactory} the harness enables.
+ * `skill`, ...), and returns the {@link AbilityFactory} the harness enables.
  *
  * The returned factory also carries its `manifest` statically, so the harness
- * boot can read what the app needs (e.g. `manifest.services`) BEFORE running
+ * boot can read what the ability needs (e.g. `manifest.services`) BEFORE running
  * the factory — provisioning happens before construction.
  *
  * Validation is split by what's knowable when:
  *
- * - **Eager (at `defineApp` call = import time):** the manifest shape.
+ * - **Eager (at `defineAbility` call = import time):** the manifest shape.
  *   `name` and `protocol.name` match `[a-z][a-z0-9_-]{1,63}`; `protocol.tools`
  *   is a non-empty unique array of names matching the same regex;
  *   `protocol.useWhen` is a single bounded sentence with no chat-role markers,
  *   code fences, or newlines (metadata sanitization); `appProtocolVersion` (if
- *   declared) is in `SUPPORTED_APP_PROTOCOL_VERSIONS`; `services` (if present)
+ *   declared) is in `SUPPORTED_ABILITY_PROTOCOL_VERSIONS`; `services` (if present)
  *   is an array of the closed service set. A malformed manifest fails the
- *   moment the app module is imported.
+ *   moment the ability module is imported.
  * - **At factory run (enable time):** the setup output. The `tools` map keys
  *   equal `manifest.protocol.tools[]` as a set (every declared tool has an
  *   implementation, no extras, each `.name` matches its key); and `skill`
@@ -36,24 +36,24 @@ import type { Operation } from 'effection';
 import type {
   Tool,
   Source,
-  App,
-  AppFactory,
-  AppManifest,
+  Ability,
+  AbilityFactory,
+  AbilityManifest,
   SkillTemplateFn,
   ExamplesTemplateFn,
   ConfigFlow,
-  AppHints,
+  AbilityHints,
 } from '@lloyal-labs/lloyal-agents';
 import { SERVICES } from '@lloyal-labs/lloyal-agents';
-import { SUPPORTED_APP_PROTOCOL_VERSIONS } from './protocol';
+import { SUPPORTED_ABILITY_PROTOCOL_VERSIONS } from './protocol';
 
 /**
- * What an app's `setup` returns — the runtime pieces `defineApp` assembles into
- * the {@link App}, alongside the declarative manifest. The `manifest` is NOT
- * here: it is the first argument to {@link defineApp} (declared once, up front).
+ * What an ability's `setup` returns — the runtime pieces `defineAbility` assembles into
+ * the {@link Ability}, alongside the declarative manifest. The `manifest` is NOT
+ * here: it is the first argument to {@link defineAbility} (declared once, up front).
  */
-export interface AppSetup {
-  /** The app's Source. */
+export interface AbilitySetup {
+  /** The ability's Source. */
   source: Source;
   /**
    * Map of tool-name → Tool instance. Keys MUST equal
@@ -74,11 +74,11 @@ export interface AppSetup {
   skill: string | SkillTemplateFn;
   /**
    * Optional discipline content rendered into the per-spawn preamble of
-   * agents assigned to this app. Never enters the shared spine.
+   * agents assigned to this ability. Never enters the shared spine.
    */
   examples?: string | ExamplesTemplateFn;
   /** Optional UX/marketplace hints (overrides `manifest.hints` if both present). */
-  hints?: AppHints;
+  hints?: AbilityHints;
   /** Optional interactive config flow. */
   configFlow?: ConfigFlow;
 }
@@ -86,10 +86,10 @@ export interface AppSetup {
 // ── Validation regexes / constants ───────────────────────────────
 
 /**
- * Identifier shape for app names and protocol names. Lowercase ASCII
+ * Identifier shape for ability names and protocol names. Lowercase ASCII
  * start, lowercase alphanumeric / underscore / hyphen rest, length 2-64.
  * This grammar is the M3 sanitization on shared-spine metadata — it
- * ensures app-supplied strings can't break the markdown bold in the
+ * ensures ability-supplied strings can't break the markdown bold in the
  * boundary marker (no `*`) and can't inject newlines, code fences, or
  * chat-role markers.
  */
@@ -125,13 +125,13 @@ const BOUNDARY_MARKER_PREFIX = 'Apply the **';
 
 function assertIdentifier(value: string, field: string): void {
   if (typeof value !== 'string') {
-    throw new Error(`defineApp: ${field} must be a string, got ${typeof value}`);
+    throw new Error(`defineAbility: ${field} must be a string, got ${typeof value}`);
   }
   if (!ID_RE.test(value)) {
     throw new Error(
-      `defineApp: ${field} ${JSON.stringify(value)} does not match the required ` +
+      `defineAbility: ${field} ${JSON.stringify(value)} does not match the required ` +
         `identifier grammar ${ID_RE.toString()} (lowercase alphanumeric + _-, length 2-64). ` +
-        `This is an App protocol metadata invariant — names appear in the boundary ` +
+        `This is an Ability protocol metadata invariant — names appear in the boundary ` +
         `marker and shared spine catalog where injection-prone characters must be excluded.`,
     );
   }
@@ -139,18 +139,18 @@ function assertIdentifier(value: string, field: string): void {
 
 function assertUseWhen(value: string): void {
   if (typeof value !== 'string') {
-    throw new Error(`defineApp: manifest.protocol.useWhen must be a string, got ${typeof value}`);
+    throw new Error(`defineAbility: manifest.protocol.useWhen must be a string, got ${typeof value}`);
   }
   if (value.length === 0 || value.length > USE_WHEN_MAX_LEN) {
     throw new Error(
-      `defineApp: manifest.protocol.useWhen length ${value.length} out of bounds ` +
+      `defineAbility: manifest.protocol.useWhen length ${value.length} out of bounds ` +
         `[1, ${USE_WHEN_MAX_LEN}]. Keep it to a single short sentence.`,
     );
   }
   for (const pattern of USE_WHEN_FORBIDDEN) {
     if (pattern.test(value)) {
       throw new Error(
-        `defineApp: manifest.protocol.useWhen contains forbidden pattern ${pattern.toString()}. ` +
+        `defineAbility: manifest.protocol.useWhen contains forbidden pattern ${pattern.toString()}. ` +
           `useWhen renders into the shared spine catalog; chat-role markers, code fences, and ` +
           `line breaks are excluded to prevent injection at the catalog-text layer.`,
       );
@@ -161,50 +161,50 @@ function assertUseWhen(value: string): void {
 function assertProtocolTools(tools: readonly string[]): void {
   if (!Array.isArray(tools) || tools.length === 0) {
     throw new Error(
-      `defineApp: manifest.protocol.tools must be a non-empty array of tool-name strings`,
+      `defineAbility: manifest.protocol.tools must be a non-empty array of tool-name strings`,
     );
   }
   const seen = new Set<string>();
   for (const name of tools) {
     assertIdentifier(name, `manifest.protocol.tools[*] (${JSON.stringify(name)})`);
     if (seen.has(name)) {
-      throw new Error(`defineApp: manifest.protocol.tools contains duplicate ${JSON.stringify(name)}`);
+      throw new Error(`defineAbility: manifest.protocol.tools contains duplicate ${JSON.stringify(name)}`);
     }
     seen.add(name);
   }
 }
 
 function assertServices(services: unknown): void {
-  // `services` comes from `app.json` (parsed as untrusted JSON), so validate it
+  // `services` comes from `ability.json` (parsed as untrusted JSON), so validate it
   // like the rest of the manifest: absent is fine; otherwise it must be an array
   // of the closed {@link SERVICES} set. A malformed value would silently break
   // pre-provisioning (the boot reads `manifest.services` before enable).
   if (services === undefined) return;
   if (!Array.isArray(services)) {
     throw new Error(
-      `defineApp: manifest.services must be an array of service names, got ${typeof services}`,
+      `defineAbility: manifest.services must be an array of service names, got ${typeof services}`,
     );
   }
   for (const service of services) {
     if (typeof service !== 'string' || !(SERVICES as readonly string[]).includes(service)) {
       throw new Error(
-        `defineApp: manifest.services contains unknown service ${JSON.stringify(service)}; ` +
+        `defineAbility: manifest.services contains unknown service ${JSON.stringify(service)}; ` +
           `supported services are ${JSON.stringify(SERVICES)}.`,
       );
     }
   }
 }
 
-function assertAppProtocolVersion(version: string | undefined): void {
-  // Undefined is permitted — apps that don't declare a version are
+function assertAbilityProtocolVersion(version: string | undefined): void {
+  // Undefined is permitted — abilities that don't declare a version are
   // assumed to target the framework's default ("3.0"). The registry
   // (enable-time) may tighten this if needed.
   if (version === undefined) return;
-  if (!SUPPORTED_APP_PROTOCOL_VERSIONS.includes(version)) {
+  if (!SUPPORTED_ABILITY_PROTOCOL_VERSIONS.includes(version)) {
     throw new Error(
-      `defineApp: manifest.appProtocolVersion ${JSON.stringify(version)} is not in the ` +
-        `supported set ${JSON.stringify(SUPPORTED_APP_PROTOCOL_VERSIONS)}. ` +
-        `This build of @lloyal-labs/rig only validates apps targeting one of those versions.`,
+      `defineAbility: manifest.appProtocolVersion ${JSON.stringify(version)} is not in the ` +
+        `supported set ${JSON.stringify(SUPPORTED_ABILITY_PROTOCOL_VERSIONS)}. ` +
+        `This build of @lloyal-labs/rig only validates abilities targeting one of those versions.`,
     );
   }
 }
@@ -223,7 +223,7 @@ function assertToolMapCoverage(
   }
   if (missing.length > 0) {
     throw new Error(
-      `defineApp: tools map is missing implementations for protocol.tools: ` +
+      `defineAbility: tools map is missing implementations for protocol.tools: ` +
         `${JSON.stringify(missing)}. Every declared tool must have a corresponding ` +
         `entry in the \`tools\` map returned by setup.`,
     );
@@ -236,7 +236,7 @@ function assertToolMapCoverage(
   }
   if (extras.length > 0) {
     throw new Error(
-      `defineApp: tools map contains entries not declared in manifest.protocol.tools: ` +
+      `defineAbility: tools map contains entries not declared in manifest.protocol.tools: ` +
         `${JSON.stringify(extras)}. Add them to protocol.tools or remove from the tools map ` +
         `— the catalog Tools: line is rendered from protocol.tools and the auth-guard's ` +
         `allowed-tools set is derived from the same array, so extras would never be callable.`,
@@ -247,7 +247,7 @@ function assertToolMapCoverage(
   for (const [key, tool] of Object.entries(toolsMap)) {
     if (tool.name !== key) {
       throw new Error(
-        `defineApp: tools[${JSON.stringify(key)}].name = ${JSON.stringify(tool.name)} ` +
+        `defineAbility: tools[${JSON.stringify(key)}].name = ${JSON.stringify(tool.name)} ` +
           `does not match its map key. The map key is what the framework dispatches against; ` +
           `the Tool's name is what the model sees in the schema. They must agree.`,
       );
@@ -259,15 +259,15 @@ function assertSkillTemplate(skill: string | SkillTemplateFn): void {
   if (typeof skill === 'function') {
     // Function-typed templates can't be statically validated here. The
     // framework's first-render check catches double-emission
-    // at the first preamble render, not at defineApp time.
+    // at the first preamble render, not at defineAbility time.
     return;
   }
   if (typeof skill !== 'string') {
-    throw new Error(`defineApp: setup.skill must be a string or SkillTemplateFn, got ${typeof skill}`);
+    throw new Error(`defineAbility: setup.skill must be a string or SkillTemplateFn, got ${typeof skill}`);
   }
   if (skill.includes(BOUNDARY_MARKER_PREFIX)) {
     throw new Error(
-      `defineApp: skill template contains the literal ${JSON.stringify(BOUNDARY_MARKER_PREFIX)} substring. ` +
+      `defineAbility: skill template contains the literal ${JSON.stringify(BOUNDARY_MARKER_PREFIX)} substring. ` +
         `The framework prepends \`Apply the **<name>** protocol.\\n\\n\` via BOUNDARY_MARKER at ` +
         `render time; including it in the template would emit it twice. Strip the ` +
         `\`Apply the **...** protocol.\` line (and its trailing blank line) from skill.eta.`,
@@ -275,26 +275,26 @@ function assertSkillTemplate(skill: string | SkillTemplateFn): void {
   }
 }
 
-// ── defineApp ─────────────────────────────────────────────────────
+// ── defineAbility ─────────────────────────────────────────────────────
 
 /**
- * Define an app from its declarative `manifest` and an effectful `setup`, and
- * return the {@link AppFactory} the registry enables.
+ * Define an ability from its declarative `manifest` and an effectful `setup`, and
+ * return the {@link AbilityFactory} the registry enables.
  *
  * The manifest is validated **eagerly** (at this call — import time), so a
  * malformed manifest fails fast. `setup` runs when the factory is enabled; its
- * returned `tools`/`skill` are validated then, and the {@link App} is assembled
+ * returned `tools`/`skill` are validated then, and the {@link Ability} is assembled
  * (tools ordered to match `protocol.tools`). The returned factory carries
  * `manifest` statically for pre-enable provisioning.
  *
  * @example
  * ```ts
- * import manifest from '../app.json';
+ * import manifest from '../ability.json';
  *
- * export const createJiraApp = defineApp(manifest, function* () {
- *   const cfg = yield* AppConfigStoreCtx.expect();
+ * export const createJiraAbility = defineAbility(manifest, function* () {
+ *   const cfg = yield* AbilityConfigStoreCtx.expect();
  *   const conf = yield* cfg.get('jira');
- *   if (!conf) throw new Error('jira app requires config');
+ *   if (!conf) throw new Error('jira ability requires config');
  *   const source = new JiraSource(conf);
  *   return {
  *     source,
@@ -304,21 +304,21 @@ function assertSkillTemplate(skill: string | SkillTemplateFn): void {
  * });
  * ```
  */
-export function defineApp(
-  manifest: AppManifest,
-  setup: () => Operation<AppSetup>,
-): AppFactory {
+export function defineAbility(
+  manifest: AbilityManifest,
+  setup: () => Operation<AbilitySetup>,
+): AbilityFactory {
   // Eager manifest validation — a malformed manifest fails at import, before
-  // the app is ever enabled. (Tool-map + skill checks need the setup output, so
+  // the ability is ever enabled. (Tool-map + skill checks need the setup output, so
   // they run when the factory runs — the same enable-time point as before.)
   assertIdentifier(manifest.name, 'manifest.name');
-  assertAppProtocolVersion(manifest.appProtocolVersion);
+  assertAbilityProtocolVersion(manifest.appProtocolVersion);
   assertIdentifier(manifest.protocol.name, 'manifest.protocol.name');
   assertUseWhen(manifest.protocol.useWhen);
   assertProtocolTools(manifest.protocol.tools);
   assertServices(manifest.services);
 
-  const factory = function* (): Operation<App> {
+  const factory = function* (): Operation<Ability> {
     const parts = yield* setup();
 
     assertToolMapCoverage(manifest.protocol.tools, parts.tools);

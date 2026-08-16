@@ -48,7 +48,7 @@ export interface Toolkit {
  * its schema reaches the model and its instance is dispatchable, and its
  * name is recorded as {@link Toolkit.terminalName}.
  *
- * @param tools - The agent's non-terminal tools (app/source tools, or
+ * @param tools - The agent's non-terminal tools (ability/source tools, or
  *   harness-constructed tools).
  * @param terminal - Optional terminal tool. Omit for pools that end on
  *   free-text/stop.

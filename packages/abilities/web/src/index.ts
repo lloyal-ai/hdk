@@ -1,18 +1,18 @@
 /**
- * `@lloyal-labs/web-app` — HDK reference app: web research.
+ * `@lloyal-labs/web-ability` — HDK reference ability: web research.
  *
- * Reads config from `AppConfigStoreCtx` and the shared reranker from
+ * Reads config from `AbilityConfigStoreCtx` and the shared reranker from
  * `RerankerCtx`, constructs the {@link WebSource} already-bound (no
- * `source.bind`), and returns a validated {@link App}.
+ * `source.bind`), and returns a validated {@link Ability}.
  *
  * @packageDocumentation
  */
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { AppConfigStoreCtx, RerankerCtx } from "@lloyal-labs/lloyal-agents";
-import type { AppManifest, Tool } from "@lloyal-labs/lloyal-agents";
-import { defineApp, TavilyProvider, createKeylessSearchProvider } from "@lloyal-labs/rig";
+import { AbilityConfigStoreCtx, RerankerCtx } from "@lloyal-labs/lloyal-agents";
+import type { AbilityManifest, Tool } from "@lloyal-labs/lloyal-agents";
+import { defineAbility, TavilyProvider, createKeylessSearchProvider } from "@lloyal-labs/rig";
 import type { Reranker, SearchProvider } from "@lloyal-labs/rig";
 import { WebSource } from "./source";
 
@@ -23,18 +23,18 @@ export type { WebSourceOpts } from "./source";
 // manifest (with `services: ['reranker']`) rides the factory — so the harness
 // provisions the reranker before enabling web research.
 const dir = join(__dirname, "..");
-const manifest = JSON.parse(readFileSync(join(dir, "app.json"), "utf8")) as AppManifest;
+const manifest = JSON.parse(readFileSync(join(dir, "ability.json"), "utf8")) as AbilityManifest;
 const skill = readFileSync(join(dir, "skill.eta"), "utf8");
 
 /**
- * Construct the web research app. Provider selection: a `tavilyKey` in the
- * app's stored config (or `TAVILY_API_KEY`) → Tavily; otherwise a keyless
+ * Construct the web research ability. Provider selection: a `tavilyKey` in the
+ * ability's stored config (or `TAVILY_API_KEY`) → Tavily; otherwise a keyless
  * DuckDuckGo provider. `services: ['reranker']` makes the harness provision +
  * set `RerankerCtx` before this runs, so the reranker is always present — the
  * `catch` below stays only as a defensive guard.
  */
-export const createWebApp = defineApp(manifest, function* () {
-  const cfgStore = yield* AppConfigStoreCtx.expect();
+export const createWebAbility = defineAbility(manifest, function* () {
+  const cfgStore = yield* AbilityConfigStoreCtx.expect();
   const cfg = (yield* cfgStore.get("web")) ?? {};
   const tavilyKey =
     typeof cfg.tavilyKey === "string" ? cfg.tavilyKey : process.env.TAVILY_API_KEY;

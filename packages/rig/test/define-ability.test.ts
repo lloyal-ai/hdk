@@ -1,14 +1,14 @@
 /**
- * Tests for `defineApp(manifest, setup): AppFactory` — RFC §5.2 validation.
+ * Tests for `defineAbility(manifest, setup): AbilityFactory` — RFC §5.2 validation.
  *
- * Manifest-shape rules validate EAGERLY (at the `defineApp` call), so a
+ * Manifest-shape rules validate EAGERLY (at the `defineAbility` call), so a
  * malformed manifest throws synchronously — asserted with `expect(() =>
  * build(...)).toThrow`. Setup-output rules (tools-map coverage, skill
  * double-emission) validate when the returned factory RUNS (enable time), so
  * those are asserted by running the factory via `assemble(...)`.
  *
- * The happy path also asserts the assembled `App` preserves `protocol.tools`
- * insertion order in `app.tools[]` — load-bearing for the §10.1 snapshot gate
+ * The happy path also asserts the assembled `Ability` preserves `protocol.tools`
+ * insertion order in `ability.tools[]` — load-bearing for the §10.1 snapshot gate
  * and the spine prefill's stable schema ordering.
  *
  * @category Testing
@@ -19,10 +19,10 @@ import { run } from 'effection';
 import type { Operation } from 'effection';
 import { Tool } from '@lloyal-labs/lloyal-agents';
 import { Source } from '@lloyal-labs/lloyal-agents';
-import type { App } from '@lloyal-labs/lloyal-agents';
-import { defineApp } from '../src/define-app';
-import type { AppSetup } from '../src/define-app';
-import type { AppManifest } from '../src/app-types';
+import type { Ability } from '@lloyal-labs/lloyal-agents';
+import { defineAbility } from '../src/define-ability';
+import type { AbilitySetup } from '../src/define-ability';
+import type { AbilityManifest } from '../src/ability-types';
 
 // ── Test fixtures ────────────────────────────────────────────────
 
@@ -54,7 +54,7 @@ class FakeSource extends Source<unknown, unknown> {
   }
 }
 
-const baseManifest: AppManifest = {
+const baseManifest: AbilityManifest = {
   name: 'jira',
   appProtocolVersion: '3.0',
   protocol: {
@@ -64,7 +64,7 @@ const baseManifest: AppManifest = {
   },
 };
 
-function baseParts(): AppSetup {
+function baseParts(): AbilitySetup {
   return {
     source: new FakeSource(),
     tools: {
@@ -76,27 +76,27 @@ function baseParts(): AppSetup {
 }
 
 /** Build the factory — eager manifest validation happens at this call. */
-function build(manifest: AppManifest, parts: AppSetup = baseParts()) {
-  return defineApp(manifest, function* () {
+function build(manifest: AbilityManifest, parts: AbilitySetup = baseParts()) {
+  return defineAbility(manifest, function* () {
     return parts;
   });
 }
 
-/** Run the factory to assemble the App (or throw — setup-output validation). */
-function assemble(manifest: AppManifest, parts?: AppSetup): Promise<App> {
+/** Run the factory to assemble the Ability (or throw — setup-output validation). */
+function assemble(manifest: AbilityManifest, parts?: AbilitySetup): Promise<Ability> {
   return run(build(manifest, parts));
 }
 
 // ── Happy path ────────────────────────────────────────────────────
 
-describe('defineApp happy path', () => {
-  it('assembles an App with manifest, source, tools, agent fields set', async () => {
-    const app = await assemble(baseManifest);
-    expect(app.name).toBe('jira');
-    expect(app.manifest).toBe(baseManifest);
-    expect(app.source).toBeInstanceOf(FakeSource);
-    expect(app.tools).toHaveLength(2);
-    expect(app.skill).toContain('JIRA research assistant');
+describe('defineAbility happy path', () => {
+  it('assembles an Ability with manifest, source, tools, agent fields set', async () => {
+    const ability = await assemble(baseManifest);
+    expect(ability.name).toBe('jira');
+    expect(ability.manifest).toBe(baseManifest);
+    expect(ability.source).toBeInstanceOf(FakeSource);
+    expect(ability.tools).toHaveLength(2);
+    expect(ability.skill).toContain('JIRA research assistant');
   });
 
   it('advertises the manifest statically on the factory (readable without running)', () => {
@@ -104,17 +104,17 @@ describe('defineApp happy path', () => {
     expect(factory.manifest).toBe(baseManifest);
   });
 
-  it('preserves protocol.tools insertion order in app.tools[]', async () => {
-    // Intentionally insert tools map in reverse order; defineApp should
+  it('preserves protocol.tools insertion order in ability.tools[]', async () => {
+    // Intentionally insert tools map in reverse order; defineAbility should
     // re-order to match protocol.tools declaration order.
-    const app = await assemble(baseManifest, {
+    const ability = await assemble(baseManifest, {
       ...baseParts(),
       tools: {
         jira_read: new FakeTool('jira_read'),
         jira_search: new FakeTool('jira_search'),
       },
     });
-    expect(app.tools.map((t) => t.name)).toEqual(['jira_search', 'jira_read']);
+    expect(ability.tools.map((t) => t.name)).toEqual(['jira_search', 'jira_read']);
   });
 
   it('accepts an absent appProtocolVersion', () => {
@@ -122,17 +122,17 @@ describe('defineApp happy path', () => {
   });
 
   it('accepts a function-typed agent template (no static double-emission check)', async () => {
-    const app = await assemble(baseManifest, {
+    const ability = await assemble(baseManifest, {
       ...baseParts(),
       skill: (params) => `agentCount=${params.agentCount}`,
     });
-    expect(typeof app.skill).toBe('function');
+    expect(typeof ability.skill).toBe('function');
   });
 });
 
 // ── Identifier grammar (M3 metadata sanitization) — eager ────────
 
-describe('defineApp identifier grammar', () => {
+describe('defineAbility identifier grammar', () => {
   it('rejects manifest.name with uppercase characters', () => {
     expect(() => build({ ...baseManifest, name: 'Jira' })).toThrow(/manifest\.name.*does not match/);
   });
@@ -174,8 +174,8 @@ describe('defineApp identifier grammar', () => {
 
 // ── useWhen grammar (RFC §3.2 M3) — eager ────────────────────────
 
-describe('defineApp useWhen grammar', () => {
-  const withUseWhen = (useWhen: string): AppManifest => ({
+describe('defineAbility useWhen grammar', () => {
+  const withUseWhen = (useWhen: string): AbilityManifest => ({
     ...baseManifest,
     protocol: { ...baseManifest.protocol, useWhen },
   });
@@ -205,17 +205,17 @@ describe('defineApp useWhen grammar', () => {
 
 // ── appProtocolVersion — eager ──────────────────────────────────
 
-describe('defineApp appProtocolVersion', () => {
-  it('rejects an unsupported App protocol version', () => {
+describe('defineAbility appProtocolVersion', () => {
+  it('rejects an unsupported Ability protocol version', () => {
     expect(() => build({ ...baseManifest, appProtocolVersion: '4.0' })).toThrow(
       /appProtocolVersion.*"4\.0".*supported set/,
     );
   });
 });
 
-// ── services (auxiliary) — eager, untrusted app.json ──
+// ── services (auxiliary) — eager, untrusted ability.json ──
 
-describe('defineApp services validation', () => {
+describe('defineAbility services validation', () => {
   it('accepts a valid services array', () => {
     expect(() => build({ ...baseManifest, services: ['reranker'] })).not.toThrow();
   });
@@ -224,14 +224,14 @@ describe('defineApp services validation', () => {
     expect(() => build({ ...baseManifest, services: undefined })).not.toThrow();
   });
 
-  it('rejects a non-array services (malformed app.json)', () => {
-    expect(() => build({ ...baseManifest, services: 'reranker' } as unknown as AppManifest)).toThrow(
+  it('rejects a non-array services (malformed ability.json)', () => {
+    expect(() => build({ ...baseManifest, services: 'reranker' } as unknown as AbilityManifest)).toThrow(
       /services must be an array/,
     );
   });
 
   it('rejects an unknown service in services', () => {
-    expect(() => build({ ...baseManifest, services: ['bogus'] } as unknown as AppManifest)).toThrow(
+    expect(() => build({ ...baseManifest, services: ['bogus'] } as unknown as AbilityManifest)).toThrow(
       /unknown service/,
     );
   });
@@ -239,7 +239,7 @@ describe('defineApp services validation', () => {
 
 // ── Tools-map coverage — validated at factory run ────────────────
 
-describe('defineApp tools map coverage', () => {
+describe('defineAbility tools map coverage', () => {
   it('rejects a tools map missing a declared protocol.tools entry', async () => {
     await expect(
       assemble(baseManifest, { ...baseParts(), tools: { jira_search: new FakeTool('jira_search') } }),
@@ -274,7 +274,7 @@ describe('defineApp tools map coverage', () => {
 
 // ── Boundary-marker double-emission guard — validated at factory run ──
 
-describe('defineApp boundary marker guard', () => {
+describe('defineAbility boundary marker guard', () => {
   it('rejects a string skill.eta that begins with the marker', async () => {
     await expect(
       assemble(baseManifest, {
@@ -294,10 +294,10 @@ describe('defineApp boundary marker guard', () => {
   });
 
   it('accepts a string skill.eta with no marker substring', async () => {
-    const app = await assemble(baseManifest, {
+    const ability = await assemble(baseManifest, {
       ...baseParts(),
       skill: 'You are a JIRA assistant. PROCESS: search → read → report.',
     });
-    expect(app.skill).toContain('JIRA assistant');
+    expect(ability.skill).toContain('JIRA assistant');
   });
 });

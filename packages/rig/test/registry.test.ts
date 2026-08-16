@@ -1,12 +1,12 @@
 /**
- * Tests for `createAppRegistry` + `registry.enable` / `disable` —
- * RFC §5.4, §6 (declarative per-app scope model).
+ * Tests for `createAbilityRegistry` + `registry.enable` / `disable` —
+ * RFC §5.4, §6 (declarative per-ability scope model).
  *
  * The model: the harness enables its boot set via explicit
  * `registry.enable(factory)` calls (creation is not enablement — there is one
  * enable path, so the two can't collide); each factory runs in its own
  * *detached* Effection scope (`createScope()` — does NOT inherit context, so the
- * registry seeds `AppConfigStoreCtx` / `AppRegistryCtx` / `RerankerCtx`
+ * registry seeds `AbilityConfigStoreCtx` / `AbilityRegistryCtx` / `RerankerCtx`
  * into it explicitly; the detachment is what isolates teardown errors so
  * `disable` can swallow them). `disable` / registry scope-exit tear that
  * scope down, firing the factory's `ensure(...)`. `enable` is the dynamic
@@ -16,7 +16,7 @@
  * Protocols verified:
  * 1. **Boot set (explicit `enable()`) is enabled** — `byName`/`enabled`/`stateOf` reflect it.
  * 2. **Factory runs in a context-bearing scope** — a factory reading
- *    `AppConfigStoreCtx` works (the regression for the detached-scope bug).
+ *    `AbilityConfigStoreCtx` works (the regression for the detached-scope bug).
  * 3. **Factory body is setup; runs during enable.**
  * 4. **Factory throw → not enabled + propagates + partial scope torn down.**
  * 5. **`ensure()` teardown fires on `disable`.**
@@ -32,24 +32,24 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { run, ensure } from 'effection';
-import { AppConfigStoreCtx } from '@lloyal-labs/lloyal-agents';
-import type { App, AppManifest, AppFactory } from '@lloyal-labs/lloyal-agents';
-import { createAppRegistry } from '../src/registry';
+import { AbilityConfigStoreCtx } from '@lloyal-labs/lloyal-agents';
+import type { Ability, AbilityManifest, AbilityFactory } from '@lloyal-labs/lloyal-agents';
+import { createAbilityRegistry } from '../src/registry';
 import { createInMemoryConfigStore } from '../src/config-store';
 
-// ── App fixture ──────────────────────────────────────────────────
+// ── Ability fixture ──────────────────────────────────────────────────
 
 function fakeApp(opts: {
   name: string;
   appProtocolVersion?: string;
-  configSchema?: AppManifest['configSchema'];
+  configSchema?: AbilityManifest['configSchema'];
   /** Override the model-facing protocol name (defaults to `${name}_research`). */
   protocolName?: string;
   /** Override the tool names (default a single per-name tool, so distinct
-   *  apps don't trip the namespace-collision guard). */
+   *  abilities don't trip the namespace-collision guard). */
   tools?: string[];
-}): App {
-  const manifest: AppManifest = {
+}): Ability {
+  const manifest: AbilityManifest = {
     name: opts.name,
     version: '1.0.0',
     appProtocolVersion: opts.appProtocolVersion ?? '3.0',
@@ -64,26 +64,26 @@ function fakeApp(opts: {
     name: opts.name,
     version: '1.0.0',
     manifest,
-    source: { name: opts.name } as App['source'],
+    source: { name: opts.name } as Ability['source'],
     tools: [],
     agent: 'test agent template',
     configSchema: opts.configSchema,
   };
 }
 
-/** Plain factory — returns an app, no teardown. */
-function plainFactory(opts: Parameters<typeof fakeApp>[0]): AppFactory {
+/** Plain factory — returns an ability, no teardown. */
+function plainFactory(opts: Parameters<typeof fakeApp>[0]): AbilityFactory {
   return function* () {
     return fakeApp(opts);
   };
 }
 
 /** Resource-shaped factory: runs onSetup, registers onTeardown via
- *  ensure(), returns the app — teardown fires when its scope halts. */
+ *  ensure(), returns the ability — teardown fires when its scope halts. */
 function resourceFactory(
   opts: Parameters<typeof fakeApp>[0],
   hooks: { onSetup?: () => void; onTeardown?: () => void },
-): AppFactory {
+): AbilityFactory {
   return function* () {
     hooks.onSetup?.();
     yield* ensure(function* () {
@@ -95,10 +95,10 @@ function resourceFactory(
 
 // ── Tests ────────────────────────────────────────────────────────
 
-describe('createAppRegistry', () => {
+describe('createAbilityRegistry', () => {
   it('enables the boot set via explicit enable() and exposes it via byName / enabled / stateOf', async () => {
     const result = await run(function* () {
-      const registry = yield* createAppRegistry({
+      const registry = yield* createAbilityRegistry({
         configStore: createInMemoryConfigStore(),
       });
       yield* registry.enable(plainFactory({ name: 'web' }));
@@ -116,20 +116,20 @@ describe('createAppRegistry', () => {
     expect(result.absent).toBe('disabled');
   });
 
-  it('runs the factory in a scope where App*Ctx are available (context inheritance)', async () => {
+  it('runs the factory in a scope where Ability*Ctx are available (context inheritance)', async () => {
     // The real web/corpus pattern: the factory reads its config from
-    // AppConfigStoreCtx. The registry MUST run the factory in a scope that
-    // inherits that context, or every real app throws MissingContextError.
+    // AbilityConfigStoreCtx. The registry MUST run the factory in a scope that
+    // inherits that context, or every real ability throws MissingContextError.
     const seen = await run(function* () {
       const configStore = createInMemoryConfigStore();
       yield* configStore.set('ctxapp', { key: 'value' });
       let readConfig: unknown;
-      const ctxFactory: AppFactory = function* () {
-        const cs = yield* AppConfigStoreCtx.expect();
+      const ctxFactory: AbilityFactory = function* () {
+        const cs = yield* AbilityConfigStoreCtx.expect();
         readConfig = yield* cs.get('ctxapp');
         return fakeApp({ name: 'ctxapp' });
       };
-      const registry = yield* createAppRegistry({ configStore });
+      const registry = yield* createAbilityRegistry({ configStore });
       yield* registry.enable(ctxFactory);
       return readConfig;
     });
@@ -139,21 +139,21 @@ describe('createAppRegistry', () => {
   it('runs the factory body (setup) when enabled', async () => {
     const onSetup = vi.fn();
     await run(function* () {
-      const registry = yield* createAppRegistry({ configStore: createInMemoryConfigStore() });
+      const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
       expect(onSetup).not.toHaveBeenCalled();
       yield* registry.enable(resourceFactory({ name: 'jira' }, { onSetup }));
       expect(onSetup).toHaveBeenCalledTimes(1);
     });
   });
 
-  it('propagates a factory throw and does NOT enable the app', async () => {
-    let captured: App | undefined;
-    const brokenFactory: AppFactory = function* () {
+  it('propagates a factory throw and does NOT enable the ability', async () => {
+    let captured: Ability | undefined;
+    const brokenFactory: AbilityFactory = function* () {
       throw new Error('construction failed');
     };
     await expect(
       run(function* () {
-        const registry = yield* createAppRegistry({ configStore: createInMemoryConfigStore() });
+        const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
         try {
           yield* registry.enable(brokenFactory);
         } finally {
@@ -167,7 +167,7 @@ describe('createAppRegistry', () => {
   it('fires ensure() teardown on disable', async () => {
     const onTeardown = vi.fn();
     const result = await run(function* () {
-      const registry = yield* createAppRegistry({ configStore: createInMemoryConfigStore() });
+      const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
       yield* registry.enable(resourceFactory({ name: 'transient' }, { onTeardown }));
       const before = onTeardown.mock.calls.length;
       yield* registry.disable('transient');
@@ -181,7 +181,7 @@ describe('createAppRegistry', () => {
   it('fires ensure() teardown on registry scope exit, reverse register order', async () => {
     const order: string[] = [];
     await run(function* () {
-      const registry = yield* createAppRegistry({
+      const registry = yield* createAbilityRegistry({
         configStore: createInMemoryConfigStore(),
       });
       yield* registry.enable(resourceFactory({ name: 'a' }, { onTeardown: () => order.push('a') }));
@@ -192,14 +192,14 @@ describe('createAppRegistry', () => {
   });
 
   it('scope-exit teardown is best-effort — a throwing teardown is logged, never strands siblings', async () => {
-    // Each app owns a detached scope, so a throwing teardown is caught
+    // Each ability owns a detached scope, so a throwing teardown is caught
     // and logged (the run does NOT reject) and good1 + good2 both tear
     // down regardless. Reverse register-order: good2 then good1.
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     const seen: string[] = [];
     await expect(
       run(function* () {
-        const registry = yield* createAppRegistry({
+        const registry = yield* createAbilityRegistry({
           configStore: createInMemoryConfigStore(),
         });
         yield* registry.enable(resourceFactory({ name: 'good1' }, { onTeardown: () => seen.push('good1') }));
@@ -211,7 +211,7 @@ describe('createAppRegistry', () => {
     ).resolves.not.toThrow();
     expect(seen).toEqual(['good2', 'good1']);
     expect(consoleError).toHaveBeenCalledWith(
-      expect.stringContaining('teardown for app "bad"'),
+      expect.stringContaining('teardown for ability "bad"'),
       expect.anything(),
     );
     consoleError.mockRestore();
@@ -221,7 +221,7 @@ describe('createAppRegistry', () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     await expect(
       run(function* () {
-        const registry = yield* createAppRegistry({ configStore: createInMemoryConfigStore() });
+        const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
         yield* registry.enable(
           resourceFactory({ name: 'bad' }, {
             onTeardown: () => { throw new Error('teardown failed'); },
@@ -232,7 +232,7 @@ describe('createAppRegistry', () => {
       }),
     ).resolves.not.toThrow();
     expect(consoleError).toHaveBeenCalledWith(
-      expect.stringContaining('teardown for app "bad"'),
+      expect.stringContaining('teardown for ability "bad"'),
       expect.anything(),
     );
     consoleError.mockRestore();
@@ -242,7 +242,7 @@ describe('createAppRegistry', () => {
     const onTeardown = vi.fn();
     await expect(
       run(function* () {
-        const registry = yield* createAppRegistry({ configStore: createInMemoryConfigStore() });
+        const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
         yield* registry.enable(
           resourceFactory({ name: 'future', appProtocolVersion: '99.0' }, { onTeardown }),
         );
@@ -256,7 +256,7 @@ describe('createAppRegistry', () => {
       run(function* () {
         const configStore = createInMemoryConfigStore();
         yield* configStore.set('webcfg', { wrongField: 'oops' });
-        const registry = yield* createAppRegistry({ configStore });
+        const registry = yield* createAbilityRegistry({ configStore });
         yield* registry.enable(
           plainFactory({
             name: 'webcfg',
@@ -276,7 +276,7 @@ describe('createAppRegistry', () => {
       run(function* () {
         const configStore = createInMemoryConfigStore();
         yield* configStore.set('typecheck', { port: 'not-a-number' });
-        const registry = yield* createAppRegistry({ configStore });
+        const registry = yield* createAbilityRegistry({ configStore });
         yield* registry.enable(
           plainFactory({
             name: 'typecheck',
@@ -291,9 +291,9 @@ describe('createAppRegistry', () => {
     ).rejects.toThrow('declares "number"');
   });
 
-  it('throws on duplicate app name; the first enable survives', async () => {
+  it('throws on duplicate ability name; the first enable survives', async () => {
     const result = await run(function* () {
-      const registry = yield* createAppRegistry({ configStore: createInMemoryConfigStore() });
+      const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
       yield* registry.enable(plainFactory({ name: 'dup' }));
       const first = registry.byName('dup');
       try {
@@ -312,12 +312,12 @@ describe('createAppRegistry', () => {
     expect(result.count).toBe(1);
   });
 
-  it('throws on a colliding protocol name across two differently-named apps (cross-publisher clash)', async () => {
+  it('throws on a colliding protocol name across two differently-named abilities (cross-publisher clash)', async () => {
     // `lloyal/web` and `acme/web` install as distinct catalog/npm entries but
     // both carry the bare model-facing `protocol.name`. Enabling both in one
     // harness must fail loud (otherwise the spine emits two same-named blocks).
     const result = await run(function* () {
-      const registry = yield* createAppRegistry({ configStore: createInMemoryConfigStore() });
+      const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
       yield* registry.enable(
         plainFactory({ name: 'web-lloyal', protocolName: 'web_research', tools: ['lloyal_search'] }),
       );
@@ -335,9 +335,9 @@ describe('createAppRegistry', () => {
     expect(result.enabled).toBe(1);
   });
 
-  it('throws on a colliding tool name across two differently-named apps', async () => {
+  it('throws on a colliding tool name across two differently-named abilities', async () => {
     const result = await run(function* () {
-      const registry = yield* createAppRegistry({ configStore: createInMemoryConfigStore() });
+      const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
       yield* registry.enable(
         plainFactory({ name: 'docs-lloyal', protocolName: 'lloyal_docs', tools: ['search', 'read'] }),
       );
@@ -356,7 +356,7 @@ describe('createAppRegistry', () => {
 
   it('coexists when protocol + tool names are distinct (the happy path)', async () => {
     const names = await run(function* () {
-      const registry = yield* createAppRegistry({ configStore: createInMemoryConfigStore() });
+      const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
       yield* registry.enable(plainFactory({ name: 'web' }));
       yield* registry.enable(plainFactory({ name: 'corpus' }));
       return registry.enabled().map((a) => a.manifest.name);
@@ -367,7 +367,7 @@ describe('createAppRegistry', () => {
   it('disable on an unknown name is a no-op', async () => {
     await expect(
       run(function* () {
-        const registry = yield* createAppRegistry({ configStore: createInMemoryConfigStore() });
+        const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
         yield* registry.disable('never-enabled');
       }),
     ).resolves.not.toThrow();
@@ -376,7 +376,7 @@ describe('createAppRegistry', () => {
   it('a plain (no-teardown) factory enables and disables cleanly', async () => {
     await expect(
       run(function* () {
-        const registry = yield* createAppRegistry({ configStore: createInMemoryConfigStore() });
+        const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
         yield* registry.enable(plainFactory({ name: 'plain' }));
         expect(registry.stateOf('plain')).toBe('enabled');
         yield* registry.disable('plain');

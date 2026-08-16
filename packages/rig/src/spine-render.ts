@@ -9,8 +9,8 @@
  *
  * Assembles the Level-1 shared-prefix system prompt. **Carries no
  * free-form prose surface**: framework-owned literal strings +
- * grammar-sanitized app catalog metadata. No `supplementaryContent`
- * parameter, no per-app prose argument.
+ * grammar-sanitized ability catalog metadata. No `supplementaryContent`
+ * parameter, no per-ability prose argument.
  *
  * Output structure:
  *
@@ -19,19 +19,19 @@
  *
  * # Protocols
  *
- * <CATALOG_ENTRY for each app, in registration order>
+ * <CATALOG_ENTRY for each ability, in registration order>
  *
  * <TOOL_SELECTION_RULE>
  * ```
  *
- * App `examples.eta` content goes through `renderAgentPreamble` into
+ * Ability `examples.eta` content goes through `renderAgentPreamble` into
  * per-spawn preambles, never into this output.
  *
  * ## `renderAgentPreamble`
  *
  * The *only* place the framework emits the boundary marker.
- * Called once per spawn with the assigned app's templates only — no
- * other app's `skill.eta` / `examples.eta` enters this rendering, which
+ * Called once per spawn with the assigned ability's templates only — no
+ * other ability's `skill.eta` / `examples.eta` enters this rendering, which
  * is what makes per-spawn isolation a framework invariant rather than
  * a convention.
  *
@@ -41,7 +41,7 @@
 
 import { renderTemplate } from '@lloyal-labs/lloyal-agents';
 import type {
-  App,
+  Ability,
   AgentRenderCtx,
   SkillTemplateFn,
   ExamplesRenderCtx,
@@ -55,38 +55,38 @@ import {
 } from './protocol';
 
 /**
- * Arguments for {@link renderSpine}. `apps` order is observable to
+ * Arguments for {@link renderSpine}. `abilities` order is observable to
  * the model — catalog entries emit in registration order; harness
  * registration order is the input order here.
  */
 export interface RenderSpineOptions {
   /**
-   * Registered apps to compose into the catalog. Pass
-   * `registry.enabled()` from {@link AppRegistryCtx}, or any
+   * Registered abilities to compose into the catalog. Pass
+   * `registry.enabled()` from {@link AbilityRegistryCtx}, or any
    * subset/ordering the harness wants reflected in the spine.
    */
-  apps: readonly App[];
+  abilities: readonly Ability[];
 }
 
 /**
  * Render the shared-spine system prompt.
  *
  * The output has a fixed shape across pool sizes and pool composition
- * — the only variability is the per-app catalog block, sourced from
- * each app's `manifest.protocol`. No app prose; no harness prose.
+ * — the only variability is the per-ability catalog block, sourced from
+ * each ability's `manifest.protocol`. No ability prose; no harness prose.
  *
  * The returned string is intended for `SpineOptions.systemPrompt` in
  * `withSpine(...)`; tool schemas pass through `SpineOptions.tools =
- * apps.flatMap(a => a.tools)` separately and are decoded into KV at
+ * abilities.flatMap(a => a.tools)` separately and are decoded into KV at
  * spine prefill.
  */
 export function renderSpine(opts: RenderSpineOptions): string {
-  const catalogBlocks = opts.apps
-    .map((app) =>
+  const catalogBlocks = opts.abilities
+    .map((ability) =>
       CATALOG_ENTRY(
-        app.manifest.protocol.name,
-        [...app.manifest.protocol.tools],
-        app.manifest.protocol.useWhen,
+        ability.manifest.protocol.name,
+        [...ability.manifest.protocol.tools],
+        ability.manifest.protocol.useWhen,
       ),
     )
     .join('\n');
@@ -102,49 +102,49 @@ export function renderSpine(opts: RenderSpineOptions): string {
 
 /**
  * Render the per-spawn preamble for a single agent assigned to
- * `app`. The framework calls this when constructing a spawn's
+ * `ability`. The framework calls this when constructing a spawn's
  * user-role message; the output is the *only* place the boundary
  * marker bytes appear at runtime.
  *
  * Output:
  *
  * ```
- * <BOUNDARY_MARKER(app.manifest.protocol.name)>
- * <renderTemplate(app.skill, params)>
+ * <BOUNDARY_MARKER(ability.manifest.protocol.name)>
+ * <renderTemplate(ability.skill, params)>
  *
- * <renderTemplate(app.examples, examplesParams)>   // if app.examples is defined
+ * <renderTemplate(ability.examples, examplesParams)>   // if ability.examples is defined
  * ```
  *
- * `app.manifest.protocol.name` is grammar-restricted at `defineApp`
+ * `ability.manifest.protocol.name` is grammar-restricted at `defineAbility`
  * time: matches `[a-z][a-z0-9_-]{1,63}`, so it cannot
  * break the markdown bold or inject newlines into the marker bytes.
  *
- * `app.examples` (if present) receives an extended render context
+ * `ability.examples` (if present) receives an extended render context
  * carrying the protocol `name` and `tools[]` in addition to the
  * standard {@link AgentRenderCtx} fields, allowing discipline content
  * to reference the protocol identity directly.
  *
- * `params` accepts app-specific render data beyond {@link AgentRenderCtx}
- * (e.g. a corpus app merges its `source.promptData()` to supply `it.toc`).
+ * `params` accepts ability-specific render data beyond {@link AgentRenderCtx}
+ * (e.g. a corpus ability merges its `source.promptData()` to supply `it.toc`).
  * Extra keys are spread into the Eta render data unchanged.
  */
 export function renderAgentPreamble(
-  app: App,
+  ability: Ability,
   params: AgentRenderCtx & Record<string, unknown>,
 ): string {
-  const marker = BOUNDARY_MARKER(app.manifest.protocol.name);
-  const body = renderSkillBody(app.skill, params);
+  const marker = BOUNDARY_MARKER(ability.manifest.protocol.name);
+  const body = renderSkillBody(ability.skill, params);
 
-  if (!app.examples) {
+  if (!ability.examples) {
     return marker + body;
   }
 
   const examplesParams: ExamplesRenderCtx = {
     ...params,
-    name: app.manifest.protocol.name,
-    tools: app.manifest.protocol.tools,
+    name: ability.manifest.protocol.name,
+    tools: ability.manifest.protocol.tools,
   };
-  const examples = renderExamples(app.examples, examplesParams);
+  const examples = renderExamples(ability.examples, examplesParams);
   return marker + body + '\n\n' + examples;
 }
 

@@ -117,14 +117,14 @@ export class Agent {
   readonly task: string;
 
   /**
-   * Optional non-enforcing label naming the App a spawn nominally belongs
-   * to (`SpawnSpec.assignedApp`), or `null` for harness-internal spawns.
+   * Optional non-enforcing label naming the Ability a spawn nominally belongs
+   * to (`SpawnSpec.assignedAbility`), or `null` for harness-internal spawns.
    * Purely informational since the authGuard moved the security boundary
    * into the tool: tool access is gated by {@link Tool.protected}
-   * + session grants, not by app membership. Carried so trace events
-   * (`tool:authReject`) and harness UI can attribute work to an app.
+   * + session grants, not by ability membership. Carried so trace events
+   * (`tool:authReject`) and harness UI can attribute work to an ability.
    */
-  readonly assignedApp: string | null;
+  readonly assignedAbility: string | null;
 
   // ── Mutable state ───────────────────────────────────────
 
@@ -167,8 +167,8 @@ export class Agent {
     fmt: FormatConfig;
     parent?: Agent | null;
     task?: string;
-    /** Optional non-enforcing app label — see {@link assignedApp}. */
-    assignedApp?: string | null;
+    /** Optional non-enforcing ability label — see {@link assignedAbility}. */
+    assignedAbility?: string | null;
   }) {
     this.id = opts.id;
     this.parentId = opts.parentId;
@@ -176,7 +176,7 @@ export class Agent {
     this.fmt = opts.fmt;
     this.task = opts.task ?? '';
     this.parent = opts.parent ?? null;
-    this.assignedApp = opts.assignedApp ?? null;
+    this.assignedAbility = opts.assignedAbility ?? null;
   }
 
   // ── Status ──────────────────────────────────────────────

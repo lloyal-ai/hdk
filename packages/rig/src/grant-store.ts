@@ -2,7 +2,7 @@
  * In-memory implementation of {@link GrantStore}.
  *
  * The `GrantStore` interface itself lives in `@lloyal-labs/lloyal-agents`
- * (so the framework context `GrantStoreCtx` and app/harness code share it
+ * (so the framework context `GrantStoreCtx` and ability/harness code share it
  * without a dependency cycle). This module supplies the reference impl that
  * dev harnesses, examples, and tests use; harnesses that back grants with
  * a secrets manager or remote authorization service implement the

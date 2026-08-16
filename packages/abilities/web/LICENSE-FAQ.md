@@ -16,22 +16,22 @@ of this page is illustration.
 ## The short version
 
 HDK 3.0 runtime packages — `liblloyal`, `lloyal-node`, and the lloyal-sdk
-packages (`agents`, `sdk`, `rig`, `apps/corpus`, `apps/web`) — are
+packages (`agents`, `sdk`, `rig`, `abilities/corpus`, `abilities/web`) — are
 **[Fair Source](https://fair.io)** under **FSL-1.1-Apache-2.0** (the Functional
 Source License, Apache 2.0 future grant).
 
 Each version converts to Apache 2.0 two years after its release. The
 restriction during those two years is narrow: **you cannot offer a competing
-HDK runtime, a managed HDK service, or an alternative HDK App distribution
+HDK runtime, a managed HDK service, or an alternative HDK Ability distribution
 channel.** Everything else — commercial use, redistribution, modification,
 sale, embedding in shipped products — is freely permitted.
 
-The reason the channel restriction exists is consumer-protective: every App
+The reason the channel restriction exists is consumer-protective: every Ability
 listed on `apps.lloyal.ai` is reviewed by Lloyal Labs for tool-safety,
 manifest conformance, and signature provenance before publication. Pinning
-the App ecosystem to one verified channel keeps the AI-safety review meaningful
+the Ability ecosystem to one verified channel keeps the AI-safety review meaningful
 (consumers can rely on a single trust boundary) and prevents protocol
-fragmentation (an App that works on one harness works on every harness).
+fragmentation (an Ability that works on one harness works on every harness).
 
 The `harness.dev` CLI and `hdk-create-app` scaffolder are licensed under
 **Apache 2.0** (unrestricted). They're not part of the runtime stack.
@@ -41,20 +41,20 @@ The `harness.dev` CLI and `hdk-create-app` scaffolder are licensed under
 **Yes.** This is the question everyone has and the answer is straightforward.
 Concretely:
 
-- **Shipping a paid intelligent inbox app to consumers** — permitted ✅
-- **Selling an Excel-with-AI desktop app to enterprises** — permitted ✅
+- **Shipping a paid intelligent inbox ability to consumers** — permitted ✅
+- **Selling an Excel-with-AI desktop ability to enterprises** — permitted ✅
 - **Embedding HDK in a medical device sold commercially** — permitted ✅
 - **A consulting firm building a custom intelligent harness for a Fortune
   500 client, charging $500K for the engagement, deploying on client
   infrastructure** — permitted ✅
-- **An indie dev shipping a paid productivity app on the Mac App Store** —
+- **An indie dev shipping a paid productivity ability on the Mac Ability Store** —
   permitted ✅
 - **An OEM shipping HDK inside an infotainment system or industrial device**
   — permitted ✅
 - **A startup building an end-user product on top of HDK** — including
-  vertical research apps, workflow tools, and agent applications — permitted
+  vertical research abilities, workflow tools, and agent applications — permitted
   ✅, *as long as the product is not offering HDK itself as a substitute
-  runtime, managed HDK service, or competing App distribution channel*.
+  runtime, managed HDK service, or competing Ability distribution channel*.
 - **A research lab using HDK in published academic work** — permitted ✅
 - **Forking HDK on GitHub to learn, modify, demo, or contribute** — permitted ✅
 - **Running HDK internally inside your company for any business use** —
@@ -75,7 +75,7 @@ platform vendor**. Concretely:
   intended as a drop-in replacement** — restricted ❌ (Competing Use doesn't
   require forking source code — a reimplementation that competes is the
   same problem)
-- **Launching `apps.competitor.com` as an alternative HDK App distribution
+- **Launching `abilities.competitor.com` as an alternative HDK Ability distribution
   channel** — restricted ❌
 - **Offering "managed HDK hosting" or "HDK-as-a-Service" as a competing
   SaaS** — restricted ❌
@@ -170,18 +170,18 @@ What this means practically:
 
 ## Why FSL specifically — why not stay Apache?
 
-HDK 3.0 introduces installable HDK Apps. Every App declares against a
-specific App protocol — the bytes-locked intro, catalog format,
+HDK 3.0 introduces installable HDK Abilities. Every Ability declares against a
+specific Ability protocol — the bytes-locked intro, catalog format,
 tool-selection rule, and boundary marker that the runtime renders into
-the spine. Your App's reliability depends on every HDK runtime your users
+the spine. Your Ability's reliability depends on every HDK runtime your users
 install agreeing on the same protocol.
 
 Under a permissive license alone, the protocol is forkable. A
 well-resourced redistributor could fork the runtime, modify the protocol
 surface, and distribute a variant under a different name with captive
-distribution. App developers then face a fragmented ecosystem: target one
+distribution. Ability developers then face a fragmented ecosystem: target one
 protocol, target both, or pick the bigger distribution and abandon the
-others. The cost of that split is paid by App developers in testing
+others. The cost of that split is paid by Ability developers in testing
 burden, divergent behavior, and reliability degradation across runtimes.
 
 FSL's two-year Competing Use restriction is shaped to block that
@@ -215,9 +215,9 @@ standard FSL because it's:
 | `lloyal-node` (N-API binding) | FSL-1.1-Apache-2.0 | The binding that lets Effection drive llama.cpp |
 | `@lloyal-labs/lloyal-agents` | FSL-1.1-Apache-2.0 | Runtime framework |
 | `@lloyal-labs/lloyal-sdk` | FSL-1.1-Apache-2.0 | Runtime framework |
-| `@lloyal-labs/rig` | FSL-1.1-Apache-2.0 | Runtime framework — holds the App protocol |
-| `@lloyal-labs/corpus`, `@lloyal-labs/web` | FSL-1.1-Apache-2.0 | Reference Apps shipped in-tree |
-| **`@lloyal-labs/harness-cli` (the `harness.dev` CLI)** | **Apache 2.0** | Scaffolder — unrestricted for scaffolding new harnesses and Apps |
+| `@lloyal-labs/rig` | FSL-1.1-Apache-2.0 | Runtime framework — holds the Ability protocol |
+| `@lloyal-labs/corpus`, `@lloyal-labs/web` | FSL-1.1-Apache-2.0 | Reference Abilities shipped in-tree |
+| **`@lloyal-labs/harness-cli` (the `harness.dev` CLI)** | **Apache 2.0** | Scaffolder — unrestricted for scaffolding new harnesses and Abilities |
 | **`hdk-create-app`** (when shipped) | **Apache 2.0** | Scaffolder — same as above |
 | `llama.cpp` (vendored dependency) | MIT (unchanged) | External upstream library; we don't relicense their code |
 
@@ -247,10 +247,10 @@ worry about it.
 ## Is there a safe harbor for building products with the HDK?
 
 Yes. The [Lloyal Harness Builder Grant](https://github.com/lloyal-ai/hdk/blob/main/GRANT.md)
-irrevocably guarantees that building, selling, and hosting Harnesses and Apps
+irrevocably guarantees that building, selling, and hosting Harnesses and Abilities
 is a Permitted Purpose and never a Competing Use — even products that compete
 head-on with Lloyal's own (including reasoning.run). Only three uses remain
 restricted: offering the HDK itself as a developer framework, hosting the HDK
-as-a-service for third-party developers, and operating a general-purpose App
-distribution channel. Private/internal App distribution and your Harness's
+as-a-service for third-party developers, and operating a general-purpose Ability
+distribution channel. Private/internal Ability distribution and your Harness's
 own plugin system are explicitly permitted.

@@ -65,7 +65,7 @@ export interface WebSourceOpts {
   };
   /**
    * Reranker for fetch_page chunk scoring. Read from `RerankerCtx` in the
-   * app factory and injected here at construction (the source is born
+   * ability factory and injected here at construction (the source is born
    * bound — there is no separate `source.bind({reranker})` step).
    * Omitted → fetch_page falls back to a maxChars truncation.
    */
