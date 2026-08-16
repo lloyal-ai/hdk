@@ -22,7 +22,7 @@
  * 5. **`ensure()` teardown fires on `disable`.**
  * 6. **`ensure()` teardown fires on registry scope-exit, reverse order.**
  * 7. **Teardown is best-effort** — a throwing `ensure` doesn't strand siblings.
- * 8. **appProtocolVersion gate** — unsupported version rejects (ensure still fires).
+ * 8. **abilityProtocolVersion gate** — unsupported version rejects (ensure still fires).
  * 9. **Stored-config validation** — missing key / wrong type rejects.
  * 10. **Duplicate names** throw; the first survives.
  * 11. **`disable` idempotent** — unknown name is a no-op.
@@ -41,7 +41,7 @@ import { createInMemoryConfigStore } from '../src/config-store';
 
 function fakeApp(opts: {
   name: string;
-  appProtocolVersion?: string;
+  abilityProtocolVersion?: string;
   configSchema?: AbilityManifest['configSchema'];
   /** Override the model-facing protocol name (defaults to `${name}_research`). */
   protocolName?: string;
@@ -52,7 +52,7 @@ function fakeApp(opts: {
   const manifest: AbilityManifest = {
     name: opts.name,
     version: '1.0.0',
-    appProtocolVersion: opts.appProtocolVersion ?? '3.0',
+    abilityProtocolVersion: opts.abilityProtocolVersion ?? '3.0',
     protocol: {
       name: opts.protocolName ?? `${opts.name}_research`,
       useWhen: 'do things',
@@ -238,16 +238,16 @@ describe('createAbilityRegistry', () => {
     consoleError.mockRestore();
   });
 
-  it('rejects unsupported appProtocolVersion (and the factory ensure still fires)', async () => {
+  it('rejects unsupported abilityProtocolVersion (and the factory ensure still fires)', async () => {
     const onTeardown = vi.fn();
     await expect(
       run(function* () {
         const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
         yield* registry.enable(
-          resourceFactory({ name: 'future', appProtocolVersion: '99.0' }, { onTeardown }),
+          resourceFactory({ name: 'future', abilityProtocolVersion: '99.0' }, { onTeardown }),
         );
       }),
-    ).rejects.toThrow('appProtocolVersion="99.0"');
+    ).rejects.toThrow('abilityProtocolVersion="99.0"');
     expect(onTeardown).toHaveBeenCalledTimes(1);
   });
 

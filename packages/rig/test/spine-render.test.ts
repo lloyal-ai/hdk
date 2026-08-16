@@ -72,7 +72,7 @@ function makeAbility(opts: {
   const manifest: AbilityManifest = {
     name: opts.name,
     version: '1.0.0',
-    appProtocolVersion: '3.0',
+    abilityProtocolVersion: '3.0',
     protocol: {
       name: protocolName,
       useWhen: opts.useWhen ?? `do ${opts.name} things`,

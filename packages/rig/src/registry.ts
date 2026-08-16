@@ -154,10 +154,10 @@ export function* createAbilityRegistry(
             }),
         );
 
-        const declared = ability.manifest.appProtocolVersion ?? '3.0';
+        const declared = ability.manifest.abilityProtocolVersion ?? '3.0';
         if (!SUPPORTED_ABILITY_PROTOCOL_VERSIONS.includes(declared)) {
           throw new Error(
-            `Ability "${ability.manifest.name}" declares appProtocolVersion="${declared}", ` +
+            `Ability "${ability.manifest.name}" declares abilityProtocolVersion="${declared}", ` +
               `but the framework supports [${SUPPORTED_ABILITY_PROTOCOL_VERSIONS.map((v) => `"${v}"`).join(', ')}]. ` +
               `Upgrade the ability or use a framework version that supports this protocol.`,
           );

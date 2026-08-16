@@ -14,7 +14,7 @@
  *   `name` and `protocol.name` match `[a-z][a-z0-9_-]{1,63}`; `protocol.tools`
  *   is a non-empty unique array of names matching the same regex;
  *   `protocol.useWhen` is a single bounded sentence with no chat-role markers,
- *   code fences, or newlines (metadata sanitization); `appProtocolVersion` (if
+ *   code fences, or newlines (metadata sanitization); `abilityProtocolVersion` (if
  *   declared) is in `SUPPORTED_ABILITY_PROTOCOL_VERSIONS`; `services` (if present)
  *   is an array of the closed service set. A malformed manifest fails the
  *   moment the ability module is imported.
@@ -202,7 +202,7 @@ function assertAbilityProtocolVersion(version: string | undefined): void {
   if (version === undefined) return;
   if (!SUPPORTED_ABILITY_PROTOCOL_VERSIONS.includes(version)) {
     throw new Error(
-      `defineAbility: manifest.appProtocolVersion ${JSON.stringify(version)} is not in the ` +
+      `defineAbility: manifest.abilityProtocolVersion ${JSON.stringify(version)} is not in the ` +
         `supported set ${JSON.stringify(SUPPORTED_ABILITY_PROTOCOL_VERSIONS)}. ` +
         `This build of @lloyal-labs/rig only validates abilities targeting one of those versions.`,
     );
@@ -312,7 +312,7 @@ export function defineAbility(
   // the ability is ever enabled. (Tool-map + skill checks need the setup output, so
   // they run when the factory runs — the same enable-time point as before.)
   assertIdentifier(manifest.name, 'manifest.name');
-  assertAbilityProtocolVersion(manifest.appProtocolVersion);
+  assertAbilityProtocolVersion(manifest.abilityProtocolVersion);
   assertIdentifier(manifest.protocol.name, 'manifest.protocol.name');
   assertUseWhen(manifest.protocol.useWhen);
   assertProtocolTools(manifest.protocol.tools);

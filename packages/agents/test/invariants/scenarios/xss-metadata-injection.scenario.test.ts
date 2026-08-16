@@ -24,7 +24,7 @@ import type { AbilityManifest, Source, Tool } from '../../../src';
 function manifestWith(useWhen: string): AbilityManifest {
   return {
     name: 'ability',
-    appProtocolVersion: '3.0',
+    abilityProtocolVersion: '3.0',
     protocol: { name: 'app_research', useWhen, tools: ['app_tool'] },
   };
 }

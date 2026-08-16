@@ -56,7 +56,7 @@ class FakeSource extends Source<unknown, unknown> {
 
 const baseManifest: AbilityManifest = {
   name: 'jira',
-  appProtocolVersion: '3.0',
+  abilityProtocolVersion: '3.0',
   protocol: {
     name: 'jira_research',
     useWhen: 'investigating tickets and project state in a JIRA workspace',
@@ -117,8 +117,8 @@ describe('defineAbility happy path', () => {
     expect(ability.tools.map((t) => t.name)).toEqual(['jira_search', 'jira_read']);
   });
 
-  it('accepts an absent appProtocolVersion', () => {
-    expect(() => build({ ...baseManifest, appProtocolVersion: undefined })).not.toThrow();
+  it('accepts an absent abilityProtocolVersion', () => {
+    expect(() => build({ ...baseManifest, abilityProtocolVersion: undefined })).not.toThrow();
   });
 
   it('accepts a function-typed agent template (no static double-emission check)', async () => {
@@ -203,12 +203,12 @@ describe('defineAbility useWhen grammar', () => {
   });
 });
 
-// ── appProtocolVersion — eager ──────────────────────────────────
+// ── abilityProtocolVersion — eager ──────────────────────────────────
 
-describe('defineAbility appProtocolVersion', () => {
+describe('defineAbility abilityProtocolVersion', () => {
   it('rejects an unsupported Ability protocol version', () => {
-    expect(() => build({ ...baseManifest, appProtocolVersion: '4.0' })).toThrow(
-      /appProtocolVersion.*"4\.0".*supported set/,
+    expect(() => build({ ...baseManifest, abilityProtocolVersion: '4.0' })).toThrow(
+      /abilityProtocolVersion.*"4\.0".*supported set/,
     );
   });
 });
