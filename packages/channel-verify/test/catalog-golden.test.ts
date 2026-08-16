@@ -235,14 +235,12 @@ const shapeValidCatalog = {
 // ── Shape checking ───────────────────────────────────────────────
 
 describe('isWellFormedCatalog', () => {
-  // The fixture is the PRE-rename production catalog, whose versions carry
-  // `appProtocolVersion`. The shape rule now requires `abilityProtocolVersion`,
-  // so it must NOT validate — the deliberate break, asserted rather than left as
-  // a red test. Its SIGNATURE still verifies (above): the rename changes what we
-  // accept, never whether the platform signed those bytes. When the channel is
-  // re-signed a new fixture is captured and this flips back to `accepts`.
-  it('rejects the pre-rename catalog — the field rename is a deliberate break', () => {
-    expect(isWellFormedCatalog(catalog)).toBe(false);
+  // Valid again, and deliberately so. The shape check guarantees the fields
+  // callers dereference; the protocol version is not one of them. Requiring it
+  // made a CUMULATIVE catalog invalid the moment one historical version predated
+  // the rename — which is exactly what happened in production.
+  it('accepts the real catalog, old protocol field and all', () => {
+    expect(isWellFormedCatalog(catalog)).toBe(true);
   });
 
   it('rejects null and non-objects without throwing', () => {
@@ -480,7 +478,6 @@ describe('isWellFormedCatalog validates entries, not just the top level', () => 
       version: '1.0.0',
       manifestUrl: 'u',
       tarballUrl: 'u',
-      abilityProtocolVersion: '3.0',
       sizeBytes: 1,
       importName: 'n',
     };

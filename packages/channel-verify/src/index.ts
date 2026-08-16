@@ -458,7 +458,14 @@ function isWellFormedEntry(value: unknown): boolean {
         typeof ver.version === 'string' &&
         typeof ver.manifestUrl === 'string' &&
         typeof ver.tarballUrl === 'string' &&
-        typeof ver.abilityProtocolVersion === 'string' &&
+          // NOT abilityProtocolVersion. This predicate exists to guarantee the
+          // fields callers DEREFERENCE — version, tarballUrl, importName,
+          // sizeBytes. Nothing in the resolution path reads the protocol
+          // version, so requiring it rejects catalogs that resolve perfectly
+          // well. Not hypothetical: the catalog is CUMULATIVE, so a single
+          // historical version signed before the field was renamed made the
+          // whole catalog invalid and every install fail. A shape check must
+          // assert what it needs and nothing more.
         typeof ver.sizeBytes === 'number' &&
         typeof ver.importName === 'string'
       );
