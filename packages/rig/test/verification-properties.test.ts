@@ -56,7 +56,7 @@ const appArb = fc.record({
   const manifest: AbilityManifest = {
     name,
     version: '1.0.0',
-    appProtocolVersion: '3.0',
+    abilityProtocolVersion: '3.0',
     protocol: { name: protocolName, useWhen, tools: [...new Set(tools)] },
   };
   return {

@@ -17,7 +17,7 @@
  * - `P-no-prose-in-spine`     — `spine-render.test.ts` ("output shape is fixed across ability.skill / ability.examples content")
  * - `P-per-spawn-isolation`   — `spine-render.test.ts` ("does NOT include another ability templates")
  * - `P-metadata-grammar`      — `define-ability.test.ts` (identifier-regex + useWhen-forbidden-patterns + tools-uniqueness suites)
- * - `P-appProtocolVersion-compat` — **codified below** (gap closed by this file)
+ * - `P-abilityProtocolVersion-compat` — **codified below** (gap closed by this file)
  * - `P-no-ungranted-protected-dispatch` — `@lloyal-labs/lloyal-agents/test/authGuard.test.ts` (lives there because it exercises `DefaultAgentPolicy`)
  *
  * §10.3 (model-based routing equivalence) is intentionally absent —
@@ -35,7 +35,7 @@ import type { AbilityManifest, Source, Tool } from '@lloyal-labs/lloyal-agents';
 
 const baseManifest: AbilityManifest = {
   name: 'gate',
-  appProtocolVersion: '3.0',
+  abilityProtocolVersion: '3.0',
   protocol: {
     name: 'gate_research',
     useWhen: 'verify gate behavior',
@@ -66,44 +66,44 @@ function build(manifest: AbilityManifest) {
   });
 }
 
-// ── P-appProtocolVersion-compat ─────────────────────────────────
+// ── P-abilityProtocolVersion-compat ─────────────────────────────────
 
-describe('P-appProtocolVersion-compat (§10.4)', () => {
+describe('P-abilityProtocolVersion-compat (§10.4)', () => {
   it('accepts every version in SUPPORTED_ABILITY_PROTOCOL_VERSIONS', () => {
     for (const version of SUPPORTED_ABILITY_PROTOCOL_VERSIONS) {
-      expect(() => build({ ...baseManifest, appProtocolVersion: version })).not.toThrow();
+      expect(() => build({ ...baseManifest, abilityProtocolVersion: version })).not.toThrow();
     }
   });
 
-  it('accepts an undefined appProtocolVersion (abilities without one default to current)', () => {
-    expect(() => build({ ...baseManifest, appProtocolVersion: undefined })).not.toThrow();
+  it('accepts an undefined abilityProtocolVersion (abilities without one default to current)', () => {
+    expect(() => build({ ...baseManifest, abilityProtocolVersion: undefined })).not.toThrow();
   });
 
   it('rejects a version outside the supported set', () => {
-    expect(() => build({ ...baseManifest, appProtocolVersion: '4.0' })).toThrow(
-      /appProtocolVersion.*supported set/,
+    expect(() => build({ ...baseManifest, abilityProtocolVersion: '4.0' })).toThrow(
+      /abilityProtocolVersion.*supported set/,
     );
   });
 
   it('rejects an empty-string version', () => {
-    expect(() => build({ ...baseManifest, appProtocolVersion: '' })).toThrow(/appProtocolVersion/);
+    expect(() => build({ ...baseManifest, abilityProtocolVersion: '' })).toThrow(/abilityProtocolVersion/);
   });
 
   it('rejects a typo-shaped version (e.g. "3.0.1")', () => {
-    expect(() => build({ ...baseManifest, appProtocolVersion: '3.0.1' })).toThrow(/appProtocolVersion/);
+    expect(() => build({ ...baseManifest, abilityProtocolVersion: '3.0.1' })).toThrow(/abilityProtocolVersion/);
   });
 });
 
 // ── Factory manifest preserves the version round-trip ───────────
 
-describe('appProtocolVersion round-trip', () => {
+describe('abilityProtocolVersion round-trip', () => {
   it('preserves the version on the factory manifest', () => {
-    const factory = build({ ...baseManifest, appProtocolVersion: '3.0' });
-    expect(factory.manifest?.appProtocolVersion).toBe('3.0');
+    const factory = build({ ...baseManifest, abilityProtocolVersion: '3.0' });
+    expect(factory.manifest?.abilityProtocolVersion).toBe('3.0');
   });
 
   it('preserves undefined on the factory manifest (no implicit defaulting)', () => {
-    const factory = build({ ...baseManifest, appProtocolVersion: undefined });
-    expect(factory.manifest?.appProtocolVersion).toBeUndefined();
+    const factory = build({ ...baseManifest, abilityProtocolVersion: undefined });
+    expect(factory.manifest?.abilityProtocolVersion).toBeUndefined();
   });
 });

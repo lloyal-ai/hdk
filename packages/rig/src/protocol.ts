@@ -120,7 +120,7 @@ export interface ValidatedModelFamily {
  *
  * Extending the fleet for a new family requires re-running the
  * verification gates against that family and updating this
- * constant. `appProtocolVersion` does NOT bump for fleet expansion —
+ * constant. `abilityProtocolVersion` does NOT bump for fleet expansion —
  * only for changes to the marker, catalog format, or tool-selection
  * rule that require re-validation across all listed families.
  */
@@ -135,7 +135,7 @@ export const VALIDATED_MODELS_3_0: readonly ValidatedModelFamily[] = [
 /**
  * The Ability protocol version this build of `@lloyal-labs/rig` ships.
  *
- * Abilities declare `appProtocolVersion` in `ability.json`; `defineAbility` and
+ * Abilities declare `abilityProtocolVersion` in `ability.json`; `defineAbility` and
  * `registry.enable` refuse to enable abilities whose declared version is not in
  * {@link SUPPORTED_ABILITY_PROTOCOL_VERSIONS}.
  */

@@ -72,7 +72,7 @@
  * The canonical channel catalog URL. Clients never accept a URL argument — to
  * point at a different channel, fork this package and edit the constant.
  */
-export const CHANNEL_CATALOG_URL = 'https://apps.lloyal.ai/v1/catalog.json';
+export const CHANNEL_CATALOG_URL = 'https://apps.lloyal.ai/v1/abilities/catalog.json';
 
 /**
  * The current Lloyal platform Ed25519 public key (raw 32 bytes) —
@@ -213,7 +213,7 @@ export interface CatalogVersion {
   version: string;
   manifestUrl: string;
   tarballUrl: string;
-  appProtocolVersion: string;
+  abilityProtocolVersion: string;
   sizeBytes: number;
   /**
    * npm package name as declared in the tarball's `package.json`. The catalog
@@ -458,7 +458,7 @@ function isWellFormedEntry(value: unknown): boolean {
         typeof ver.version === 'string' &&
         typeof ver.manifestUrl === 'string' &&
         typeof ver.tarballUrl === 'string' &&
-        typeof ver.appProtocolVersion === 'string' &&
+        typeof ver.abilityProtocolVersion === 'string' &&
         typeof ver.sizeBytes === 'number' &&
         typeof ver.importName === 'string'
       );

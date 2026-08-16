@@ -201,11 +201,48 @@ describe('frozen production catalog', () => {
   });
 });
 
+
+/**
+ * A minimal catalog that is well-formed under the CURRENT shape rule.
+ *
+ * The frozen fixture deliberately is NOT — it predates the
+ * `appProtocolVersion` → `abilityProtocolVersion` rename. Shape-predicate tests
+ * need a valid document, which is a different job from the fixture's: the
+ * fixture is the SIGNATURE oracle, bytes no test can regenerate. Conflating the
+ * two is what made these tests fail for a reason unrelated to what they assert.
+ */
+const shapeValidCatalog = {
+  signedAt: '2026-08-16T00:00:00.000Z',
+  publisherKeyId: 'lloyal-platform-2026-q2',
+  signature: 'AA==',
+  entries: [
+    {
+      name: 'lloyal/example',
+      versions: [
+        {
+          version: '1.0.0',
+          manifestUrl: 'https://apps.lloyal.ai/v1/abilities/bundles/x.manifest.json',
+          tarballUrl: 'https://apps.lloyal.ai/v1/abilities/bundles/x.tgz',
+          abilityProtocolVersion: '3.0',
+          sizeBytes: 1,
+          importName: '@lloyal-labs/example-ability',
+        },
+      ],
+    },
+  ],
+};
+
 // ── Shape checking ───────────────────────────────────────────────
 
 describe('isWellFormedCatalog', () => {
-  it('accepts the real catalog', () => {
-    expect(isWellFormedCatalog(catalog)).toBe(true);
+  // The fixture is the PRE-rename production catalog, whose versions carry
+  // `appProtocolVersion`. The shape rule now requires `abilityProtocolVersion`,
+  // so it must NOT validate — the deliberate break, asserted rather than left as
+  // a red test. Its SIGNATURE still verifies (above): the rename changes what we
+  // accept, never whether the platform signed those bytes. When the channel is
+  // re-signed a new fixture is captured and this flips back to `accepts`.
+  it('rejects the pre-rename catalog — the field rename is a deliberate break', () => {
+    expect(isWellFormedCatalog(catalog)).toBe(false);
   });
 
   it('rejects null and non-objects without throwing', () => {
@@ -236,7 +273,7 @@ describe('isWellFormedCatalog', () => {
     // A well-formed document with a garbage signature must still pass the
     // shape gate — conflating the two would let a caller treat "parses" as
     // "verified".
-    expect(isWellFormedCatalog({ ...catalog, signature: 'not-base64!!' })).toBe(
+    expect(isWellFormedCatalog({ ...shapeValidCatalog, signature: 'not-base64!!' })).toBe(
       true,
     );
   });
@@ -336,7 +373,7 @@ describe('the base64 globals are a stated requirement, not an assumption', () =>
 
 describe('vendored constants', () => {
   it('points at the production channel', () => {
-    expect(CHANNEL_CATALOG_URL).toBe('https://apps.lloyal.ai/v1/catalog.json');
+    expect(CHANNEL_CATALOG_URL).toBe('https://apps.lloyal.ai/v1/abilities/catalog.json');
   });
 
   it('lists exactly the vendored key ids', () => {
@@ -443,7 +480,7 @@ describe('isWellFormedCatalog validates entries, not just the top level', () => 
       version: '1.0.0',
       manifestUrl: 'u',
       tarballUrl: 'u',
-      appProtocolVersion: '3.0',
+      abilityProtocolVersion: '3.0',
       sizeBytes: 1,
       importName: 'n',
     };
@@ -460,7 +497,7 @@ describe('isWellFormedCatalog validates entries, not just the top level', () => 
   });
 
   it('tolerates unknown fields so a newer catalog still validates', () => {
-    const withExtra = JSON.parse(JSON.stringify(catalog)) as Record<string, unknown>;
+    const withExtra = JSON.parse(JSON.stringify(shapeValidCatalog)) as Record<string, unknown>;
     (withExtra.entries as Record<string, unknown>[])[0].futureField = 'x';
     expect(isWellFormedCatalog(withExtra)).toBe(true);
   });

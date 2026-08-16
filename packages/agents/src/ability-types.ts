@@ -91,7 +91,7 @@ export type Service = (typeof SERVICES)[number];
 
 /**
  * The declarative ability manifest — content of `ability.json` plus the
- * `appProtocolVersion` declaration. Imported into the ability's factory
+ * `abilityProtocolVersion` declaration. Imported into the ability's factory
  * and passed to `defineAbility(...)`.
  *
  * `manifest.name` is the **ability identifier** used in code paths
@@ -107,7 +107,7 @@ export interface AbilityManifest {
    * refuses to register abilities whose declared version is not in
    * `SUPPORTED_ABILITY_PROTOCOL_VERSIONS` (currently `['3.0']`).
    */
-  readonly appProtocolVersion?: string;
+  readonly abilityProtocolVersion?: string;
   /** The model-facing identity. */
   readonly protocol: AbilityProtocol;
   /**

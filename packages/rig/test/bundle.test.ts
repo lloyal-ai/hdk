@@ -89,7 +89,7 @@ export default function* () {
     manifest: {
       name: ${JSON.stringify(abilityName)},
       version: '1.0.0',
-      appProtocolVersion: '3.0',
+      abilityProtocolVersion: '3.0',
       protocol: {
         name: ${JSON.stringify(protocolName)},
         useWhen: 'test bundle',
@@ -174,7 +174,7 @@ async function buildSignedCatalog(
       version: f.version,
       manifestUrl: f.manifestUrl,
       tarballUrl: f.tarballUrl,
-      appProtocolVersion: '3.0',
+      abilityProtocolVersion: '3.0',
       sizeBytes: f.tarballBytes.byteLength,
       importName: `@lloyal-labs/${f.name}-ability`,
     });
