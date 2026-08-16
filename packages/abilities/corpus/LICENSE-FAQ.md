@@ -22,7 +22,7 @@ Source License, Apache 2.0 future grant).
 
 Each version converts to Apache 2.0 two years after its release. The
 restriction during those two years is narrow: **you cannot offer a competing
-HDK runtime, a managed HDK service, or an alternative HDK Ability distribution
+HDK runtime, a managed HDK service, or an alternative Ability distribution
 channel.** Everything else — commercial use, redistribution, modification,
 sale, embedding in shipped products — is freely permitted.
 
@@ -33,26 +33,27 @@ the Ability ecosystem to one verified channel keeps the AI-safety review meaning
 (consumers can rely on a single trust boundary) and prevents protocol
 fragmentation (an Ability that works on one harness works on every harness).
 
-The `harness.dev` CLI and `hdk-create-app` scaffolder are licensed under
-**Apache 2.0** (unrestricted). They're not part of the runtime stack.
+The `lloyal-ai` CLI is licensed under **MIT**; the `hdk-create-app`
+scaffolder under **Apache 2.0**. Both are unrestricted, and neither is
+part of the runtime stack.
 
 ## Can I ship a commercial product built on HDK?
 
 **Yes.** This is the question everyone has and the answer is straightforward.
 Concretely:
 
-- **Shipping a paid intelligent inbox ability to consumers** — permitted ✅
-- **Selling an Excel-with-AI desktop ability to enterprises** — permitted ✅
+- **Shipping a paid intelligent inbox app to consumers** — permitted ✅
+- **Selling an Excel-with-AI desktop app to enterprises** — permitted ✅
 - **Embedding HDK in a medical device sold commercially** — permitted ✅
 - **A consulting firm building a custom intelligent harness for a Fortune
   500 client, charging $500K for the engagement, deploying on client
   infrastructure** — permitted ✅
-- **An indie dev shipping a paid productivity ability on the Mac Ability Store** —
+- **An indie dev shipping a paid productivity app on the Mac App Store** —
   permitted ✅
 - **An OEM shipping HDK inside an infotainment system or industrial device**
   — permitted ✅
 - **A startup building an end-user product on top of HDK** — including
-  vertical research abilities, workflow tools, and agent applications — permitted
+  vertical research apps, workflow tools, and agent applications — permitted
   ✅, *as long as the product is not offering HDK itself as a substitute
   runtime, managed HDK service, or competing Ability distribution channel*.
 - **A research lab using HDK in published academic work** — permitted ✅
@@ -75,7 +76,7 @@ platform vendor**. Concretely:
   intended as a drop-in replacement** — restricted ❌ (Competing Use doesn't
   require forking source code — a reimplementation that competes is the
   same problem)
-- **Launching `abilities.competitor.com` as an alternative HDK Ability distribution
+- **Launching `apps.competitor.com` as an alternative Ability distribution
   channel** — restricted ❌
 - **Offering "managed HDK hosting" or "HDK-as-a-Service" as a competing
   SaaS** — restricted ❌
@@ -170,7 +171,7 @@ What this means practically:
 
 ## Why FSL specifically — why not stay Apache?
 
-HDK 3.0 introduces installable HDK Abilities. Every Ability declares against a
+HDK 3.0 introduces installable Abilities. Every Ability declares against a
 specific Ability protocol — the bytes-locked intro, catalog format,
 tool-selection rule, and boundary marker that the runtime renders into
 the spine. Your Ability's reliability depends on every HDK runtime your users
@@ -217,8 +218,8 @@ standard FSL because it's:
 | `@lloyal-labs/lloyal-sdk` | FSL-1.1-Apache-2.0 | Runtime framework |
 | `@lloyal-labs/rig` | FSL-1.1-Apache-2.0 | Runtime framework — holds the Ability protocol |
 | `@lloyal-labs/corpus`, `@lloyal-labs/web` | FSL-1.1-Apache-2.0 | Reference Abilities shipped in-tree |
-| **`@lloyal-labs/harness-cli` (the `harness.dev` CLI)** | **Apache 2.0** | Scaffolder — unrestricted for scaffolding new harnesses and Abilities |
-| **`hdk-create-app`** (when shipped) | **Apache 2.0** | Scaffolder — same as above |
+| **`lloyal-ai`** (the CLI) | **MIT** | Scaffolder — unrestricted for scaffolding new harnesses and Abilities |
+| **`hdk-create-app`** (when shipped) | **Apache 2.0** | Scaffolder — unrestricted, not part of the runtime stack |
 | `llama.cpp` (vendored dependency) | MIT (unchanged) | External upstream library; we don't relicense their code |
 
 ## Can I contribute to HDK?
