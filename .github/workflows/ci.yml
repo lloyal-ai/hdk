@@ -51,7 +51,7 @@ jobs:
           node-version: 24
 
       - run: npm install
-      - run: npx tsc -b packages/sdk packages/agents packages/rig packages/channel-verify
+      - run: npx tsc -b packages/sdk packages/agents packages/rig packages/channel-verify packages/abilities/timeline
 
   gpu-tests:
     name: GPU Integration Tests

@@ -55,7 +55,7 @@ jobs:
           test -f packages/channel-verify/dist/esm/package.json
 
       - name: Typecheck
-        run: npx tsc -b packages/sdk packages/agents packages/rig packages/channel-verify packages/binding packages/relay packages/host
+        run: npx tsc -b packages/sdk packages/agents packages/rig packages/channel-verify packages/binding packages/relay packages/host packages/abilities/timeline
 
       - name: Publish packages
         if: success() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.skip_publish))
