@@ -82,3 +82,5 @@ export { SERVICES } from './ability-types';
 export type { AbilityConfigStore } from './ability-config';
 export type { GrantStore } from './grant-store';
 export type { Resource, Chunk, ScoredChunk, ScoredResult, Reranker } from './chunk';
+export type { Cite, EvidenceRegion, EvidenceDocument } from './evidence';
+export { resolveCites, assertWellFormedDocument, EvidenceDocumentError } from './evidence';
