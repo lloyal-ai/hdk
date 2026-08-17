@@ -56,6 +56,14 @@ export interface AssertionSupport {
   span: [number, number];
   /** Every region the span touches — a sentence can cross a page or speaker. */
   cites: Cite[];
+  /**
+   * The words the extractor said it was pointing at.
+   *
+   * `document.text.slice(...span)` must equal this. It is the only way to catch
+   * an offset that is in bounds and wrong — which is what a segment-local index
+   * becomes when it escapes into a document-level field.
+   */
+  quote: string;
 }
 
 /**

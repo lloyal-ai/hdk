@@ -22,6 +22,16 @@ export interface ExtractedEvent {
   description: string;
   /** Offsets into the SEGMENT; converted to document offsets before citing. */
   span: [number, number];
+  /**
+   * The exact words at `span`, as the skill instructs the model to quote them.
+   *
+   * Carried so the span can be VERIFIED rather than trusted. A segment-local
+   * offset that escapes into a document-level field stays in bounds and still
+   * resolves to a region — valid, self-consistent, and pointing at the wrong
+   * sentence. Comparing the quote against the text at the resolved span is what
+   * makes that visible.
+   */
+  quote: string;
   dateExpr: DateExpr;
   temporalStatus: TimelineAssertion['temporalStatus'];
   epistemicStatus: TimelineAssertion['epistemicStatus'];
@@ -146,6 +156,7 @@ export class BuildTimelineTool extends Tool<{ documents: EvidenceDocument[] }> {
             docId: doc.id,
             span,
             cites: resolveCites(doc, span),
+            quote: event.quote,
           };
           const assertion: TimelineAssertion = {
             id: `a${++seq}`,
