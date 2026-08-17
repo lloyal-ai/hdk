@@ -1,0 +1,18 @@
+{
+  "name": "timeline",
+  "abilityProtocolVersion": "3.0",
+  "protocol": {
+    "name": "timeline_chronology",
+    "useWhen": "reconstructing when events happened across evidence too large, indirect or contradictory for a single-context answer — building a chronology, establishing sequence, or ordering records whose order matters.",
+    "tools": ["build_timeline"]
+  },
+  "configSchema": {
+    "type": "object",
+    "required": ["locale"],
+    "properties": {
+      "locale": { "type": "string" },
+      "criteria": { "type": "string" },
+      "segmentChars": { "type": "number" }
+    }
+  }
+}

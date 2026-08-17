@@ -1,0 +1,34 @@
+{
+  "name": "@lloyal-labs/timeline-ability",
+  "version": "2.0.0",
+  "private": true,
+  "description": "HDK ability — turns documents and transcripts into a cited chronology, preserving partial dates, attributed claims and processing failures. Distributed via the signed channel, never public npm.",
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "ability.json",
+    "skill.eta",
+    "attention-surface.json",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "chrono-node": "^2.10.1"
+  },
+  "peerDependencies": {
+    "@lloyal-labs/lloyal-agents": "^5.0.0",
+    "@lloyal-labs/rig": "^5.0.0",
+    "effection": "^4.0.2"
+  }
+}
