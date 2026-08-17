@@ -1,6 +1,6 @@
 import { createContext } from "@lloyal-labs/lloyal.node";
 import { Rerank } from "@lloyal-labs/sdk";
-import type { SessionContext } from "@lloyal-labs/sdk";
+import type { SessionContext, RerankTask } from "@lloyal-labs/sdk";
 import { resource, call } from "effection";
 import type { Operation } from "effection";
 import type { Chunk, Reranker, ScoredResult } from "@lloyal-labs/lloyal-agents";
@@ -18,6 +18,12 @@ export interface RerankerLoadOpts {
   nCtx?: number;
   /** Decode batch size (default floor(nCtx / nSeqMax)). */
   nBatch?: number;
+  /**
+   * The scoring question, with its calibration fixtures. Defaults to
+   * retrieval relevance. A different task means a different instruction in
+   * the warm trunk, so it is bound here rather than per score() call.
+   */
+  task?: RerankTask;
 }
 
 /**
@@ -73,7 +79,7 @@ export function createReranker(
       typeV: 'q4_0',
     }));
     const rerank = yield* call(() =>
-      Rerank.create(ctx as unknown as SessionContext, { nSeqMax, nCtx }),
+      Rerank.create(ctx as unknown as SessionContext, { nSeqMax, nCtx, task: opts?.task }),
     );
 
     let disposed = false;

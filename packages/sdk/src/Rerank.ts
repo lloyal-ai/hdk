@@ -6,17 +6,78 @@ const SYSTEM_PROMPT =
   'Judge whether the Document meets the requirements based on the Query ' +
   'and the Instruct provided. Note that the answer can only be "yes" or "no".';
 
-const USER_PREFIX =
-  '<Instruct>: Given a web search query, retrieve relevant passages that answer the query\n\n' +
-  '<Query>: ';
+/**
+ * A scoring question, with the fixtures and thresholds that make its answers
+ * mean something.
+ *
+ * The reranker is a pointwise instruction-following judge, not a similarity
+ * model: {@link SYSTEM_PROMPT} asks it to judge the Document against the Query
+ * *and the Instruct provided*, and the score is `logit("yes") − logit("no")`. So
+ * the criterion is a sentence, and changing the sentence changes the question
+ * the same weights answer — retrieval, entailment, support-for-a-claim, policy
+ * conformance.
+ *
+ * The instruction, its canaries and its thresholds travel together **as one
+ * unit** because they are only meaningful together. An instruction whose
+ * thresholds live elsewhere drifts silently: someone improves the wording, the
+ * calibrated threshold stays put, and the score quietly stops meaning what the
+ * gate assumes. `version` bumps when EITHER changes.
+ *
+ * BOUND AT CONSTRUCTION, never mutated. The instruction is prefilled once into
+ * the warm trunk (see the architecture note on {@link Rerank}) and lives for the
+ * instance's lifetime, so selecting a different task means a different
+ * `Rerank` — which is also a different `SessionContext`, since each instance
+ * takes exclusive decode ownership of its own.
+ *
+ * @category Rerank
+ */
+export interface RerankTask {
+  /** Stable identity for audit — e.g. `'retrieval/v1'`. */
+  id: string;
+  /** The `<Instruct>` line. Stated as the question, without the tag. */
+  instruction: string;
+  /**
+   * Boot fixtures for THIS question. The shipped pair is retrieval-shaped; a
+   * support or policy instruction reusing them would pass the boot gate while
+   * validating nothing, because the gate is only as good as its fixtures.
+   */
+  canary: {
+    query: string;
+    /** Must score positive under `instruction`. */
+    positive: string;
+    /** Must score negative under `instruction`. */
+    negative: string;
+    /**
+     * Minimum `positive − negative` logit gap. Asserts the SEPARATION, not the
+     * sign — a model that ranks both highly has not demonstrated it can tell
+     * them apart.
+     */
+    minGap: number;
+  };
+}
 
-// Boot canary fixtures — hardcoded to Qwen3-reranker semantics. If you swap
-// reranker models, re-run the calibration probe and update these fixtures.
-const CANARY_QUERY = 'What is the capital of France?';
-const CANARY_RELEVANT_DOC =
-  'Paris is the capital and most populous city of France.';
-const CANARY_IRRELEVANT_DOC =
-  'Photosynthesis converts carbon dioxide and water into glucose.';
+/**
+ * The default question: retrieval relevance, as every caller before task
+ * profiles existed. Unchanged wording, so existing behaviour is bit-identical.
+ */
+export const RETRIEVAL_TASK: RerankTask = {
+  id: 'retrieval/v1',
+  instruction:
+    'Given a web search query, retrieve relevant passages that answer the query',
+  // Hardcoded to Qwen3-reranker semantics. If you swap reranker models, re-run
+  // the calibration probe and update these fixtures.
+  canary: {
+    query: 'What is the capital of France?',
+    positive: 'Paris is the capital and most populous city of France.',
+    negative: 'Photosynthesis converts carbon dioxide and water into glucose.',
+    minGap: 1.0,
+  },
+};
+
+/** Render a task's instruction into the prompt prefix the trunk holds. */
+function userPrefixFor(task: RerankTask): string {
+  return `<Instruct>: ${task.instruction}\n\n<Query>: `;
+}
 
 // Sentinel strings used to discover segment boundaries inside the rendered
 // chat probe. Longer ASCII (not NUL bytes) survives tokenizer normalization;
@@ -80,6 +141,17 @@ export interface RerankOpts {
    * (`rerank:truncate`) or to a metric. Silent in the SDK by default.
    */
   onTruncate?: (event: RerankTruncation) => void;
+  /**
+   * The question this instance answers. Defaults to {@link RETRIEVAL_TASK},
+   * so existing callers are unchanged.
+   *
+   * Bound here rather than per call because the instruction is prefilled
+   * into the warm trunk once at construction: a task swap is a new
+   * instance, which is a new SessionContext. Two questions asked often
+   * therefore means two instances — each holding one sequence lease, not
+   * one model context each.
+   */
+  task?: RerankTask;
 }
 
 interface ProgressSink {
@@ -171,10 +243,10 @@ function channel<T>(onCancel?: () => void): {
  *
  * # Architecture
  *
- *   [SYSTEM][USER_PREFIX][QUERY][MID][DOC_i][SUFFIX][GEN_PROMPT]
+ *   [SYSTEM][<Instruct>][QUERY][MID][DOC_i][SUFFIX][GEN_PROMPT]
  *   └── permanent trunk ─┘ └── per-query branch ──┘ └─── per-chunk leaves ─┘
  *
- * - **trunk**: prefilled with the static [SYSTEM][USER_PREFIX] segment ONCE
+ * - **trunk**: prefilled with the task's [SYSTEM][<Instruct>] segment ONCE
  *   at `Rerank.create()`; lives for the instance lifetime. Warm KV is
  *   amortized across every score() via multi-tag KV survival.
  * - **queryBranch**: forked from trunk per score() call, prefilled with
@@ -235,6 +307,8 @@ export class Rerank {
   private _suffixTokens: number[];
   private _staticPrefix: number[];
   private _onTruncate?: (event: RerankTruncation) => void;
+  /** The question this instance was calibrated for. */
+  readonly task: RerankTask;
   private _inflight: Promise<void> = Promise.resolve();
   private _disposed = false;
 
@@ -249,7 +323,8 @@ export class Rerank {
     staticPrefix: number[],
     midTokens: number[],
     suffixTokens: number[],
-    onTruncate?: (event: RerankTruncation) => void,
+    onTruncate: ((event: RerankTruncation) => void) | undefined,
+    task: RerankTask,
   ) {
     this._ctx = ctx;
     this._store = store;
@@ -262,6 +337,7 @@ export class Rerank {
     this._midTokens = midTokens;
     this._suffixTokens = suffixTokens;
     this._onTruncate = onTruncate;
+    this.task = task;
   }
 
   /**
@@ -284,6 +360,8 @@ export class Rerank {
       );
     }
 
+    const task = opts?.task ?? RETRIEVAL_TASK;
+    const userPrefix = userPrefixFor(task);
     const nSeqMax = opts?.nSeqMax ?? 10;
     const nCtx = opts?.nCtx ?? ctx._storeKvPressure().nCtx;
 
@@ -312,7 +390,7 @@ export class Rerank {
         { role: 'system', content: SYSTEM_PROMPT },
         {
           role: 'user',
-          content: `${USER_PREFIX}${SENTINEL_Q}\n\n<Document>: ${SENTINEL_D}`,
+          content: `${userPrefix}${SENTINEL_Q}\n\n<Document>: ${SENTINEL_D}`,
         },
       ]),
       { addGenerationPrompt: true, enableThinking: false },
@@ -347,14 +425,14 @@ export class Rerank {
     // length. Exact-equality was too strict for the Qwen3-reranker template
     // (it drifts by ~3 tokens on the canary prompt, but the boot canary
     // still scores cleanly).
-    const canaryQueryTokens = await ctx.tokenize(CANARY_QUERY, false);
-    const canaryDocTokens = await ctx.tokenize(CANARY_RELEVANT_DOC, false);
+    const canaryQueryTokens = await ctx.tokenize(task.canary.query, false);
+    const canaryDocTokens = await ctx.tokenize(task.canary.positive, false);
     const canaryWhole = await ctx.formatChat(
       JSON.stringify([
         { role: 'system', content: SYSTEM_PROMPT },
         {
           role: 'user',
-          content: `${USER_PREFIX}${CANARY_QUERY}\n\n<Document>: ${CANARY_RELEVANT_DOC}`,
+          content: `${userPrefix}${task.canary.query}\n\n<Document>: ${task.canary.positive}`,
         },
       ]),
       { addGenerationPrompt: true, enableThinking: false },
@@ -401,6 +479,7 @@ export class Rerank {
         midTokens,
         suffixTokens,
         opts?.onTruncate,
+        task,
       );
 
       // Calibration gate 3: boot canary RELATIVE ordering.
@@ -418,21 +497,23 @@ export class Rerank {
       // scores → no consistent ordering), template drift (random scores) —
       // without false-positiving on aggressively-quantized models that
       // produce shifted-but-monotone score distributions.
-      const canaryScores = await r.scoreBatch(CANARY_QUERY, [
-        CANARY_RELEVANT_DOC,
-        CANARY_IRRELEVANT_DOC,
+      const canaryScores = await r.scoreBatch(task.canary.query, [
+        task.canary.positive,
+        task.canary.negative,
       ]);
       const gap = canaryScores[0] - canaryScores[1];
-      if (!(gap > 1.0)) {
+      if (!(gap > task.canary.minGap)) {
         throw new RerankCalibrationError(
-          `Boot canary failed: relevant pair scored ` +
-            `${canaryScores[0].toFixed(3)}, irrelevant pair scored ` +
-            `${canaryScores[1].toFixed(3)} (gap=${gap.toFixed(3)}, ` +
-            `expected > 1.0). Possible causes: yes/no token id swap, ` +
-            `reranker model swap, or chat template drift. ` +
-            `Canary pair: query=${JSON.stringify(CANARY_QUERY)}, ` +
-            `relevant=${JSON.stringify(CANARY_RELEVANT_DOC)}, ` +
-            `irrelevant=${JSON.stringify(CANARY_IRRELEVANT_DOC)}.`,
+          `Boot canary failed for task ${JSON.stringify(task.id)}: ` +
+            `positive scored ${canaryScores[0].toFixed(3)}, negative scored ` +
+            `${canaryScores[1].toFixed(3)} (gap=${gap.toFixed(3)}, expected > ` +
+            `${task.canary.minGap}). Possible causes: yes/no token id swap, ` +
+            `reranker model swap, chat template drift — or fixtures that do ` +
+            `not exercise this instruction. ` +
+            `Instruct: ${JSON.stringify(task.instruction)}. ` +
+            `Canary: query=${JSON.stringify(task.canary.query)}, ` +
+            `positive=${JSON.stringify(task.canary.positive)}, ` +
+            `negative=${JSON.stringify(task.canary.negative)}.`,
         );
       }
 

@@ -2,8 +2,8 @@ export { Branch, BranchSampleError } from './Branch';
 export type { ForkOpts } from './Branch';
 export { BranchStore } from './BranchStore';
 export { Session } from './Session';
-export { Rerank, RerankCalibrationError, RerankInternalError } from './Rerank';
-export type { RerankOpts, RerankTruncation } from './Rerank';
+export { Rerank, RerankCalibrationError, RerankInternalError, RETRIEVAL_TASK } from './Rerank';
+export type { RerankOpts, RerankTruncation, RerankTask } from './Rerank';
 export { buildUserDelta, buildAssistantDelta, buildToolResultDelta, buildTurnDelta } from './deltas';
 export type { DeltaOpts } from './deltas';
 
