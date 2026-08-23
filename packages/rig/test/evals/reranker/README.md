@@ -28,7 +28,7 @@ which is gitignored for that reason.
 
 - **Swapping the reranker model.** `Rerank.ts` says it outright: re-run the
   calibration and update the fixtures. Canaries are Qwen3-Reranker-shaped.
-- **Adding a `RerankTask` profile.** A profile's `minGap` and any threshold must
+- **Adding a `RerankInstruction`.** Its `smokeTest.minGap` and any threshold must
   clear the noise floor by a comfortable multiple, and a gate is only as good as
   its fixtures — the shipped ones test retrieval and validate nothing else.
 - **Touching KV type, `nSeqMax`, `nCtx`, or the batching path.**
@@ -61,6 +61,15 @@ it as *top-K within a query*, never as a global threshold. That is what
 `SearchTool` documents its floor as "a discrimination signal, not an absolute
 relevance line".
 
-**Instruction wording dominates direction.** Compound instructions ("date AND
-actor AND modality") invert the ranking — wrong-actor outscores verbatim. A
-cross-encoder follows one criterion, not a conjunction of three.
+**Instruction wording dominates.** Compound instructions ("date AND actor AND
+modality") invert the ranking — wrong-actor outscores verbatim. A cross-encoder
+follows one criterion, not a conjunction of three.
+
+**The two directions are different questions, not a fair race.**
+`assertion-as-query` scores topically-distinct passages against one claim —
+close to retrieval, wide margins (1.8–2.8), easy. `passage-as-query` scores
+near-identical assertions against one passage — the real support judgement, and
+thin (`factcheck` 0.135, `entailment` 0.059, `compound` inverted). Judge a
+support instruction on the left column. An earlier revision compared the two as
+if one were "7x better"; that came from scoring each pair under its own query
+and comparing across queries — the very error this suite exists to document.

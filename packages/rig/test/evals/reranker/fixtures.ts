@@ -49,9 +49,11 @@ export async function contextWithKv(
 /**
  * An instruction wired for measurement.
  *
- * `minGap` is 0 BY DESIGN: the boot smoke test certifies a question, and these
- * runs are what establish whether the question is answerable at all. Gating
- * hard here would refuse to start for the very reason being measured.
+ * `minGap` is -Infinity BY DESIGN — the gate must be OFF, not merely loose.
+ * `Rerank.create` requires `gap > minGap`, so 0 still rejects a zero or inverted
+ * ordering. That is precisely the outcome a calibration harness exists to
+ * observe: `compound` INVERTS, and a gate that refuses to start on inversion
+ * would suppress the most useful negative result here.
  */
 export function probeInstruction(text: string): RerankInstruction {
   return {
@@ -60,7 +62,7 @@ export function probeInstruction(text: string): RerankInstruction {
       query: 'The assessor attended the property on 12 March 2024.',
       matching: 'The assessor attended the property on 12 March 2024.',
       nonMatching: 'Photosynthesis converts carbon dioxide and water into glucose.',
-      minGap: 0.0,
+      minGap: Number.NEGATIVE_INFINITY,
     },
   };
 }
@@ -186,8 +188,29 @@ export const IDENTITY_CASES: CaseGroup[] = [
 ];
 
 /**
- * The pairs that discriminate hardest, for the direction × wording matrix.
- * Grouped: within a group, the supported case must outscore the others.
+ * ONE assertion as `<Query>`, its true passage against competing passages as
+ * `<Document>`s — a single batch, so every score shares a query and the margin
+ * is real.
+ *
+ * This exists because the obvious construction is WRONG. Scoring each
+ * (passage, assertion) pair separately and comparing across them puts a
+ * DIFFERENT assertion in query position per row, and the scale shifts per
+ * query — which is the finding this whole suite establishes. Margins built that
+ * way are not comparable, however sensible the table looks.
+ */
+export const ASSERTION_AS_QUERY: { assertion: string; truePassage: string; note: string }[] = [
+  { assertion: 'The assessor attended the property on 12 March 2024.', truePassage: SUPPORT_CASES[0].passage, note: 'verbatim vs other passages' },
+  { assertion: 'The inspection was scheduled for 18 March 2024.', truePassage: SUPPORT_CASES[1].passage, note: 'scheduled vs other passages' },
+  { assertion: 'The claimant alleges payment was made on 3 April 2024.', truePassage: SUPPORT_CASES[2].passage, note: 'allegation vs other passages' },
+];
+
+/** Every passage, so a true one can be scored against genuine competitors. */
+export const ALL_PASSAGES: string[] = SUPPORT_CASES.map((c) => c.passage);
+
+/**
+ * The pairs that discriminate hardest, for the passage-as-query direction.
+ * Grouped: within a group all rows SHARE a passage, so the scores share a query
+ * and the within-group margin is meaningful.
  */
 export const DISCRIMINATING: { passage: string; assertion: string; supported: boolean; note: string; group: number }[] = [
   { group: 0, passage: SUPPORT_CASES[0].passage, assertion: 'The assessor attended the property on 12 March 2024.', supported: true, note: 'verbatim' },

@@ -110,7 +110,8 @@ export function createReranker(
       // measurement error, and any score threshold was inside the noise. The
       // +322 MiB buys a judge whose scores mean what they say.
       //
-      // Reproduce with scripts/probe-scatter-vs-serial.ts <type>.
+      // Reproduce: `npm run eval:reranker`, or
+      // `npx tsx packages/rig/test/evals/reranker/isolation.eval.ts q4_0 q8_0 f16`.
       typeK: opts?.typeK ?? 'f16',
       typeV: opts?.typeV ?? 'f16',
     }));
@@ -119,6 +120,15 @@ export function createReranker(
         nSeqMax,
         nCtx,
         instruction: opts?.instruction,
+      }).catch((err: unknown) => {
+        // A failing smoke test is a NORMAL configuration outcome now that the
+        // instruction is a parameter — not an exotic crash. `Rerank.create`
+        // scrubs its own trunk and decode-owner mark but does NOT own the
+        // context, so without this the caller's f16 context (448 MiB at nCtx
+        // 4096) leaks: the throw escapes before `provide`, so the try/finally
+        // below never runs.
+        ctx.dispose();
+        throw err;
       }),
     );
 

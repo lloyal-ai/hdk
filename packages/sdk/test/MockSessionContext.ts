@@ -202,6 +202,27 @@ export class MockSessionContext implements SessionContext {
   _branchModelEntropy(_handle: number, _base?: string): number { return 0.5; }
   _branchModelSurprisal(_handle: number, _token: number, _base?: string): number { return 1.0; }
   _branchGetLogits(_handle: number): Float32Array { return new Float32Array(1); }
+
+  /**
+   * The two logits `Rerank` reads per leaf (`logit(yes)`, `logit(no)`), consumed
+   * in call order so a test can shape a smoke-test gap.
+   *
+   * Default: first read scores +3.0, second −1.0 → a gap of 4.0. That lets a
+   * test assert a `minGap` BELOW it passes and one ABOVE it fails, which is the
+   * only way to prove a custom `minGap` is actually threaded rather than
+   * defaulted.
+   */
+  logitsSequence: Array<[number, number]> = [[3.0, 0.0], [0.0, 1.0]];
+  private _logitsAtCall = 0;
+
+  _branchLogitsAt(_handle: number, _indices: Int32Array): Float32Array {
+    const v = this.logitsSequence[this._logitsAtCall % this.logitsSequence.length];
+    this._logitsAtCall++;
+    return new Float32Array(v);
+  }
+
+  /** Every `formatChat` payload, so a test can assert what reached the prompt. */
+  formatChatCalls: string[] = [];
   _branchSetLogits(_handle: number, _logits: Float32Array): void { /* mock no-op */ }
 
   _branchForkHead(handle: number): number {
@@ -270,6 +291,7 @@ export class MockSessionContext implements SessionContext {
   // ── Chat formatting ───────────────────────────────────────────
 
   formatChatSync(msgs: string, _opts?: FormatChatOptions | string): FormattedChatResult {
+    this.formatChatCalls.push(msgs);
     return {
       prompt: `<formatted>${msgs}</formatted>`,
       format: 2 as ChatFormat, // >1 to pass tool-calling support check
