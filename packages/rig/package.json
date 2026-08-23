@@ -42,7 +42,7 @@
   "dependencies": {
     "@lloyal-labs/channel-verify": "^0.3.1",
     "@lloyal-labs/lloyal-agents": "^5.0.0",
-    "@lloyal-labs/sdk": "^3.0.0",
+    "@lloyal-labs/sdk": "^3.1.0",
     "@mozilla/readability": "^0.6.0",
     "effection": "^4.0.2",
     "ignore": "^7.0.5",

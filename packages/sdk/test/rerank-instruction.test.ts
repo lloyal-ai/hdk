@@ -85,6 +85,48 @@ describe('RerankOpts.instruction', () => {
     expect(msg).toContain('99');
   });
 
+  it('rejects non-finite scores instead of letting Infinity clear the bar', async () => {
+    // A `>` comparison is not a finiteness check. An Infinity matching score
+    // against a finite non-matching one gives gap = Infinity, which clears
+    // EVERY threshold — so a model emitting broken logits would boot clean.
+    const ctx = mock();
+    ctx.logitsSequence = [[Infinity, 0.0], [0.0, 1.0]];
+    await expect(
+      Rerank.create(ctx as unknown as SessionContext, {}),
+    ).rejects.toThrow(RerankCalibrationError);
+  });
+
+  it('rejects a NaN score', async () => {
+    // Characterisation, not a new guard: NaN already fails closed because the
+    // comparison is written `!(gap > minGap)` and NaN loses every comparison.
+    // Pinned so a later rewrite to `gap <= minGap` cannot silently invert it.
+    const ctx = mock();
+    ctx.logitsSequence = [[NaN, 0.0], [0.0, 1.0]];
+    await expect(
+      Rerank.create(ctx as unknown as SessionContext, {}),
+    ).rejects.toThrow(RerankCalibrationError);
+  });
+
+  it('refuses a non-finite minGap rather than treating it as a disable', async () => {
+    // -Infinity admits any gap. Allowing it would create a second, silent way
+    // to switch the gate off when `smokeTest: 'none'` is the documented one.
+    const ctx = mock();
+    let msg = '';
+    try {
+      await Rerank.create(ctx as unknown as SessionContext, {
+        instruction: {
+          ...CUSTOM,
+          smokeTest: { ...CUSTOM.smokeTest, minGap: -Infinity },
+        },
+      });
+    } catch (e) {
+      msg = (e as Error).message;
+    }
+    expect(msg).toContain('must be finite');
+    // And it points at the supported way to boot ungated.
+    expect(msg).toContain("smokeTest: 'none'");
+  });
+
   it('the DEFAULT path still gates at 1.0 — production behaviour, unchanged', async () => {
     // The union refactor must not loosen the shipped gate. A gap below 1.0 on
     // the default instruction must still refuse to boot, exactly as it did when

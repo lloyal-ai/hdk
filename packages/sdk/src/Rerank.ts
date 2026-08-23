@@ -492,25 +492,47 @@ export class Rerank {
       // without false-positiving on aggressively-quantized models that
       // produce shifted-but-monotone score distributions.
       if (smoke !== 'none') {
-      const canaryScores = await r.scoreBatch(smoke.query, [
-        smoke.matching,
-        smoke.nonMatching,
-      ]);
-      const gap = canaryScores[0] - canaryScores[1];
-      if (!(gap > smoke.minGap)) {
-        throw new RerankCalibrationError(
-          `Boot smoke test failed: matching scored ` +
-            `${canaryScores[0].toFixed(3)}, non-matching scored ` +
-            `${canaryScores[1].toFixed(3)} (gap=${gap.toFixed(3)}, ` +
-            `expected > ${smoke.minGap}). Possible causes: ` +
-            `yes/no token id swap, reranker model swap, chat template drift — ` +
-            `or fixtures that do not exercise this instruction. ` +
-            `Instruct: ${JSON.stringify(instruction.text)}. ` +
-            `Smoke test: query=${JSON.stringify(smoke.query)}, ` +
-            `matching=${JSON.stringify(smoke.matching)}, ` +
-            `nonMatching=${JSON.stringify(smoke.nonMatching)}.`,
-        );
-      }
+        // A non-finite threshold slips the comparison below — -Infinity would
+        // admit anything, making it a second, undocumented way to disable the
+        // gate when `smokeTest: 'none'` is already the documented one. Checked
+        // before scoring, so a misconfiguration costs no decode.
+        if (!Number.isFinite(smoke.minGap)) {
+          throw new RerankCalibrationError(
+            `Boot smoke test misconfigured: minGap must be finite, got ` +
+              `${smoke.minGap}. To boot without a calibration gate, set ` +
+              `smokeTest: 'none'.`,
+          );
+        }
+
+        const canaryScores = await r.scoreBatch(smoke.query, [
+          smoke.matching,
+          smoke.nonMatching,
+        ]);
+        const gap = canaryScores[0] - canaryScores[1];
+
+        // Non-finite scores are a broken model, not a narrow margin, and `>`
+        // lets them through: an Infinity matching score against a finite
+        // non-matching one gives gap = Infinity, which clears every threshold.
+        // isolation.eval.ts treats non-finite logits as a native regression;
+        // the boot gate has to agree with it.
+        const finite =
+          Number.isFinite(canaryScores[0]) && Number.isFinite(canaryScores[1]);
+
+        if (!finite || !(gap > smoke.minGap)) {
+          throw new RerankCalibrationError(
+            `Boot smoke test failed: matching scored ` +
+              `${canaryScores[0].toFixed(3)}, non-matching scored ` +
+              `${canaryScores[1].toFixed(3)} (gap=${gap.toFixed(3)}, ` +
+              `expected > ${smoke.minGap}). Possible causes: ` +
+              `non-finite logits, yes/no token id swap, reranker model swap, ` +
+              `chat template drift — or fixtures that do not exercise this ` +
+              `instruction. ` +
+              `Instruct: ${JSON.stringify(instruction.text)}. ` +
+              `Smoke test: query=${JSON.stringify(smoke.query)}, ` +
+              `matching=${JSON.stringify(smoke.matching)}, ` +
+              `nonMatching=${JSON.stringify(smoke.nonMatching)}.`,
+          );
+        }
       }
 
       return r;
