@@ -49,22 +49,12 @@ export async function contextWithKv(
 /**
  * An instruction wired for measurement.
  *
- * `minGap` is -Infinity BY DESIGN — the gate must be OFF, not merely loose.
- * `Rerank.create` requires `gap > minGap`, so 0 still rejects a zero or inverted
- * ordering. That is precisely the outcome a calibration harness exists to
- * observe: `compound` INVERTS, and a gate that refuses to start on inversion
- * would suppress the most useful negative result here.
+ * `smokeTest: 'none'` BY DESIGN. A calibration harness exists to observe
+ * instructions that FAIL — `compound` inverts — and a gate that rejects
+ * inversion would suppress the most useful negative result here.
  */
 export function probeInstruction(text: string): RerankInstruction {
-  return {
-    text,
-    smokeTest: {
-      query: 'The assessor attended the property on 12 March 2024.',
-      matching: 'The assessor attended the property on 12 March 2024.',
-      nonMatching: 'Photosynthesis converts carbon dioxide and water into glucose.',
-      minGap: Number.NEGATIVE_INFINITY,
-    },
-  };
+  return { text, smokeTest: 'none' };
 }
 
 // ── Instruction wordings ─────────────────────────────────────

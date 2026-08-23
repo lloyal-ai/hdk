@@ -85,6 +85,42 @@ describe('RerankOpts.instruction', () => {
     expect(msg).toContain('99');
   });
 
+  it('the DEFAULT path still gates at 1.0 — production behaviour, unchanged', async () => {
+    // The union refactor must not loosen the shipped gate. A gap below 1.0 on
+    // the default instruction must still refuse to boot, exactly as it did when
+    // `1.0` was a literal in `create()`.
+    const ctx = mock();
+    ctx.logitsSequence = [[0.5, 0.0], [0.0, 0.0]]; // gap 0.5 — below the shipped minGap
+    await expect(
+      Rerank.create(ctx as unknown as SessionContext, {}),
+    ).rejects.toThrow(RerankCalibrationError);
+  });
+
+  it('the default still PASSES on a healthy gap', async () => {
+    const ctx = mock(); // default logits give a gap of 4.0
+    await expect(Rerank.create(ctx as unknown as SessionContext, {})).resolves.toBeDefined();
+  });
+
+  it("boots unchecked on smokeTest: 'none' — the calibration-harness case", async () => {
+    // A harness measuring an instruction it EXPECTS to invert cannot boot behind
+    // a gate that rejects inversion. `-Infinity` used to be the only way to say
+    // this, which required knowing the comparison is strict `>`.
+    const ctx = mock();
+    ctx.logitsSequence = [[0.0, 5.0], [0.0, 0.0]]; // matching scores BELOW non-matching
+    const r = await Rerank.create(ctx as unknown as SessionContext, {
+      instruction: { text: 'an instruction that inverts', smokeTest: 'none' },
+    });
+    expect(r).toBeDefined();
+  });
+
+  it("still renders the instruction when the smoke test is skipped", async () => {
+    const ctx = mock();
+    await Rerank.create(ctx as unknown as SessionContext, {
+      instruction: { text: 'a skipped question', smokeTest: 'none' },
+    });
+    expect(ctx.formatChatCalls.join('\n')).toContain('<Instruct>: a skipped question');
+  });
+
   it('releases the decode-owner mark when the smoke test rejects', async () => {
     // Otherwise a failed calibration poisons the context for any retry.
     const ctx = mock();

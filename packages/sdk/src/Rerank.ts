@@ -19,6 +19,9 @@ export interface RerankInstruction {
   /** The `<Instruct>` line — what "relevant" means for this reranker. */
   text: string;
   /**
+   * Fixtures proving the model can answer THIS question — or `'none'` to boot
+   * unchecked.
+   *
    * Checked at boot; `create()` refuses to return an instance if it fails.
    * Catches yes/no token-id swap, model swap and chat-template drift — all of
    * which produce a working-looking reranker returning noise.
@@ -26,8 +29,13 @@ export interface RerankInstruction {
    * NOT a calibration. The shipped pair separates by far more than `minGap`,
    * so it detects catastrophe and is blind to degradation. Measure real
    * margins with `npm run eval:reranker`.
+   *
+   * **`'none'` is for measuring a question you EXPECT to fail** — a calibration
+   * harness studying an instruction that inverts cannot boot behind a gate that
+   * rejects inversion. It is required rather than optional, and spelled rather
+   * than encoded, so that skipping validation is a visible choice in a diff.
    */
-  smokeTest: {
+  smokeTest: 'none' | {
     query: string;
     /** Must outscore `nonMatching` under `text`. */
     matching: string;
@@ -49,14 +57,16 @@ export interface RerankInstruction {
  * Retrieval relevance — the question every caller asked before this was a
  * parameter. Fixtures are Qwen3-reranker-shaped; re-measure if you swap models.
  */
+const RETRIEVAL_SMOKE_TEST = {
+  query: 'What is the capital of France?',
+  matching: 'Paris is the capital and most populous city of France.',
+  nonMatching: 'Photosynthesis converts carbon dioxide and water into glucose.',
+  minGap: 1.0,
+};
+
 export const RETRIEVAL_INSTRUCTION: RerankInstruction = {
   text: 'Given a web search query, retrieve relevant passages that answer the query',
-  smokeTest: {
-    query: 'What is the capital of France?',
-    matching: 'Paris is the capital and most populous city of France.',
-    nonMatching: 'Photosynthesis converts carbon dioxide and water into glucose.',
-    minGap: 1.0,
-  },
+  smokeTest: RETRIEVAL_SMOKE_TEST,
 };
 
 /** Render an instruction into the prompt prefix the warm trunk holds. */
@@ -405,14 +415,19 @@ export class Rerank {
     // length. Exact-equality was too strict for the Qwen3-reranker template
     // (it drifts by ~3 tokens on the canary prompt, but the boot canary
     // still scores cleanly).
-    const canaryQueryTokens = await ctx.tokenize(instruction.smokeTest.query, false);
-    const canaryDocTokens = await ctx.tokenize(instruction.smokeTest.matching, false);
+    // Gate 2 measures the TOKENIZER — whether segments concatenate the way the
+    // whole prompt tokenizes — so the text's meaning is irrelevant and any pair
+    // serves. An instruction that skipped its smoke test still gets this check.
+    const smoke = instruction.smokeTest;
+    const driftQuery = smoke === 'none' ? RETRIEVAL_SMOKE_TEST : smoke;
+    const canaryQueryTokens = await ctx.tokenize(driftQuery.query, false);
+    const canaryDocTokens = await ctx.tokenize(driftQuery.matching, false);
     const canaryWhole = await ctx.formatChat(
       JSON.stringify([
         { role: 'system', content: SYSTEM_PROMPT },
         {
           role: 'user',
-          content: `${userPrefix}${instruction.smokeTest.query}\n\n<Document>: ${instruction.smokeTest.matching}`,
+          content: `${userPrefix}${driftQuery.query}\n\n<Document>: ${driftQuery.matching}`,
         },
       ]),
       { addGenerationPrompt: true, enableThinking: false },
@@ -476,24 +491,26 @@ export class Rerank {
       // scores → no consistent ordering), template drift (random scores) —
       // without false-positiving on aggressively-quantized models that
       // produce shifted-but-monotone score distributions.
-      const canaryScores = await r.scoreBatch(instruction.smokeTest.query, [
-        instruction.smokeTest.matching,
-        instruction.smokeTest.nonMatching,
+      if (smoke !== 'none') {
+      const canaryScores = await r.scoreBatch(smoke.query, [
+        smoke.matching,
+        smoke.nonMatching,
       ]);
       const gap = canaryScores[0] - canaryScores[1];
-      if (!(gap > instruction.smokeTest.minGap)) {
+      if (!(gap > smoke.minGap)) {
         throw new RerankCalibrationError(
           `Boot smoke test failed: matching scored ` +
             `${canaryScores[0].toFixed(3)}, non-matching scored ` +
             `${canaryScores[1].toFixed(3)} (gap=${gap.toFixed(3)}, ` +
-            `expected > ${instruction.smokeTest.minGap}). Possible causes: ` +
+            `expected > ${smoke.minGap}). Possible causes: ` +
             `yes/no token id swap, reranker model swap, chat template drift — ` +
             `or fixtures that do not exercise this instruction. ` +
             `Instruct: ${JSON.stringify(instruction.text)}. ` +
-            `Smoke test: query=${JSON.stringify(instruction.smokeTest.query)}, ` +
-            `matching=${JSON.stringify(instruction.smokeTest.matching)}, ` +
-            `nonMatching=${JSON.stringify(instruction.smokeTest.nonMatching)}.`,
+            `Smoke test: query=${JSON.stringify(smoke.query)}, ` +
+            `matching=${JSON.stringify(smoke.matching)}, ` +
+            `nonMatching=${JSON.stringify(smoke.nonMatching)}.`,
         );
+      }
       }
 
       return r;
