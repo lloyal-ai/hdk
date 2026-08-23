@@ -97,7 +97,14 @@ async function main(): Promise<void> {
 
     if (kv === 'f16') {
       const worst = Math.max(a.spread, b.spread);
-      if (worst > F16_TOLERANCE) {
+      if (!Number.isFinite(worst)) {
+        // NaN fails EVERY comparison, so `worst > TOLERANCE` would be false and
+        // this pass/fail eval would print `ok` and exit 0 on a native
+        // regression returning NaN or infinite logits — the loudest possible
+        // breakage, reported as success.
+        console.log(`  FAIL — spread is ${worst}; logits are not finite`);
+        failed = true;
+      } else if (worst > F16_TOLERANCE) {
         console.log(`  FAIL — f16 spread ${worst.toFixed(6)} exceeds ${F16_TOLERANCE}; leaves are not isolated`);
         failed = true;
       } else {

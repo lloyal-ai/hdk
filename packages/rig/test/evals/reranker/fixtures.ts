@@ -27,8 +27,9 @@ export async function rerankerModelPath(): Promise<string> {
 /**
  * A context with an explicitly chosen KV type.
  *
- * Deliberately below `createReranker`, which hardcodes f16 — these evals exist
- * to measure what that choice buys, so they cannot go through it.
+ * Deliberately below `createReranker`, which DEFAULTS to f16 — these evals
+ * exist to measure what that default buys, and comparing types means setting
+ * each one explicitly rather than accepting the default.
  */
 export async function contextWithKv(
   modelPath: string,
