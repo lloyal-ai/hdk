@@ -21,7 +21,9 @@
     "smoke:visual": "npx tsx examples/shared/tui-ink/__visual-smoke.tsx",
     "examples:compare": "npx tsx examples/compare/main.ts",
     "examples:react": "npx tsx examples/react-agent/main.ts",
-    "examples:reflect": "npx tsx examples/reflection/main.ts"
+    "examples:reflect": "npx tsx examples/reflection/main.ts",
+    "eval:reranker": "npx tsx packages/rig/test/evals/reranker/isolation.eval.ts && npx tsx packages/rig/test/evals/reranker/profiles.eval.ts && npx tsx packages/rig/test/evals/reranker/footprint.eval.ts",
+    "typecheck:evals": "npx tsc -p packages/rig/test/evals/tsconfig.json"
   },
   "devDependencies": {
     "@lloyal-labs/lloyal.node": "^3.1.1",

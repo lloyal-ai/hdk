@@ -6,17 +6,63 @@ const SYSTEM_PROMPT =
   'Judge whether the Document meets the requirements based on the Query ' +
   'and the Instruct provided. Note that the answer can only be "yes" or "no".';
 
-const USER_PREFIX =
-  '<Instruct>: Given a web search query, retrieve relevant passages that answer the query\n\n' +
-  '<Query>: ';
+/**
+ * The scoring question, and the pair that proves the model can answer it.
+ *
+ * The criterion lives in the `<Instruct>` line, so changing that sentence
+ * changes the question these same weights answer — retrieval, entailment,
+ * support-for-a-claim. The smoke test ships WITH the sentence because a
+ * fixture validates a QUESTION, not a model: reuse retrieval's pair under a
+ * support instruction and the boot gate passes having tested nothing.
+ */
+export interface RerankInstruction {
+  /** The `<Instruct>` line — what "relevant" means for this reranker. */
+  text: string;
+  /**
+   * Checked at boot; `create()` refuses to return an instance if it fails.
+   * Catches yes/no token-id swap, model swap and chat-template drift — all of
+   * which produce a working-looking reranker returning noise.
+   *
+   * NOT a calibration. The shipped pair separates by far more than `minGap`,
+   * so it detects catastrophe and is blind to degradation. Measure real
+   * margins with `npm run eval:reranker`.
+   */
+  smokeTest: {
+    query: string;
+    /** Must outscore `nonMatching` under `text`. */
+    matching: string;
+    nonMatching: string;
+    /**
+     * Minimum `matching − nonMatching` logit gap. Asserts SEPARATION, not
+     * sign — scores go negative routinely on real corpora and the ranking is
+     * still correct.
+     *
+     * Only meaningful above the score's resolution, which the KV cache type
+     * sets: the floor is 1.270 logits at `q4_0` and 0.004 at f16. A `minGap`
+     * below the floor asserts into noise.
+     */
+    minGap: number;
+  };
+}
 
-// Boot canary fixtures — hardcoded to Qwen3-reranker semantics. If you swap
-// reranker models, re-run the calibration probe and update these fixtures.
-const CANARY_QUERY = 'What is the capital of France?';
-const CANARY_RELEVANT_DOC =
-  'Paris is the capital and most populous city of France.';
-const CANARY_IRRELEVANT_DOC =
-  'Photosynthesis converts carbon dioxide and water into glucose.';
+/**
+ * Retrieval relevance — the question every caller asked before this was a
+ * parameter. Fixtures are Qwen3-reranker-shaped; re-measure if you swap models.
+ */
+export const RETRIEVAL_INSTRUCTION: RerankInstruction = {
+  text: 'Given a web search query, retrieve relevant passages that answer the query',
+  smokeTest: {
+    query: 'What is the capital of France?',
+    matching: 'Paris is the capital and most populous city of France.',
+    nonMatching: 'Photosynthesis converts carbon dioxide and water into glucose.',
+    minGap: 1.0,
+  },
+};
+
+/** Render an instruction into the prompt prefix the warm trunk holds. */
+function userPrefixFor(instruction: RerankInstruction): string {
+  return `<Instruct>: ${instruction.text}\n\n<Query>: `;
+}
 
 // Sentinel strings used to discover segment boundaries inside the rendered
 // chat probe. Longer ASCII (not NUL bytes) survives tokenizer normalization;
@@ -80,6 +126,16 @@ export interface RerankOpts {
    * (`rerank:truncate`) or to a metric. Silent in the SDK by default.
    */
   onTruncate?: (event: RerankTruncation) => void;
+  /**
+   * The question this instance answers. Defaults to
+   * {@link RETRIEVAL_INSTRUCTION}, so existing callers are unchanged.
+   *
+   * Bound here rather than per call because the `<Instruct>` line is prefilled
+   * into the warm trunk once at construction and amortised across every
+   * `score()`. Re-prefilling per call would spend on every score what is
+   * currently spent once per process.
+   */
+  instruction?: RerankInstruction;
 }
 
 interface ProgressSink {
@@ -171,10 +227,10 @@ function channel<T>(onCancel?: () => void): {
  *
  * # Architecture
  *
- *   [SYSTEM][USER_PREFIX][QUERY][MID][DOC_i][SUFFIX][GEN_PROMPT]
+ *   [SYSTEM][<Instruct>][QUERY][MID][DOC_i][SUFFIX][GEN_PROMPT]
  *   └── permanent trunk ─┘ └── per-query branch ──┘ └─── per-chunk leaves ─┘
  *
- * - **trunk**: prefilled with the static [SYSTEM][USER_PREFIX] segment ONCE
+ * - **trunk**: prefilled with the static [SYSTEM][<Instruct>] segment ONCE
  *   at `Rerank.create()`; lives for the instance lifetime. Warm KV is
  *   amortized across every score() via multi-tag KV survival.
  * - **queryBranch**: forked from trunk per score() call, prefilled with
@@ -284,6 +340,8 @@ export class Rerank {
       );
     }
 
+    const instruction = opts?.instruction ?? RETRIEVAL_INSTRUCTION;
+    const userPrefix = userPrefixFor(instruction);
     const nSeqMax = opts?.nSeqMax ?? 10;
     const nCtx = opts?.nCtx ?? ctx._storeKvPressure().nCtx;
 
@@ -312,7 +370,7 @@ export class Rerank {
         { role: 'system', content: SYSTEM_PROMPT },
         {
           role: 'user',
-          content: `${USER_PREFIX}${SENTINEL_Q}\n\n<Document>: ${SENTINEL_D}`,
+          content: `${userPrefix}${SENTINEL_Q}\n\n<Document>: ${SENTINEL_D}`,
         },
       ]),
       { addGenerationPrompt: true, enableThinking: false },
@@ -347,14 +405,14 @@ export class Rerank {
     // length. Exact-equality was too strict for the Qwen3-reranker template
     // (it drifts by ~3 tokens on the canary prompt, but the boot canary
     // still scores cleanly).
-    const canaryQueryTokens = await ctx.tokenize(CANARY_QUERY, false);
-    const canaryDocTokens = await ctx.tokenize(CANARY_RELEVANT_DOC, false);
+    const canaryQueryTokens = await ctx.tokenize(instruction.smokeTest.query, false);
+    const canaryDocTokens = await ctx.tokenize(instruction.smokeTest.matching, false);
     const canaryWhole = await ctx.formatChat(
       JSON.stringify([
         { role: 'system', content: SYSTEM_PROMPT },
         {
           role: 'user',
-          content: `${USER_PREFIX}${CANARY_QUERY}\n\n<Document>: ${CANARY_RELEVANT_DOC}`,
+          content: `${userPrefix}${instruction.smokeTest.query}\n\n<Document>: ${instruction.smokeTest.matching}`,
         },
       ]),
       { addGenerationPrompt: true, enableThinking: false },
@@ -418,21 +476,23 @@ export class Rerank {
       // scores → no consistent ordering), template drift (random scores) —
       // without false-positiving on aggressively-quantized models that
       // produce shifted-but-monotone score distributions.
-      const canaryScores = await r.scoreBatch(CANARY_QUERY, [
-        CANARY_RELEVANT_DOC,
-        CANARY_IRRELEVANT_DOC,
+      const canaryScores = await r.scoreBatch(instruction.smokeTest.query, [
+        instruction.smokeTest.matching,
+        instruction.smokeTest.nonMatching,
       ]);
       const gap = canaryScores[0] - canaryScores[1];
-      if (!(gap > 1.0)) {
+      if (!(gap > instruction.smokeTest.minGap)) {
         throw new RerankCalibrationError(
-          `Boot canary failed: relevant pair scored ` +
-            `${canaryScores[0].toFixed(3)}, irrelevant pair scored ` +
+          `Boot smoke test failed: matching scored ` +
+            `${canaryScores[0].toFixed(3)}, non-matching scored ` +
             `${canaryScores[1].toFixed(3)} (gap=${gap.toFixed(3)}, ` +
-            `expected > 1.0). Possible causes: yes/no token id swap, ` +
-            `reranker model swap, or chat template drift. ` +
-            `Canary pair: query=${JSON.stringify(CANARY_QUERY)}, ` +
-            `relevant=${JSON.stringify(CANARY_RELEVANT_DOC)}, ` +
-            `irrelevant=${JSON.stringify(CANARY_IRRELEVANT_DOC)}.`,
+            `expected > ${instruction.smokeTest.minGap}). Possible causes: ` +
+            `yes/no token id swap, reranker model swap, chat template drift — ` +
+            `or fixtures that do not exercise this instruction. ` +
+            `Instruct: ${JSON.stringify(instruction.text)}. ` +
+            `Smoke test: query=${JSON.stringify(instruction.smokeTest.query)}, ` +
+            `matching=${JSON.stringify(instruction.smokeTest.matching)}, ` +
+            `nonMatching=${JSON.stringify(instruction.smokeTest.nonMatching)}.`,
         );
       }
 

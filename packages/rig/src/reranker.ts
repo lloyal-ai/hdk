@@ -1,6 +1,6 @@
 import { createContext } from "@lloyal-labs/lloyal.node";
 import { Rerank } from "@lloyal-labs/sdk";
-import type { SessionContext } from "@lloyal-labs/sdk";
+import type { SessionContext, KvCacheType, RerankInstruction } from "@lloyal-labs/sdk";
 import { resource, call } from "effection";
 import type { Operation } from "effection";
 import type { Chunk, Reranker, ScoredResult } from "@lloyal-labs/lloyal-agents";
@@ -18,6 +18,29 @@ export interface RerankerLoadOpts {
   nCtx?: number;
   /** Decode batch size (default floor(nCtx / nSeqMax)). */
   nBatch?: number;
+  /**
+   * KV cache types. Default **f16** for both — the reranker's output is a logit
+   * difference, and quantised KV is noise in exactly that quantity.
+   *
+   * Measured noise floor (six leaves given identical tokens must score
+   * identically; the spread is the floor):
+   * `q4_0` 1.270 · `q5_0` 0.813 · `q8_0` 0.122 · `f16` 0.004 logits.
+   *
+   * Lower this only under real memory pressure, and know what it costs: at
+   * nCtx 4096 f16 is 448 MiB against q4_0's 126 MiB, and any calibrated
+   * threshold whose margin was measured at f16 stops meaning anything. The old
+   * q4_0 default put the floor ABOVE the boot canary's own `minGap` of 1.0.
+   *
+   * Re-measure with `npm run eval:reranker` if you change these.
+   */
+  typeK?: KvCacheType;
+  typeV?: KvCacheType;
+  /**
+   * The scoring question. Defaults to retrieval relevance — the question every
+   * ability asks today. Changing it changes what "relevant" means for EVERY
+   * ability sharing this reranker, so it is a harness-level decision.
+   */
+  instruction?: RerankInstruction;
 }
 
 /**
@@ -69,11 +92,34 @@ export function createReranker(
       nCtx,
       nSeqMax,
       nBatch,
-      typeK: 'q4_0',
-      typeV: 'q4_0',
+      // Defaults to f16, NOT q4_0 — the reranker's whole output is a
+      // fine-grained logit difference, and quantised KV puts noise into it.
+      //
+      // Measured on Qwen3-Reranker-0.6B (28 layers · 8 KV heads · head_dim 128
+      // = 57,344 KV values/token) with six leaves forked from one parent and
+      // given IDENTICAL tokens. They must score identically; the spread is the
+      // noise floor:
+      //
+      //   q4_0  126 MiB @ nCtx 4096   spread 1.270    ← was the default
+      //   q5_0  154 MiB               spread 0.813    (worse than q4_0 serially)
+      //   q8_0  238 MiB               spread 0.122
+      //   f16   448 MiB               spread 0.004
+      //
+      // At q4_0 the noise EXCEEDED the shipped boot canary's `minGap` of 1.0,
+      // so the calibration gate was asserting a separation smaller than its own
+      // measurement error, and any score threshold was inside the noise. The
+      // +322 MiB buys a judge whose scores mean what they say.
+      //
+      // Reproduce with scripts/probe-scatter-vs-serial.ts <type>.
+      typeK: opts?.typeK ?? 'f16',
+      typeV: opts?.typeV ?? 'f16',
     }));
     const rerank = yield* call(() =>
-      Rerank.create(ctx as unknown as SessionContext, { nSeqMax, nCtx }),
+      Rerank.create(ctx as unknown as SessionContext, {
+        nSeqMax,
+        nCtx,
+        instruction: opts?.instruction,
+      }),
     );
 
     let disposed = false;
