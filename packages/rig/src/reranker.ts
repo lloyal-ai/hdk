@@ -1,6 +1,6 @@
 import { createContext } from "@lloyal-labs/lloyal.node";
 import { Rerank } from "@lloyal-labs/sdk";
-import type { SessionContext } from "@lloyal-labs/sdk";
+import type { SessionContext, KvCacheType, RerankInstruction } from "@lloyal-labs/sdk";
 import { resource, call } from "effection";
 import type { Operation } from "effection";
 import type { Chunk, Reranker, ScoredResult } from "@lloyal-labs/lloyal-agents";
@@ -18,6 +18,22 @@ export interface RerankerLoadOpts {
   nCtx?: number;
   /** Decode batch size (default floor(nCtx / nSeqMax)). */
   nBatch?: number;
+  /**
+   * KV cache types for the reranker context. Both default to `q4_0` in this
+   * version.
+   *
+   * The score is a logit difference, so KV precision bounds the smallest
+   * score difference that is meaningful. Set these explicitly if you need a
+   * known resolution.
+   */
+  typeK?: KvCacheType;
+  typeV?: KvCacheType;
+  /**
+   * The scoring question. Defaults to retrieval relevance — the question every
+   * ability asks today. Changing it changes what "relevant" means for EVERY
+   * ability sharing this reranker, so it is a harness-level decision.
+   */
+  instruction?: RerankInstruction;
 }
 
 /**
@@ -69,11 +85,23 @@ export function createReranker(
       nCtx,
       nSeqMax,
       nBatch,
-      typeK: 'q4_0',
-      typeV: 'q4_0',
+      typeK: opts?.typeK ?? 'q4_0',
+      typeV: opts?.typeV ?? 'q4_0',
     }));
     const rerank = yield* call(() =>
-      Rerank.create(ctx as unknown as SessionContext, { nSeqMax, nCtx }),
+      Rerank.create(ctx as unknown as SessionContext, {
+        nSeqMax,
+        nCtx,
+        instruction: opts?.instruction,
+      }).catch((err: unknown) => {
+        // A failing smoke test is a NORMAL configuration outcome now that the
+        // instruction is a parameter. `Rerank.create` scrubs its own trunk and
+        // decode-owner mark but does NOT own the context, so without this the
+        // context leaks: the throw escapes before `provide`, so the
+        // try/finally below never runs.
+        ctx.dispose();
+        throw err;
+      }),
     );
 
     let disposed = false;
