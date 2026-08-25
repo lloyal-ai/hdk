@@ -85,6 +85,15 @@ describe('readJsonForWrite (writer: never rebuild over unusable)', () => {
     expect(() => readJsonForWrite(p)).toThrow(/version 2.*not overwriting a newer runtime/);
     expect(fs.readFileSync(p, 'utf8')).toBe(v2); // byte-identical
   });
+  it('a JSON `null` (or any non-object) hits the version guard, never a TypeError', () => {
+    const p = path.join(dir, 'harness.json');
+    fs.writeFileSync(p, 'null');
+    expect(() => readJsonForWrite(p)).toThrow(/version undefined.*not overwriting/);
+    fs.writeFileSync(p, '5');
+    expect(() => readJsonForWrite(p)).toThrow(/version undefined.*not overwriting/);
+    fs.writeFileSync(p, 'null');
+    expect(readJsonOverlay(p)).toBeNull();
+  });
   it.skipIf(process.getuid?.() === 0)('an unreadable file throws with its errno, not null', () => {
     const p = path.join(dir, 'harness.json');
     fs.writeFileSync(p, JSON.stringify({ version: 1 }));
@@ -108,6 +117,18 @@ describe('writeJsonAtomic', () => {
     fs.chmodSync(p, 0o644);
     writeJsonAtomic(p, { version: 1 });
     expect(fs.statSync(p).mode & 0o777).toBe(0o600);
+  });
+});
+
+describe('writeJsonAtomic tmp hygiene', () => {
+  it.skipIf(process.getuid?.() === 0)('a failed write leaves NO tmp file behind', () => {
+    const sub = path.join(dir, 'ro');
+    fs.mkdirSync(sub);
+    fs.writeFileSync(path.join(sub, 'harness.json'), '{}');
+    fs.chmodSync(sub, 0o500); // directory unwritable: the tmp create fails
+    expect(() => writeJsonAtomic(path.join(sub, 'harness.json'), { version: 1 })).toThrow();
+    fs.chmodSync(sub, 0o700);
+    expect(fs.readdirSync(sub)).toEqual(['harness.json']); // no .tmp-* residue
   });
 });
 
@@ -136,6 +157,26 @@ describe('maybeAppendGitignore', () => {
     fs.writeFileSync(p, '{}');
     expect(maybeAppendGitignore(p)).toBe(false);
     expect(fs.readFileSync(path.join(dir, '.gitignore'), 'utf8')).toBe('*.json\n');
+  });
+  it('a TRACKED config file already covered by a pattern is not re-appended (--no-index)', () => {
+    initRepo();
+    const p = path.join(dir, 'harness.json');
+    fs.writeFileSync(p, '{}');
+    execFileSync('git', ['add', 'harness.json'], { cwd: dir });
+    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'x'], { cwd: dir });
+    fs.writeFileSync(path.join(dir, '.gitignore'), 'harness.json\n');
+    expect(maybeAppendGitignore(p)).toBe(false); // index-aware check-ignore would say exit 1 here
+    expect(fs.readFileSync(path.join(dir, '.gitignore'), 'utf8')).toBe('harness.json\n');
+  });
+  it('a TRACKED, uncovered file appends once and never duplicates', () => {
+    initRepo();
+    const p = path.join(dir, 'harness.json');
+    fs.writeFileSync(p, '{}');
+    execFileSync('git', ['add', 'harness.json'], { cwd: dir });
+    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'x'], { cwd: dir });
+    expect(maybeAppendGitignore(p)).toBe(true);
+    expect(maybeAppendGitignore(p)).toBe(false);
+    expect(fs.readFileSync(path.join(dir, '.gitignore'), 'utf8')).toBe('harness.json\n');
   });
   it('a gitignore without a trailing newline gets one before the appended line', () => {
     initRepo();

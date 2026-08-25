@@ -206,13 +206,18 @@ export function markSession<
   return next as O;
 }
 
-function pickPresent<T extends Record<string, unknown>>(
-  from: T,
+/** Restore `keys` in `next` to exactly their boot state — value OR absence. A
+ *  frozen key that was absent at boot must stay absent, or a relayered file
+ *  could bring it live mid-session despite the freeze. */
+function restoreFrozen(
+  next: Record<string, unknown>,
+  boot: Record<string, unknown>,
   keys: readonly string[],
-): Partial<T> {
-  const out: Record<string, unknown> = {};
-  for (const k of keys) if (k in from) out[k] = from[k];
-  return out as Partial<T>;
+): void {
+  for (const k of keys) {
+    if (k in boot) next[k] = boot[k];
+    else delete next[k];
+  }
 }
 
 function makeRunner<
@@ -237,14 +242,12 @@ function makeRunner<
         // The frozen set (the model block) stays BOOT-FROZEN: it describes
         // the RUNNING residency, which a save cannot change.
         const saved = opts.persist(patch);
-        sessionConfig = {
-          ...saved.config,
-          ...pickPresent(sessionConfig as Record<string, unknown>, frozenConfig),
-        } as C;
-        sessionOrigin = {
-          ...saved.origin,
-          ...pickPresent(sessionOrigin as Record<string, unknown>, frozenOrigin),
-        } as O;
+        const nextConfig = { ...saved.config } as Record<string, unknown>;
+        restoreFrozen(nextConfig, sessionConfig as Record<string, unknown>, frozenConfig);
+        const nextOrigin = { ...saved.origin } as Record<string, unknown>;
+        restoreFrozen(nextOrigin, sessionOrigin as Record<string, unknown>, frozenOrigin);
+        sessionConfig = nextConfig as C;
+        sessionOrigin = nextOrigin as O;
         return { ...saved, config: sessionConfig, origin: sessionOrigin };
       }
       // In-memory only (served, or an edge boot without persistence): touched

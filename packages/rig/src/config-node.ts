@@ -15,6 +15,7 @@
  * @category Rig
  */
 import { execFileSync } from 'node:child_process';
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -65,7 +66,7 @@ export function readJsonOverlay<T>(p: string): (Partial<T> & { version?: number 
     const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as Partial<T> & {
       version?: number;
     };
-    if (parsed.version !== 1) return null;
+    if (parsed === null || typeof parsed !== 'object' || parsed.version !== 1) return null;
     return parsed;
   } catch {
     return null;
@@ -96,9 +97,10 @@ export function readJsonForWrite<T>(
   } catch {
     throw new Error(`${displayName} is not valid JSON — fix or delete it; nothing was saved.`);
   }
-  if (parsed.version !== 1) {
+  const version = parsed === null || typeof parsed !== 'object' ? undefined : parsed.version;
+  if (version !== 1) {
     throw new Error(
-      `${displayName} is version ${String(parsed.version)}; this harness writes version 1 — not overwriting a newer runtime's settings.`,
+      `${displayName} is version ${String(version)}; this harness writes version 1 — not overwriting a newer runtime's settings.`,
     );
   }
   return parsed;
@@ -111,12 +113,22 @@ export function readJsonForWrite<T>(
 export function writeJsonAtomic(p: string, value: unknown): void {
   const resolved = path.resolve(p);
   fs.mkdirSync(path.dirname(resolved), { recursive: true });
-  const tmp = resolved + '.tmp-' + process.pid;
-  fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', {
-    encoding: 'utf8',
-    mode: 0o600,
-  });
-  fs.renameSync(tmp, resolved);
+  // Random suffix + 'wx' (O_CREAT|O_EXCL): the tmp is always a FRESH inode we
+  // own — an attacker-planted file or symlink at a guessed name makes the
+  // write FAIL instead of following the link or inheriting a loose mode.
+  const tmp =
+    resolved + '.tmp-' + crypto.randomBytes(8).toString('hex');
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', {
+      encoding: 'utf8',
+      mode: 0o600,
+      flag: 'wx',
+    });
+    fs.renameSync(tmp, resolved);
+  } catch (err) {
+    fs.rmSync(tmp, { force: true });
+    throw err;
+  }
 }
 
 /** If the file's directory (or an ancestor) is a git repo, append the file to
@@ -136,24 +148,26 @@ export function maybeAppendGitignore(configFilePath: string): boolean {
       : '';
     let ignored: boolean | null = null;
     try {
-      execFileSync('git', ['check-ignore', '-q', '--', relative], {
+      // --no-index: evaluate the ignore RULES alone. Without it a TRACKED
+      // config file is never reported ignored (exit 1 on every save), and the
+      // same line would be appended again each time.
+      execFileSync('git', ['check-ignore', '-q', '--no-index', '--', relative], {
         cwd: repoRoot,
         stdio: 'ignore',
       });
       ignored = true;
     } catch (e) {
       // exit 1 = definitively not ignored; anything else (git missing) =
-      // unknown → fall back to the literal check.
+      // unknown → the literal check below is the only authority.
       ignored = (e as { status?: number }).status === 1 ? false : null;
     }
     if (ignored === true) return false;
-    if (ignored === null) {
-      const name = path.basename(configFilePath);
-      const needle = new RegExp(
-        `(^|\\n)\\s*(${escapeRe(relative)}|${escapeRe(name)})\\s*(\\n|$)`,
-      );
-      if (needle.test(existing)) return false;
-    }
+    // Never append a line that is already there, whatever git said.
+    const name = path.basename(configFilePath);
+    const needle = new RegExp(
+      `(^|\\n)\\s*(${escapeRe(relative)}|${escapeRe(name)})\\s*(\\n|$)`,
+    );
+    if (needle.test(existing)) return false;
     const prefix = existing.length === 0 || existing.endsWith('\n') ? '' : '\n';
     fs.appendFileSync(gitignorePath, prefix + relative + '\n');
     return true;

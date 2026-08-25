@@ -137,6 +137,26 @@ describe('edge runner (persist + reconcile)', () => {
     expect(calls).toEqual([{ model: { path: '/new.gguf' } }]);
   });
 
+  it('a frozen key ABSENT at boot stays absent — a relayered file cannot bring it live', () => {
+    const boot: BasicConfig = {
+      version: 1, sources: {}, abilities: {}, // no `surface` at boot
+      model: { path: '/m.gguf' },
+    };
+    const origin: BasicOrigin = { modelPath: 'yml', reranker: 'default', nCtx: 'default', gpu: 'default', outputDir: 'default' };
+    const relayered: BasicConfig = {
+      version: 1, sources: {}, abilities: {}, surface: 'web', // file introduces it
+      model: { path: '/other.gguf' },
+    };
+    const r = makeEdgeRunner(boot, {
+      origin,
+      sessionOriginMap: { 'sources.outputDir': 'outputDir' },
+      persist: () => ({ path: '/p/harness.json', gitignored: false, skipped: [], config: relayered, origin }),
+    });
+    const saved = r.saveConfig({ sources: { outputDir: '/d' } });
+    expect('surface' in saved.config).toBe(false);
+    expect(saved.config.model.path).toBe('/m.gguf'); // frozen value also held
+  });
+
   it('basic shape: `surface` is boot-frozen by default; absent keys ignored', () => {
     const boot: BasicConfig = {
       version: 1, sources: {}, abilities: {}, surface: 'cli',
