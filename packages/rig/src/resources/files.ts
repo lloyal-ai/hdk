@@ -67,6 +67,10 @@ export function resolveCorpusInput(input: string): {
  * Resource names preserve the relative path from the corpus root so
  * nested files with the same basename don't collide.
  *
+ * THROWS on a bad corpus — missing path, non-markdown input, or zero
+ * matches. Library code never exits the process: the caller (an ability
+ * factory behind `registry.enable`, a CLI) owns what a bad corpus means.
+ *
  * @category Rig
  */
 export function loadResources(input: string): Resource[] {
@@ -76,25 +80,20 @@ export function loadResources(input: string): Resource[] {
   if (rawPattern) {
     // Glob input — validate extension, then use as-is.
     if (!ACCEPTED_GLOB_TAIL.test(rawPattern)) {
-      process.stdout.write(
-        `Error: only .md/.mdx files are supported. Got pattern: ${rawPattern}\n`,
+      throw new Error(
+        `only .md/.mdx files are supported. Got pattern: ${rawPattern}`,
       );
-      process.exit(1);
     }
     pattern = rawPattern;
   } else {
     // Plain path — file or directory.
     if (!fs.existsSync(cwd)) {
-      process.stdout.write(`Error: corpus not found: ${cwd}\n`);
-      process.exit(1);
+      throw new Error(`corpus not found: ${cwd}`);
     }
     const stat = fs.statSync(cwd);
     if (stat.isFile()) {
       if (!/\.(md|mdx)$/.test(cwd)) {
-        process.stdout.write(
-          `Error: only .md/.mdx files are supported. Got: ${cwd}\n`,
-        );
-        process.exit(1);
+        throw new Error(`only .md/.mdx files are supported. Got: ${cwd}`);
       }
       return [
         { name: path.basename(cwd), content: fs.readFileSync(cwd, "utf8") },
@@ -115,10 +114,7 @@ export function loadResources(input: string): Resource[] {
   const all = fs.globSync(pattern, { cwd }) as string[];
   const files = (ig ? all.filter((f) => !ig.ignores(f)) : all).sort();
   if (!files.length) {
-    process.stdout.write(
-      `Error: no .md(x) files matched: ${cwd}/${pattern}\n`,
-    );
-    process.exit(1);
+    throw new Error(`no .md(x) files matched: ${cwd}/${pattern}`);
   }
   return files.map((rel) => ({
     name: rel,
