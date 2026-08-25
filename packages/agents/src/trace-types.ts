@@ -162,6 +162,15 @@ export type TraceEvent =
       outputExcerpt: string;
     }
 
+  // ── Agent lifecycle span ─────────────────────
+  // Trace mirrors of the bus events: `agent:spawn` opens the agent's span
+  // (`parentAgentId` = the parent BRANCH handle — the spine for pool
+  // spawns), `agent:done` ends it at the drop or return. Recovery events
+  // (`pool:recovery*`) may follow `agent:done` for the same agent — a span
+  // consumer that wants the recovery tail extends to the last such event.
+  | TraceEventBase & { type: 'agent:spawn'; agentId: number; parentAgentId: number }
+  | TraceEventBase & { type: 'agent:done'; agentId: number }
+
   // ── Agent per-turn output ────────────────────
   | TraceEventBase & {
       type: 'agent:turn';

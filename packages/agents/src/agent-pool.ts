@@ -232,12 +232,15 @@ function buildTerminalGrammar(ctx: SessionContext, terminalTool: Tool): Terminal
 const MIN_REPORT_BUDGET = 128;
 const MAX_REPORT_BUDGET = 2048;
 
-/** Prune a branch only when it is a childless leaf. `Branch.pruneSync` is
- *  RESTRICT-mode (`Branch.ts`: throws when the branch has live children — they
+/** Prune an agent's branch only when it is a childless leaf. `Branch.pruneSync`
+ *  is RESTRICT-mode (`Branch.ts`: throws when the branch has live children — they
  *  still need its KV prefix), so a recovered agent that sub-spawned must NOT be
- *  pruned: skip it and let the children's own teardown reclaim the lineage. */
-function safePrune(branch: Branch): void {
-  if (!branch.disposed && branch.children.length === 0) branch.pruneSync();
+ *  pruned: skip it and let the children's own teardown reclaim the lineage.
+ *  Harvests the branch's perplexity first ({@link Agent.harvestMetrics}) — the
+ *  metrics die with the branch, and `pool:close` reads the harvest. */
+function safePrune(a: Agent): void {
+  a.harvestMetrics();
+  if (!a.branch.disposed && a.branch.children.length === 0) a.branch.pruneSync();
 }
 
 /** Extract the terminal-tool result string from a parsed (possibly TRUNCATED)
@@ -347,7 +350,7 @@ function* completeExtraction(
 ): Operation<void> {
   yield* finishRecovery(a, a.rawOutput, a.recoveryTokens, events, tw, parentTraceId, ctx, terminalToolName);
   a.transition('idle');
-  safePrune(a.branch);
+  safePrune(a);
   const postPressure = new ContextPressure(ctx, pressureOpts);
   yield* events.send({ type: 'agent:tick', cellsUsed: postPressure.cellsUsed, nCtx: postPressure.nCtx });
 }
@@ -385,7 +388,7 @@ function* recoverInline(
     tw.write({ traceId: tw.nextId(), parentTraceId, ts: performance.now(),
       type: 'pool:recoveryFailed', agentId: agent.id, reason, outputExcerpt: agent.rawOutput.slice(0, 200) });
     yield* events.send({ type: 'agent:failed', agentId: agent.id, reason });
-    safePrune(agent.branch);
+    safePrune(agent);
     return false;
   }
 
@@ -436,10 +439,10 @@ function* recoverInline(
   }
 
   // Always prune after scope exits (success or failure) — child-safe.
-  safePrune(agent.branch);
+  safePrune(agent);
 
   // Emit tick so TUI updates pressure percentage after prune
-  const postPressure = new ContextPressure(ctx);
+  const postPressure = new ContextPressure(ctx, pressureOpts);
   yield* events.send({ type: 'agent:tick', cellsUsed: postPressure.cellsUsed, nCtx: postPressure.nCtx });
 
   return reported;
@@ -467,13 +470,21 @@ function stripDanglingToolCall(text: string): string {
   return text.replace(/<tool_call>(?:(?!<\/tool_call>)[\s\S])*$/, '').trimEnd();
 }
 
+/** Trace mirror of the bus `agent:done` — the end of the agent's span. Fires
+ *  at the drop or return; recovery events may follow for the same agent. */
+function traceAgentDone(tw: TraceWriter, parentTraceId: number | null, agentId: number): void {
+  tw.write({ traceId: tw.nextId(), parentTraceId, ts: performance.now(), type: 'agent:done', agentId });
+}
+
 function* handleFreeTextReturn(
   a: Agent, content: string, events: EventSender,
+  tw: TraceWriter, parentTraceId: number | null,
 ): Operation<void> {
   a.setResult(stripDanglingToolCall(content), 'free_text');
   a.transition('idle');
   yield* events.send({ type: 'agent:return', agentId: a.id, result: a.result! });
   yield* events.send({ type: 'agent:done', agentId: a.id });
+  traceAgentDone(tw, parentTraceId, a.id);
 }
 
 function* handleIdleDrop(
@@ -488,6 +499,7 @@ function* handleIdleDrop(
       reason: reason === 'max_turns' ? 'maxTurns' : 'pressure_softcut' });
   }
   yield* events.send({ type: 'agent:done', agentId: a.id });
+  traceAgentDone(tw, parentTraceId, a.id);
 }
 
 function* handleNudge(
@@ -507,6 +519,7 @@ function* handleNudge(
 function* handleReturn(
   a: Agent, result: string, tc: ParsedToolCall, terminalToolName: string,
   pruneOnReturn: boolean, events: EventSender,
+  tw: TraceWriter, parentTraceId: number | null,
 ): Operation<void> {
   a.setResult(stripDanglingToolCall(result), 'voluntary_return');
   a.transition('idle');
@@ -514,7 +527,11 @@ function* handleReturn(
   yield* events.send({ type: 'agent:tool_call', agentId: a.id, tool: terminalToolName, args: tc.arguments });
   yield* events.send({ type: 'agent:return', agentId: a.id, result: a.result! });
   yield* events.send({ type: 'agent:done', agentId: a.id });
-  if (pruneOnReturn && !a.branch.disposed) a.branch.pruneSync();
+  traceAgentDone(tw, parentTraceId, a.id);
+  if (pruneOnReturn && !a.branch.disposed) {
+    a.harvestMetrics();
+    a.branch.pruneSync();
+  }
 }
 
 /**
@@ -579,7 +596,7 @@ function* handleRecover(
     tw.write({ traceId: tw.nextId(), parentTraceId, ts: performance.now(),
       type: 'pool:recoveryFailed', agentId: a.id, reason, outputExcerpt: a.rawOutput.slice(0, 200) });
     yield* events.send({ type: 'agent:failed', agentId: a.id, reason });
-    safePrune(a.branch);
+    safePrune(a);
     a.transition('idle');
     return null;
   }
@@ -1565,6 +1582,10 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           // transition fires agent.statusSignal — ctx.spawn's subscriber is waiting on this.
           s.agent.transition('active');
           yield* poolChannel.send({ type: 'agent:spawn', agentId: s.agent.id, parentAgentId: s.agent.parentId });
+          tw.write({
+            traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+            type: 'agent:spawn', agentId: s.agent.id, parentAgentId: s.agent.parentId,
+          });
         }
       }
 
@@ -1591,7 +1612,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           yield* poolChannel.send({ type: 'agent:failed', agentId: id, reason: 'user_cancel' });
           cancelledIds.add(id);
           a.transition('idle');
-          safePrune(a.branch);
+          safePrune(a);
         }
       }
 
@@ -1623,6 +1644,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
             type: 'pool:agentDrop', agentId: a.id, reason: 'wind_down' });
           yield* poolChannel.send({ type: 'agent:done', agentId: a.id });
+          traceAgentDone(tw, poolScope.traceId, a.id);
           const settled = yield* handleRecover(a, policy, ctx, pressureOpts, aliveCount, poolChannel, tw, poolScope.traceId);
           if (settled) nudges.push(settled);
           continue;
@@ -1649,6 +1671,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
             type: 'pool:agentDrop', agentId: a.id, reason: exitReason });
           yield* poolChannel.send({ type: 'agent:done', agentId: a.id });
+          traceAgentDone(tw, poolScope.traceId, a.id);
           if (isEmittingTerminal(a, terminalToolName)) {
             // The agent was already producing its OWN report when the critical kill
             // fired. DON'T prefill a fresh recovery turn — that discards the in-flight
@@ -1661,7 +1684,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             // report — report-scoped + consistent with the in-loop path's `recoveryTokens`.
             yield* finishRecovery(a, a.rawOutput, ctx.tokenizeSync(a.rawOutput, false).length, poolChannel, tw, poolScope.traceId, ctx, terminalToolName);
             a.transition('idle');
-            safePrune(a.branch);
+            safePrune(a);
           } else if (policy.recoveryShape === 'parallel') {
             // In-loop: inject the recovery turn; SETTLE re-activates it (capped
             // report grammar) and the report decodes bin-packed with live agents.
@@ -1712,7 +1735,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
 
           switch (action.type) {
             case 'free_text_return':
-              yield* handleFreeTextReturn(a, action.content, poolChannel);
+              yield* handleFreeTextReturn(a, action.content, poolChannel, tw, poolScope.traceId);
               continue;
             case 'idle':
               // Parallel: recover in-loop at the stop (no termination sweep for
@@ -1724,6 +1747,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
                     reason: action.reason === 'max_turns' ? 'maxTurns' : 'pressure_softcut' });
                 }
                 yield* poolChannel.send({ type: 'agent:done', agentId: a.id });
+                traceAgentDone(tw, poolScope.traceId, a.id);
                 const settled = yield* handleRecover(a, policy, ctx, pressureOpts, aliveCount, poolChannel, tw, poolScope.traceId);
                 if (settled) nudges.push(settled);
               } else {
@@ -1749,7 +1773,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
                 type: 'pool:agentNudge', agentId: a.id, reason: 'nudge', message: action.message });
               continue;
             case 'return':
-              yield* handleReturn(a, action.result, parsed.toolCalls[0], terminalToolName!, pruneOnReturn, poolChannel);
+              yield* handleReturn(a, action.result, parsed.toolCalls[0], terminalToolName!, pruneOnReturn, poolChannel, tw, poolScope.traceId);
               totalToolCalls++;
               continue;
             case 'tool_call':
@@ -1799,6 +1823,18 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         }
         steps++;
         const commitPressure = new ContextPressure(ctx, pressureOpts);
+        // One `pool:tick` per batched decode — the trace-side pressure series
+        // (the bus `agent:tick` below is its live twin). `remaining` is
+        // Infinity with no context limit, which JSONL renders as null.
+        tw.write({
+          traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+          type: 'pool:tick', phase: 'COMMIT',
+          activeAgents: agents.filter(x => x.status === 'active' || x.status === 'awaiting_tool').length,
+          pressure: {
+            remaining: commitPressure.remaining, cellsUsed: commitPressure.cellsUsed,
+            nCtx: commitPressure.nCtx, headroom: commitPressure.headroom,
+          },
+        });
         yield* poolChannel.send({ type: 'agent:tick', cellsUsed: commitPressure.cellsUsed, nCtx: commitPressure.nCtx });
       }
 
@@ -1880,7 +1916,10 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           // critical-kill path, which ALREADY emitted `agent:done` at the kill; its
           // recovery turn deferred and re-surfaced at the stall-break. Re-announcing it
           // done would double-emit (violating the invariant `agent-pool.test.ts` asserts).
-          if (!a.extracting) yield* poolChannel.send({ type: 'agent:done', agentId: a.id });
+          if (!a.extracting) {
+            yield* poolChannel.send({ type: 'agent:done', agentId: a.id });
+            traceAgentDone(tw, poolScope.traceId, a.id);
+          }
           if (policy.recoveryShape === 'parallel' && !a.extracting) {
             // In-loop (first attempt): queue the recovery turn for next tick's
             // SETTLE (alongside the surviving nudges). Agent is awaiting_tool → no
@@ -1986,7 +2025,9 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       agents: agents.map(a => ({
         agentId: a.id, tokenCount: a.tokenCount,
         toolCallCount: a.toolCallCount, result: a.result,
-        ppl: a.branch.disposed ? 0 : a.branch.perplexity,
+        // Disposed → the pre-prune harvest (0 only if the branch died outside
+        // the pool's prune paths — scope teardown mid-run).
+        ppl: a.branch.disposed ? (a.finalPpl ?? 0) : a.branch.perplexity,
       })),
       totalTokens: agents.reduce((s, a) => s + a.tokenCount, 0),
       steps, durationMs: performance.now() - poolT0,
@@ -2003,8 +2044,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           exitReason: a.exitReason,
           toolCallCount: a.toolCallCount,
           tokenCount: a.tokenCount,
-          ppl: a.branch.disposed ? 0 : a.branch.perplexity,
-          samplingPpl: a.branch.disposed ? 0 : a.branch.samplingPerplexity,
+          ppl: a.branch.disposed ? (a.finalPpl ?? 0) : a.branch.perplexity,
+          samplingPpl: a.branch.disposed ? (a.finalSamplingPpl ?? 0) : a.branch.samplingPerplexity,
           trace: trace ? a.traceBuffer : undefined,
           nestedResults: [...a.nestedResults],
         })),
@@ -2023,8 +2064,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           agents: agents.map(a => ({
             agentId: a.id, parentAgentId: a.parentId, branch: a.branch, agent: a,
             result: a.result, exitReason: a.exitReason, toolCallCount: a.toolCallCount, tokenCount: a.tokenCount,
-            ppl: a.branch.disposed ? 0 : a.branch.perplexity,
-            samplingPpl: a.branch.disposed ? 0 : a.branch.samplingPerplexity,
+            ppl: a.branch.disposed ? (a.finalPpl ?? 0) : a.branch.perplexity,
+            samplingPpl: a.branch.disposed ? (a.finalSamplingPpl ?? 0) : a.branch.samplingPerplexity,
             trace: trace ? a.traceBuffer : undefined,
             nestedResults: [...a.nestedResults],
           })),

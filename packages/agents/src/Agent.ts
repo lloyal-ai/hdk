@@ -378,6 +378,23 @@ export class Agent {
 
   // ── Branch-derived readings ─────────────────────────────
 
+  /**
+   * Branch metrics harvested just before the pool pruned this agent's branch.
+   * A branch's perplexity accumulators die with it (metrics live in the
+   * branch, not the agent), so every pool prune path calls
+   * {@link harvestMetrics} first; `pool:close` and the AgentResult read the
+   * harvest when `branch.disposed`. Null until harvested.
+   */
+  finalPpl: number | null = null;
+  finalSamplingPpl: number | null = null;
+
+  /** Capture branch metrics ahead of a prune — no-op once the branch is gone. */
+  harvestMetrics(): void {
+    if (this.branch.disposed) return;
+    this.finalPpl = this.branch.perplexity;
+    this.finalSamplingPpl = this.branch.samplingPerplexity;
+  }
+
   get position(): number { return this.branch.position; }
   get forkHead(): number { return this.branch.forkHead; }
   /** Number of unique KV cells this agent owns above the fork point */

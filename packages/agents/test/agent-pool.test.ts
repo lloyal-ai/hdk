@@ -1690,3 +1690,110 @@ describe('transient tool failure (park + retry)', () => {
     expect((retries[0] as { retryAfterMs: number }).retryAfterMs).toBe(20); // policy's 20ms, not the tool's 5s
   });
 });
+
+// ── Group 11: trace fidelity — pool:tick, agent span, harvested ppl ──
+// The trace carries the per-COMMIT pressure series (`pool:tick`), the agent
+// lifecycle span (`agent:spawn`/`agent:done`, mirroring the bus events), and
+// `pool:close.ppl` reads the pre-prune harvest for a disposed branch instead
+// of writing a 0 that wears the shape of a measurement.
+
+describe('trace fidelity: pool:tick, agent span, harvested ppl', () => {
+  it('pool:tick written once per COMMIT with the declared pressure shape', async () => {
+    const { trace, result } = await runPool({
+      forkTokenQueues: [[1, 2, STOP]],
+      parseChatOutputFn: () => ({ content: '', reasoningContent: '', toolCalls: [] }),
+      policy: stubPolicy({
+        shouldExit: () => false,
+        onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
+        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      }),
+    });
+
+    const ticks = trace.ofType('pool:tick');
+    expect(ticks.length).toBe(result.steps); // one per batched commit
+    expect(ticks[0].phase).toBe('COMMIT');
+    expect(ticks[0].activeAgents).toBeGreaterThanOrEqual(1);
+    expect(ticks[0].pressure.nCtx).toBe(16384);
+    expect(ticks[0].pressure.cellsUsed).toBeGreaterThan(0);
+    expect(ticks[0].pressure.remaining).toBe(ticks[0].pressure.nCtx - ticks[0].pressure.cellsUsed);
+    expect(typeof ticks[0].pressure.headroom).toBe('number');
+  });
+
+  it('agent:spawn + agent:done trace events bracket the agent, mirroring the bus', async () => {
+    const { trace, events } = await runPool({
+      forkTokenQueues: [[1, STOP]],
+      parseChatOutputFn: () => ({ content: 'findings', reasoningContent: '', toolCalls: [] }),
+      policy: stubPolicy({
+        shouldExit: () => false,
+        onProduced: (_a, parsed) => {
+          if (parsed.content) return { type: 'free_text_return', content: parsed.content };
+          return { type: 'idle', reason: 'free_text_stop' };
+        },
+        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      }),
+    });
+
+    const spawns = trace.ofType('agent:spawn');
+    const dones = trace.ofType('agent:done');
+    expect(spawns).toHaveLength(1);
+    expect(dones).toHaveLength(1);
+    expect(dones[0].agentId).toBe(spawns[0].agentId);
+    expect(typeof spawns[0].parentAgentId).toBe('number');
+    // One-for-one with the bus span
+    expect(events.filter(e => e.type === 'agent:spawn')).toHaveLength(1);
+    expect(events.filter(e => e.type === 'agent:done')).toHaveLength(1);
+  });
+
+  it('a drop ends the span too — agent:done trace follows pool:agentDrop', async () => {
+    const { trace } = await runPool({
+      forkTokenQueues: [[1, STOP]],
+      parseChatOutputFn: () => ({ content: '', reasoningContent: '', toolCalls: [] }),
+      policy: stubPolicy({
+        shouldExit: () => true,
+        onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
+        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      }),
+    });
+
+    const dones = trace.ofType('agent:done');
+    expect(dones).toHaveLength(1);
+    const dropIdx = trace.events.findIndex(e => e.type === 'pool:agentDrop');
+    const doneIdx = trace.events.findIndex(e => e.type === 'agent:done');
+    expect(dropIdx).toBeGreaterThanOrEqual(0);
+    expect(doneIdx).toBeGreaterThan(dropIdx);
+  });
+
+  it('pool:close reads the harvested ppl for a branch pruned mid-run', async () => {
+    const { trace, result } = await runPool({
+      forkTokenQueues: [[1, STOP]],
+      parseChatOutputFn: (raw) => {
+        if (!raw || raw === '') return { content: '', reasoningContent: '', toolCalls: [] };
+        return {
+          content: '', reasoningContent: '',
+          toolCalls: [{ name: 'report', arguments: '{"result":"done"}', id: 'c1' }],
+        };
+      },
+      pruneOnReturn: true,
+      mutateCtx: (ctx) => {
+        ctx._branchGetPerplexity = () => 7.25;
+        ctx._branchGetSamplingPerplexity = () => 3.5;
+      },
+      policy: stubPolicy({
+        shouldExit: () => false,
+        onProduced: (_a, parsed) => {
+          if (parsed.toolCalls.length > 0) return { type: 'return', result: 'done' };
+          return { type: 'idle', reason: 'free_text_stop' };
+        },
+        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      }),
+    });
+
+    // The branch died mid-run (pruneOnReturn) — before the harvest, these read 0.
+    expect(result.agents[0].branch.disposed).toBe(true);
+    expect(result.agents[0].ppl).toBe(7.25);
+    expect(result.agents[0].samplingPpl).toBe(3.5);
+    const close = trace.ofType('pool:close');
+    expect(close).toHaveLength(1);
+    expect(close[0].agents[0].ppl).toBe(7.25);
+  });
+});
