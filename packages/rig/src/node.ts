@@ -36,5 +36,17 @@ export type {
 
 // Node-only: provision the auxiliary models an enabled ability set requires
 // (aggregates each factory's manifest.services → resolveModel + createReranker + RerankerCtx)
+// Node-only: config-file mechanics for the Runner substrate (hdk#109) —
+// atomic 0600 writes, the writer's version guard, git check-ignore append,
+// boundary path resolution. The per-template LAYERING stays in the scaffold.
+export {
+  resolvePath,
+  resolveAppConfigPaths,
+  readJsonOverlay,
+  readJsonForWrite,
+  writeJsonAtomic,
+  maybeAppendGitignore,
+} from './config-node';
+
 export { provisionAbilityModels } from './provision';
 export type { ProvisionAbilityModelsOpts } from './provision';
