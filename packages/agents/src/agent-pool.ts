@@ -1591,11 +1591,14 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           applyLazyGrammar(s.agent);
           // transition fires agent.statusSignal — ctx.spawn's subscriber is waiting on this.
           s.agent.transition('active');
-          yield* poolChannel.send({ type: 'agent:spawn', agentId: s.agent.id, parentAgentId: s.agent.parentId });
+          // Trace before the suspending bus send — same contract as
+          // traceAgentDone: the span's start must not absorb subscriber
+          // backpressure or vanish on a cancellation mid-send.
           tw.write({
             traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
             type: 'agent:spawn', agentId: s.agent.id, parentAgentId: s.agent.parentId,
           });
+          yield* poolChannel.send({ type: 'agent:spawn', agentId: s.agent.id, parentAgentId: s.agent.parentId });
         }
       }
 
