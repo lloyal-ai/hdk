@@ -1797,3 +1797,29 @@ describe('trace fidelity: pool:tick, agent span, harvested ppl', () => {
     expect(close[0].agents[0].ppl).toBe(7.25);
   });
 });
+
+// ── Group 12: unlimited context → explicit nulls, not JSON-coerced Infinity ──
+
+describe('unlimited-context pressure serialization', () => {
+  it('nCtx <= 0 → pool:open/pool:tick write remaining/headroom as null', async () => {
+    const { trace } = await runPool({
+      nCtx: 0, // unlimited — ContextPressure reads remaining as Infinity
+      forkTokenQueues: [[1, STOP]],
+      parseChatOutputFn: () => ({ content: '', reasoningContent: '', toolCalls: [] }),
+      policy: stubPolicy({
+        shouldExit: () => false,
+        onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
+        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      }),
+    });
+
+    const open = trace.ofType('pool:open');
+    expect(open[0].pressure.remaining).toBeNull();
+    expect(open[0].pressure.headroom).toBeNull();
+    const ticks = trace.ofType('pool:tick');
+    expect(ticks.length).toBeGreaterThanOrEqual(1);
+    expect(ticks[0].pressure.remaining).toBeNull();
+    expect(ticks[0].pressure.headroom).toBeNull();
+    expect(ticks[0].pressure.nCtx).toBe(0); // finite fields stay numbers
+  });
+});

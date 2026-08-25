@@ -94,7 +94,9 @@ export type TraceEvent =
       type: 'pool:open';
       agentCount: number;
       taskSuffixTokens: number[];
-      pressure: { remaining: number; softLimit: number; headroom: number };
+      /** `remaining`/`headroom` are null when the context is unlimited
+       *  (`nCtx <= 0` — they'd otherwise be Infinity, which JSON can't carry). */
+      pressure: { remaining: number | null; softLimit: number; headroom: number | null };
     }
   | TraceEventBase & {
       type: 'pool:close';
@@ -113,7 +115,9 @@ export type TraceEvent =
       type: 'pool:tick';
       phase: 'PRODUCE' | 'COMMIT' | 'SETTLE' | 'DISPATCH';
       activeAgents: number;
-      pressure: { remaining: number; cellsUsed: number; nCtx: number; headroom: number };
+      /** `remaining`/`headroom` are null when the context is unlimited
+       *  (`nCtx <= 0` — they'd otherwise be Infinity, which JSON can't carry). */
+      pressure: { remaining: number | null; cellsUsed: number; nCtx: number; headroom: number | null };
     }
   | TraceEventBase & {
       type: 'pool:agentDrop';
