@@ -82,6 +82,31 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     recommendedContext: 32768,
   },
   {
+    id: 'qwen3.8-27b-q4',
+    role: 'llm',
+    label: 'Qwen3.8 27B · Q4_K_M',
+    // Upstream only: models.lloyal.ai does not carry these yet (verified 404
+    // while the 4B mirror returns 200). Add the mirror URL when it is seeded,
+    // rather than listing a fallback that cannot serve.
+    urls: [
+      'https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_M.gguf',
+    ],
+    sha256: '322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482',
+    sizeBytes: 16_464_440_224,
+    recommendedContext: 32768,
+  },
+  {
+    id: 'qwen3.8-27b-iq1',
+    role: 'llm',
+    label: 'Qwen3.8 27B · UD-IQ1_S',
+    urls: [
+      'https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-IQ1_S.gguf',
+    ],
+    sha256: '3895b6eaa91e705c06ad1938d16c22e86f073c6a67df86260a1da79be3d1f887',
+    sizeBytes: 6_192_222_208,
+    recommendedContext: 32768,
+  },
+  {
     id: 'qwen3-reranker-0.6b-q8',
     role: 'reranker',
     label: 'Qwen3 Reranker 0.6B · Q8_0',
