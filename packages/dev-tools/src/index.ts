@@ -227,12 +227,15 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
     }
     case 'agent:tool_result': {
       const agentId = ev.agentId as number;
+      const tool = typeof ev.tool === 'string' ? ev.tool : '';
       const lane = m.lanes.get(agentId);
-      if (lane) lane.inflightTool = null;
+      // Clear only the matching in-flight marker — a late result for an
+      // earlier tool must not blank a newer call's state.
+      if (lane && lane.inflightTool === tool) lane.inflightTool = null;
       // Settle the OLDEST unsettled call for this agent+tool — dispatch is
       // per-agent serial, so there is at most one.
       const r = m.retrievals.find(
-        (x) => x.agentId === agentId && x.tool === ev.tool && x.settledAt === null,
+        (x) => x.agentId === agentId && x.tool === tool && x.settledAt === null,
       );
       if (r) {
         r.settledAt = now;
@@ -269,7 +272,7 @@ export function pressureStrip(
   m: PaneModel,
   buckets: number,
 ): { at: number; pct: number }[] {
-  if (m.pressure.length === 0) return [];
+  if (m.pressure.length === 0 || buckets <= 0) return [];
   const first = m.pressure[0].at;
   const last = m.pressure[m.pressure.length - 1].at;
   const span = Math.max(1, last - first);

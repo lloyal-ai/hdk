@@ -30,14 +30,19 @@ export interface DevOverlayProps {
   tail?: readonly string[];
 }
 
+/** The overlay is bounded BY CONTRACT (Ink wipes scrollback past the frame) —
+ *  clamp the tail rows so no caller value can grow it. */
+const MAX_TAIL_ROWS = 12;
+
 export function DevOverlay({ model: m, tailRows = 5, tail = [] }: DevOverlayProps): ReactElement | null {
   if (!m.dev) return null;
+  const rows = Math.max(0, Math.min(MAX_TAIL_ROWS, Math.floor(tailRows)));
   const pct = pressurePercent(m);
   const origin = m.origin ?? {};
   const originLine = Object.entries(origin)
     .map(([k, v]) => `${k}:${v}`)
     .join('  ');
-  const bounded = tail.slice(-tailRows);
+  const bounded = rows === 0 ? [] : tail.slice(-rows);
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="gray" paddingX={1}>
       <Box gap={2}>

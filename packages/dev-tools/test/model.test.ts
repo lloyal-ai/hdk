@@ -135,6 +135,20 @@ describe('pressure', () => {
     expect(spark.length).toBe(strip.length);
   });
 
+  it('a stale tool_result cannot blank a newer in-flight marker; buckets<=0 is empty', () => {
+    const m = createPaneModel();
+    foldEvent(m, { type: 'agent:spawn', agentId: 3, parentAgentId: 1 }, 0);
+    foldEvent(m, { type: 'agent:tool_call', agentId: 3, tool: 'search', args: '' }, 1);
+    foldEvent(m, { type: 'agent:tool_call', agentId: 3, tool: 'fetch_page', args: '' }, 2);
+    // A late result for the EARLIER tool settles its retrieval but must not
+    // clear the newer in-flight marker.
+    foldEvent(m, { type: 'agent:tool_result', agentId: 3, tool: 'search', result: '{}' }, 3);
+    expect(m.lanes.get(3)!.inflightTool).toBe('fetch_page');
+    foldEvent(m, { type: 'agent:tick', cellsUsed: 1, nCtx: 10 }, 4);
+    expect(pressureStrip(m, 0)).toEqual([]);
+    expect(pressureStrip(m, -3)).toEqual([]);
+  });
+
   it('caps hold: the series and retrieval list never grow without bound', () => {
     const m = createPaneModel();
     for (let i = 0; i < 25_000; i++) foldEvent(m, { type: 'agent:tick', cellsUsed: i, nCtx: 0 }, i);
