@@ -138,17 +138,20 @@ export function DevPane({ bridge, controls = [], title }: DevPaneProps): ReactEl
 
   if (!open) {
     return (
-      <div
+      <button
+        type="button"
         onClick={() => setOpen(true)}
         title="dev pane (LLOYAL_DEV)"
+        aria-label="open the dev pane"
         style={{
           position: 'fixed', right: 20, bottom: 20, width: 44, height: 44, borderRadius: '50%',
           background: '#fff', border: `1px solid #dadce0`, display: 'grid', placeItems: 'center',
           color: C.dim, boxShadow: '0 2px 8px rgba(32,33,36,.14)', cursor: 'pointer', zIndex: 9999,
+          padding: 0, font: 'inherit',
         }}
       >
         <Cog />
-      </div>
+      </button>
     );
   }
 
