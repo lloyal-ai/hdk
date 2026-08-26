@@ -187,6 +187,30 @@ describe('maybeAppendGitignore', () => {
     expect(fs.readFileSync(path.join(dir, '.gitignore'), 'utf8')).toBe(' harness.json\nharness.json\n');
     expect(maybeAppendGitignore(p)).toBe(false); // now genuinely ignored
   });
+  it('a path with gitignore metacharacters is appended ESCAPED and actually ignores the file', () => {
+    initRepo();
+    const sub = path.join(dir, '[dev]');
+    fs.mkdirSync(sub);
+    const p = path.join(sub, 'harness.json');
+    fs.writeFileSync(p, '{}');
+    expect(maybeAppendGitignore(p)).toBe(true);
+    expect(fs.readFileSync(path.join(dir, '.gitignore'), 'utf8')).toBe('\\[dev\\]/harness.json\n');
+    // The escaped pattern must be EFFECTIVE — git itself is the judge.
+    expect(() =>
+      execFileSync('git', ['check-ignore', '-q', '--no-index', '--', '[dev]/harness.json'], { cwd: dir }),
+    ).not.toThrow();
+    expect(maybeAppendGitignore(p)).toBe(false); // and it dedups
+  });
+  it('a raw UNESCAPED metacharacter line does not suppress the effective append', () => {
+    initRepo();
+    fs.writeFileSync(path.join(dir, '.gitignore'), '[dev]/harness.json\n'); // ineffective: a char class
+    const sub = path.join(dir, '[dev]');
+    fs.mkdirSync(sub);
+    const p = path.join(sub, 'harness.json');
+    fs.writeFileSync(p, '{}');
+    expect(maybeAppendGitignore(p)).toBe(true);
+    expect(fs.readFileSync(path.join(dir, '.gitignore'), 'utf8')).toBe('[dev]/harness.json\n\\[dev\\]/harness.json\n');
+  });
   it('a gitignore without a trailing newline gets one before the appended line', () => {
     initRepo();
     fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules');

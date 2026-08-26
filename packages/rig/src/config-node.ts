@@ -162,16 +162,21 @@ export function maybeAppendGitignore(configFilePath: string): boolean {
       ignored = (e as { status?: number }).status === 1 ? false : null;
     }
     if (ignored === true) return false;
+    // A gitignore line is a PATTERN, not a pathname: metacharacters must be
+    // escaped or `sub/[dev]/harness.json` ignores `sub/d/…`, never the literal
+    // path. Dedup against the escaped form only — a raw unescaped line in the
+    // file is ineffective and must not suppress the effective append.
+    const line = escapeGitignore(relative);
     // Never append a line that is already there, whatever git said. Leading
     // whitespace is PART of a gitignore pattern (an indented line ignores
     // nothing), so the match allows none; trailing spaces git strips.
-    const name = path.basename(configFilePath);
+    const nameLine = escapeGitignore(path.basename(configFilePath));
     const needle = new RegExp(
-      `(^|\\n)(${escapeRe(relative)}|${escapeRe(name)})[ \\t]*\\r?(\\n|$)`,
+      `(^|\\n)(${escapeRe(line)}|${escapeRe(nameLine)})[ \\t]*\\r?(\\n|$)`,
     );
     if (needle.test(existing)) return false;
     const prefix = existing.length === 0 || existing.endsWith('\n') ? '' : '\n';
-    fs.appendFileSync(gitignorePath, prefix + relative + '\n');
+    fs.appendFileSync(gitignorePath, prefix + line + '\n');
     return true;
   } catch {
     return false;
@@ -180,6 +185,13 @@ export function maybeAppendGitignore(configFilePath: string): boolean {
 
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Escape a literal pathname into a gitignore PATTERN: backslash the fnmatch
+ *  metacharacters, and a leading `#` (comment) or `!` (negation). */
+function escapeGitignore(p: string): string {
+  const escaped = p.replace(/([\\[\]*?])/g, '\\$1');
+  return /^[#!]/.test(escaped) ? '\\' + escaped : escaped;
 }
 
 function findGitRoot(start: string): string | null {
