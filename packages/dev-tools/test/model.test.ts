@@ -304,3 +304,15 @@ describe('reports', () => {
     expect(m.lanes.get(3)!).toMatchObject({ report: 'salvaged', reportSource: 'recovery', outcome: 'recovered' });
   });
 });
+
+describe('parked retries (agent:tool_retry)', () => {
+  it('a transient failure parks the call — never bare in-flight', () => {
+    const m = freshRun();
+    foldEvent(m, { type: 'agent:tool_call', agentId: 2, tool: 'web_search', args: '{"query":"q"}' }, 2000);
+    foldEvent(m, { type: 'agent:tool_retry', agentId: 2, tool: 'web_search', retryAfterMs: 90000, attempt: 1 }, 5200);
+    expect(m.retrievals[0].retry).toEqual({ at: 5200, afterMs: 90000, attempt: 1 });
+    // the eventual settle closes the SAME call
+    foldEvent(m, { type: 'agent:tool_result', agentId: 2, tool: 'web_search', result: '{"error":"failed"}' }, 101_000);
+    expect(m.retrievals[0].settledAt).toBe(101_000);
+  });
+});

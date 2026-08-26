@@ -423,9 +423,20 @@ function Lane({ m, l, px, on, secOf, nowS, live, selected, toolColor, onClick, g
                 Math.max(px(secOf(r.dispatchedAt)), Math.max(capL, gutter)),
                 Math.min(px(Math.min(secOf(r.settledAt!), e)), capR),
               ))}
-            {/* a live wait stripes to the edge */}
-            {myCalls.filter((r) => r.settledAt === null).map((r) =>
-              stripe(Math.max(px(secOf(r.dispatchedAt)), Math.max(capL, gutter)), capR))}
+            {/* a live wait stripes to the edge; a PARKED retry (rate-limit
+                wait) renders grey from the park moment — waiting on the
+                outside world, not the tool */}
+            {myCalls.filter((r) => r.settledAt === null).map((r) => {
+              const from = Math.max(px(secOf(r.dispatchedAt)), Math.max(capL, gutter));
+              if (!r.retry) return stripe(from, capR);
+              const parkFrom = Math.max(px(secOf(r.retry.at)), Math.max(capL, gutter));
+              return (
+                <React.Fragment key={`lw${r.dispatchedAt}`}>
+                  {stripe(from, Math.min(parkFrom, capR))}
+                  {stripe(Math.min(parkFrom, capR), capR, true)}
+                </React.Fragment>
+              );
+            })}
             {/* the planner waiting on the USER — same grammar, grey */}
             {l.clarify && stripe(
               Math.max(px(secOf(l.clarify.askedAt)), Math.max(capL, gutter)),
@@ -508,7 +519,20 @@ function Lane({ m, l, px, on, secOf, nowS, live, selected, toolColor, onClick, g
           <span style={{
             position: 'absolute', left: px(e) - gutter + 10, top: 13, fontSize: 10.5,
             fontFamily: mono, color: C.agentDark, whiteSpace: 'nowrap', pointerEvents: 'none',
-          }}>{l.clarify && l.clarify.answeredAt === null ? 'waiting on you…' : l.inflightTool ? `${l.inflightTool}…` : l.role === 'synth' ? 'streaming report…' : 'thinking…'}</span>
+          }}>{(() => {
+            if (l.clarify && l.clarify.answeredAt === null) return 'waiting on you…';
+            if (l.inflightTool) {
+              const parked = m.retrievals.find((r) => r.agentId === l.agentId && r.settledAt === null && r.retry !== null);
+              if (parked?.retry) {
+                const left = Math.ceil((parked.retry.afterMs - (nowS - secOf(parked.retry.at)) * 1000) / 1000);
+                return left > 0
+                  ? `${l.inflightTool} — rate-limited · retry in ${left}s`
+                  : `${l.inflightTool} — retrying (attempt ${parked.retry.attempt + 1})…`;
+              }
+              return `${l.inflightTool}…`;
+            }
+            return l.role === 'synth' ? 'streaming report…' : 'thinking…';
+          })()}</span>
         )}
       </div>
     </div>
@@ -573,7 +597,8 @@ function AgentFeed({ m, lane, toolColor, onClose, onJump }: {
   for (const { r, id } of calls) {
     const open = expanded.has(id);
     const err = r.result !== null && r.result.includes('"error"');
-    const status = r.settledAt === null ? 'in flight'
+    const status = r.settledAt === null
+      ? (r.retry ? `rate-limited · parked ${Math.round(r.retry.afterMs / 1000)}s · attempt ${r.retry.attempt}` : 'in flight')
       : r.admission
         ? `${r.admission.selectedPassageCount}${r.admission.totalScored != null ? ` of ${r.admission.totalScored}` : ''} passages${r.admission.admittedTokens != null ? ` · ${r.admission.admittedTokens} tok` : ''}`
         : err ? 'error' : 'done';

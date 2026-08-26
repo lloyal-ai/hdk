@@ -132,6 +132,10 @@ export interface Retrieval {
   /** Exploit dual scores (`entailment:content:exploit` mirror) — the
    *  before/after ranking the slope chart draws. */
   exploitChunks: Array<{ heading: string; toolQueryScore: number; combinedScore: number }> | null;
+  /** The call is PARKED: the tool reported a transient failure and the pool
+   *  will re-execute after `afterMs` (`agent:tool_retry`). Rendered as
+   *  waiting-on-the-outside-world, never as bare in-flight. */
+  retry: { at: number; afterMs: number; attempt: number } | null;
 }
 
 /** One point of the live pressure series (`agent:tick` is the bus twin of the
@@ -419,6 +423,7 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
         explore: null,
         admission: null,
         exploitChunks: null,
+        retry: null,
       });
       if (m.retrievals.length > MAX_RETRIEVALS) m.retrievals.shift();
       return;
@@ -526,6 +531,22 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
         default:
           return;
       }
+    }
+    case 'agent:tool_retry': {
+      const agentId = ev.agentId as number;
+      const tool = typeof ev.tool === 'string' ? ev.tool : '';
+      for (let i = m.retrievals.length - 1; i >= 0; i--) {
+        const r = m.retrievals[i];
+        if (r.agentId === agentId && r.tool === tool && r.settledAt === null) {
+          r.retry = {
+            at: now,
+            afterMs: typeof ev.retryAfterMs === 'number' ? ev.retryAfterMs : 0,
+            attempt: typeof ev.attempt === 'number' ? ev.attempt : 1,
+          };
+          break;
+        }
+      }
+      return;
     }
     case 'agent:tick': {
       if (typeof ev.cellsUsed === 'number' && typeof ev.nCtx === 'number') {
