@@ -119,8 +119,13 @@ export function DevPane({ bridge, controls = [], title }: DevPaneProps): ReactEl
       }
     }, 200);
     const off = bridge.onEvent(({ ev }) => {
-      foldEvent(modelRef.current!, ev, Date.now());
-      dirty = true;
+      // Truly wire-gated: until config:loaded says dev, fold ONLY that event
+      // — a non-dev page never pays the per-token fold.
+      const m = modelRef.current!;
+      if (m.dev || ev.type === 'config:loaded') {
+        foldEvent(m, ev, Date.now());
+        dirty = true;
+      }
     });
     return () => {
       clearInterval(timer);
