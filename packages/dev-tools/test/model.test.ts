@@ -197,3 +197,110 @@ describe('pressure', () => {
     expect(m.retrievals.length).toBeLessThanOrEqual(500);
   });
 });
+
+// ── the tee vocabulary: interventions, retrieval metadata, plan, clarify ──
+
+function freshRun() {
+  const m = createPaneModel();
+  foldEvent(m, { type: 'config:loaded', dev: true, config: {}, origin: {} }, 0);
+  foldEvent(m, { type: 'plan:start' }, 1000);
+  foldEvent(m, { type: 'agent:spawn', agentId: 2, parentAgentId: 1 }, 1100);
+  return m;
+}
+
+describe('interventions (agent:trace mirrors)', () => {
+  it('a guard nudge folds as kind guard, a plain nudge as nudge, authReject as auth', () => {
+    const m = freshRun();
+    foldEvent(m, { type: 'agent:trace', agentId: 2, event: {
+      type: 'pool:agentNudge', traceId: 1, parentTraceId: null, ts: 1,
+      reason: 'nudge', message: 'already searched', tool: 'web_search', args: '"q"', guard: 'query_dedup',
+    } }, 2000);
+    foldEvent(m, { type: 'agent:trace', agentId: 2, event: {
+      type: 'pool:agentNudge', traceId: 2, parentTraceId: null, ts: 2,
+      reason: 'nudge', message: 'report now within 220 words',
+    } }, 2100);
+    foldEvent(m, { type: 'agent:trace', agentId: 2, event: {
+      type: 'tool:authReject', traceId: 3, parentTraceId: null, ts: 3, attemptedTool: 'write_file',
+    } }, 2200);
+    expect(m.interventions.map((i) => i.kind)).toEqual(['guard', 'nudge', 'auth']);
+    expect(m.interventions[0]).toMatchObject({ guard: 'query_dedup', tool: 'web_search' });
+    expect(m.interventions[2].tool).toBe('write_file');
+  });
+
+  it('pool:agentDrop and branch:prune land on the lane', () => {
+    const m = freshRun();
+    foldEvent(m, { type: 'agent:trace', agentId: 2, event: {
+      type: 'pool:agentDrop', traceId: 1, parentTraceId: null, ts: 1, reason: 'pressure_critical',
+    } }, 2000);
+    foldEvent(m, { type: 'agent:trace', agentId: 2, event: {
+      type: 'branch:prune', traceId: 2, parentTraceId: null, ts: 2, branchHandle: 2, position: 900,
+    } }, 2100);
+    const lane = m.lanes.get(2)!;
+    expect(lane.dropReason).toBe('pressure_critical');
+    expect(lane.prunedAt).toBe(2100);
+  });
+});
+
+describe('retrieval metadata (the admission funnel, live)', () => {
+  it('tool:dispatch keys the call; rerank:end + exploit attach by callId', () => {
+    const m = freshRun();
+    foldEvent(m, { type: 'agent:tool_call', agentId: 2, tool: 'fetch_page', args: '{"url":"u","query":"q"}' }, 2000);
+    foldEvent(m, { type: 'agent:trace', agentId: 2, event: {
+      type: 'tool:dispatch', traceId: 1, parentTraceId: null, ts: 1,
+      agentId: 2, tool: 'fetch_page', toolIndex: 0, toolkitSize: 1,
+      args: {}, callId: 'call_7', explore: false, percentAvailable: 38,
+    } }, 2001);
+    foldEvent(m, { type: 'agent:trace', agentId: 2, callId: 'call_7', event: {
+      type: 'entailment:content:exploit', traceId: 2, parentTraceId: 1, ts: 2,
+      tool: 'fetch_page', pressure: { percentAvailable: 38 },
+      chunks: [{ heading: 'A', toolQueryScore: 0.6, combinedScore: 0.9 }],
+    } }, 2002);
+    foldEvent(m, { type: 'agent:trace', agentId: 2, callId: 'call_7', event: {
+      type: 'rerank:end', traceId: 3, parentTraceId: 1, ts: 3,
+      topResults: [{ file: 'u', heading: 'A', score: 0.9, textPreview: 'p' }],
+      selectedPassageCount: 1, totalChars: 100, durationMs: 5,
+      topK: 5, tokenBudget: 2048, admittedTokens: 700, totalScored: 12,
+    } }, 2003);
+    foldEvent(m, { type: 'agent:tool_result', agentId: 2, tool: 'fetch_page', result: '{"content":"…"}' }, 2004);
+
+    const r = m.retrievals[0];
+    expect(r.callId).toBe('call_7');
+    expect(r.explore).toBe(false);
+    expect(r.admission).toMatchObject({ topK: 5, tokenBudget: 2048, admittedTokens: 700, totalScored: 12 });
+    expect(r.exploitChunks).toEqual([{ heading: 'A', toolQueryScore: 0.6, combinedScore: 0.9 }]);
+    expect(r.settledAt).toBe(2004);
+  });
+});
+
+describe('plan structure + clarify continuation', () => {
+  it('a research plan captures ordered task descriptions', () => {
+    const m = freshRun();
+    foldEvent(m, { type: 'plan', intent: 'research', tasks: [{ description: 'T1' }, { description: 'T2' }], clarifyQuestions: [] }, 3000);
+    expect(m.plan).toEqual({ intent: 'research', tasks: ['T1', 'T2'] });
+    expect(m.lanes.get(2)!.outcome).toBe('done');
+  });
+
+  it('a clarify plan parks the planner on the user; the next cycle CONTINUES the run', () => {
+    const m = freshRun();
+    foldEvent(m, { type: 'plan', intent: 'clarify', tasks: [], clarifyQuestions: ['Which sense?'] }, 3000);
+    const lane = m.lanes.get(2)!;
+    expect(lane.clarify).toEqual({ questions: ['Which sense?'], askedAt: 3000, answeredAt: null });
+    expect(lane.outcome).toBe('running');
+    // The user answers minutes later — plan:start again must NOT reset the run.
+    foldEvent(m, { type: 'plan:start' }, 120_000);
+    expect(m.lanes.size).toBe(1);
+    expect(lane.clarify!.answeredAt).toBe(120_000);
+    expect(m.runStartAt).toBe(1000);
+  });
+});
+
+describe('reports', () => {
+  it('agent:return delivers; agent:recovered marks extraction', () => {
+    const m = freshRun();
+    foldEvent(m, { type: 'agent:return', agentId: 2, result: 'findings' }, 4000);
+    expect(m.lanes.get(2)!).toMatchObject({ report: 'findings', reportSource: 'voluntary' });
+    foldEvent(m, { type: 'agent:spawn', agentId: 3, parentAgentId: 1 }, 4100);
+    foldEvent(m, { type: 'agent:recovered', agentId: 3, result: 'salvaged' }, 4200);
+    expect(m.lanes.get(3)!).toMatchObject({ report: 'salvaged', reportSource: 'recovery', outcome: 'recovered' });
+  });
+});

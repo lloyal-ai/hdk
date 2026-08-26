@@ -1,55 +1,9 @@
 import { call } from "effection";
 import type { Operation } from "effection";
-import { Tool, Trace } from "@lloyal-labs/lloyal-agents";
+import { Tool, admitChunks } from "@lloyal-labs/lloyal-agents";
 import type { JsonSchema, ToolContext } from "@lloyal-labs/lloyal-agents";
 import { chunkHtml } from "@lloyal-labs/rig";
-import type { Chunk } from "@lloyal-labs/rig";
-import type { Reranker, ScoredChunk } from "@lloyal-labs/rig";
-
-/** Select top-K scored chunks within a token budget. */
-function selectTopChunks(
-  scored: ScoredChunk[],
-  chunks: Chunk[],
-  topK: number,
-  tokenBudget: number,
-): Array<{ text: string; heading: string; score: number }> {
-  const selected: Array<{ text: string; heading: string; score: number }> = [];
-  let tokenTotal = 0;
-
-  for (const sc of scored.slice(0, topK)) {
-    const chunk = chunks.find(
-      (c) => c.resource === sc.file && c.startLine === sc.startLine,
-    );
-    if (!chunk?.text) continue;
-
-    const chunkTokens = chunk.tokens.length || Math.ceil(chunk.text.length / 4);
-
-    if (tokenTotal + chunkTokens > tokenBudget) {
-      // First chunk exceeds budget — truncate on paragraph boundary
-      if (selected.length === 0) {
-        const charLimit = tokenBudget * 4;
-        let truncated = chunk.text.slice(0, charLimit);
-        const lastBreak = Math.max(
-          truncated.lastIndexOf("\n\n"),
-          truncated.lastIndexOf(". "),
-        );
-        if (lastBreak > charLimit * 0.4)
-          truncated = truncated.slice(0, lastBreak + 1);
-        selected.push({
-          text: truncated + "\n\n[truncated]",
-          heading: sc.heading,
-          score: sc.score,
-        });
-      }
-      break;
-    }
-
-    selected.push({ text: chunk.text, heading: sc.heading, score: sc.score });
-    tokenTotal += chunkTokens;
-  }
-
-  return selected;
-}
+import type { Reranker } from "@lloyal-labs/rig";
 
 /**
  * Fetch a web page and extract readable article content.
@@ -224,137 +178,34 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
       };
     }
 
-    // Step 2: Reranker path — chunk HTML structurally, score, return top-K
+    // Step 2: Reranker path — chunk HTML structurally, then hand the chunks
+    // to the platform's admission pipeline. `admitChunks` owns scoring,
+    // explore/exploit dual scoring, the budgeted selection, and the trace
+    // events that make the funnel observable (rerank:start/end,
+    // entailment:content:exploit) — this tool owns only what is page-shaped:
+    // fetching, chunking, tokenizing fresh chunks, and rendering the result.
     if (reranker && args.query) {
       const chunks = yield* call(() =>
         chunkHtml(fetched.articleHtml, url, fetched.title),
       );
 
-      // Write chunks to trace for replay sufficiency
-      let tw;
-      try {
-        tw = yield* Trace.expect();
-      } catch {
-        /* no trace context */
-      }
-      const rerankT0 = performance.now();
-      if (tw) {
-        tw.write({
-          traceId: tw.nextId(),
-          parentTraceId: null,
-          ts: rerankT0,
-          type: "rerank:start",
-          query: args.query,
-          chunkCount: chunks.length,
-          tool: "fetch_page",
-          url,
-          chunks: chunks.map((c) => ({
-            heading: c.heading,
-            textLength: c.text.length,
-            startLine: c.startLine,
-          })),
-        });
-      }
-
       if (chunks.length > 0) {
         yield* call(() => reranker.tokenizeChunks(chunks));
 
-        // Score chunks against agent's local query
-        let scored: ScoredChunk[] = [];
-        yield* call(async () => {
-          for await (const batch of reranker.score(args.query!, chunks)) {
-            if (context?.onProgress)
-              context.onProgress({ filled: batch.filled, total: batch.total });
-            scored = batch.results;
-          }
+        const admitted = yield* admitChunks(reranker, chunks, args.query, context, {
+          tool: "fetch_page",
+          url,
+          select: { mode: "budget", topK, tokenBudget },
+          traceChunkList: true,
         });
 
-        // Explore mode (default): agent-local scoring only. The agent chose
-        // this page — content scored against what it asked for. Filtering
-        // against original query removes bridging content that produces
-        // hypothesis greps. alsoOnPage provides discovery signals instead.
-        //
-        // Exploit mode (!explore): dual scoring via scoreRelevanceBatch.
-        if (!context?.explore && context?.scorer && scored.length > 0) {
-          type ScoredWithOriginal = ScoredChunk & { _toolQueryScore: number };
-          const chunkTexts = scored.map((sc) => {
-            const chunk = chunks.find(
-              (c) => c.resource === sc.file && c.startLine === sc.startLine,
-            );
-            return chunk?.text ?? "";
-          });
-          const combinedScores: number[] = yield* call(() =>
-            context.scorer!.scoreRelevanceBatch(chunkTexts, args.query!),
-          );
-          const reordered: ScoredWithOriginal[] = scored
-            .map((sc, i) => ({
-              ...sc,
-              score: combinedScores[i],
-              _toolQueryScore: sc.score,
-            }))
-            .sort((a, b) => b.score - a.score);
-          scored = reordered;
-
-          if (tw) {
-            tw.write({
-              traceId: tw.nextId(),
-              parentTraceId: null,
-              ts: performance.now(),
-              type: "entailment:content:exploit",
-              tool: "fetch_page",
-              // Only the pressure the tool can SEE — absent values are
-              // omitted, never written as sentinels.
-              pressure:
-                context.pressurePercentAvailable != null
-                  ? { percentAvailable: context.pressurePercentAvailable }
-                  : {},
-              chunks: reordered.slice(0, 5).map((sc) => ({
-                heading: sc.heading,
-                toolQueryScore: sc._toolQueryScore,
-                combinedScore: sc.score,
-              })),
-            });
-          }
-        }
-
-        // Select top-K within token budget (tokens populated by tokenizeChunks)
-        const topChunks = selectTopChunks(scored, chunks, topK, tokenBudget);
-
-        if (tw) {
-          tw.write({
-            traceId: tw.nextId(),
-            parentTraceId: null,
-            ts: performance.now(),
-            type: "rerank:end",
-            topResults: topChunks.map((c) => ({
-              file: url,
-              heading: c.heading,
-              score: c.score,
-              textPreview: c.text.slice(0, 200),
-            })),
-            selectedPassageCount: topChunks.length,
-            totalChars: topChunks.reduce((sum, c) => sum + c.text.length, 0),
-            durationMs: performance.now() - rerankT0,
-            tool: "fetch_page",
-            url,
-          });
-        }
-
-        if (topChunks.length > 0) {
-          // Discovery signal: headings of chunks that didn't make the cut.
-          // Lightweight (~50 tokens) but gives the agent topics to explore.
-          const selectedHeadings = new Set(topChunks.map((c) => c.heading));
-          const alsoOnPage = scored
-            .filter((sc) => !selectedHeadings.has(sc.heading))
-            .map((sc) => sc.heading)
-            .filter((h, i, arr) => arr.indexOf(h) === i);
-
+        if (admitted.passages!.length > 0) {
           return {
             url,
             title: fetched.title,
-            content: topChunks.map((c) => c.text).join("\n\n---\n\n"),
-            chunks: topChunks.length,
-            ...(alsoOnPage.length > 0 ? { alsoOnPage } : {}),
+            content: admitted.passages!.map((c) => c.text).join("\n\n---\n\n"),
+            chunks: admitted.passages!.length,
+            ...(admitted.alsoOnPage!.length > 0 ? { alsoOnPage: admitted.alsoOnPage } : {}),
           };
         }
       }

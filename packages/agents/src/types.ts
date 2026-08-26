@@ -4,6 +4,7 @@ import type { SessionContext } from '@lloyal-labs/sdk';
 import type { AgentPolicy } from './AgentPolicy';
 import type { EntailmentScorer } from './source';
 import type { ToolHistoryEntry } from './Agent';
+import type { TraceEvent } from './trace-types';
 
 // ── Tool base class types ──────────────────────────────────────
 
@@ -495,4 +496,10 @@ export type AgentEvent =
   | { type: 'agent:recovered'; agentId: number; result: string }
   | { type: 'agent:failed'; agentId: number; reason: string }
   | { type: 'agent:done'; agentId: number }
-  | { type: 'agent:tick'; cellsUsed: number; nCtx: number };
+  | { type: 'agent:tick'; cellsUsed: number; nCtx: number }
+  /** Dev-gated trace tee: a trace event mirrored onto the bus, stamped with
+   *  the agent it belongs to. Tool-scoped writes carry the `callId` of the
+   *  dispatch that produced them; pool-side interventions (nudges, drops,
+   *  auth rejections, prunes) mirror without one. Emitted only when a real
+   *  (non-Null) TraceWriter is active — production streams never carry it. */
+  | { type: 'agent:trace'; agentId: number; callId?: string; event: TraceEvent };

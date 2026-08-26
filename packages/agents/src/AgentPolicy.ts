@@ -95,6 +95,7 @@ export const defaultToolGuards: ToolGuard[] = [
       'you can, and report what blocks completion.',
   },
   {
+    name: 'url_dedup',
     tools: ['fetch_page'],
     reject: (args, history) => {
       const url = args.url as string | undefined;
@@ -105,6 +106,7 @@ export const defaultToolGuards: ToolGuard[] = [
     message: 'This URL was already fetched. Try a different source.',
   },
   {
+    name: 'query_dedup',
     tools: ['web_search'],
     reject: (args, history) => {
       const query = (args.query as string | undefined)?.toLowerCase();

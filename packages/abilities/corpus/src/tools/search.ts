@@ -1,9 +1,9 @@
 import { call } from 'effection';
 import type { Operation } from 'effection';
-import { Tool, Trace } from '@lloyal-labs/lloyal-agents';
+import { Tool, Trace, admitChunks } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema, ToolContext } from '@lloyal-labs/lloyal-agents';
 import type { Chunk } from '@lloyal-labs/rig';
-import type { Reranker, ScoredChunk } from '@lloyal-labs/rig';
+import type { Reranker } from '@lloyal-labs/rig';
 import { BM25Index } from '../bm25';
 
 /**
@@ -152,84 +152,23 @@ export class SearchTool extends Tool<{ query: string }> {
       });
     }
 
-    // ── Stage 2: cross-encoder rerank ──────────────────────────
-    const t0 = performance.now();
-    tw.write({
-      traceId: tw.nextId(), parentTraceId: null, ts: t0,
-      type: 'rerank:start', query, chunkCount: candidates.length,
+    // ── Stage 2: cross-encoder rerank via the platform's admission
+    // pipeline. `admitChunks` owns scoring (with progress), explore/exploit
+    // dual scoring, the threshold gate, and the trace events that make the
+    // funnel observable (rerank:start/end, entailment:content:exploit) —
+    // this tool owns only what is corpus-shaped: the BM25 first stage and
+    // the hits envelope.
+    const admitted = yield* admitChunks(reranker, candidates, query, context, {
+      tool: 'search',
+      select: { mode: 'threshold', threshold: this._threshold },
     });
 
-    // `reranker.score` yields a topK-truncated `results` array but the
-    // `total` field carries the actual candidate count that was scored.
-    // We need `total` to populate `totalScored` honestly.
-    let scoredCount = 0;
-    let results: ScoredChunk[] = yield* call(async () => {
-      let last: ScoredChunk[] = [];
-      for await (const { results, filled, total } of reranker.score(query, candidates)) {
-        if (context?.onProgress) context.onProgress({ filled, total });
-        last = results;
-        scoredCount = total;
-      }
-      return last;
-    });
+    return {
+      hits: admitted.admitted,
+      thresholdScore: this._threshold,
+      totalScored: admitted.totalScored,
+      topRejected: admitted.topRejected,
+    };
 
-    // Explore mode (default): agent-local scoring only. Agents discover
-    // bridging content (adjacent sections connecting investigation to answer).
-    // Scoring against the original query would demote exactly that content.
-    //
-    // Exploit mode (!explore): dual scoring via scoreRelevanceBatch —
-    // min(toolQueryScore, originalQueryScore) per chunk. Tightens focus
-    // when KV headroom is low, at the cost of serendipitous discovery.
-    if (!context?.explore && context?.scorer && results.length > 0) {
-      type ScoredWithOriginal = ScoredChunk & { _toolQueryScore: number };
-      const chunkTexts = results.map((sc) => {
-        const chunk = chunks.find(c => c.resource === sc.file && c.startLine === sc.startLine);
-        return chunk?.text ?? '';
-      });
-      const combinedScores: number[] = yield* call(() =>
-        context.scorer!.scoreRelevanceBatch(chunkTexts, query),
-      );
-      const reordered: ScoredWithOriginal[] = results
-        .map((sc, i) => ({ ...sc, score: combinedScores[i], _toolQueryScore: sc.score }))
-        .sort((a, b) => b.score - a.score);
-      results = reordered;
-
-      tw.write({
-        traceId: tw.nextId(), parentTraceId: null, ts: performance.now(),
-        type: 'entailment:content:exploit', tool: 'search',
-        // Only the pressure the tool can SEE — absent values are omitted,
-        // never written as sentinels.
-        pressure:
-          context.pressurePercentAvailable != null
-            ? { percentAvailable: context.pressurePercentAvailable }
-            : {},
-        chunks: reordered.slice(0, 5).map((sc) => ({
-          heading: sc.heading,
-          toolQueryScore: sc._toolQueryScore,
-          combinedScore: sc.score,
-        })),
-      });
-    }
-
-    // Threshold filter: drop hits below the configured score floor. If
-    // everything is below the floor, return [] and surface the top 3
-    // rejected hits in the envelope so the agent sees "best I could find,
-    // but the model said no to all of them" rather than getting fed
-    // garbage as if it were honest signal.
-    const thresholdScore = this._threshold;
-    const totalScored = scoredCount;
-    const passing = results.filter(r => r.score >= thresholdScore);
-    const topRejected = passing.length === 0 ? results.slice(0, 3) : [];
-
-    tw.write({
-      traceId: tw.nextId(), parentTraceId: null, ts: performance.now(),
-      type: 'rerank:end',
-      topResults: passing.slice(0, 5).map(r => ({ file: r.file, heading: r.heading, score: r.score })),
-      selectedPassageCount: passing.length,
-      totalChars: 0,
-      durationMs: performance.now() - t0,
-    });
-
-    return { hits: passing, thresholdScore, totalScored, topRejected };
   }
 }

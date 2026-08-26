@@ -48,6 +48,14 @@ export interface DevControl {
   read: (config: Record<string, unknown>) => string | undefined;
 }
 
+/** A clarify exchange on the planner's lane — the planner waiting on the
+ *  USER, rendered with the same call/wait/answer grammar a tool wait uses. */
+export interface ClarifyExchange {
+  questions: string[];
+  askedAt: number;
+  answeredAt: number | null;
+}
+
 /** One lane row of the timeline: an agent's span, derived live from the bus. */
 export interface AgentLane {
   agentId: number;
@@ -64,6 +72,44 @@ export interface AgentLane {
   tokenCount: number;
   /** tool name → the call currently in flight (cleared on result). */
   inflightTool: string | null;
+  /** The agent's delivered report — `agent:return` (voluntary) or
+   *  `agent:recovered` (extracted). Null until one arrives. */
+  report: string | null;
+  reportSource: 'voluntary' | 'recovery' | null;
+  /** When the pool reclaimed the branch's KV (`branch:prune` mirror). */
+  prunedAt: number | null;
+  /** The pool's drop reason (`pool:agentDrop` mirror) — richer than the
+   *  bus `agent:failed` reason. */
+  dropReason: string | null;
+  /** Set on the planner while it waits on the user (research's clarify). */
+  clarify: ClarifyExchange | null;
+}
+
+/** A harness intervention the model felt but the UI never showed until now:
+ *  a guard rejecting a call before dispatch, a budget/pressure nudge, or an
+ *  auth rejection on an ungranted protected tool. */
+export interface Intervention {
+  kind: 'guard' | 'nudge' | 'auth';
+  agentId: number;
+  at: number;
+  tool?: string;
+  args?: string;
+  guard?: string;
+  message?: string;
+  reason?: string;
+}
+
+/** The admission funnel for one retrieval — `rerank:end`'s live mirror. */
+export interface AdmissionSummary {
+  selectedPassageCount: number;
+  totalChars: number;
+  durationMs: number;
+  topResults: Array<{ file: string; heading: string; score: number; textPreview?: string }>;
+  topK?: number;
+  tokenBudget?: number;
+  admittedTokens?: number;
+  threshold?: number;
+  totalScored?: number;
 }
 
 /** One tool call/result pair — the Sources tab's row. */
@@ -76,6 +122,16 @@ export interface Retrieval {
   /** The tool's JSON result string, when it settled. */
   result: string | null;
   contextAvailablePercent: number | null;
+  /** From the `tool:dispatch` mirror — keys the trace metadata below. */
+  callId: string | null;
+  /** explore (agent-local scoring) vs exploit (re-ranked against the query).
+   *  Null when the wire never said. */
+  explore: boolean | null;
+  /** The admission funnel (`rerank:end` mirror), when the tool ran one. */
+  admission: AdmissionSummary | null;
+  /** Exploit dual scores (`entailment:content:exploit` mirror) — the
+   *  before/after ranking the slope chart draws. */
+  exploitChunks: Array<{ heading: string; toolQueryScore: number; combinedScore: number }> | null;
 }
 
 /** One point of the live pressure series (`agent:tick` is the bus twin of the
@@ -116,6 +172,14 @@ export interface PaneModel {
   lanes: Map<number, AgentLane>;
   retrievals: Retrieval[];
   pressure: PressurePoint[];
+  /** Guard rejections, nudges, auth rejections — in arrival order. */
+  interventions: Intervention[];
+  /** The structured plan (`plan` with research intent) — task descriptions
+   *  in fanout order, which is also flat-mode spawn order. */
+  plan: { intent: string; tasks: string[] } | null;
+  /** True between a clarify plan and the follow-up planning cycle — the
+   *  next plan:start/query CONTINUES the run instead of resetting it. */
+  clarifying: boolean;
   /** The first event's arrival time — the timeline's 0. */
   t0: number | null;
   eventCount: number;
@@ -133,6 +197,9 @@ export function createPaneModel(): PaneModel {
     lanes: new Map(),
     retrievals: [],
     pressure: [],
+    interventions: [],
+    plan: null,
+    clarifying: false,
     t0: null,
     eventCount: 0,
   };
@@ -143,6 +210,7 @@ export function createPaneModel(): PaneModel {
  *  bound on a long-lived host. */
 const MAX_PRESSURE_POINTS = 20_000;
 const MAX_RETRIEVALS = 500;
+const MAX_INTERVENTIONS = 200;
 
 /**
  * Fold one bus event into the model — MUTATING (the pane owns its model and
@@ -153,13 +221,36 @@ const MAX_RETRIEVALS = 500;
  *  load — clear the run-scoped collections and anchor the axis. Idempotent
  *  (research emits `plan:start` then `query` back-to-back). */
 function resetRun(m: PaneModel, now: number): void {
+  // A clarify answer re-enters planning WITHIN the same run: the planner
+  // asked, the user answered, the cycle continues — mark the exchange
+  // answered and keep everything.
+  if (m.clarifying) {
+    m.clarifying = false;
+    for (const lane of m.lanes.values()) {
+      if (lane.clarify && lane.clarify.answeredAt === null) lane.clarify.answeredAt = now;
+    }
+    return;
+  }
   // Idempotent across the back-to-back run-start pair (research emits
   // `plan:start` then `query` within milliseconds) — one reset per run.
   if (m.runStartAt !== null && now - m.runStartAt < 1500) return;
   m.lanes = new Map();
   m.retrievals = [];
   m.pressure = [];
+  m.interventions = [];
+  m.plan = null;
   m.runStartAt = now;
+}
+
+/** The retrieval a mirrored trace event belongs to: by callId when the
+ *  dispatch mirror stamped one, else the newest unsettled call of the agent. */
+function findRetrieval(m: PaneModel, callId: string | null, agentId: number): Retrieval | undefined {
+  if (callId) return m.retrievals.find((x) => x.callId === callId);
+  for (let i = m.retrievals.length - 1; i >= 0; i--) {
+    const r = m.retrievals[i];
+    if (r.agentId === agentId && r.settledAt === null) return r;
+  }
+  return undefined;
 }
 
 export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
@@ -186,9 +277,33 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
       return;
     }
     case 'plan': {
+      const intent = typeof ev.intent === 'string' ? ev.intent : 'research';
+      if (intent === 'clarify') {
+        // The planner asked the USER instead of planning — it now waits on
+        // them, the same shape as an agent waiting on a tool. The run stays
+        // open; the answer's planning cycle continues it (see resetRun).
+        m.clarifying = true;
+        const questions = Array.isArray(ev.clarifyQuestions)
+          ? (ev.clarifyQuestions as unknown[]).filter((q): q is string => typeof q === 'string')
+          : [];
+        for (const lane of m.lanes.values()) {
+          if (lane.role === 'planner') lane.clarify = { questions, askedAt: now, answeredAt: null };
+        }
+        return;
+      }
       // The plan ARRIVED — the planner succeeded, whatever the pool's
       // recovery mechanics said afterwards (recovery_skipped fires for an
       // agent whose pool has nothing to salvage — the plan was already out).
+      if (Array.isArray(ev.tasks)) {
+        m.plan = {
+          intent,
+          tasks: (ev.tasks as unknown[]).map((t) =>
+            typeof t === 'string' ? t
+              : typeof (t as { description?: unknown })?.description === 'string'
+                ? (t as { description: string }).description
+                : ''),
+        };
+      }
       for (const lane of m.lanes.values()) {
         if (lane.role === 'planner') {
           lane.outcome = 'done';
@@ -233,6 +348,11 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
         outcome: 'running',
         tokenCount: 0,
         inflightTool: null,
+        report: null,
+        reportSource: null,
+        prunedAt: null,
+        dropReason: null,
+        clarify: null,
       });
       return;
     }
@@ -250,9 +370,23 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
       }
       return;
     }
+    case 'agent:return': {
+      const lane = m.lanes.get(ev.agentId as number);
+      if (lane && typeof ev.result === 'string') {
+        lane.report = ev.result;
+        lane.reportSource = 'voluntary';
+      }
+      return;
+    }
     case 'agent:recovered': {
       const lane = m.lanes.get(ev.agentId as number);
-      if (lane) lane.outcome = 'recovered';
+      if (lane) {
+        lane.outcome = 'recovered';
+        if (typeof ev.result === 'string') {
+          lane.report = ev.result;
+          lane.reportSource = 'recovery';
+        }
+      }
       return;
     }
     case 'agent:failed': {
@@ -281,6 +415,10 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
         settledAt: null,
         result: null,
         contextAvailablePercent: null,
+        callId: null,
+        explore: null,
+        admission: null,
+        exploitChunks: null,
       });
       if (m.retrievals.length > MAX_RETRIEVALS) m.retrievals.shift();
       return;
@@ -304,6 +442,90 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
           typeof ev.contextAvailablePercent === 'number' ? ev.contextAvailablePercent : null;
       }
       return;
+    }
+    case 'agent:trace': {
+      // The dev-gated tee: a trace event mirrored onto the bus, attributed.
+      // Only the types the pane renders are folded; everything else is
+      // ignored (the vocabulary can grow without breaking older panes).
+      const agentId = typeof ev.agentId === 'number' ? ev.agentId : -1;
+      const callId = typeof ev.callId === 'string' ? ev.callId : null;
+      const te = ev.event as ({ type: string } & Record<string, unknown>) | undefined;
+      if (!te) return;
+      switch (te.type) {
+        case 'pool:agentNudge': {
+          m.interventions.push({
+            kind: typeof te.guard === 'string' ? 'guard' : 'nudge',
+            agentId, at: now,
+            tool: typeof te.tool === 'string' ? te.tool : undefined,
+            args: typeof te.args === 'string' ? te.args : undefined,
+            guard: typeof te.guard === 'string' ? te.guard : undefined,
+            message: typeof te.message === 'string' ? te.message : undefined,
+            reason: typeof te.reason === 'string' ? te.reason : undefined,
+          });
+          if (m.interventions.length > MAX_INTERVENTIONS) m.interventions.shift();
+          return;
+        }
+        case 'tool:authReject': {
+          m.interventions.push({
+            kind: 'auth', agentId, at: now,
+            tool: typeof te.attemptedTool === 'string' ? te.attemptedTool : undefined,
+          });
+          if (m.interventions.length > MAX_INTERVENTIONS) m.interventions.shift();
+          return;
+        }
+        case 'pool:agentDrop': {
+          const lane = m.lanes.get(agentId);
+          if (lane && typeof te.reason === 'string') lane.dropReason = te.reason;
+          return;
+        }
+        case 'branch:prune': {
+          // agent ids ARE branch handles — the prune ends the hatched tail.
+          const handle = typeof te.branchHandle === 'number' ? te.branchHandle : agentId;
+          const lane = m.lanes.get(handle);
+          if (lane) lane.prunedAt = now;
+          return;
+        }
+        case 'tool:dispatch': {
+          // Keys the retrieval: newest unsettled call for this agent+tool
+          // gains the callId + explore mode the trace metadata hangs off.
+          const tool = typeof te.tool === 'string' ? te.tool : '';
+          for (let i = m.retrievals.length - 1; i >= 0; i--) {
+            const r = m.retrievals[i];
+            if (r.agentId === agentId && r.tool === tool && r.settledAt === null && r.callId === null) {
+              r.callId = typeof te.callId === 'string' ? te.callId : null;
+              r.explore = typeof te.explore === 'boolean' ? te.explore : null;
+              break;
+            }
+          }
+          return;
+        }
+        case 'rerank:end': {
+          const r = findRetrieval(m, callId, agentId);
+          if (r) {
+            r.admission = {
+              selectedPassageCount: typeof te.selectedPassageCount === 'number' ? te.selectedPassageCount : 0,
+              totalChars: typeof te.totalChars === 'number' ? te.totalChars : 0,
+              durationMs: typeof te.durationMs === 'number' ? te.durationMs : 0,
+              topResults: Array.isArray(te.topResults) ? (te.topResults as AdmissionSummary['topResults']) : [],
+              ...(typeof te.topK === 'number' ? { topK: te.topK } : {}),
+              ...(typeof te.tokenBudget === 'number' ? { tokenBudget: te.tokenBudget } : {}),
+              ...(typeof te.admittedTokens === 'number' ? { admittedTokens: te.admittedTokens } : {}),
+              ...(typeof te.threshold === 'number' ? { threshold: te.threshold } : {}),
+              ...(typeof te.totalScored === 'number' ? { totalScored: te.totalScored } : {}),
+            };
+          }
+          return;
+        }
+        case 'entailment:content:exploit': {
+          const r = findRetrieval(m, callId, agentId);
+          if (r && Array.isArray(te.chunks)) {
+            r.exploitChunks = te.chunks as Retrieval['exploitChunks'];
+          }
+          return;
+        }
+        default:
+          return;
+      }
     }
     case 'agent:tick': {
       if (typeof ev.cellsUsed === 'number' && typeof ev.nCtx === 'number') {

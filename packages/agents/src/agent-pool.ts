@@ -8,6 +8,8 @@ import type { FormatConfig } from './Agent';
 import { buildToolResultDelta, buildTurnDelta, buildUserDelta } from '@lloyal-labs/sdk';
 import { traceScope } from './trace-scope';
 import type { TraceWriter } from './trace-writer';
+import { NullTraceWriter } from './trace-writer';
+import type { TraceEvent } from './trace-types';
 import type { AgentPolicy, IdleReason, ToolRetryAction } from './AgentPolicy';
 import { Agent } from './Agent';
 import { DefaultAgentPolicy, RECOVERY_PREFILL_OVERHEAD, BATCH_BUFFER } from './AgentPolicy';
@@ -801,7 +803,58 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         yield* each.next();
       }
     });
-    const tw = yield* Trace.expect();
+    const baseTw = yield* Trace.expect();
+    // ── Dev-gated trace tee ─────────────────────────────────────
+    // Mirrors trace writes onto the bus (`agent:trace`) so a live consumer
+    // (the dev pane) sees what the trace file sees, attributed. Two layers:
+    //   • pool writes — the allowlisted intervention events below mirror with
+    //     the agentId read off the event itself;
+    //   • tool writes — dispatch() sets a per-dispatch `toolTee` as the Trace
+    //     context for the tool's execution, stamping agentId + callId and
+    //     replacing the abilities' hardcoded `parentTraceId: null` with the
+    //     dispatch id (real lineage in the FILE too, not just the bus).
+    // The bridge is a Signal: `write` is sync per the TraceWriter contract and
+    // cannot yield, so the mirror cannot ride poolChannel directly — a spawned
+    // forwarder drains it, the same pattern progressBridge uses for
+    // onProgress. Inert when tracing is off: NullTraceWriter ⇒ no wrapper, no
+    // mirror, no forwarder.
+    const teeOn = !(baseTw instanceof NullTraceWriter);
+    const traceBridge = createSignal<AgentEvent, void>();
+    if (teeOn) {
+      yield* spawn(function*() {
+        for (const ev of yield* each(traceBridge)) {
+          yield* poolChannel.send(ev);
+          yield* each.next();
+        }
+      });
+    }
+    const MIRRORED_POOL_EVENTS = new Set<TraceEvent['type']>([
+      'pool:agentNudge', 'tool:authReject', 'pool:agentDrop', 'branch:prune',
+      // The dispatch record carries explore/exploit + callId — the live
+      // consumer keys retrieval metadata off it.
+      'tool:dispatch',
+    ]);
+    const tw: TraceWriter = !teeOn ? baseTw : {
+      nextId: () => baseTw.nextId(),
+      flush: () => baseTw.flush(),
+      write: (event) => {
+        baseTw.write(event);
+        if (!MIRRORED_POOL_EVENTS.has(event.type)) return;
+        const e = event as { agentId?: number; branchHandle?: number };
+        try {
+          traceBridge.send({ type: 'agent:trace', agentId: e.agentId ?? e.branchHandle ?? -1, event });
+        } catch { /* mirror is best-effort — never disrupt the write */ }
+      },
+    };
+    const toolTee = (agentId: number, callId: string, dispatchTraceId: number): TraceWriter => ({
+      nextId: () => baseTw.nextId(),
+      flush: () => baseTw.flush(),
+      write: (event) => {
+        const stamped = event.parentTraceId == null ? { ...event, parentTraceId: dispatchTraceId } : event;
+        baseTw.write(stamped);
+        try { traceBridge.send({ type: 'agent:trace', agentId, callId, event: stamped }); } catch { /* best-effort */ }
+      },
+    });
     const { spine, orchestrate, toolsJson, tools, maxTurns = 100, terminalToolName, trace = false, pruneOnReturn = false, enableThinking = true, eagerGrammar } = opts;
 
     // Tool index map for trace — position in toolkit array
@@ -1462,6 +1515,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
               // shared loop-fiber set the inline path uses).
               yield* TraceParent.set(dispatchTraceId);
               yield* CallingAgent.set(agent);
+              if (teeOn) yield* Trace.set(toolTee(agent.id, callId, dispatchTraceId));
               const result: unknown = yield* scoped(function*() {
                 return yield* call(() => fanoutTool.execute(toolArgs, toolContext));
               });
@@ -1490,6 +1544,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         try {
           yield* TraceParent.set(dispatchTraceId);
           yield* CallingAgent.set(agent);
+          if (teeOn) yield* Trace.set(toolTee(agent.id, callId, dispatchTraceId));
 
           // Unknown-tool messaging branches on toolkit emptiness: a no-tool
           // agent emitting tool calls is imitating markup from its context
@@ -1792,7 +1847,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
               }
               nudges.push(yield* handleNudge(a, action.message, parsed.toolCalls[0], ctx, tools));
               tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-                type: 'pool:agentNudge', agentId: a.id, reason: 'nudge', message: action.message });
+                type: 'pool:agentNudge', agentId: a.id, reason: 'nudge', message: action.message,
+                tool: parsed.toolCalls[0]?.name, args: parsed.toolCalls[0]?.arguments, guard: action.guard });
               continue;
             case 'return':
               yield* handleReturn(a, action.result, parsed.toolCalls[0], terminalToolName!, pruneOnReturn, poolChannel, tw, poolScope.traceId);
@@ -1904,6 +1960,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             tw.write({
               traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
               type: 'pool:agentNudge', agentId: a.id, reason: 'settle_reject', message: action.message,
+              tool: item.toolName, args: item.args,
             });
             const nudgeResult = { error: action.message };
             const nudgeTokens = buildToolResultDelta(ctx, JSON.stringify(nudgeResult), item.callId, { enableThinking: a.fmt.enableThinking });

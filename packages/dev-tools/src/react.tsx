@@ -1,642 +1,1090 @@
 /**
- * `<DevPane>` — the dev pane for the shared React view (desktop + web).
+ * The dev pane's web/desktop surface: a cog FAB that docks a full-width pane
+ * over the harness's own view — Timeline · Sources · Settings.
  *
- * Mounted ONCE beside the app's own view; it subscribes to the same bridge
- * stream the view folds and renders nothing until `config:loaded` carries
- * `dev: true` (the boot's `LLOYAL_DEV` signal on the wire, so a production
- * build ships this import inert).
+ * Mounted ONCE beside the app's view; it subscribes to the same bridge stream
+ * through {@link createDevStore} (wire-gated: a production stream folds
+ * nothing but `config:loaded`). Rendering is hand-rolled — no timeline
+ * library: the design's invariants (fixed-span sliding window, stepped live
+ * edge, wait stripes CUT into capsules, letter badges with a collision rule)
+ * are cheaper to own than to fight a library for.
  *
- * Visual contract (the approved mocks): monochrome CHROME — black active tab,
- * light-grey active pills, black selection — with color reserved for DATA:
- * agent spans blue, tools amber, rerank teal, the pressure area, the six
- * provenance rungs. FAB-toggled, DOCKED full width when open; the pane's ✕
- * collapses back to the cog. The timeline is full width until a lane is
- * selected; selection opens the detail pane, which closes with its own ✕.
- *
- * @category DevTools
+ * Everything shown is a recorded event field; absence renders as absence.
  */
-import { useEffect, useReducer, useRef, useState } from 'react';
-import type { CSSProperties, ReactElement } from 'react';
-import * as vis from 'vis-timeline/standalone';
-import { Timeline as VisTimeline } from 'vis-timeline/standalone';
-import 'vis-timeline/styles/vis-timeline-graph2d.css';
-
-/** vis-data's types entry never re-exports DataSet (a packaging quirk: it
- *  imports it `.ts`-suffixed for a namespace typeof only), so take the VALUE
- *  off the standalone bundle and type just the surface we call. */
-interface VisDataSet { update(items: object[]): void }
-const makeDataSet = (): VisDataSet =>
-  new (vis as unknown as { DataSet: new (items: object[]) => VisDataSet }).DataSet([]);
+import React, { useEffect, useRef, useState } from 'react';
+import type { ReactElement } from 'react';
+import { useStore } from 'zustand';
 import {
-  createPaneModel,
-  foldEvent,
-  pressurePercent,
-  pressureStrip,
-  readConfigPath,
-  KEY_TIERS,
-} from './index.js';
-import type { DevControl, DevEvent, PaneModel, PaneTab } from './index.js';
+  pressureStrip, pressurePercent, readConfigPath, KEY_TIERS,
+} from './index';
+import type {
+  AgentLane, DevControl, Intervention, PaneModel, PaneTab, Retrieval,
+} from './index';
+import { createDevStore, EDGE_STEP } from './store';
+import type { DevBridge, DevStore } from './store';
 
-/** The bridge slice the pane needs — structurally `window.harness`, minus the
- *  snapshot (the pane folds live only; it renders what it has seen). */
-export interface DevBridge {
-  onEvent(cb: (frame: { seq: number; ev: DevEvent }) => void): () => void;
-  send(command: unknown): void;
-}
+export type { DevBridge } from './store';
 
 export interface DevPaneProps {
   bridge: DevBridge;
-  /** The template's Settings contribution — pure data; `[]` for a template
-   *  whose protocol has no config commands (its Settings tab is an
-   *  inspector). */
+  /** Template-contributed Settings controls (research passes effort/mode
+   *  rows; basic passes none — its Settings is the read-only inspector). */
   controls?: readonly DevControl[];
-  /** Shown in the pane's file/status area, e.g. the harness name. */
+  /** Shown in the status area. */
   title?: string;
 }
 
-// ── palette: monochrome chrome, colored data ─────────────────────
+// ── palette: monochrome chrome, color reserved for data ──
 const C = {
-  text: '#202124',
-  dim: '#5f6368',
-  faint: '#9aa0a6',
-  border: '#e8eaed',
-  hairline: '#f1f3f4',
-  toolbar: '#f8f9fa',
-  chipBg: '#f1f3f4',
-  pillOn: '#e8eaed',
-  agent: '#1a73e8',
-  agentAlt: '#669df6',
-  tool: '#e0a63f',
-  rerank: '#3f9e83',
-  fail: '#c5221f',
-  pressure: '#1a73e8',
+  text: '#202124', dim: '#5f6368', faint: '#9aa0a6', border: '#e8eaed',
+  hair: '#f4f5f7', chromeBg: '#f1f3f4', panelBg: '#fafbfc',
+  agent: '#1a73e8', agentDark: '#174ea6', fail: '#b3261e', ok: '#188038',
+  warn: '#9a6700', warnBg: '#fef7e0', warnBorder: '#f9d67a',
 };
-const PROV_COLORS: Record<string, { bg: string; fg: string }> = {
-  cli: { bg: '#fce8d8', fg: '#b3540a' },
-  env: { bg: '#f0e4fc', fg: '#7627bb' },
-  file: { bg: '#e8f0fe', fg: '#1a66c9' },
-  yml: { bg: '#dcf2ea', fg: '#0d7a55' },
-  session: { bg: '#fce4f0', fg: '#b81d75' },
-  default: { bg: '#f1f3f4', fg: '#80868b' },
-};
+const TOOL_PALETTE = ['#e8710a', '#8430ce', '#00897b', '#d01884', '#827717', '#0097a7'];
+const mono = 'ui-monospace, "SF Mono", Menlo, Consolas, monospace';
 
-const mono: CSSProperties = {
-  fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
-};
+/** Per-tool color, assigned first-seen — stable within a run. */
+function useToolColors(): (name: string) => string {
+  const map = useRef(new Map<string, string>());
+  return (name: string) => {
+    if (!map.current.has(name)) {
+      map.current.set(name, TOOL_PALETTE[map.current.size % TOOL_PALETTE.length]);
+    }
+    return map.current.get(name)!;
+  };
+}
+const letterOf = (name: string): string => (name[0] || '?').toUpperCase();
+const fmtS = (s: number): string =>
+  s >= 60 ? `${Math.floor(s / 60)}m${String(Math.round(s % 60)).padStart(2, '0')}s` : `${s.toFixed(1)}s`;
 
-function Prov({ rung }: { rung: string }): ReactElement {
-  const c = PROV_COLORS[rung] ?? PROV_COLORS.default;
-  return (
-    <span
-      style={{
-        fontSize: 9, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase',
-        padding: '1px 6px', borderRadius: 8, background: c.bg, color: c.fg,
-      }}
-    >
-      {rung}
-    </span>
-  );
+/** Live when any lane is still open. */
+function isLive(m: PaneModel): boolean {
+  for (const l of m.lanes.values()) if (l.doneAt === null) return true;
+  return false;
+}
+function runEndS(m: PaneModel): number {
+  let end = 0;
+  for (const l of m.lanes.values()) {
+    if (l.doneAt !== null) end = Math.max(end, l.doneAt);
+  }
+  return m.runStartAt === null ? 0 : Math.max(0, (end - m.runStartAt) / 1000);
 }
 
-function Cog(): ReactElement {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-    </svg>
-  );
-}
-
+// ═══════════════════════════════════════════════════════════════
 export function DevPane({ bridge, controls = [], title }: DevPaneProps): ReactElement | null {
-  // Lazy init — an inline initializer would allocate a fresh model every
-  // render only to be discarded after the first.
-  const modelRef = useRef<PaneModel | null>(null);
-  modelRef.current ??= createPaneModel();
-  const [, bump] = useReducer((n: number) => n + 1, 0);
+  // Lazy ref init — one store per mount, created on first render only.
+  const storeRef = useRef<DevStore | null>(null);
+  storeRef.current ??= createDevStore(bridge);
+  const store = storeRef.current;
+  useEffect(() => () => store.destroy(), [store]);
+
+  const rev = useStore(store, (s) => s.rev);
+  const m = store.getState().model;
   const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState<PaneTab>('timeline');
-  const [selectedLane, setSelectedLane] = useState<number | null>(null);
-  const [selectedRetrieval, setSelectedRetrieval] = useState<number>(0);
 
-  useEffect(() => {
-    // Coalesce re-renders: agent:produce arrives per token — fold immediately,
-    // paint at most ~5×/s.
-    let dirty = false;
-    const timer = setInterval(() => {
-      if (dirty) {
-        dirty = false;
-        bump();
-      }
-    }, 200);
-    const off = bridge.onEvent(({ ev }) => {
-      // Truly wire-gated: until config:loaded says dev, fold ONLY that event
-      // — a non-dev page never pays the per-token fold.
-      const m = modelRef.current!;
-      if (m.dev || ev.type === 'config:loaded') {
-        foldEvent(m, ev, Date.now());
-        dirty = true;
-      }
-    });
-    return () => {
-      clearInterval(timer);
-      off();
-    };
-  }, [bridge]);
-
-  const m = modelRef.current;
-  if (!m.dev) return null; // the gate: no dev signal, no cog — ever
+  // The FAB renders only when the wire said dev — production ships inert.
+  if (!m.dev) return null;
 
   if (!open) {
     return (
       <button
-        type="button"
         onClick={() => setOpen(true)}
-        title="dev pane (LLOYAL_DEV)"
         aria-label="open the dev pane"
+        title="dev pane (LLOYAL_DEV)"
         style={{
-          position: 'fixed', right: 20, bottom: 20, width: 44, height: 44, borderRadius: '50%',
-          background: '#fff', border: `1px solid #dadce0`, display: 'grid', placeItems: 'center',
-          color: C.dim, boxShadow: '0 2px 8px rgba(32,33,36,.14)', cursor: 'pointer', zIndex: 9999,
-          padding: 0, font: 'inherit',
+          position: 'fixed', right: 20, bottom: 20, width: 44, height: 44,
+          borderRadius: '50%', background: '#fff', border: `1px solid #dadce0`,
+          display: 'grid', placeItems: 'center', color: C.dim, cursor: 'pointer',
+          boxShadow: '0 2px 8px rgba(32,33,36,.14)', zIndex: 40, padding: 0,
         }}
       >
-        <Cog />
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
       </button>
     );
   }
 
-  return (
-    <div
-      style={{
-        position: 'fixed', left: 0, right: 0, bottom: 0, height: 'min(560px, 70vh)',
-        background: '#fff', borderTop: '1px solid #bdc1c6', display: 'flex', flexDirection: 'column',
-        fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
-        color: C.text, zIndex: 9999, fontSize: 12,
-      }}
-    >
-      {/* tab strip */}
-      <div style={{ height: 30, display: 'flex', alignItems: 'stretch', background: C.hairline, borderBottom: '1px solid #d9dce1', flex: 'none' }}>
-        {(['timeline', 'sources', 'settings'] as PaneTab[]).map((t) => (
-          <div
-            key={t}
-            onClick={() => setTab(t)}
-            style={{
-              padding: '0 13px', display: 'flex', alignItems: 'center', cursor: 'pointer',
-              borderRight: `1px solid ${C.border}`, textTransform: 'capitalize',
-              ...(tab === t
-                ? { background: '#fff', fontWeight: 500, boxShadow: 'inset 0 2px 0 #202124' }
-                : { color: C.dim }),
-            }}
-          >
-            {t}
-          </div>
-        ))}
-        <div style={{ flex: 1 }} />
-        <div style={{ ...mono, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 7, fontSize: 10.5, color: C.dim }}>
-          <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#188038' }} />
-          live · {m.eventCount} events{title ? ` · ${title}` : ''}
-        </div>
-        <div
-          onClick={() => setOpen(false)}
-          title="collapse to the cog"
-          style={{ width: 32, display: 'grid', placeItems: 'center', cursor: 'pointer', color: C.dim, borderLeft: `1px solid ${C.border}` }}
-        >
-          ✕
-        </div>
-      </div>
-
-      {tab === 'timeline' && (
-        <Timeline
-          m={m}
-          selected={selectedLane}
-          onSelect={setSelectedLane}
-        />
-      )}
-      {tab === 'sources' && (
-        <Sources m={m} selected={selectedRetrieval} onSelect={setSelectedRetrieval} />
-      )}
-      {tab === 'settings' && <Settings m={m} controls={controls} send={(c) => bridge.send(c)} />}
-
-      {/* status bar */}
-      <div style={{ height: 24, flex: 'none', display: 'flex', alignItems: 'center', gap: 14, padding: '0 12px', borderTop: `1px solid ${C.border}`, background: C.toolbar }}>
-        {m.facts && (
-          <span style={{ ...mono, fontSize: 10.5, color: C.dim }}>
-            {m.facts.model.id}{m.facts.surface ? ` · ${m.facts.surface}` : ''}
-          </span>
-        )}
-        {pressurePercent(m) !== null && (
-          <span style={{ ...mono, fontSize: 10.5, color: C.faint }}>kv {pressurePercent(m)}% · attention cells</span>
-        )}
-        <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 10.5, color: C.faint }}>LLOYAL_DEV=1 — ships to nobody</span>
-      </div>
-    </div>
-  );
+  return <Pane key={rev >= 0 ? 'pane' : 'pane'} store={store} m={m} rev={rev} controls={controls} title={title} onClose={() => setOpen(false)} />;
 }
 
-// ── Timeline ─────────────────────────────────────────────────────
-
-function fmtS(ms: number): string {
-  return `${(ms / 1000).toFixed(1)}s`;
-}
-
-function Timeline({
-  m, selected, onSelect,
-}: {
-  m: PaneModel;
-  selected: number | null;
-  onSelect: (id: number | null) => void;
+// ═══ the docked pane ═══
+function Pane({ store, m, rev, controls, title, onClose }: {
+  store: DevStore; m: PaneModel; rev: number;
+  controls: readonly DevControl[]; title?: string; onClose: () => void;
 }): ReactElement {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const visRef = useRef<{ tl: VisTimeline; items: VisDataSet; groups: VisDataSet } | null>(null);
+  const [tab, setTab] = useState<PaneTab>('timeline');
+  const [selAgent, setSelAgent] = useState<number | null>(null);
+  const toolColor = useToolColors();
 
-  // Create the timeline ONCE — vis-timeline owns the DOM under the container.
   useEffect(() => {
-    if (!containerRef.current || visRef.current) return;
-    const items = makeDataSet();
-    const groups = makeDataSet();
-    const tl = new VisTimeline(containerRef.current, items as never, groups as never, {
-      stack: false,
-      stackSubgroups: true,
-      selectable: true,
-      zoomKey: 'ctrlKey',
-      orientation: 'top',
-      margin: { item: { horizontal: 0, vertical: 4 } },
-      showCurrentTime: true,
-    });
-    tl.on('select', (props: { items: (string | number)[] }) => {
-      const id = props.items[0];
-      if (typeof id === 'string' && id.startsWith('a')) onSelect(Number(id.slice(1)));
-      else if (typeof id === 'string' && id.startsWith('t')) {
-        const lane = id.match(/^t(\d+)-/);
-        if (lane) onSelect(Number(lane[1]));
-      } else onSelect(null);
-    });
-    visRef.current = { tl, items, groups };
-    return () => {
-      tl.destroy();
-      visRef.current = null;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return;
+      if (selAgent !== null) setSelAgent(null);
+      else onClose();
     };
-  }, [onSelect]);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selAgent, onClose]);
 
-  // Sync the fold into vis on every paint: upsert groups (one per agent, in
-  // spawn order) and items (the agent span + one range per tool call).
-  const live = [...m.lanes.values()].some((l) => l.doneAt === null);
-  useEffect(() => {
-    const v = visRef.current;
-    if (!v) return;
-    const lanes = [...m.lanes.values()];
-    v.groups.update(
-      lanes.map((lane, i) => ({
-        id: lane.agentId,
-        order: i,
-        content:
-          `<span class="lv-g">${lane.role ?? 'agent'} ${lane.agentId}` +
-          (lane.parentAgentId !== null ? ` <span class="lv-p">· parent ${lane.parentAgentId}</span>` : '') +
-          `</span>`,
-      })),
-    );
-    const now = Date.now();
-    const items: object[] = [];
-    for (const lane of lanes) {
-      items.push({
-        id: `a${lane.agentId}`,
-        group: lane.agentId,
-        subgroup: 'span',
-        start: lane.spawnedAt,
-        end: lane.doneAt ?? now,
-        type: 'range',
-        content: `${lane.tokenCount.toLocaleString()} tok`,
-        className:
-          lane.outcome === 'failed' ? 'lv-failed'
-          : lane.outcome === 'recovered' ? 'lv-recovered'
-          : lane.role === 'synth' ? 'lv-synth'
-          : 'lv-agent',
-        title: `${lane.role ?? 'agent'} ${lane.agentId} · ${lane.outcome}${lane.failReason ? ` · ${lane.failReason}` : ''}`,
-      });
-    }
-    m.retrievals.forEach((r, i) => {
-      if (!m.lanes.has(r.agentId)) return;
-      items.push({
-        id: `t${r.agentId}-${i}`,
-        group: r.agentId,
-        subgroup: 'tool',
-        start: r.dispatchedAt,
-        end: r.settledAt ?? now,
-        type: 'range',
-        content: r.tool,
-        className: 'lv-tool',
-        title: `${r.tool} · ${r.args.slice(0, 120)}`,
-      });
-    });
-    v.items.update(items);
-    // Live-follow: the window tracks the run while it breathes; a selection
-    // pauses the follow so inspection is stable.
-    if (live && selected === null && m.runStartAt !== null) {
-      v.tl.setWindow(m.runStartAt - 1000, now + 3000, { animation: false });
-    }
+  const live = isLive(m);
+  const lanes = [...m.lanes.values()];
+  const done = lanes.filter((l) => l.doneAt !== null).length;
+  const toolsSeen = [...new Set(m.retrievals.map((r) => r.tool))];
+
+  const tabStyle = (on: boolean): React.CSSProperties => ({
+    padding: '0 13px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12,
+    color: on ? C.text : C.dim, borderRight: `1px solid ${C.border}`, cursor: 'pointer',
+    background: on ? '#fff' : 'transparent', fontWeight: on ? 500 : 400,
+    boxShadow: on ? `inset 0 2px 0 ${C.text}` : undefined,
   });
 
-  const sel = selected !== null ? m.lanes.get(selected) ?? null : null;
-  const selRetrievals = sel ? m.retrievals.filter((r) => r.agentId === sel.agentId) : [];
-  const strip = pressureStrip(m, 120);
-
   return (
-    <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-        {strip.length > 0 && (
-          <div style={{ height: 46, flex: 'none', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', padding: '0 12px', gap: 12 }}>
-            <div style={{ width: 130, flex: 'none' }}>
-              <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '.06em', textTransform: 'uppercase', color: '#b0b6c2' }}>pressure</div>
-              <div style={{ ...mono, fontSize: 10.5, color: C.dim }}>
-                {pressurePercent(m)}%{' '}
-                <span style={{ color: '#b0b6c2' }}>
-                  {m.pressure[m.pressure.length - 1]?.cellsUsed.toLocaleString()} / {m.pressure[m.pressure.length - 1]?.nCtx.toLocaleString()}
-                </span>
-              </div>
-            </div>
-            <svg width="100%" height="36" preserveAspectRatio="none" viewBox="0 0 120 36">
-              <polyline
-                fill="rgba(26,115,232,.12)"
-                stroke="none"
-                points={`0,36 ${strip.map((p, i) => `${(i / Math.max(1, strip.length - 1)) * 120},${36 - (p.pct / 100) * 32}`).join(' ')} 120,36`}
-              />
-              <polyline
-                fill="none"
-                stroke={C.pressure}
-                strokeWidth="1"
-                points={strip.map((p, i) => `${(i / Math.max(1, strip.length - 1)) * 120},${36 - (p.pct / 100) * 32}`).join(' ')}
-              />
-            </svg>
-          </div>
-        )}
-        {m.lanes.size === 0 && (
-          <div style={{ padding: '18px 14px', color: C.faint, flex: 'none' }}>waiting for the first agent — submit a query</div>
-        )}
-        <div ref={containerRef} style={{ flex: 1, minHeight: 0, overflowY: 'auto' }} />
-        <style>{VIS_CSS}</style>
-      </div>
-
-      {sel && (
-        <div style={{ width: 340, flex: 'none', borderLeft: '1px solid #d9dce1', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          <div style={{ height: 30, flex: 'none', display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px', borderBottom: `1px solid ${C.border}`, background: C.toolbar }}>
-            <span style={{ ...mono, fontWeight: 600, fontSize: 11 }}>{sel.role ?? 'agent'} {sel.agentId}</span>
-            {sel.parentAgentId !== null && (
-              <span style={{ fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 2, background: C.chipBg, color: C.dim }}>parent {sel.parentAgentId}</span>
-            )}
-            <span style={{ fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 2, background: C.chipBg, color: C.dim }}>
-              {sel.outcome}{sel.doneAt ? ` · ${fmtS(sel.doneAt - sel.spawnedAt)}` : ''}
-            </span>
-            <div style={{ flex: 1 }} />
-            <span onClick={() => onSelect(null)} style={{ cursor: 'pointer', color: C.dim }} title="close detail — the timeline returns to full width">✕</span>
-          </div>
-          <div style={{ overflowY: 'auto', flex: 1, fontSize: 11 }}>
-            <Row k="tokens" v={sel.tokenCount.toLocaleString()} />
-            {sel.failReason && <Row k="pool said" v={sel.failReason} />}
-            {selRetrievals.map((r, i) => (
-              <div key={i} style={{ borderTop: `1px solid ${C.border}`, marginTop: 4, paddingTop: 4 }}>
-                <Row k="tool" v={`${r.tool}${r.settledAt ? ` · ${fmtS(r.settledAt - r.dispatchedAt)}` : ' · in flight'}`} />
-                <Row k="args" v={r.args.slice(0, 120)} />
-                {r.contextAvailablePercent !== null && <Row k="ctx avail" v={`${r.contextAvailablePercent}%`} />}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Monochrome chrome, colored data — the vis skin. */
-const VIS_CSS = `
-.vis-timeline { border: none; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; font-size: 11px; }
-.vis-panel.vis-left { border: none; }
-.vis-labelset .vis-label { border-bottom: 1px solid #f1f3f4; color: #5f6368; }
-.vis-labelset .vis-label .vis-inner { padding: 4px 12px; }
-.lv-g { font-size: 11px; } .lv-p { color: #9aa0a6; font-size: 10px; }
-.vis-time-axis .vis-text { color: #9aa0a6; font-size: 9px; font-family: ui-monospace, Menlo, monospace; }
-.vis-time-axis .vis-grid.vis-minor { border-color: #f1f3f4; }
-.vis-time-axis .vis-grid.vis-major { border-color: #e8eaed; }
-.vis-item { border-radius: 2px; border: none; font-size: 9.5px; font-family: ui-monospace, Menlo, monospace; }
-.vis-item.vis-range { height: 14px; }
-.vis-item .vis-item-content { padding: 1px 5px; }
-.vis-item.lv-agent { background: #1a73e8; color: #fff; }
-.vis-item.lv-synth { background: #185abc; color: #fff; }
-.vis-item.lv-recovered { background: #669df6; color: #fff; }
-.vis-item.lv-failed { background: #c5221f; color: #fff; }
-.vis-item.lv-tool { background: #e0a63f; color: #3b2b00; }
-.vis-item.vis-selected { box-shadow: 0 0 0 2px #202124; background-clip: padding-box; }
-.vis-current-time { background: #202124; width: 1px; }
-.vis-panel.vis-center, .vis-panel.vis-top, .vis-panel.vis-bottom { border-color: #e8eaed; }
-`;
-
-function Row({ k, v }: { k: string; v: string }): ReactElement {
-  return (
-    <div style={{ display: 'flex', alignItems: 'baseline', padding: '3px 12px', gap: 8 }}>
-      <span style={{ color: C.dim, width: 84, flex: 'none' }}>{k}</span>
-      <span style={{ ...mono, fontSize: 11, wordBreak: 'break-word' }}>{v}</span>
-    </div>
-  );
-}
-
-// ── Sources ──────────────────────────────────────────────────────
-
-function Sources({
-  m, selected, onSelect,
-}: {
-  m: PaneModel;
-  selected: number;
-  onSelect: (i: number) => void;
-}): ReactElement {
-  const rows = m.retrievals;
-  const sel = rows[selected] ?? null;
-  let parsed: Record<string, unknown> | null = null;
-  if (sel?.result) {
-    try {
-      const p = JSON.parse(sel.result) as unknown;
-      if (p && typeof p === 'object') parsed = p as Record<string, unknown>;
-    } catch { /* result isn't JSON — render raw below */ }
-  }
-  return (
-    <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-      <div style={{ width: 300, flex: 'none', borderRight: '1px solid #d9dce1', overflowY: 'auto' }}>
-        {rows.length === 0 && <div style={{ padding: '18px 14px', color: C.faint }}>no tool calls yet</div>}
-        {rows.map((r, i) => (
-          <div
-            key={i}
-            onClick={() => onSelect(i)}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', fontSize: 11,
-              borderBottom: `1px solid ${C.hairline}`, cursor: 'pointer',
-              ...(i === selected ? { background: C.hairline, boxShadow: 'inset 3px 0 0 #202124' } : {}),
-            }}
-          >
-            <span style={{ fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 2, background: '#fef7e0', color: '#b06000' }}>{r.tool}</span>
-            <span style={{ ...mono, fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{r.args.slice(0, 60)}</span>
-            <span style={{ ...mono, fontSize: 10, color: C.faint }}>
-              {r.settledAt ? fmtS(r.settledAt - r.dispatchedAt) : '…'}
-            </span>
+    <div style={{
+      position: 'fixed', left: 0, right: 0, bottom: 0, height: 'min(560px, 72vh)',
+      background: '#fff', borderTop: '1px solid #bdc1c6', display: 'flex',
+      flexDirection: 'column', zIndex: 50, fontSize: 12, color: C.text,
+      fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+    }}>
+      {/* tab strip */}
+      <div style={{ height: 30, display: 'flex', alignItems: 'stretch', background: C.chromeBg, borderBottom: '1px solid #d9dce1', flex: 'none' }}>
+        {(['timeline', 'sources', 'settings'] as const).map((t) => (
+          <div key={t} style={tabStyle(tab === t)} onClick={() => setTab(t)}>
+            {t[0].toUpperCase() + t.slice(1)}
           </div>
         ))}
+        <span style={{ flex: 1 }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '0 12px', fontSize: 10.5, color: C.dim }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            <span style={{ width: 14, height: 5, borderRadius: 3, background: C.agent, display: 'inline-block' }} /> agent
+          </span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            <span style={{ width: 14, height: 5, display: 'inline-block', borderRadius: 3, background: 'repeating-linear-gradient(135deg, rgba(26,115,232,.45) 0 4px, rgba(26,115,232,.12) 4px 9px)' }} /> waiting
+          </span>
+          {toolsSeen.map((t) => (
+            <span key={t} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              <Badge color={toolColor(t)} letter={letterOf(t)} size={15} /> {t}
+            </span>
+          ))}
+          <span style={{ fontFamily: mono, display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: live ? C.ok : C.faint }} />
+            {live ? 'live' : m.runStartAt === null ? 'idle' : 'run complete'}
+          </span>
+          <span style={{ cursor: 'pointer', color: C.dim }} onClick={onClose} title="collapse to the cog">✕</span>
+        </div>
       </div>
-      <div style={{ flex: 1, minWidth: 0, overflowY: 'auto', fontSize: 11 }}>
-        {sel && (
+
+      {/* body */}
+      {tab === 'timeline' && (
+        <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+          <Timeline m={m} rev={rev} store={store} selAgent={selAgent} onSelect={setSelAgent} toolColor={toolColor} />
+          {selAgent !== null && m.lanes.has(selAgent) && (
+            <AgentFeed m={m} lane={m.lanes.get(selAgent)!} toolColor={toolColor} onClose={() => setSelAgent(null)} onJump={setSelAgent} />
+          )}
+        </div>
+      )}
+      {tab === 'sources' && <Sources m={m} toolColor={toolColor} />}
+      {tab === 'settings' && <Settings m={m} controls={controls} send={(c) => store.send(c)} />}
+
+      {/* status bar */}
+      <div style={{
+        height: 24, display: 'flex', alignItems: 'center', gap: 14, padding: '0 12px',
+        borderTop: `1px solid ${C.border}`, background: '#f8f9fa', fontSize: 10.5, color: C.dim, flex: 'none',
+      }}>
+        <span style={{ fontFamily: mono }}>
+          {m.runStartAt === null
+            ? 'no run yet'
+            : `run 0:00 – ${fmtS(live ? (performance.now() - m.runStartAt) / 1000 : runEndS(m))} · ${lanes.length} agents (${done} done) · ${m.retrievals.length} tool calls`}
+          {title ? ` · ${title}` : ''}
+        </span>
+        <span style={{ flex: 1 }} />
+        <span style={{ color: C.faint }}>
+          {tab === 'timeline' && 'click a lane or badge → detail · esc closes · drag pans (detaches follow) · double-click re-follows'}
+          {tab === 'sources' && 'what entered the context — every number is a recorded event field'}
+          {tab === 'settings' && 'session-tier controls apply next run · boot rows are fixed for this run'}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ═══ shared atoms ═══
+function Badge({ color, letter, size = 18, hollow = false, title }: {
+  color: string; letter: string; size?: number; hollow?: boolean; title?: string;
+}): ReactElement {
+  return (
+    <span title={title} style={{
+      width: size, height: size, borderRadius: '50%', flex: 'none',
+      display: 'inline-grid', placeItems: 'center',
+      background: hollow ? '#fff' : color,
+      color: hollow ? color : '#fff',
+      border: hollow ? `2px solid ${color}` : '2px solid #fff',
+      boxShadow: '0 1px 2px rgba(0,0,0,.18)',
+      fontSize: size * 0.53, fontWeight: 700, fontFamily: 'system-ui, sans-serif',
+    }}>{letter}</span>
+  );
+}
+
+// ═══ Timeline ═══
+const SPAN_LIVE = 75; // seconds visible while following
+
+function Timeline({ m, rev, store, selAgent, onSelect, toolColor }: {
+  m: PaneModel; rev: number; store: DevStore;
+  selAgent: number | null; onSelect: (id: number | null) => void;
+  toolColor: (t: string) => string;
+}): ReactElement {
+  const [follow, setFollow] = useState(true);
+  const [panWindow, setPanWindow] = useState<{ w0: number; w1: number } | null>(null);
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const drag = useRef<{ x: number; w0: number; w1: number } | null>(null);
+
+  const t0 = m.runStartAt;
+  const live = isLive(m);
+  const paintedAt = store.getState().paintedAt;
+  // The stepped live edge: quantized to the repaint grid, never per-token.
+  const nowS = t0 === null ? 0 : Math.floor(((paintedAt - t0) / 1000) / (EDGE_STEP / 1000)) * (EDGE_STEP / 1000);
+  const endS = live ? nowS : runEndS(m);
+
+  // The WINDOW: fixed span; parked at the run start, then SLIDES — never grows.
+  let w0: number; let w1: number;
+  if (panWindow && !follow) ({ w0, w1 } = panWindow);
+  else if (live) {
+    if (nowS <= SPAN_LIVE) { w0 = 0; w1 = SPAN_LIVE; }
+    else { w0 = Math.floor(nowS - SPAN_LIVE * 0.85); w1 = w0 + SPAN_LIVE; }
+  } else { w0 = -2; w1 = Math.max(SPAN_LIVE, endS + 6); }
+
+  const GUTTER = 168;
+  const width = trackRef.current?.clientWidth ?? 900;
+  const track = Math.max(50, width - GUTTER);
+  const px = (s: number): number => GUTTER + ((s - w0) / (w1 - w0)) * track;
+  const on = (s: number): boolean => s >= w0 && s <= w1;
+  const secOf = (at: number): number => (t0 === null ? 0 : (at - t0) / 1000);
+
+  const span = w1 - w0;
+  const step = span > 240 ? 60 : span > 120 ? 30 : span > 60 ? 15 : 5;
+  const ticks: number[] = [];
+  for (let t = Math.ceil(w0 / step) * step; t <= w1; t += step) ticks.push(t);
+
+  const lanes = [...m.lanes.values()];
+  const strip = pressureStrip(m, 200);
+  const pct = pressurePercent(m);
+
+  const onMouseDown = (e: React.MouseEvent): void => { drag.current = { x: e.clientX, w0, w1 }; };
+  const onMouseMove = (e: React.MouseEvent): void => {
+    if (!drag.current) return;
+    if (Math.abs(e.clientX - drag.current.x) > 3 && follow) setFollow(false);
+    const dt = ((drag.current.x - e.clientX) / track) * (drag.current.w1 - drag.current.w0);
+    setPanWindow({ w0: drag.current.w0 + dt, w1: drag.current.w1 + dt });
+  };
+  const onMouseUp = (): void => { drag.current = null; };
+
+  return (
+    <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      {/* pressure strip */}
+      <div style={{ height: 40, borderBottom: `1px solid ${C.border}`, display: 'flex', flex: 'none' }}>
+        <div style={{ width: GUTTER, flex: 'none', padding: '5px 0 0 14px' }}>
+          <div style={label}>pressure</div>
+          <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dim }}>
+            {pct === null ? '—' : `${pct}% · ${m.pressure[m.pressure.length - 1]?.cellsUsed.toLocaleString()} / ${m.pressure[m.pressure.length - 1]?.nCtx.toLocaleString()}`}
+          </div>
+        </div>
+        <div style={{ flex: 1, position: 'relative' }}>
+          {strip.length > 1 && t0 !== null && (
+            <svg width="100%" height="40" preserveAspectRatio="none" style={{ display: 'block' }}>
+              <polyline
+                fill="rgba(26,115,232,.12)" stroke="none"
+                points={`${strip.map((p) => `${((secOf(p.at) - w0) / span) * 100}%`.length && `${(((secOf(p.at) - w0) / span) * track).toFixed(1)},${(38 - (p.pct / 100) * 85).toFixed(1)}`).join(' ')} ${(((secOf(strip[strip.length - 1].at) - w0) / span) * track).toFixed(1)},40 ${(((secOf(strip[0].at) - w0) / span) * track).toFixed(1)},40`}
+              />
+              <polyline
+                fill="none" stroke={C.agent} strokeWidth="1.5"
+                points={strip.map((p) => `${(((secOf(p.at) - w0) / span) * track).toFixed(1)},${(38 - (p.pct / 100) * 85).toFixed(1)}`).join(' ')}
+              />
+            </svg>
+          )}
+        </div>
+      </div>
+
+      {/* ruler */}
+      <div style={{ height: 20, display: 'flex', borderBottom: `1px solid ${C.border}`, flex: 'none' }}>
+        <div style={{ width: GUTTER, flex: 'none', padding: '4px 0 0 14px' }}>
+          <span style={label}>{lanes.length ? `${lanes.length} agents` : ''}</span>
+        </div>
+        <div style={{ flex: 1, position: 'relative', fontFamily: mono }}>
+          {ticks.map((t) => (
+            <span key={t} style={{ position: 'absolute', left: px(t) - GUTTER, fontSize: 9, color: C.faint }}>
+              {t >= 60 ? `${Math.floor(t / 60)}m${t % 60 ? String(t % 60).padStart(2, '0') : ''}` : `${t}s`}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* lanes */}
+      <div
+        ref={trackRef}
+        style={{ flex: 1, position: 'relative', overflowY: 'auto', overflowX: 'hidden', cursor: drag.current ? 'grabbing' : undefined }}
+        onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}
+        onDoubleClick={() => { setFollow(true); setPanWindow(null); }}
+      >
+        {/* grid + now */}
+        <div style={{ position: 'absolute', left: GUTTER, right: 0, top: 0, bottom: 0, pointerEvents: 'none' }}>
+          {ticks.map((t) => (
+            <div key={t} style={{ position: 'absolute', left: px(t) - GUTTER, top: 0, bottom: 0, width: 1, background: t % (step * 3) === 0 ? C.border : C.hair }} />
+          ))}
+          {live && on(nowS) && (
+            <>
+              <div style={{ position: 'absolute', left: px(nowS) - GUTTER, right: 0, top: 0, bottom: 0, background: C.panelBg }} />
+              <div style={{ position: 'absolute', left: px(nowS) - GUTTER, top: 0, bottom: 0, width: 1, background: C.text, zIndex: 1 }} />
+              <div style={{ position: 'absolute', left: px(nowS) - GUTTER, top: 2, transform: 'translateX(-50%)', fontSize: 8.5, background: C.text, color: '#fff', padding: '0 5px', borderRadius: 2, zIndex: 2, fontFamily: mono }}>now</div>
+            </>
+          )}
+        </div>
+
+        {lanes.map((l) => (
+          <Lane
+            key={l.agentId} m={m} l={l} px={px} on={on} secOf={secOf} nowS={nowS} live={live}
+            selected={selAgent === l.agentId} toolColor={toolColor}
+            onClick={() => onSelect(selAgent === l.agentId ? null : l.agentId)}
+            gutter={GUTTER} windowEnd={w1}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const label: React.CSSProperties = {
+  fontSize: 10, fontWeight: 600, letterSpacing: '.06em', textTransform: 'uppercase', color: '#b0b6c2',
+};
+
+function Lane({ m, l, px, on, secOf, nowS, live, selected, toolColor, onClick, gutter, windowEnd }: {
+  m: PaneModel; l: AgentLane;
+  px: (s: number) => number; on: (s: number) => boolean; secOf: (at: number) => number;
+  nowS: number; live: boolean; selected: boolean;
+  toolColor: (t: string) => string; onClick: () => void; gutter: number; windowEnd: number;
+}): ReactElement {
+  const s = secOf(l.spawnedAt);
+  const e = l.doneAt === null ? nowS : secOf(l.doneAt);
+  const capL = px(s);
+  const capR = px(Math.min(e, windowEnd));
+  const running = l.doneAt === null;
+  const color = l.outcome === 'failed' ? C.fail : l.role === 'synth' ? C.agentDark : C.agent;
+  const rgb = l.outcome === 'failed' ? '179,38,30' : l.role === 'synth' ? '23,78,166' : '26,115,232';
+
+  const myCalls = m.retrievals.filter((r) => r.agentId === l.agentId);
+  const myGuards = m.interventions.filter((iv) => iv.agentId === l.agentId && iv.kind !== 'nudge');
+
+  const stripe = (x0: number, x1: number, grey = false): ReactElement | null => {
+    if (x1 <= x0) return null;
+    const g = grey ? '95,99,104' : rgb;
+    return (
+      <div key={`w${x0}`} style={{
+        position: 'absolute', top: 12, height: 14, left: x0 - gutter, width: x1 - x0,
+        background: `repeating-linear-gradient(135deg, rgba(${g},.45) 0 4px, rgba(${g},.08) 4px 9px), #fff`,
+      }} />
+    );
+  };
+
+  const glyph = l.outcome === 'failed' ? '✗' : l.outcome === 'recovered' ? '↻' : '✓';
+  const glyphBg = l.outcome === 'failed' ? C.fail : l.outcome === 'recovered' ? C.agent : C.ok;
+  const endLabel = l.role === 'planner' && m.plan
+    ? `plan · ${m.plan.tasks.length} tasks · ${fmtS(e - s)}`
+    : l.outcome === 'recovered' ? `recovered · ${fmtS(e - s)}`
+      : l.outcome === 'failed' ? `${l.failReason ?? l.dropReason ?? 'failed'} · ${fmtS(e - s)}` : fmtS(e - s);
+  const endColor = l.outcome === 'failed' ? C.fail : l.outcome === 'recovered' ? C.agent : '#3c4043';
+
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        display: 'flex', height: 38, borderTop: `1px solid ${C.hair}`, position: 'relative', cursor: 'pointer',
+        background: selected ? C.chromeBg : undefined,
+        boxShadow: selected ? `inset 3px 0 0 ${C.text}` : undefined,
+      }}
+    >
+      <div style={{ width: gutter, flex: 'none', display: 'flex', alignItems: 'baseline', gap: 5, padding: '12px 0 0 14px', fontSize: 11.5 }}>
+        <span style={{ fontWeight: 600 }}>{l.role ?? 'agent'}</span>
+        <span style={{ color: C.faint, fontSize: 10, fontFamily: mono }}>{l.agentId} · p{l.parentAgentId ?? '?'}</span>
+      </div>
+      <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+        {capR > gutter && capL < px(windowEnd) && (
           <>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: `1px solid ${C.border}` }}>
-              <span style={{ ...mono, fontSize: 11 }}>{sel.args.slice(0, 140)}</span>
-              <div style={{ flex: 1 }} />
-              <span style={{ ...mono, fontSize: 10.5, color: C.dim }}>agent {sel.agentId}</span>
-            </div>
-            {parsed !== null ? (
-              <div style={{ padding: '8px 0' }}>
-                {Object.entries(parsed).map(([k, v]) => (
-                  <Row
-                    key={k}
-                    k={k}
-                    v={typeof v === 'string' ? v.slice(0, 800) : JSON.stringify(v)?.slice(0, 800) ?? ''}
-                  />
-                ))}
-              </div>
-            ) : sel.result ? (
-              <pre style={{ ...mono, padding: 14, whiteSpace: 'pre-wrap', fontSize: 11 }}>{sel.result.slice(0, 4000)}</pre>
-            ) : (
-              <div style={{ padding: '18px 14px', color: C.faint }}>in flight</div>
+            <div style={{
+              position: 'absolute', top: 12, height: 14,
+              left: Math.max(capL, gutter) - gutter,
+              width: Math.max(4, capR - Math.max(capL, gutter)),
+              background: color,
+              borderRadius: running ? '7px 0 0 7px' : capL < gutter ? '0 7px 7px 0' : 7,
+            }} />
+            {/* settled waits cut into the bar */}
+            {myCalls.filter((r) => r.settledAt !== null).map((r) =>
+              stripe(
+                Math.max(px(secOf(r.dispatchedAt)), Math.max(capL, gutter)),
+                Math.min(px(Math.min(secOf(r.settledAt!), e)), capR),
+              ))}
+            {/* a live wait stripes to the edge */}
+            {myCalls.filter((r) => r.settledAt === null).map((r) =>
+              stripe(Math.max(px(secOf(r.dispatchedAt)), Math.max(capL, gutter)), capR))}
+            {/* the planner waiting on the USER — same grammar, grey */}
+            {l.clarify && stripe(
+              Math.max(px(secOf(l.clarify.askedAt)), Math.max(capL, gutter)),
+              Math.min(px(l.clarify.answeredAt === null ? e : secOf(l.clarify.answeredAt)), capR),
+              true,
+            )}
+            {running && live && (
+              <span style={{
+                position: 'absolute', left: capR - gutter - 3, top: 15.5, width: 7, height: 7,
+                borderRadius: '50%', background: C.agentDark, zIndex: 2,
+              }} />
             )}
           </>
         )}
+
+        {/* clarify ? badges */}
+        {l.clarify && on(secOf(l.clarify.askedAt)) && (
+          <span style={{ position: 'absolute', left: px(secOf(l.clarify.askedAt)) - gutter - 9, top: 8.5, zIndex: 2 }}
+            title={`asked the user — ${l.clarify.questions.join(' · ')}`}>
+            <Badge color={C.dim} letter="?" hollow />
+          </span>
+        )}
+        {l.clarify?.answeredAt != null && on(secOf(l.clarify.answeredAt)) && (
+          <span style={{ position: 'absolute', left: px(secOf(l.clarify.answeredAt)) - gutter - 9, top: 8.5, zIndex: 2 }}
+            title="the user replied">
+            <Badge color={C.dim} letter="?" />
+          </span>
+        )}
+
+        {/* guard ⊘ badges */}
+        {myGuards.filter((g) => g.kind === 'guard' || g.kind === 'auth').map((g, i) =>
+          on(secOf(g.at)) ? (
+            <span key={`g${i}`} style={{ position: 'absolute', left: px(secOf(g.at)) - gutter - 9, top: 8.5, zIndex: 2 }}
+              title={`blocked — ${g.guard ?? g.kind}: ${g.message ?? g.tool ?? ''}`}>
+              <Badge color={C.warn} letter="⊘" hollow />
+            </span>
+          ) : null)}
+
+        {/* tool badges: hollow call, solid result, red error; call yields under 20px */}
+        {myCalls.map((r, i) => {
+          const cs = secOf(r.dispatchedAt);
+          const ce = r.settledAt === null ? null : secOf(r.settledAt);
+          const err = r.result !== null && r.result.includes('"error"');
+          const collides = ce !== null && px(ce) - px(cs) < 20;
+          return (
+            <React.Fragment key={`c${i}`}>
+              {on(cs) && !collides && (
+                <span style={{ position: 'absolute', left: px(cs) - gutter - 9, top: 8.5, zIndex: 2 }}
+                  title={`${r.tool} · ${r.args.slice(0, 140)}`}>
+                  <Badge color={toolColor(r.tool)} letter={letterOf(r.tool)} hollow />
+                </span>
+              )}
+              {ce !== null && on(ce) && (
+                <span style={{ position: 'absolute', left: px(ce) - gutter - 9, top: 8.5, zIndex: 2 }}
+                  title={`${r.tool} → ${fmtS(ce - cs)}${r.contextAvailablePercent != null ? ` · ctx ${r.contextAvailablePercent}%` : ''}`}>
+                  <Badge color={err ? C.fail : toolColor(r.tool)} letter={letterOf(r.tool)} />
+                </span>
+              )}
+            </React.Fragment>
+          );
+        })}
+
+        {/* outcome */}
+        {l.doneAt !== null && on(e) && (
+          <>
+            <span style={{ position: 'absolute', left: px(e) - gutter + 8, top: 8.5, zIndex: 2 }}>
+              <span style={{
+                width: 18, height: 18, borderRadius: '50%', display: 'inline-grid', placeItems: 'center',
+                background: glyphBg, color: '#fff', border: '2px solid #fff',
+                boxShadow: '0 1px 2px rgba(0,0,0,.18)', fontSize: 10, fontWeight: 700,
+              }}>{glyph}</span>
+            </span>
+            <span style={{
+              position: 'absolute', left: px(e) - gutter + 33, top: 13, fontSize: 10.5,
+              fontFamily: mono, color: endColor, whiteSpace: 'nowrap', pointerEvents: 'none',
+            }}>{endLabel}</span>
+          </>
+        )}
+        {running && on(e) && (
+          <span style={{
+            position: 'absolute', left: px(e) - gutter + 10, top: 13, fontSize: 10.5,
+            fontFamily: mono, color: C.agentDark, whiteSpace: 'nowrap', pointerEvents: 'none',
+          }}>{l.clarify && l.clarify.answeredAt === null ? 'waiting on you…' : l.inflightTool ? `${l.inflightTool}…` : l.role === 'synth' ? 'streaming report…' : 'thinking…'}</span>
+        )}
       </div>
     </div>
   );
 }
 
-// ── Settings ─────────────────────────────────────────────────────
-
-/** The read-only inspector rows every harness gets — the machine's config
- *  surface. The template's own knobs arrive via `controls`. */
-const INSPECT_KEYS: readonly { path: string; originKey?: string }[] = [
-  { path: 'model.path', originKey: 'modelPath' },
-  { path: 'model.reranker', originKey: 'reranker' },
-  { path: 'model.nCtx', originKey: 'nCtx' },
-  { path: 'model.gpu', originKey: 'gpu' },
-  { path: 'model.branches' },
-  { path: 'model.kvCache' },
-  { path: 'sources.outputDir', originKey: 'outputDir' },
-];
-
-function Settings({
-  m, controls, send,
-}: {
-  m: PaneModel;
-  controls: readonly DevControl[];
-  send: (c: unknown) => void;
+// ═══ agent detail: the story feed ═══
+function AgentFeed({ m, lane, toolColor, onClose, onJump }: {
+  m: PaneModel; lane: AgentLane; toolColor: (t: string) => string;
+  onClose: () => void; onJump: (id: number) => void;
 }): ReactElement {
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['report']));
+  const toggle = (id: string): void => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const calls = m.retrievals.map((r, i) => ({ r, id: `c${i}` })).filter(({ r }) => r.agentId === lane.agentId);
+  const interventions = m.interventions.filter((iv) => iv.agentId === lane.agentId);
+  const items: Array<{ at: number; el: ReactElement }> = [];
+
+  if (lane.clarify) {
+    items.push({
+      at: lane.clarify.askedAt,
+      el: (
+        <div key="clarify" style={feedItem}>
+          <div style={{ display: 'flex', gap: 7, alignItems: 'baseline' }}>
+            <b style={{ color: C.dim }}>? asked the user</b>
+            <span style={{ color: '#3c4043' }}>“{lane.clarify.questions.join(' · ')}”</span>
+          </div>
+          <div style={{ margin: '3px 0 0 16px', color: lane.clarify.answeredAt === null ? C.warn : C.dim }}>
+            {lane.clarify.answeredAt === null
+              ? 'waiting on the user…'
+              : `the user replied · ${fmtS((lane.clarify.answeredAt - lane.clarify.askedAt) / 1000)}`}
+          </div>
+        </div>
+      ),
+    });
+  }
+
+  for (const iv of interventions) {
+    items.push({
+      at: iv.at,
+      el: (
+        <div key={`iv${iv.at}`} style={{ ...feedItem, color: C.warn }}>
+          <div style={{ display: 'flex', gap: 7, alignItems: 'baseline' }}>
+            <b>{iv.kind === 'nudge' ? '▲ harness nudge' : '⊘ blocked'}</b>
+            {iv.tool && <span style={{ fontFamily: mono, fontSize: 10.5 }}>{iv.tool}{iv.args ? ` · ${iv.args.slice(0, 80)}` : ''}</span>}
+          </div>
+          <div style={{ margin: '2px 0 0 16px', color: C.dim }}>
+            {iv.guard ? `${iv.guard} guard — ` : iv.reason ? `${iv.reason} — ` : ''}
+            {iv.message ? `“${iv.message}”` : ''}
+          </div>
+        </div>
+      ),
+    });
+  }
+
+  for (const { r, id } of calls) {
+    const open = expanded.has(id);
+    const err = r.result !== null && r.result.includes('"error"');
+    const status = r.settledAt === null ? 'in flight'
+      : r.admission
+        ? `${r.admission.selectedPassageCount}${r.admission.totalScored != null ? ` of ${r.admission.totalScored}` : ''} passages${r.admission.admittedTokens != null ? ` · ${r.admission.admittedTokens} tok` : ''}`
+        : err ? 'error' : 'done';
+    items.push({
+      at: r.dispatchedAt,
+      el: (
+        <div key={id} style={feedItem}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer' }} onClick={() => toggle(id)}>
+            <span style={{ color: C.faint, fontSize: 9, width: 9, flex: 'none' }}>{open ? '▾' : '▸'}</span>
+            <Badge color={err ? C.fail : toolColor(r.tool)} letter={letterOf(r.tool)} size={14} />
+            <span style={{ fontFamily: mono, fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{r.args}</span>
+            <span style={{ color: err ? C.fail : C.faint, fontSize: 10.5 }}>{status}</span>
+          </div>
+          {open && (
+            <div style={{ margin: '6px 0 2px 16px', fontSize: 11 }}>
+              {r.explore === false && (
+                <div style={{ color: C.faint, marginBottom: 3 }}>exploit — re-ranked against the query</div>
+              )}
+              {r.admission?.topResults.map((t, i) => (
+                <div key={i} style={{ padding: '3px 0', borderTop: `1px solid ${C.hair}` }}>
+                  <b style={{ fontSize: 11 }}>{i + 1} · {t.heading}</b>
+                  {t.textPreview && <div style={{ color: C.dim, fontSize: 10.5, lineHeight: 1.45 }}>{t.textPreview}…</div>}
+                </div>
+              ))}
+              {!r.admission && r.result && (
+                <div style={{ padding: '3px 0', color: err ? C.fail : C.dim, fontSize: 10.5, wordBreak: 'break-word' }}>
+                  {r.result.slice(0, 400)}{r.result.length > 400 ? '…' : ''}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      ),
+    });
+  }
+
+  items.sort((a, b) => a.at - b.at);
+
+  // The planner's report IS the plan — structure, with task→agent jumps.
+  const research = [...m.lanes.values()].filter((l) => l.role === 'research');
+  const planView = lane.role === 'planner' && m.plan && (
+    <div style={feedItem}>
+      <div style={{ display: 'flex', gap: 7, alignItems: 'baseline', marginBottom: 3 }}>
+        <b style={{ fontSize: 11 }}>plan</b>
+        <span style={{ color: C.faint }}>{m.plan.tasks.length} tasks — click one to follow its agent</span>
+      </div>
+      {m.plan.tasks.map((task, i) => {
+        const ag = research[i]; // fanout order = flat-mode spawn order
+        const g = !ag ? '' : ag.outcome === 'failed' ? '✗' : ag.outcome === 'recovered' ? '↻' : ag.doneAt === null ? '…' : '✓';
+        const gc = !ag ? C.faint : ag.outcome === 'failed' ? C.fail : ag.outcome === 'recovered' ? C.agent : C.ok;
+        return (
+          <div key={i}
+            onClick={ag ? () => onJump(ag.agentId) : undefined}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderTop: `1px solid ${C.hair}`, cursor: ag ? 'pointer' : 'default' }}>
+            <span style={{ width: 16, textAlign: 'right', fontFamily: mono, fontSize: 10, color: C.faint }}>{i + 1}</span>
+            <span style={{ flex: 1, fontSize: 11, lineHeight: 1.4 }}>{task}</span>
+            {ag && <span style={chip}>{`research ${ag.agentId}`}</span>}
+            <b style={{ color: gc, width: 14, textAlign: 'center' }}>{g}</b>
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  const reportOpen = expanded.has('report');
+  return (
+    <div style={{
+      width: 420, flex: 'none', borderLeft: '1px solid #d9dce1', display: 'flex',
+      flexDirection: 'column', minHeight: 0, background: C.panelBg,
+    }}>
+      <div style={{
+        height: 30, flex: 'none', display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px',
+        borderBottom: `1px solid ${C.border}`, background: '#f8f9fa',
+      }}>
+        <span style={{ fontFamily: mono, fontWeight: 600, fontSize: 11 }}>{lane.role ?? 'agent'} {lane.agentId}</span>
+        <span style={chip}>parent {lane.parentAgentId ?? '?'}</span>
+        <span style={chip}>{lane.outcome}{lane.doneAt !== null && m.runStartAt !== null ? ` · ${fmtS((lane.doneAt - lane.spawnedAt) / 1000)}` : ''}</span>
+        <span style={{ flex: 1 }} />
+        <span style={{ cursor: 'pointer', color: C.dim }} onClick={onClose} title="close — the timeline returns to full width">✕</span>
+      </div>
+      <div style={{ overflowY: 'auto', flex: 1, fontSize: 11, paddingBottom: 8 }}>
+        {(lane.failReason || lane.dropReason) && (
+          <div style={{ display: 'flex', alignItems: 'baseline', padding: '6px 12px', gap: 8 }}>
+            <span style={{ color: C.dim, width: 92, flex: 'none' }}>pool said</span>
+            <span style={{ fontFamily: mono, fontSize: 11 }}>{lane.dropReason ?? lane.failReason}</span>
+          </div>
+        )}
+        {items.map((it) => it.el)}
+        {planView}
+        {lane.role !== 'planner' && (lane.report !== null || lane.outcome === 'failed') && (
+          <div style={feedItem}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer' }} onClick={() => toggle('report')}>
+              <span style={{ color: C.faint, fontSize: 9, width: 9, flex: 'none' }}>{reportOpen ? '▾' : '▸'}</span>
+              <b style={{ fontSize: 11 }}>report</b>
+              <span style={{ color: C.faint }}>
+                {lane.report === null ? 'not delivered' : lane.reportSource === 'recovery' ? 'extracted by recovery' : 'delivered'}
+              </span>
+            </div>
+            {reportOpen && lane.report !== null && (
+              <div style={{ margin: '6px 0 2px 16px', lineHeight: 1.5, color: '#3c4043', whiteSpace: 'pre-wrap' }}>
+                {lane.report}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const feedItem: React.CSSProperties = { padding: '7px 12px', borderTop: '1px solid #eceef1' };
+const chip: React.CSSProperties = {
+  fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 2, background: C.chromeBg, color: C.dim,
+};
+
+// ═══ Sources: the admission view ═══
+function Sources({ m, toolColor }: { m: PaneModel; toolColor: (t: string) => string }): ReactElement {
+  const settled = m.retrievals.filter((r) => r.settledAt !== null);
+  const [pinned, setPinned] = useState<number | null>(null);
+  const sel = pinned !== null && pinned < settled.length ? pinned : settled.length - 1;
+  const r = settled[sel];
+  const blocked = m.interventions.filter((iv) => iv.kind === 'guard' || iv.kind === 'auth');
+
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+      <div style={{ width: 300, flex: 'none', borderRight: '1px solid #d9dce1', overflowY: 'auto' }}>
+        {settled.length === 0 && blocked.length === 0 && (
+          <div style={{ padding: '16px 14px', color: C.faint, fontSize: 11 }}>no results yet</div>
+        )}
+        {settled.map((x, i) => {
+          const err = x.result !== null && x.result.includes('"error"');
+          return (
+            <div key={i} onClick={() => setPinned(i)} style={{
+              display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', fontSize: 11,
+              borderBottom: `1px solid ${C.hair}`, cursor: 'pointer',
+              background: i === sel ? C.chromeBg : undefined,
+              boxShadow: i === sel ? `inset 3px 0 0 ${C.text}` : undefined,
+            }}>
+              <Badge color={err ? C.fail : toolColor(x.tool)} letter={letterOf(x.tool)} size={16} />
+              <span style={{ fontFamily: mono, fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{x.args}</span>
+              <span style={{ fontFamily: mono, fontSize: 10, color: C.faint }}>
+                {x.settledAt !== null ? fmtS((x.settledAt - x.dispatchedAt) / 1000) : ''}
+              </span>
+            </div>
+          );
+        })}
+        {blocked.map((g, i) => (
+          <div key={`b${i}`} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', fontSize: 11, borderBottom: `1px solid ${C.hair}`, opacity: 0.65 }}>
+            <Badge color={C.warn} letter="⊘" size={16} hollow />
+            <span style={{ fontFamily: mono, fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{g.args ?? g.tool ?? ''}</span>
+            <span style={{ fontSize: 10.5, color: C.warn }}>blocked</span>
+          </div>
+        ))}
+      </div>
+      <div style={{ flex: 1, minWidth: 0, overflowY: 'auto', fontSize: 11.5 }}>
+        {r && <AdmissionView r={r} />}
+      </div>
+    </div>
+  );
+}
+
+function AdmissionView({ r }: { r: Retrieval }): ReactElement {
+  let parsed: Record<string, unknown> | null = null;
+  try { parsed = r.result ? (JSON.parse(r.result) as Record<string, unknown>) : null; } catch { /* not JSON */ }
+  const error = parsed && typeof parsed.error === 'string' ? parsed.error : null;
+  const alsoOnPage = parsed && Array.isArray(parsed.alsoOnPage) ? (parsed.alsoOnPage as string[]) : null;
+  const a = r.admission;
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderBottom: `1px solid ${C.border}`, flexWrap: 'wrap' }}>
+        <span style={{ fontFamily: mono, fontSize: 11 }}>{r.tool} · {r.args.slice(0, 160)}</span>
+        <span style={{ flex: 1 }} />
+        {r.explore === false && (
+          <span style={{ ...fchip, background: C.warnBg, color: C.warn }}>exploit — re-ranked against the query</span>
+        )}
+        {r.explore === true && <span style={fchip}>explore — scored against the agent's task</span>}
+        <span style={fchip}>agent {r.agentId}</span>
+      </div>
+
+      {error && (
+        <div style={{ padding: '8px 14px' }}>
+          <b style={{ color: C.fail }}>{error}</b>
+          <p style={{ margin: '3px 0 0', color: C.dim, fontSize: 11 }}>the agent was told and pivoted</p>
+        </div>
+      )}
+
+      {r.exploitChunks && r.exploitChunks.length > 0 && <SlopeChart r={r} />}
+
+      {a && a.topResults.length > 0 && (
+        <div style={{ padding: '6px 16px 2px', maxWidth: 760 }}>
+          {a.topResults.map((t, i) => {
+            const maxScore = Math.max(...a.topResults.map((x) => x.score));
+            const rel = maxScore !== 0 ? t.score / maxScore : 1;
+            return (
+              <div key={i} style={{ padding: '6px 0', borderTop: i ? `1px solid ${C.hair}` : undefined }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                  <span style={{ width: 14, textAlign: 'right', fontFamily: mono, fontSize: 10, color: C.faint }}>{i + 1}</span>
+                  <span style={{ width: 150, flex: 'none' }}>
+                    <span style={{ display: 'block', height: 5, borderRadius: 3, background: C.agent, width: `${Math.max(4, rel * 100)}%` }} />
+                  </span>
+                  <b style={{ fontSize: 11 }}>{t.heading}</b>
+                  <span style={{ flex: 1 }} />
+                </div>
+                {t.textPreview && (
+                  <p style={{ margin: '2px 0 0 21px', color: C.dim, fontSize: 10.5, lineHeight: 1.45 }}>{t.textPreview}…</p>
+                )}
+              </div>
+            );
+          })}
+          <div style={cutline}>
+            {a.tokenBudget != null
+              ? `admitted ${a.selectedPassageCount}${a.totalScored != null ? ` of ${a.totalScored}` : ''} · ${a.admittedTokens?.toLocaleString() ?? '?'} of ${a.tokenBudget.toLocaleString()} token budget`
+              : a.threshold != null
+                ? `admitted ${a.selectedPassageCount}${a.totalScored != null ? ` of ${a.totalScored}` : ''} at the score floor`
+                : `admitted ${a.selectedPassageCount}`}
+          </div>
+          {alsoOnPage && alsoOnPage.length > 0 && (
+            <div style={{ padding: '2px 0 10px', display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+              {alsoOnPage.map((h) => <span key={h} style={{ ...fchip, opacity: 0.7 }}>{h}</span>)}
+              <span style={{ color: C.faint, fontSize: 10.5 }}>— left on the page, offered to the agent as topics</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {!a && !error && r.result && (
+        <div style={{ padding: '8px 14px', color: C.dim, fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxWidth: 760 }}>
+          {r.result.slice(0, 2000)}{r.result.length > 2000 ? '…' : ''}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Two rankings of the same chunks, side by side — each column HEADED by the
+ *  question it ranks for; crossing lines ARE the re-rank. No legend. */
+function SlopeChart({ r }: { r: Retrieval }): ReactElement {
+  const chunks = r.exploitChunks!;
+  const ROW = 26; const W = 70; const HEAD = 40;
+  const byTask = [...chunks].sort((a, b) => b.combinedScore - a.combinedScore);
+  const byTool = [...chunks].sort((a, b) => b.toolQueryScore - a.toolQueryScore);
+  const H = chunks.length * ROW;
+  let agentQ = '';
+  try { agentQ = String((JSON.parse(r.args || '{}') as { query?: string }).query ?? ''); } catch { /* raw args */ }
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', padding: '14px 16px 4px', maxWidth: 900 }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ height: HEAD, textAlign: 'right' }}>
+          <div style={label}>for the agent's task</div>
+          {agentQ && <div style={{ fontFamily: mono, fontSize: 10, color: C.faint }}>“{agentQ}”</div>}
+        </div>
+        {byTool.map((x, i) => (
+          <div key={x.heading} style={{ height: ROW, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 7, color: '#3c4043' }}>
+            <span style={{ fontSize: 11 }}>{x.heading}</span>
+            <span style={{ width: 14, fontFamily: mono, fontSize: 10, color: C.faint }}>{i + 1}</span>
+          </div>
+        ))}
+      </div>
+      <svg width={W} height={H} style={{ flex: 'none', margin: `${HEAD}px 10px 0` }}>
+        {byTask.map((x, ti) => {
+          const li = byTool.indexOf(x);
+          return <line key={x.heading} x1={0} y1={li * ROW + 13} x2={W} y2={ti * ROW + 13} stroke={C.agent} strokeWidth={1.8} />;
+        })}
+      </svg>
+      <div style={{ flex: 1.2, minWidth: 0 }}>
+        <div style={{ height: HEAD }}>
+          <div style={label}>re-ranked for the query</div>
+        </div>
+        {byTask.map((x, i) => (
+          <div key={x.heading} style={{ height: ROW, display: 'flex', alignItems: 'center', gap: 7 }}>
+            <span style={{ width: 14, textAlign: 'right', fontFamily: mono, fontSize: 10, color: C.faint }}>{i + 1}</span>
+            <span style={{ fontSize: 11, fontWeight: 600 }}>{x.heading}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const fchip: React.CSSProperties = {
+  fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 3, background: C.chromeBg, color: C.dim,
+};
+const cutline: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0 4px', color: C.faint, fontSize: 10,
+  borderTop: '1px dashed #dadce0', marginTop: 6,
+};
+
+// ═══ Settings: category nav → harness (master list + detail) · ability pages ═══
+
+/** What the detail panel knows about each well-known harness key: what it is,
+ *  and how to change it. Prose is product copy — one clause per sentence. */
+const SETTING_META: Readonly<Record<string, { desc: string; how: string }>> = {
+  'defaults.effort': {
+    desc: 'Run effort preset — agent budget, planner breadth, recovery cap.',
+    how: 'Change it here; it applies to your next run and is remembered locally. The committed default lives in harness.yml → defaults.effort.',
+  },
+  'defaults.reasoningMode': {
+    desc: 'flat runs one research wave over the plan; deep lets agents recurse into sub-plans.',
+    how: 'Change it here; it applies to your next run.',
+  },
+  'sources.outputDir': {
+    desc: 'Where per-query run-dirs and the session trace are written. Empty means where the harness started.',
+    how: 'Edit harness.yml → sources.outputDir; the next run picks it up.',
+  },
+  'defaults.maxTurns': {
+    desc: 'Turn cap per agent run.',
+    how: 'Edit harness.yml → defaults.maxTurns; the next run picks it up.',
+  },
+  'model.path': {
+    desc: 'Filesystem path or catalog id of the reasoning model.',
+    how: 'Saved changes load at the next start; this run keeps the model it booted with.',
+  },
+  'model.reranker': {
+    desc: 'The admission judge — a pointwise yes/no reranker that gates what enters the context.',
+    how: 'Saved changes load at the next start.',
+  },
+  'model.nCtx': {
+    desc: 'Context window of the one shared llama_context — every branch leases cells out of this budget.',
+    how: 'Edit harness.yml → model.llm.context, then restart.',
+  },
+  'model.branches': {
+    desc: 'Concurrent sequences — createContext takes it as nSeqMax. Each sequence holds its own KV lease.',
+    how: 'Edit harness.yml → model.llm.branches, then restart.',
+  },
+  'model.kvCache': {
+    desc: 'KV cache type for the attention layers — raise for precision, lower for memory.',
+    how: 'Edit harness.yml → model.llm.kvCache, then restart.',
+  },
+  'model.gpu': {
+    desc: 'Which native backend the process loaded — picked once at start. A configured backend fails loud if unavailable, never silently CPU.',
+    how: 'A deploy choice: set harness.yml → model.llm.gpu (or LLOYAL_GPU), then restart.',
+  },
+};
+
+const TIER_NOTE: Record<string, string> = {
+  session: 'applies to the next run',
+  reload: 'saved now — a restart loads it',
+  boot: 'fixed for this run',
+};
+
+function Settings({ m, controls, send }: {
+  m: PaneModel; controls: readonly DevControl[]; send: (c: unknown) => void;
+}): ReactElement {
+  const [cat, setCat] = useState('harness');
+  const [selKey, setSelKey] = useState<string>(controls[0]?.key ?? 'model.path');
+  const abilities = m.config && typeof m.config.abilities === 'object' && m.config.abilities !== null
+    ? Object.keys(m.config.abilities as Record<string, unknown>)
+    : [];
+
   if (!m.config) {
     return (
-      <div style={{ flex: 1, padding: '18px 14px', color: C.faint }}>
+      <div style={{ flex: 1, display: 'grid', placeItems: 'center', color: C.faint, fontSize: 11.5 }}>
         this harness has not emitted config:loaded — the inspector has nothing to show
       </div>
     );
   }
-  const abilities = (m.config.abilities ?? {}) as Record<string, Record<string, unknown>>;
+
+  const navItem = (name: string, on: boolean): ReactElement => (
+    <div key={name} onClick={() => setCat(name)} style={{
+      padding: '7px 16px', fontSize: 12, cursor: 'pointer',
+      color: on ? C.text : C.dim, fontWeight: on ? 600 : 400,
+      background: on ? '#fff' : undefined,
+      borderLeft: on ? `3px solid ${C.text}` : '3px solid transparent',
+    }}>{name}</div>
+  );
+
   return (
-    <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-      {/* machine config — the inspector */}
-      <div style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: '14px 18px', borderRight: `1px solid ${C.border}` }}>
-        <SectionLabel text="config" sub="value and where it came from" />
-        {INSPECT_KEYS.map(({ path, originKey }) => {
-          const v = readConfigPath(m.config, path);
-          if (v === undefined) return null;
-          const rung = originKey && m.origin ? m.origin[originKey] : undefined;
-          const tier = KEY_TIERS[path];
-          return (
-            <div key={path} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 0', borderTop: `1px solid ${C.hairline}` }}>
-              <span style={{ ...mono, fontSize: 11.5, fontWeight: 500 }}>{path}</span>
-              {tier === 'boot' && <span style={{ fontSize: 9.5, color: C.faint }}>fixed for this context</span>}
-              <div style={{ flex: 1 }} />
-              <span style={{ ...mono, fontSize: 11, color: C.dim, maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {String(v)}
-              </span>
-              {rung && <Prov rung={rung} />}
-            </div>
-          );
-        })}
-
-        {Object.keys(abilities).length > 0 && (
-          <>
-            <div style={{ height: 14 }} />
-            <SectionLabel text="abilities" sub="values are redacted to key-presence — secrets never render back" />
-            {Object.entries(abilities).map(([name, cfg]) => (
-              <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 0', borderTop: `1px solid ${C.hairline}` }}>
-                <span style={{ ...mono, fontSize: 11.5, fontWeight: 500 }}>{name}</span>
-                <div style={{ flex: 1 }} />
-                <span style={{ ...mono, fontSize: 11, color: '#188038' }}>
-                  {Object.keys(cfg).length > 0 ? `${Object.keys(cfg).join(', ')} configured ✓` : 'no config'}
-                </span>
-              </div>
-            ))}
-          </>
-        )}
+    <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+      <div style={{ width: 148, flex: 'none', borderRight: '1px solid #d9dce1', paddingTop: 10, background: C.panelBg, overflowY: 'auto' }}>
+        {navItem('harness', cat === 'harness')}
+        {abilities.length > 0 && <div style={{ ...label, padding: '12px 16px 3px' }}>abilities</div>}
+        {abilities.map((a) => navItem(a, cat === a))}
       </div>
-
-      {/* template controls */}
-      <div style={{ width: 360, flex: 'none', overflowY: 'auto', padding: '14px 18px', display: 'flex', flexDirection: 'column' }}>
-        <SectionLabel text="run policy" sub={controls.length ? 'how this harness thinks' : 'this template has no runtime controls yet'} />
-        {controls.map((ctl) => {
-          const current = ctl.read(m.config!);
-          const rung = ctl.originKey && m.origin ? m.origin[ctl.originKey] : undefined;
-          return (
-            <div key={ctl.key} style={{ padding: '10px 0', borderTop: `1px solid ${C.hairline}` }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 7 }}>
-                <span style={{ ...mono, fontSize: 11.5, fontWeight: 500 }}>{ctl.key}</span>
-                {rung && <Prov rung={rung} />}
-                <div style={{ flex: 1 }} />
-                {ctl.note && <span style={{ fontSize: 10, color: '#188038' }}>{ctl.note}</span>}
-              </div>
-              <div style={{ display: 'flex', border: '1px solid #dadce0', borderRadius: 4, overflow: 'hidden' }}>
-                {ctl.values.map((v) => (
-                  <div
-                    key={v}
-                    onClick={() => send({ type: ctl.command, [ctl.field]: v })}
-                    style={{
-                      flex: 1, fontSize: 11.5, padding: '6px 0', textAlign: 'center', cursor: 'pointer',
-                      borderLeft: `1px solid ${C.border}`,
-                      ...(v === current ? { background: '#202124', color: '#fff', fontWeight: 500 } : { color: C.dim }),
-                    }}
-                  >
-                    {v}
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })}
-        <div style={{ flex: 1 }} />
-        {/* placement-aware save footer: a real path or the honest session note */}
-        {m.lastSavedTo !== undefined && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 10, borderTop: `1px solid ${C.border}` }}>
-            {m.lastSavedTo !== null ? (
-              <>
-                <Prov rung="file" />
-                <span style={{ ...mono, fontSize: 10.5, color: C.dim }}>saved → {m.lastSavedTo}</span>
-              </>
-            ) : (
-              <>
-                <Prov rung="session" />
-                <span style={{ ...mono, fontSize: 10.5, color: C.dim }}>applied for this session — no file remembers it</span>
-              </>
-            )}
-          </div>
-        )}
-      </div>
+      {cat === 'harness'
+        ? <HarnessSettings m={m} controls={controls} send={send} selKey={selKey} onSelect={setSelKey} />
+        : <AbilityPage m={m} name={cat} />}
     </div>
   );
 }
 
-function SectionLabel({ text, sub }: { text: string; sub?: string }): ReactElement {
+function HarnessSettings({ m, controls, send, selKey, onSelect }: {
+  m: PaneModel; controls: readonly DevControl[]; send: (c: unknown) => void;
+  selKey: string; onSelect: (k: string) => void;
+}): ReactElement {
+  const config = m.config!;
+  const byTier = (tier: string): string[] =>
+    Object.entries(KEY_TIERS).filter(([, t]) => t === tier).map(([k]) => k);
+  const controlFor = (key: string): DevControl | undefined => controls.find((c) => c.key === key);
+
+  const row = (key: string): ReactElement | null => {
+    const ctl = controlFor(key);
+    const value = ctl ? ctl.read(config) : readConfigPath(config, key);
+    if (value === undefined && !ctl) return null; // skip-if-absent: basic has no defaults block
+    const selected = selKey === key;
+    return (
+      <div key={key} onClick={() => onSelect(key)} style={{
+        display: 'flex', alignItems: 'center', gap: 8, padding: '5px 14px 5px 11px', minHeight: 36,
+        borderLeft: selected ? `3px solid ${C.text}` : '3px solid transparent', cursor: 'pointer',
+        background: selected ? C.chromeBg : undefined,
+      }}>
+        <span style={{ fontFamily: mono, fontSize: 11.5, fontWeight: 500 }}>{key}</span>
+        <span style={{ flex: 1 }} />
+        {ctl ? (
+          <span style={{ display: 'flex', border: '1px solid #dadce0', borderRadius: 4, overflow: 'hidden', width: 276, flex: 'none' }}>
+            {ctl.values.map((v) => (
+              <span key={v}
+                onClick={(e) => { e.stopPropagation(); onSelect(key); send({ type: ctl.command, [ctl.field]: v }); }}
+                style={{
+                  flex: 1, fontSize: 11, padding: '5px 0', textAlign: 'center', cursor: 'pointer',
+                  background: v === value ? C.text : '#fff', color: v === value ? '#fff' : C.dim,
+                  fontWeight: v === value ? 500 : 400, borderLeft: '1px solid #e8eaed',
+                }}>{v}</span>
+            ))}
+          </span>
+        ) : (
+          <span style={{ fontFamily: mono, fontSize: 11, color: C.dim, maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {value === undefined || value === null || value === '' ? '—' : String(value)}
+            {key === 'model.branches' && <span style={{ color: C.faint }}> → nSeqMax</span>}
+          </span>
+        )}
+      </div>
+    );
+  };
+
+  const head = (t: string): ReactElement => (
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '13px 14px 3px' }}>
+      <span style={label}>{t}</span>
+      <span style={{ color: C.faint, fontSize: 10.5 }}>{TIER_NOTE[t]}</span>
+    </div>
+  );
+
+  const meta = SETTING_META[selKey];
+  const tier = KEY_TIERS[selKey];
+  // The exception case, surfaced exactly when true: something outside the
+  // manifest set this value. No badges anywhere else.
+  const originKey = controlFor(selKey)?.originKey;
+  const origin = originKey && m.origin ? m.origin[originKey] : undefined;
+  const overridden = origin === 'env' || origin === 'cli';
+
   return (
-    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
-      <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '.07em', textTransform: 'uppercase', color: '#80868b' }}>{text}</span>
-      {sub && <span style={{ fontSize: 10.5, color: '#b0b6c2' }}>{sub}</span>}
+    <>
+      <div style={{ flex: 1, minWidth: 0, overflowY: 'auto', paddingBottom: 10 }}>
+        {head('session')}
+        {byTier('session').map(row)}
+        {head('reload')}
+        {byTier('reload').map(row)}
+        {head('boot')}
+        {byTier('boot').map(row)}
+      </div>
+      <div style={{ width: 400, flex: 'none', borderLeft: '1px solid #d9dce1', overflowY: 'auto', padding: '16px 20px', background: C.panelBg }}>
+        {meta ? (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontFamily: mono, fontSize: 13, fontWeight: 500 }}>{selKey}</span>
+              {tier && <span style={chip}>{TIER_NOTE[tier]}</span>}
+            </div>
+            <p style={{ maxWidth: 340, margin: '8px 0 0', fontSize: 12, lineHeight: 1.55, color: '#3c4043' }}>{meta.desc}</p>
+            <div style={{ ...label, marginTop: 16 }}>changing it</div>
+            <p style={{ maxWidth: 340, margin: '6px 0 0', fontSize: 12, lineHeight: 1.55, color: '#3c4043' }}>{meta.how}</p>
+            {overridden && (
+              <div style={{
+                display: 'flex', alignItems: 'baseline', gap: 8, padding: '8px 11px', marginTop: 14,
+                background: C.warnBg, border: `1px solid ${C.warnBorder}`, borderRadius: 4, fontSize: 11, maxWidth: 360,
+              }}>
+                <b>currently overridden</b>
+                <span style={{ color: C.dim }}>
+                  {origin === 'env' ? 'an environment variable' : 'a command-line flag'} is overriding the manifest — the value shown is the one in effect.
+                </span>
+              </div>
+            )}
+          </>
+        ) : (
+          <span style={{ color: C.faint }}>select a setting</span>
+        )}
+        {m.lastSavedTo !== undefined && (
+          <div style={{ marginTop: 18, fontFamily: mono, fontSize: 10.5, color: C.dim }}>
+            {m.lastSavedTo === null
+              ? 'applied for this session — a served session has no local file'
+              : `saved → ${m.lastSavedTo} (local, not committed)`}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+/** An ability's page — the INSPECTOR increment: stored keys are shown as
+ *  set/unset (values never travel to the UI); editors arrive with the
+ *  per-key config merge. */
+function AbilityPage({ m, name }: { m: PaneModel; name: string }): ReactElement {
+  const stored = (m.config?.abilities as Record<string, Record<string, unknown>> | undefined)?.[name] ?? {};
+  const keys = Object.keys(stored);
+  return (
+    <div style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: '16px 22px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ fontFamily: mono, fontSize: 13, fontWeight: 500 }}>{name}</span>
+        <span style={{ color: C.ok, fontSize: 10.5 }}>{keys.length} set</span>
+        <span style={chip}>applies to the next run</span>
+      </div>
+      <p style={{ maxWidth: 480, margin: '6px 0 0', fontSize: 11.5, color: C.dim }}>
+        Stored values never travel to the UI — only which keys are set. Secrets are write-only.
+      </p>
+      {keys.map((k) => (
+        <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12 }}>
+          <span style={{ width: 140, flex: 'none', fontFamily: mono, fontSize: 11.5 }}>{k}</span>
+          <span style={{ color: C.ok, fontSize: 11 }}>set ✓</span>
+        </div>
+      ))}
+      {keys.length === 0 && <p style={{ marginTop: 12, color: C.faint, fontSize: 11 }}>nothing configured</p>}
     </div>
   );
 }

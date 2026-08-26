@@ -29,7 +29,7 @@
     "linkedom": "^0.18.12"
   },
   "peerDependencies": {
-    "@lloyal-labs/lloyal-agents": "^5.0.0",
+    "@lloyal-labs/lloyal-agents": "^5.3.0",
     "@lloyal-labs/rig": "^5.0.0",
     "effection": "^4.0.2"
   }

@@ -227,6 +227,45 @@ export function I30_exitReasonMatchesTrace(run: PoolRun): PredicateResult {
 }
 
 /**
+ * I31 Trace-tee mirror-completeness: with a real TraceWriter active, every
+ * POOL-side write of a mirrored type reaches the bus exactly once as an
+ * `agent:trace` envelope wrapping the SAME event (matched by traceId), with
+ * the envelope's agentId agreeing with the event's own attribution. The
+ * live consumer (the dev pane) must be able to trust that what it sees is
+ * what the file recorded — no dropped mirrors, no duplicates, no
+ * mis-attribution.
+ */
+const MIRRORED_TYPES = new Set<string>([
+  'pool:agentNudge', 'tool:authReject', 'pool:agentDrop', 'branch:prune', 'tool:dispatch',
+]);
+
+export function I31_traceTeeMirrors(run: PoolRun): PredicateResult {
+  const mirrors = new Map<number, { agentId?: number; event: TraceEvent }>();
+  for (const ev of run.channelEvents) {
+    if (ev.type !== 'agent:trace' || !ev.event) continue;
+    if (mirrors.has(ev.event.traceId)) {
+      return fail('I31', `trace event ${ev.event.traceId} (${ev.event.type}) mirrored more than once`);
+    }
+    mirrors.set(ev.event.traceId, { agentId: ev.agentId, event: ev.event });
+  }
+  for (const te of run.traceEvents) {
+    if (!MIRRORED_TYPES.has(te.type)) continue;
+    const m = mirrors.get(te.traceId);
+    if (!m) {
+      return fail('I31', `pool wrote ${te.type} (traceId ${te.traceId}) but no agent:trace mirror reached the bus`);
+    }
+    const owner = (te as any).agentId ?? (te as any).branchHandle;
+    if (typeof owner === 'number' && m.agentId !== owner) {
+      return fail(
+        'I31',
+        `${te.type} (traceId ${te.traceId}) belongs to agent ${owner} but its mirror is stamped agentId=${m.agentId}`,
+      );
+    }
+  }
+  return ok();
+}
+
+/**
  * Format a PredicateResult for fast-check / expect output.
  */
 export function formatResult(name: string, r: PredicateResult): string {

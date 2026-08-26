@@ -141,6 +141,15 @@ export type TraceEvent =
       agentId: number;
       reason: 'pressure_softcut' | 'pressure_settle_reject' | 'settle_reject' | 'time_nudge' | 'nudge';
       message?: string;
+      /** The tool call the nudge replaced (PRODUCE nudges reject a parsed
+       *  call; settle_reject nudges replace an oversized result). Absent
+       *  when no call was in hand. */
+      tool?: string;
+      args?: string;
+      /** The rejecting {@link ToolGuard.name} when a guard produced this
+       *  nudge (`url_dedup`, `query_dedup`, `auth_reject`, or a harness
+       *  guard's own name). Absent for budget/pressure nudges. */
+      guard?: string;
     }
 
   // ── Recovery diagnostics ────────────────────
@@ -301,6 +310,15 @@ export type TraceEvent =
       durationMs: number;
       tool?: string;
       url?: string;
+      /** The admission gate's own parameters — budget mode. */
+      topK?: number;
+      tokenBudget?: number;
+      /** Sum of admitted passage tokens (budget mode). */
+      admittedTokens?: number;
+      /** The admission gate's score floor — threshold mode. */
+      threshold?: number;
+      /** Candidates actually cross-encoded (the reranker's `total`). */
+      totalScored?: number;
     }
 
   // ── Source events (rig package) ─────────────

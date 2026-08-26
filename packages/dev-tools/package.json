@@ -1,7 +1,7 @@
 {
   "name": "@lloyal-labs/dev-tools",
   "version": "0.1.0",
-  "description": "The dev pane for scaffolded harnesses \u2014 timeline, sources, and settings over the event bus, gated by the runner's dev signal",
+  "description": "The dev pane for scaffolded harnesses — timeline, sources, and settings over the event bus, gated by the runner's dev signal",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -49,8 +49,7 @@
   },
   "dependencies": {
     "@lloyal-labs/rig": "^5.3.0",
-    "vis-data": "^8.0.5",
-    "vis-timeline": "^8.5.4"
+    "zustand": "^5.0.15"
   },
   "peerDependencies": {
     "ink": "^4.4.0 || ^5.0.0",
