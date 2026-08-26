@@ -245,9 +245,16 @@ function finiteOrNull(x: number): number | null {
  *  pruned: skip it and let the children's own teardown reclaim the lineage.
  *  Harvests the branch's perplexity first ({@link Agent.harvestMetrics}) — the
  *  metrics die with the branch, and `pool:close` reads the harvest. */
-function safePrune(a: Agent): void {
+function safePrune(a: Agent, tw: TraceWriter, parentTraceId: number | null): void {
   a.harvestMetrics();
-  if (!a.branch.disposed && a.branch.children.length === 0) a.branch.pruneSync();
+  if (!a.branch.disposed && a.branch.children.length === 0) {
+    // The KV free is real and observable: record it (position read BEFORE the
+    // prune — the branch is disposed after) so the trace shows frees, not
+    // only growth (#104).
+    tw.write({ traceId: tw.nextId(), parentTraceId, ts: performance.now(),
+      type: 'branch:prune', branchHandle: a.branch.handle, position: a.branch.position });
+    a.branch.pruneSync();
+  }
 }
 
 /** Extract the terminal-tool result string from a parsed (possibly TRUNCATED)
@@ -357,7 +364,7 @@ function* completeExtraction(
 ): Operation<void> {
   yield* finishRecovery(a, a.rawOutput, a.recoveryTokens, events, tw, parentTraceId, ctx, terminalToolName);
   a.transition('idle');
-  safePrune(a);
+  safePrune(a, tw, parentTraceId);
   const postPressure = new ContextPressure(ctx, pressureOpts);
   yield* events.send({ type: 'agent:tick', cellsUsed: postPressure.cellsUsed, nCtx: postPressure.nCtx });
 }
@@ -395,7 +402,7 @@ function* recoverInline(
     tw.write({ traceId: tw.nextId(), parentTraceId, ts: performance.now(),
       type: 'pool:recoveryFailed', agentId: agent.id, reason, outputExcerpt: agent.rawOutput.slice(0, 200) });
     yield* events.send({ type: 'agent:failed', agentId: agent.id, reason });
-    safePrune(agent);
+    safePrune(agent, tw, parentTraceId);
     return false;
   }
 
@@ -446,7 +453,7 @@ function* recoverInline(
   }
 
   // Always prune after scope exits (success or failure) — child-safe.
-  safePrune(agent);
+  safePrune(agent, tw, parentTraceId);
 
   // Emit tick so TUI updates pressure percentage after prune
   const postPressure = new ContextPressure(ctx, pressureOpts);
@@ -540,6 +547,8 @@ function* handleReturn(
   yield* events.send({ type: 'agent:done', agentId: a.id });
   if (pruneOnReturn && !a.branch.disposed) {
     a.harvestMetrics();
+    tw.write({ traceId: tw.nextId(), parentTraceId, ts: performance.now(),
+      type: 'branch:prune', branchHandle: a.branch.handle, position: a.branch.position });
     a.branch.pruneSync();
   }
 }
@@ -606,7 +615,7 @@ function* handleRecover(
     tw.write({ traceId: tw.nextId(), parentTraceId, ts: performance.now(),
       type: 'pool:recoveryFailed', agentId: a.id, reason, outputExcerpt: a.rawOutput.slice(0, 200) });
     yield* events.send({ type: 'agent:failed', agentId: a.id, reason });
-    safePrune(a);
+    safePrune(a, tw, parentTraceId);
     a.transition('idle');
     return null;
   }
@@ -1625,7 +1634,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           yield* poolChannel.send({ type: 'agent:failed', agentId: id, reason: 'user_cancel' });
           cancelledIds.add(id);
           a.transition('idle');
-          safePrune(a);
+          safePrune(a, tw, poolScope.traceId);
         }
       }
 
@@ -1697,7 +1706,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             // report — report-scoped + consistent with the in-loop path's `recoveryTokens`.
             yield* finishRecovery(a, a.rawOutput, ctx.tokenizeSync(a.rawOutput, false).length, poolChannel, tw, poolScope.traceId, ctx, terminalToolName);
             a.transition('idle');
-            safePrune(a);
+            safePrune(a, tw, poolScope.traceId);
           } else if (policy.recoveryShape === 'parallel') {
             // In-loop: inject the recovery turn; SETTLE re-activates it (capped
             // report grammar) and the report decodes bin-packed with live agents.

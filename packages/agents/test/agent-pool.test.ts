@@ -1798,6 +1798,65 @@ describe('trace fidelity: pool:tick, agent span, harvested ppl', () => {
   });
 });
 
+// ── Group 13: branch:prune — KV frees are traced, not invisible (#104) ──
+// Every in-run prune (safePrune + pruneOnReturn) writes the declared
+// `branch:prune {branchHandle, position}` BEFORE the free, so the trace shows
+// where KV was reclaimed instead of only where it grew.
+
+describe('branch:prune traced at every in-run free (#104)', () => {
+  it('pruneOnReturn writes branch:prune with the branch handle and position', async () => {
+    const { trace, result } = await runPool({
+      forkTokenQueues: [[1, STOP]],
+      parseChatOutputFn: (raw) => {
+        if (!raw || raw === '') return { content: '', reasoningContent: '', toolCalls: [] };
+        return {
+          content: '', reasoningContent: '',
+          toolCalls: [{ name: 'report', arguments: '{"result":"done"}', id: 'c1' }],
+        };
+      },
+      pruneOnReturn: true,
+      policy: stubPolicy({
+        shouldExit: () => false,
+        onProduced: (_a, parsed) => {
+          if (parsed.toolCalls.length > 0) return { type: 'return', result: 'done' };
+          return { type: 'idle', reason: 'free_text_stop' };
+        },
+        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      }),
+    });
+
+    expect(result.agents[0].branch.disposed).toBe(true);
+    const prunes = trace.ofType('branch:prune');
+    expect(prunes).toHaveLength(1);
+    expect(prunes[0].branchHandle).toBe(result.agents[0].agentId);
+    expect(typeof prunes[0].position).toBe('number');
+    // The free is recorded before the pool folds.
+    const pruneIdx = trace.events.findIndex(e => e.type === 'branch:prune');
+    const closeIdx = trace.events.findIndex(e => e.type === 'pool:close');
+    expect(pruneIdx).toBeGreaterThanOrEqual(0);
+    expect(closeIdx).toBeGreaterThan(pruneIdx);
+  });
+
+  it('a dropped agent\'s recovery prune is traced too (safePrune path)', async () => {
+    const { trace } = await runPool({
+      forkTokenQueues: [[1, STOP]],
+      parseChatOutputFn: () => ({ content: '', reasoningContent: '', toolCalls: [] }),
+      policy: stubPolicy({
+        shouldExit: () => true,
+        onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
+        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      }),
+    });
+
+    const prunes = trace.ofType('branch:prune');
+    expect(prunes.length).toBeGreaterThanOrEqual(1);
+    // The span ended (agent:done) before its KV was freed.
+    const doneIdx = trace.events.findIndex(e => e.type === 'agent:done');
+    const pruneIdx = trace.events.findIndex(e => e.type === 'branch:prune');
+    expect(pruneIdx).toBeGreaterThan(doneIdx);
+  });
+});
+
 // ── Group 12: unlimited context → explicit nulls, not JSON-coerced Infinity ──
 
 describe('unlimited-context pressure serialization', () => {

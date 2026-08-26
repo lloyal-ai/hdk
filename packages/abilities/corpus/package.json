@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/corpus-ability",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "private": true,
   "description": "HDK reference app — local-corpus research (Source + tools + contract). Distributed via the signed-bundle channel, never public npm.",
   "license": "SEE LICENSE IN LICENSE",

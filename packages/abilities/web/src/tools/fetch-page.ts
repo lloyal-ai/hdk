@@ -302,11 +302,12 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
               ts: performance.now(),
               type: "entailment:content:exploit",
               tool: "fetch_page",
-              pressure: {
-                percentAvailable: context.pressurePercentAvailable ?? -1,
-                remaining: -1,
-                nCtx: -1,
-              },
+              // Only the pressure the tool can SEE — absent values are
+              // omitted, never written as sentinels.
+              pressure:
+                context.pressurePercentAvailable != null
+                  ? { percentAvailable: context.pressurePercentAvailable }
+                  : {},
               chunks: reordered.slice(0, 5).map((sc) => ({
                 heading: sc.heading,
                 toolQueryScore: sc._toolQueryScore,

@@ -319,8 +319,10 @@ export type TraceEvent =
        *  applies scoreRelevanceBatch to tighten focus. */
       type: 'entailment:content:exploit';
       tool: string;
-      /** Pressure snapshot that triggered exploit mode. */
-      pressure: { percentAvailable: number; remaining: number; nCtx: number };
+      /** Pressure snapshot that triggered exploit mode. Only the field the
+       *  ability actually observes (`ToolContext.pressurePercentAvailable`)
+       *  is recorded — a value it cannot see is OMITTED, never faked. */
+      pressure: { percentAvailable?: number };
       /** Top chunks with both score flavors.
        *  toolQueryScore: reranker score against this tool call's query arg.
        *  combinedScore: min(toolQueryScore, originalQueryScore). */
