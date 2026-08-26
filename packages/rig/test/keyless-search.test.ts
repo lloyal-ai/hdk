@@ -621,6 +621,29 @@ describe("createKeylessSearchProvider — rate-limit classification", () => {
     });
   });
 
+  it("the provider SURVIVES its own retry signal — a later search still works", async () => {
+    // The Effection trap this locks (observed live 2026-08-27): the retry
+    // signal used to be THROWN through `scope.run`, and a task failing on a
+    // scope crashes the scope — killing the pacer's tick loop, so every
+    // subsequent `pacer.acquire()` hung forever (and, once the scope finished
+    // dying, `scope.run` rejected instantly with "halted"). The outcome now
+    // crosses the boundary as a value and becomes a throw on the consumer
+    // side; the scope — and the pacer — live on.
+    let blocked = true;
+    const fetcher = makeFetch((url) => {
+      if (url.startsWith("https://html.duckduckgo.com")) {
+        return blocked ? htmlResponse(202, CHALLENGE_HTML) : htmlResponse(200, SAMPLE_DDG_HTML());
+      }
+      return jsonResponse(200, { results: [] }); // Marginalia empty
+    });
+    await withProvider(defaults({ fetchImpl: fetcher.impl, breakerThreshold: 10 }), async (p) => {
+      await expect(p.search("first", 8)).rejects.toMatchObject({ name: "ToolRetryError" });
+      blocked = false; // DDG recovers
+      const again = await p.search("second", 8);
+      expect(again.length).toBeGreaterThan(0);
+    });
+  });
+
   it("200 + challenge markers (zero parses) → rate-limited, not soft-fail", async () => {
     const fetcher = makeFetch((url) => {
       if (url.startsWith("https://html.duckduckgo.com")) {
