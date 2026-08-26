@@ -74,5 +74,26 @@ export type {
   CatalogVersion,
   SignedCatalog,
 } from './bundle';
+// The Runner substrate (hdk#109) — the runner ↔ harness seam, generic over
+// the harness's own config/origin shapes. Node-free (RN-safe); the disk
+// mechanics live in ./node.
+export {
+  RunnerCtx,
+  makeEdgeRunner,
+  makeServedRunner,
+  mergeConfig,
+  markSession,
+  rung,
+} from './runner';
+export type {
+  Runner,
+  RunnerDevOpts,
+  RunnerConfigOpts,
+  BaseHarnessConfig,
+  ConfigOriginValue,
+  ConfigPatch,
+  SaveResult,
+  LoadedConfig,
+} from './runner';
 export { renderSpine, renderAgentPreamble } from './spine-render';
 export type { RenderSpineOptions } from './spine-render';
