@@ -98,7 +98,10 @@ function Cog(): ReactElement {
 }
 
 export function DevPane({ bridge, controls = [], title }: DevPaneProps): ReactElement | null {
-  const modelRef = useRef<PaneModel>(createPaneModel());
+  // Lazy init — an inline initializer would allocate a fresh model every
+  // render only to be discarded after the first.
+  const modelRef = useRef<PaneModel | null>(null);
+  modelRef.current ??= createPaneModel();
   const [, bump] = useReducer((n: number) => n + 1, 0);
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<PaneTab>('timeline');
@@ -116,7 +119,7 @@ export function DevPane({ bridge, controls = [], title }: DevPaneProps): ReactEl
       }
     }, 200);
     const off = bridge.onEvent(({ ev }) => {
-      foldEvent(modelRef.current, ev, Date.now());
+      foldEvent(modelRef.current!, ev, Date.now());
       dirty = true;
     });
     return () => {
