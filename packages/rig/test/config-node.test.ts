@@ -178,6 +178,15 @@ describe('maybeAppendGitignore', () => {
     expect(maybeAppendGitignore(p)).toBe(false);
     expect(fs.readFileSync(path.join(dir, '.gitignore'), 'utf8')).toBe('harness.json\n');
   });
+  it('an INDENTED line is not a match — leading whitespace is part of a gitignore pattern', () => {
+    initRepo();
+    fs.writeFileSync(path.join(dir, '.gitignore'), ' harness.json\n'); // ignores nothing
+    const p = path.join(dir, 'harness.json');
+    fs.writeFileSync(p, '{}');
+    expect(maybeAppendGitignore(p)).toBe(true); // must append a REAL line
+    expect(fs.readFileSync(path.join(dir, '.gitignore'), 'utf8')).toBe(' harness.json\nharness.json\n');
+    expect(maybeAppendGitignore(p)).toBe(false); // now genuinely ignored
+  });
   it('a gitignore without a trailing newline gets one before the appended line', () => {
     initRepo();
     fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules');

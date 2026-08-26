@@ -162,10 +162,12 @@ export function maybeAppendGitignore(configFilePath: string): boolean {
       ignored = (e as { status?: number }).status === 1 ? false : null;
     }
     if (ignored === true) return false;
-    // Never append a line that is already there, whatever git said.
+    // Never append a line that is already there, whatever git said. Leading
+    // whitespace is PART of a gitignore pattern (an indented line ignores
+    // nothing), so the match allows none; trailing spaces git strips.
     const name = path.basename(configFilePath);
     const needle = new RegExp(
-      `(^|\\n)\\s*(${escapeRe(relative)}|${escapeRe(name)})\\s*(\\n|$)`,
+      `(^|\\n)(${escapeRe(relative)}|${escapeRe(name)})[ \\t]*\\r?(\\n|$)`,
     );
     if (needle.test(existing)) return false;
     const prefix = existing.length === 0 || existing.endsWith('\n') ? '' : '\n';
