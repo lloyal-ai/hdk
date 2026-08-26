@@ -17,6 +17,16 @@
  */
 import { useEffect, useReducer, useRef, useState } from 'react';
 import type { CSSProperties, ReactElement } from 'react';
+import * as vis from 'vis-timeline/standalone';
+import { Timeline as VisTimeline } from 'vis-timeline/standalone';
+import 'vis-timeline/styles/vis-timeline-graph2d.css';
+
+/** vis-data's types entry never re-exports DataSet (a packaging quirk: it
+ *  imports it `.ts`-suffixed for a namespace typeof only), so take the VALUE
+ *  off the standalone bundle and type just the surface we call. */
+interface VisDataSet { update(items: object[]): void }
+const makeDataSet = (): VisDataSet =>
+  new (vis as unknown as { DataSet: new (items: object[]) => VisDataSet }).DataSet([]);
 import {
   createPaneModel,
   foldEvent,
@@ -237,24 +247,105 @@ function Timeline({
   selected: number | null;
   onSelect: (id: number | null) => void;
 }): ReactElement {
-  const t0 = m.t0 ?? Date.now();
-  const tEnd = Math.max(Date.now(), t0 + 1000);
-  const span = tEnd - t0;
-  const pos = (t: number): string => `${Math.min(100, Math.max(0, ((t - t0) / span) * 100))}%`;
-  const width = (a: number, b: number | null): string =>
-    `${Math.min(100, Math.max(0.5, (((b ?? tEnd) - a) / span) * 100))}%`;
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const visRef = useRef<{ tl: VisTimeline; items: VisDataSet; groups: VisDataSet } | null>(null);
 
-  const lanes = [...m.lanes.values()];
-  const strip = pressureStrip(m, 120);
+  // Create the timeline ONCE — vis-timeline owns the DOM under the container.
+  useEffect(() => {
+    if (!containerRef.current || visRef.current) return;
+    const items = makeDataSet();
+    const groups = makeDataSet();
+    const tl = new VisTimeline(containerRef.current, items as never, groups as never, {
+      stack: false,
+      stackSubgroups: true,
+      selectable: true,
+      zoomKey: 'ctrlKey',
+      orientation: 'top',
+      margin: { item: { horizontal: 0, vertical: 4 } },
+      showCurrentTime: true,
+    });
+    tl.on('select', (props: { items: (string | number)[] }) => {
+      const id = props.items[0];
+      if (typeof id === 'string' && id.startsWith('a')) onSelect(Number(id.slice(1)));
+      else if (typeof id === 'string' && id.startsWith('t')) {
+        const lane = id.match(/^t(\d+)-/);
+        if (lane) onSelect(Number(lane[1]));
+      } else onSelect(null);
+    });
+    visRef.current = { tl, items, groups };
+    return () => {
+      tl.destroy();
+      visRef.current = null;
+    };
+  }, [onSelect]);
+
+  // Sync the fold into vis on every paint: upsert groups (one per agent, in
+  // spawn order) and items (the agent span + one range per tool call).
+  const live = [...m.lanes.values()].some((l) => l.doneAt === null);
+  useEffect(() => {
+    const v = visRef.current;
+    if (!v) return;
+    const lanes = [...m.lanes.values()];
+    v.groups.update(
+      lanes.map((lane, i) => ({
+        id: lane.agentId,
+        order: i,
+        content:
+          `<span class="lv-g">${lane.role ?? 'agent'} ${lane.agentId}` +
+          (lane.parentAgentId !== null ? ` <span class="lv-p">· parent ${lane.parentAgentId}</span>` : '') +
+          `</span>`,
+      })),
+    );
+    const now = Date.now();
+    const items: object[] = [];
+    for (const lane of lanes) {
+      items.push({
+        id: `a${lane.agentId}`,
+        group: lane.agentId,
+        subgroup: 'span',
+        start: lane.spawnedAt,
+        end: lane.doneAt ?? now,
+        type: 'range',
+        content: `${lane.tokenCount.toLocaleString()} tok`,
+        className:
+          lane.outcome === 'failed' ? 'lv-failed'
+          : lane.outcome === 'recovered' ? 'lv-recovered'
+          : lane.role === 'synth' ? 'lv-synth'
+          : 'lv-agent',
+        title: `${lane.role ?? 'agent'} ${lane.agentId} · ${lane.outcome}${lane.failReason ? ` · ${lane.failReason}` : ''}`,
+      });
+    }
+    m.retrievals.forEach((r, i) => {
+      if (!m.lanes.has(r.agentId)) return;
+      items.push({
+        id: `t${r.agentId}-${i}`,
+        group: r.agentId,
+        subgroup: 'tool',
+        start: r.dispatchedAt,
+        end: r.settledAt ?? now,
+        type: 'range',
+        content: r.tool,
+        className: 'lv-tool',
+        title: `${r.tool} · ${r.args.slice(0, 120)}`,
+      });
+    });
+    v.items.update(items);
+    // Live-follow: the window tracks the run while it breathes; a selection
+    // pauses the follow so inspection is stable.
+    if (live && selected === null && m.runStartAt !== null) {
+      v.tl.setWindow(m.runStartAt - 1000, now + 3000, { animation: false });
+    }
+  });
+
   const sel = selected !== null ? m.lanes.get(selected) ?? null : null;
   const selRetrievals = sel ? m.retrievals.filter((r) => r.agentId === sel.agentId) : [];
+  const strip = pressureStrip(m, 120);
 
   return (
     <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-      <div style={{ flex: 1, minWidth: 0, overflowY: 'auto' }}>
-        {/* pressure: the compact area strip — data blue, demoted placement */}
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         {strip.length > 0 && (
-          <div style={{ height: 46, borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', padding: '0 12px', gap: 12 }}>
+          <div style={{ height: 46, flex: 'none', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', padding: '0 12px', gap: 12 }}>
             <div style={{ width: 130, flex: 'none' }}>
               <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '.06em', textTransform: 'uppercase', color: '#b0b6c2' }}>pressure</div>
               <div style={{ ...mono, fontSize: 10.5, color: C.dim }}>
@@ -279,52 +370,17 @@ function Timeline({
             </svg>
           </div>
         )}
-
-        {lanes.length === 0 && (
-          <div style={{ padding: '18px 14px', color: C.faint }}>waiting for the first agent — submit a query</div>
+        {m.lanes.size === 0 && (
+          <div style={{ padding: '18px 14px', color: C.faint, flex: 'none' }}>waiting for the first agent — submit a query</div>
         )}
-
-        {lanes.map((lane) => {
-          const isSel = selected === lane.agentId;
-          return (
-            <div
-              key={lane.agentId}
-              onClick={() => onSelect(isSel ? null : lane.agentId)}
-              style={{
-                display: 'flex', alignItems: 'center', height: 26, borderTop: `1px solid ${C.hairline}`,
-                cursor: 'pointer',
-                ...(isSel ? { background: C.hairline, boxShadow: 'inset 3px 0 0 #202124' } : {}),
-              }}
-            >
-              <div style={{ width: 150, flex: 'none', paddingLeft: 12, fontSize: 11, color: isSel ? C.text : C.dim, display: 'flex', gap: 6, alignItems: 'center', fontWeight: isSel ? 500 : 400 }}>
-                agent {lane.agentId}
-                <span style={{ fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 2, background: isSel ? '#202124' : C.chipBg, color: isSel ? '#fff' : C.dim }}>
-                  {lane.outcome === 'running' && lane.inflightTool ? lane.inflightTool : lane.outcome}
-                </span>
-              </div>
-              <div style={{ flex: 1, position: 'relative', height: '100%' }}>
-                <div
-                  style={{
-                    position: 'absolute', top: 7, height: 12, borderRadius: 2,
-                    left: pos(lane.spawnedAt), width: width(lane.spawnedAt, lane.doneAt),
-                    background: lane.outcome === 'failed' ? C.fail : lane.agentId % 2 ? C.agent : C.agentAlt,
-                  }}
-                />
-                <span style={{ ...mono, position: 'absolute', top: 6, right: 8, fontSize: 9.5, color: C.dim }}>
-                  {lane.tokenCount > 0 ? `${lane.tokenCount.toLocaleString()} tok` : ''}
-                  {lane.doneAt ? ` · ${fmtS(lane.doneAt - lane.spawnedAt)}` : ''}
-                </span>
-              </div>
-            </div>
-          );
-        })}
+        <div ref={containerRef} style={{ flex: 1, minHeight: 0, overflowY: 'auto' }} />
+        <style>{VIS_CSS}</style>
       </div>
 
-      {/* detail — opens on selection, closes with its own ✕ */}
       {sel && (
         <div style={{ width: 340, flex: 'none', borderLeft: '1px solid #d9dce1', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
           <div style={{ height: 30, flex: 'none', display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px', borderBottom: `1px solid ${C.border}`, background: C.toolbar }}>
-            <span style={{ ...mono, fontWeight: 600, fontSize: 11 }}>agent {sel.agentId}</span>
+            <span style={{ ...mono, fontWeight: 600, fontSize: 11 }}>{sel.role ?? 'agent'} {sel.agentId}</span>
             {sel.parentAgentId !== null && (
               <span style={{ fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 2, background: C.chipBg, color: C.dim }}>parent {sel.parentAgentId}</span>
             )}
@@ -336,7 +392,7 @@ function Timeline({
           </div>
           <div style={{ overflowY: 'auto', flex: 1, fontSize: 11 }}>
             <Row k="tokens" v={sel.tokenCount.toLocaleString()} />
-            {sel.failReason && <Row k="failed" v={sel.failReason} />}
+            {sel.failReason && <Row k="pool said" v={sel.failReason} />}
             {selRetrievals.map((r, i) => (
               <div key={i} style={{ borderTop: `1px solid ${C.border}`, marginTop: 4, paddingTop: 4 }}>
                 <Row k="tool" v={`${r.tool}${r.settledAt ? ` · ${fmtS(r.settledAt - r.dispatchedAt)}` : ' · in flight'}`} />
@@ -350,6 +406,29 @@ function Timeline({
     </div>
   );
 }
+
+/** Monochrome chrome, colored data — the vis skin. */
+const VIS_CSS = `
+.vis-timeline { border: none; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; font-size: 11px; }
+.vis-panel.vis-left { border: none; }
+.vis-labelset .vis-label { border-bottom: 1px solid #f1f3f4; color: #5f6368; }
+.vis-labelset .vis-label .vis-inner { padding: 4px 12px; }
+.lv-g { font-size: 11px; } .lv-p { color: #9aa0a6; font-size: 10px; }
+.vis-time-axis .vis-text { color: #9aa0a6; font-size: 9px; font-family: ui-monospace, Menlo, monospace; }
+.vis-time-axis .vis-grid.vis-minor { border-color: #f1f3f4; }
+.vis-time-axis .vis-grid.vis-major { border-color: #e8eaed; }
+.vis-item { border-radius: 2px; border: none; font-size: 9.5px; font-family: ui-monospace, Menlo, monospace; }
+.vis-item.vis-range { height: 14px; }
+.vis-item .vis-item-content { padding: 1px 5px; }
+.vis-item.lv-agent { background: #1a73e8; color: #fff; }
+.vis-item.lv-synth { background: #185abc; color: #fff; }
+.vis-item.lv-recovered { background: #669df6; color: #fff; }
+.vis-item.lv-failed { background: #c5221f; color: #fff; }
+.vis-item.lv-tool { background: #e0a63f; color: #3b2b00; }
+.vis-item.vis-selected { box-shadow: 0 0 0 2px #202124; background-clip: padding-box; }
+.vis-current-time { background: #202124; width: 1px; }
+.vis-panel.vis-center, .vis-panel.vis-top, .vis-panel.vis-bottom { border-color: #e8eaed; }
+`;
 
 function Row({ k, v }: { k: string; v: string }): ReactElement {
   return (

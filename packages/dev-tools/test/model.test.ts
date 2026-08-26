@@ -118,6 +118,45 @@ describe('retrievals (Sources)', () => {
   });
 });
 
+describe('run phases + the planner truth', () => {
+  it('phase markers tag spawns with roles; the plan event outranks recovery_skipped', () => {
+    const m = createPaneModel();
+    foldEvent(m, { type: 'plan:start', query: 'q', mode: 'flat' }, 0);
+    foldEvent(m, { type: 'query', query: 'q', warm: false }, 1);
+    foldEvent(m, { type: 'agent:spawn', agentId: 2, parentAgentId: 1 }, 2);
+    expect(m.lanes.get(2)!.role).toBe('planner');
+    foldEvent(m, { type: 'agent:done', agentId: 2 }, 10);
+    foldEvent(m, { type: 'plan', tasks: [] }, 11);
+    foldEvent(m, { type: 'agent:failed', agentId: 2, reason: 'recovery_skipped' }, 12);
+    const planner = m.lanes.get(2)!;
+    // The plan ARRIVED — the pool's nothing-to-salvage mechanics must not
+    // paint the planner as a run failure. The raw reason stays for detail.
+    expect(planner.outcome).toBe('done');
+    expect(planner.failReason).toBe('recovery_skipped');
+
+    foldEvent(m, { type: 'research:start', agentCount: 2, mode: 'flat' }, 20);
+    foldEvent(m, { type: 'agent:spawn', agentId: 3, parentAgentId: 1 }, 21);
+    expect(m.lanes.get(3)!.role).toBe('research');
+    foldEvent(m, { type: 'synthesize:start' }, 30);
+    foldEvent(m, { type: 'agent:spawn', agentId: 9, parentAgentId: 1 }, 31);
+    expect(m.lanes.get(9)!.role).toBe('synth');
+  });
+
+  it('a new run resets the run-scoped state and anchors the axis', () => {
+    const m = createPaneModel();
+    foldEvent(m, { type: 'agent:spawn', agentId: 2, parentAgentId: 1 }, 5);
+    foldEvent(m, { type: 'agent:tick', cellsUsed: 1, nCtx: 10 }, 6);
+    foldEvent(m, { type: 'plan:start', query: 'next', mode: 'flat' }, 100);
+    expect(m.lanes.size).toBe(0);
+    expect(m.pressure.length).toBe(0);
+    expect(m.runStartAt).toBe(100);
+    // plan:start then query back-to-back must not double-reset a fresh run.
+    foldEvent(m, { type: 'agent:spawn', agentId: 4, parentAgentId: 1 }, 101);
+    foldEvent(m, { type: 'query', query: 'next', warm: false }, 101);
+    expect(m.lanes.size).toBe(1);
+  });
+});
+
 describe('pressure', () => {
   it('percent reads the latest tick; the strip downsamples against TIME, not index', () => {
     const m = createPaneModel();

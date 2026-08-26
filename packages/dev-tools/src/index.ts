@@ -52,6 +52,10 @@ export interface DevControl {
 export interface AgentLane {
   agentId: number;
   parentAgentId: number | null;
+  /** The run phase current at spawn — research's own markers (`plan:start`,
+   *  `research:start`, `synthesize:start`) when the template emits them;
+   *  null when the wire says nothing (basic). Never guessed. */
+  role: 'planner' | 'research' | 'synth' | null;
   spawnedAt: number;
   doneAt: number | null;
   /** Terminal outcome, when known. `failed` carries the reason. */
@@ -85,6 +89,12 @@ export interface PressurePoint {
 /** The folded pane state. Everything optional is honestly absent until its
  *  event arrives — the pane renders absence, never a placeholder value. */
 export interface PaneModel {
+  /** The current run's phase cursor — set by the template's own phase events;
+   *  tags each spawn with a role. */
+  runPhase: 'planner' | 'research' | 'synth' | null;
+  /** When the current run began (`query` / `plan:start`) — the timeline's
+   *  anchor. Null before the first run. */
+  runStartAt: number | null;
   /** The dev gate — `config:loaded.dev`, the boot's LLOYAL_DEV signal carried
    *  on the wire. The FAB renders only when true. */
   dev: boolean;
@@ -113,6 +123,8 @@ export interface PaneModel {
 
 export function createPaneModel(): PaneModel {
   return {
+    runPhase: null,
+    runStartAt: null,
     dev: false,
     facts: null,
     config: null,
@@ -137,11 +149,54 @@ const MAX_RETRIEVALS = 500;
  * re-renders on a version counter; an immutable fold would copy a Map per
  * token). `now` is injected so the fold stays clock-free and testable.
  */
+/** A new run begins: the timeline shows THE RUN, not wall-clock since page
+ *  load — clear the run-scoped collections and anchor the axis. Idempotent
+ *  (research emits `plan:start` then `query` back-to-back). */
+function resetRun(m: PaneModel, now: number): void {
+  // Idempotent across the back-to-back run-start pair (research emits
+  // `plan:start` then `query` within milliseconds) — one reset per run.
+  if (m.runStartAt !== null && now - m.runStartAt < 1500) return;
+  m.lanes = new Map();
+  m.retrievals = [];
+  m.pressure = [];
+  m.runStartAt = now;
+}
+
 export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
   m.eventCount++;
   if (m.t0 === null) m.t0 = now;
 
   switch (ev.type) {
+    // ── run phases: the template's OWN markers tag spawns with roles ──
+    case 'plan:start': {
+      resetRun(m, now);
+      m.runPhase = 'planner';
+      return;
+    }
+    case 'query': {
+      resetRun(m, now);
+      return;
+    }
+    case 'research:start': {
+      m.runPhase = 'research';
+      return;
+    }
+    case 'synthesize:start': {
+      m.runPhase = 'synth';
+      return;
+    }
+    case 'plan': {
+      // The plan ARRIVED — the planner succeeded, whatever the pool's
+      // recovery mechanics said afterwards (recovery_skipped fires for an
+      // agent whose pool has nothing to salvage — the plan was already out).
+      for (const lane of m.lanes.values()) {
+        if (lane.role === 'planner') {
+          lane.outcome = 'done';
+          if (lane.doneAt === null) lane.doneAt = now;
+        }
+      }
+      return;
+    }
     case 'ready': {
       const facts = ev.facts as Record<string, unknown> | undefined;
       if (facts) {
@@ -172,6 +227,7 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
       m.lanes.set(id, {
         agentId: id,
         parentAgentId: typeof ev.parentAgentId === 'number' ? ev.parentAgentId : null,
+        role: m.runPhase,
         spawnedAt: now,
         doneAt: null,
         outcome: 'running',
@@ -202,8 +258,12 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
     case 'agent:failed': {
       const lane = m.lanes.get(ev.agentId as number);
       if (lane) {
-        lane.outcome = 'failed';
         lane.failReason = typeof ev.reason === 'string' ? ev.reason : undefined;
+        // A planner whose plan already arrived stays `done` — the raw reason
+        // is kept for the detail pane, not painted as a run failure.
+        if (!(lane.role === 'planner' && lane.outcome === 'done')) {
+          lane.outcome = 'failed';
+        }
         if (lane.doneAt === null) lane.doneAt = now;
       }
       return;
