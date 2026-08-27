@@ -61,31 +61,50 @@ const keyActivate = (fn: () => void) => (e: React.KeyboardEvent): void => {
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(); }
 };
 
-/** A tiny auto-scaled sparkline: the SHAPE carries the trend, the label
- *  beside it carries the magnitude — min-max over the window, so small
- *  variation stays visible whatever the absolute level. */
-function MiniSpark({ values, color, w = 44, h = 14 }: {
-  values: readonly number[]; color: string; w?: number; h?: number;
-}): ReactElement | null {
+/** One cell of the metric row: heading + magnitude on top, a min-max
+ *  auto-scaled area spark filling the cell below — the shape carries the
+ *  trend, the number carries the truth the auto-zoom hides. */
+function MetricCell({ heading, value, values, color, title, last = false }: {
+  heading: string; value: string; values: readonly number[]; color: string;
+  title: string; last?: boolean;
+}): ReactElement {
   const gradId = React.useId();
-  if (values.length < 2) return null;
-  let min = Infinity, max = -Infinity;
-  for (const v of values) { if (v < min) min = v; if (v > max) max = v; }
-  const span = Math.max(max - min, 1e-6);
-  const pts = values.map((v, i) =>
-    `${((i / (values.length - 1)) * w).toFixed(1)},${(h - 2 - ((v - min) / span) * (h - 4)).toFixed(1)}`,
-  ).join(' ');
+  let spark: ReactElement | null = null;
+  if (values.length >= 2) {
+    let min = Infinity, max = -Infinity;
+    for (const v of values) { if (v < min) min = v; if (v > max) max = v; }
+    const spanV = Math.max(max - min, 1e-6);
+    const pts = values.map((v, i) =>
+      `${((i / (values.length - 1)) * 100).toFixed(2)},${(26 - ((v - min) / spanV) * 22).toFixed(2)}`,
+    ).join(' ');
+    spark = (
+      <svg viewBox="0 0 100 28" preserveAspectRatio="none" style={{ width: '100%', height: 28, display: 'block' }}>
+        <defs>
+          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity="0.35" />
+            <stop offset="100%" stopColor={color} stopOpacity="0.04" />
+          </linearGradient>
+        </defs>
+        <polygon fill={`url(#${gradId})`} stroke="none" points={`0,28 ${pts} 100,28`} />
+        <polyline fill="none" stroke={color} strokeWidth="1.4" vectorEffect="non-scaling-stroke" strokeLinejoin="round" points={pts} />
+      </svg>
+    );
+  }
   return (
-    <svg width={w} height={h} style={{ display: 'block' }}>
-      <defs>
-        <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity="0.35" />
-          <stop offset="100%" stopColor={color} stopOpacity="0.04" />
-        </linearGradient>
-      </defs>
-      <polygon fill={`url(#${gradId})`} stroke="none" points={`0,${h} ${pts} ${w},${h}`} />
-      <polyline fill="none" stroke={color} strokeWidth="1.4" strokeLinejoin="round" strokeLinecap="round" points={pts} />
-    </svg>
+    <div
+      title={title}
+      style={{
+        flex: 1, minWidth: 0, padding: '5px 12px 0',
+        borderRight: last ? undefined : `1px solid ${C.hair}`,
+        display: 'flex', flexDirection: 'column',
+      }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+        <span style={label}>{heading}</span>
+        <span style={{ fontFamily: mono, fontSize: 10.5, color: C.dim, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</span>
+      </div>
+      <div style={{ flex: 1, display: 'flex', alignItems: 'flex-end' }}>{spark}</div>
+    </div>
   );
 }
 
@@ -512,63 +531,36 @@ function Timeline({ m, rev, store, selAgent, onSelect, toolColor }: {
 
   return (
     <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-      {/* pressure strip — model pressure (kv area) and machine pressure
-          (cpu/mem lines) share the 0–100 axis and the timeline's window */}
+      {/* metric row — four uniform cells, equal width: the SHAPE is the
+          recent trend (min-max auto-scaled), the NUMBER is the magnitude.
+          pressure = kv cells (model), cpu/mem = machine, harness = this
+          process's resident memory (weights + KV + runtime). */}
       <div style={{ height: 54, borderBottom: `1px solid ${C.border}`, display: 'flex', flex: 'none' }}>
-        <div style={{ width: GUTTER, flex: 'none', padding: '5px 0 0 14px' }}>
-          <div style={label}>pressure</div>
-          <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dim }}>
-            {pct === null ? '—' : `${pct}% · ${m.pressure[m.pressure.length - 1]?.cellsUsed.toLocaleString()} / ${m.pressure[m.pressure.length - 1]?.nCtx.toLocaleString()}`}
-          </div>
-
-        </div>
-        <div style={{ flex: 1, position: 'relative' }}>
-          {strip.length > 1 && t0 !== null && (() => {
-            const xAt = (at: number): string => ((((secOf(at)) - w0) / span) * track).toFixed(1);
-            // Auto ceiling, floored at 25% and PRINTED — the shape uses the
-            // strip's height while the label keeps the scale honest.
-            const ceil = Math.max(25, ...strip.map((p) => p.pct));
-            const yPct = (v: number): string => (52 - (Math.min(ceil, Math.max(0, v)) / ceil) * 50).toFixed(1);
-            return (
-              <>
-                <svg width="100%" height="54" preserveAspectRatio="none" style={{ display: 'block' }}>
-                  <polyline
-                    fill="rgba(26,115,232,.12)" stroke="none"
-                    points={`${strip.map((p) => `${xAt(p.at)},${yPct(p.pct)}`).join(' ')} ${xAt(strip[strip.length - 1].at)},54 ${xAt(strip[0].at)},54`}
-                  />
-                  <polyline
-                    fill="none" stroke={C.agent} strokeWidth="1.5"
-                    points={strip.map((p) => `${xAt(p.at)},${yPct(p.pct)}`).join(' ')}
-                  />
-                </svg>
-                <span style={{ position: 'absolute', top: 2, left: 6, fontFamily: mono, fontSize: 8.5, color: C.faint }}>
-                  {Math.round(ceil)}%
-                </span>
-              </>
-            );
-          })()}
-          {lastHost && (
-            <div
-              style={{
-                position: 'absolute', top: 0, right: 10, height: '100%',
-                display: 'flex', alignItems: 'center', gap: 12, fontFamily: mono, fontSize: 10,
-              }}
-              title="harness = this process's resident memory (weights + KV + runtime); mem = machine memory in use, honestly counted (vm_stat / MemAvailable); cpu = this process, % of the whole machine — sparklines auto-scale to their own range, the numbers carry the magnitude"
-            >
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                <MiniSpark values={host.slice(-40).map((h) => h.cpu)} color={HOST_CPU} />
-                <span style={{ color: HOST_CPU }}>cpu {lastHost.cpu}%</span>
-              </span>
-              {lastHost.memUsedMb !== null && lastHost.memTotalMb > 0 && (
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                  <MiniSpark values={host.slice(-40).filter((h) => h.memUsedMb !== null).map((h) => h.memUsedMb!)} color="#9aa0a6" />
-                  <span style={{ color: C.dim }}>mem {(lastHost.memUsedMb / 1024).toFixed(1)}/{Math.round(lastHost.memTotalMb / 1024)}G</span>
-                </span>
-              )}
-              <span style={{ color: C.dim }}>harness {(lastHost.rssMb / 1024).toFixed(1)}G</span>
-            </div>
-          )}
-        </div>
+        <MetricCell
+          heading="pressure" color={C.agent}
+          values={strip.slice(-60).map((p) => p.pct)}
+          value={pct === null ? '—' : `${pct}% · ${m.pressure[m.pressure.length - 1]?.cellsUsed.toLocaleString()} / ${m.pressure[m.pressure.length - 1]?.nCtx.toLocaleString()}`}
+          title="kv cells used — context pressure on the model side"
+        />
+        <MetricCell
+          heading="cpu" color={HOST_CPU}
+          values={host.slice(-60).map((h) => h.cpu)}
+          value={lastHost ? `${lastHost.cpu}%` : '—'}
+          title="this process's cpu, % of the whole machine"
+        />
+        <MetricCell
+          heading="mem" color="#9aa0a6"
+          values={host.slice(-60).filter((h) => h.memUsedMb !== null).map((h) => h.memUsedMb!)}
+          value={lastHost && lastHost.memUsedMb !== null && lastHost.memTotalMb > 0
+            ? `${(lastHost.memUsedMb / 1024).toFixed(1)} / ${Math.round(lastHost.memTotalMb / 1024)}G` : '—'}
+          title="machine memory in use, honestly counted (vm_stat / MemAvailable)"
+        />
+        <MetricCell
+          heading="harness" color="#5f6368" last
+          values={host.slice(-60).map((h) => h.rssMb)}
+          value={lastHost ? `${(lastHost.rssMb / 1024).toFixed(1)}G` : '—'}
+          title="this process's resident memory — weights + KV + runtime"
+        />
       </div>
 
       {/* ruler */}
