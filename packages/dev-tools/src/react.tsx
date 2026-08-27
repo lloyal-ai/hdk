@@ -166,6 +166,7 @@ function Pane({ store, m, rev, controls, title, onClose }: {
 }): ReactElement {
   const [tab, setTab] = useState<PaneTab>('timeline');
   const [selAgent, setSelAgent] = useState<number | null>(null);
+  const [feedW, setFeedW] = useState(feedWidthPref);
   const toolColor = useToolColors();
   const paneRef = useRef<HTMLDivElement | null>(null);
 
@@ -247,7 +248,10 @@ function Pane({ store, m, rev, controls, title, onClose }: {
         <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
           <Timeline m={m} rev={rev} store={store} selAgent={selAgent} onSelect={setSelAgent} toolColor={toolColor} />
           {selAgent !== null && m.lanes.has(selAgent) && (
-            <AgentFeed m={m} lane={m.lanes.get(selAgent)!} toolColor={toolColor} onClose={() => setSelAgent(null)} onJump={setSelAgent} nowMs={store.getState().paintedAt} />
+            <>
+              <FeedResizer width={feedW} onWidth={(w) => { feedWidthPref = w; setFeedW(w); }} />
+              <AgentFeed m={m} lane={m.lanes.get(selAgent)!} toolColor={toolColor} onClose={() => setSelAgent(null)} onJump={setSelAgent} nowMs={store.getState().paintedAt} width={feedW} />
+            </>
           )}
         </div>
       )}
@@ -609,6 +613,39 @@ function Lane({ m, l, px, on, secOf, nowS, live, selected, toolColor, onClick, g
 }
 
 // ═══ agent detail: the story feed ═══
+/** Drag handle on the agent feed's left edge — pull to widen the panel
+ *  (the chart stretches with it); double-click restores the default. The
+ *  strip is invisible: the cursor change is the affordance, and the feed's
+ *  own border stays the visual line. Width persists for the page session. */
+const FEED_W_DEFAULT = 420;
+let feedWidthPref = FEED_W_DEFAULT;
+function FeedResizer({ width, onWidth }: {
+  width: number; onWidth: (w: number) => void;
+}): ReactElement {
+  const drag = useRef<{ x: number; w: number } | null>(null);
+  return (
+    <div
+      style={{ width: 7, margin: '0 -3.5px', flex: 'none', cursor: 'col-resize', zIndex: 3, position: 'relative', userSelect: 'none', touchAction: 'none' }}
+      title="drag to resize \u00b7 double-click to reset"
+      onDoubleClick={() => { feedWidthPref = FEED_W_DEFAULT; onWidth(FEED_W_DEFAULT); }}
+      onPointerDown={(e) => {
+        e.preventDefault();
+        drag.current = { x: e.clientX, w: width };
+        e.currentTarget.setPointerCapture(e.pointerId);
+      }}
+      onPointerMove={(e) => {
+        if (!drag.current) return;
+        const w = drag.current.w + (drag.current.x - e.clientX);
+        onWidth(Math.round(Math.min(Math.max(w, 320), Math.max(480, window.innerWidth - 380))));
+      }}
+      onPointerUp={(e) => {
+        drag.current = null;
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }}
+    />
+  );
+}
+
 /** The epistemics instrument: entropy (area) and surprisal (line) in nats
  *  over the agent's WHOLE span — x is anchored time, so samples never slide,
  *  and amber ticks mark where tool results landed (a spike right after one
@@ -712,9 +749,9 @@ function EpistemicsChart({ m, lane, nowMs }: {
   );
 }
 
-function AgentFeed({ m, lane, toolColor, onClose, onJump, nowMs }: {
+function AgentFeed({ m, lane, toolColor, onClose, onJump, nowMs, width }: {
   m: PaneModel; lane: AgentLane; toolColor: (t: string) => string;
-  onClose: () => void; onJump: (id: number) => void; nowMs: number;
+  onClose: () => void; onJump: (id: number) => void; nowMs: number; width: number;
 }): ReactElement {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['report']));
   const toggle = (id: string): void => {
@@ -838,7 +875,7 @@ function AgentFeed({ m, lane, toolColor, onClose, onJump, nowMs }: {
   const reportOpen = expanded.has('report');
   return (
     <div style={{
-      width: 420, flex: 'none', borderLeft: '1px solid #d9dce1', display: 'flex',
+      width, flex: 'none', borderLeft: '1px solid #d9dce1', display: 'flex',
       flexDirection: 'column', minHeight: 0, background: C.panelBg,
     }}>
       <div style={{
