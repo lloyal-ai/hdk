@@ -36,7 +36,7 @@ const MAX_TAIL_ROWS = 12;
 
 export function DevOverlay({ model: m, tailRows = 5, tail = [] }: DevOverlayProps): ReactElement | null {
   if (!m.dev) return null;
-  const rows = Math.max(0, Math.min(MAX_TAIL_ROWS, Math.floor(tailRows)));
+  const rows = Math.max(0, Math.min(MAX_TAIL_ROWS, Number.isFinite(tailRows) ? Math.floor(tailRows) : 5));
   const pct = pressurePercent(m);
   const origin = m.origin ?? {};
   const originLine = Object.entries(origin)

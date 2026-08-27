@@ -15,15 +15,15 @@ import React, { useEffect, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { useStore } from 'zustand';
 import {
-  pressureStrip, pressurePercent, readConfigPath, lanePpl, KEY_TIERS,
-} from './index';
+  pressureStrip, pressurePercent, readConfigPath, lanePpl, isLive, KEY_TIERS,
+} from './index.js';
 import type {
   AbilityInfo, AgentLane, DevControl, Intervention, PaneModel, PaneTab, Retrieval,
-} from './index';
-import { devStoreFor, EDGE_STEP } from './store';
-import type { DevBridge, DevStore } from './store';
+} from './index.js';
+import { devStoreFor, EDGE_STEP } from './store.js';
+import type { DevBridge, DevStore } from './store.js';
 
-export type { DevBridge } from './store';
+export type { DevBridge } from './store.js';
 
 export interface DevPaneProps {
   bridge: DevBridge;
@@ -107,11 +107,6 @@ function resultRows(parsed: unknown): ResultRow[] | null {
 const fmtS = (s: number): string =>
   s >= 60 ? `${Math.floor(s / 60)}m${String(Math.round(s % 60)).padStart(2, '0')}s` : `${s.toFixed(1)}s`;
 
-/** Live when any lane is still open. */
-function isLive(m: PaneModel): boolean {
-  for (const l of m.lanes.values()) if (l.doneAt === null) return true;
-  return false;
-}
 function runEndS(m: PaneModel): number {
   let end = 0;
   for (const l of m.lanes.values()) {
@@ -216,9 +211,13 @@ function Pane({ store, m, rev, controls, title, onClose }: {
       fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
     }}>
       {/* tab strip */}
-      <div style={{ height: 30, display: 'flex', alignItems: 'stretch', background: C.chromeBg, borderBottom: '1px solid #d9dce1', flex: 'none' }}>
+      <div role="tablist" style={{ height: 30, display: 'flex', alignItems: 'stretch', background: C.chromeBg, borderBottom: '1px solid #d9dce1', flex: 'none' }}>
         {(['timeline', 'sources', 'settings'] as const).map((t) => (
-          <div key={t} style={tabStyle(tab === t)} onClick={() => setTab(t)}>
+          <div
+            key={t} role="tab" tabIndex={0} aria-selected={tab === t}
+            style={tabStyle(tab === t)} onClick={() => setTab(t)}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setTab(t); } }}
+          >
             {t[0].toUpperCase() + t.slice(1)}
           </div>
         ))}
@@ -365,11 +364,11 @@ function Timeline({ m, rev, store, selAgent, onSelect, toolColor }: {
             <svg width="100%" height="40" preserveAspectRatio="none" style={{ display: 'block' }}>
               <polyline
                 fill="rgba(26,115,232,.12)" stroke="none"
-                points={`${strip.map((p) => `${((secOf(p.at) - w0) / span) * 100}%`.length && `${(((secOf(p.at) - w0) / span) * track).toFixed(1)},${(38 - (p.pct / 100) * 85).toFixed(1)}`).join(' ')} ${(((secOf(strip[strip.length - 1].at) - w0) / span) * track).toFixed(1)},40 ${(((secOf(strip[0].at) - w0) / span) * track).toFixed(1)},40`}
+                points={`${strip.map((p) => `${(((secOf(p.at) - w0) / span) * track).toFixed(1)},${(38 - (Math.min(100, Math.max(0, p.pct)) / 100) * 36).toFixed(1)}`).join(' ')} ${(((secOf(strip[strip.length - 1].at) - w0) / span) * track).toFixed(1)},40 ${(((secOf(strip[0].at) - w0) / span) * track).toFixed(1)},40`}
               />
               <polyline
                 fill="none" stroke={C.agent} strokeWidth="1.5"
-                points={strip.map((p) => `${(((secOf(p.at) - w0) / span) * track).toFixed(1)},${(38 - (p.pct / 100) * 85).toFixed(1)}`).join(' ')}
+                points={strip.map((p) => `${(((secOf(p.at) - w0) / span) * track).toFixed(1)},${(38 - (Math.min(100, Math.max(0, p.pct)) / 100) * 36).toFixed(1)}`).join(' ')}
               />
             </svg>
           )}
@@ -1371,9 +1370,9 @@ interface ConfigFieldSpec {
 function fieldsOf(a: AbilityInfo): ConfigFieldSpec[] {
   const props = a.configSchema?.properties;
   if (!props) return [];
-  const required = new Set(((a.configSchema as { required?: string[] })?.required) ?? []);
+  const required = new Set(a.configSchema?.required ?? []);
   return Object.entries(props).map(([key, raw]) => {
-    const prop = (raw ?? {}) as { 'x-secret'?: boolean; description?: string };
+    const prop = raw ?? {};
     const secret = prop['x-secret'] === true;
     return {
       key,

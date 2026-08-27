@@ -180,7 +180,10 @@ export interface AbilityInfo {
   name: string;
   title?: string;
   description?: string;
-  configSchema?: { properties?: Record<string, { type?: string; description?: string }> };
+  configSchema?: {
+    properties?: Record<string, { type?: string; description?: string; 'x-secret'?: boolean }>;
+    required?: string[];
+  };
   config: Record<string, unknown>;
   enabled: boolean;
 }
@@ -635,6 +638,14 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
     default:
       return;
   }
+}
+
+/** Live when any lane is still open — the run is producing and the pane's
+ *  clocks (elapsed, park countdowns) must keep advancing even between
+ *  events. */
+export function isLive(m: PaneModel): boolean {
+  for (const l of m.lanes.values()) if (l.doneAt === null) return true;
+  return false;
 }
 
 /** The latest pressure reading as a 0–100 used percentage, or null before the

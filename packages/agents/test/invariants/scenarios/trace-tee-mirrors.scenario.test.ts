@@ -46,6 +46,7 @@ describe('scenario: trace-tee mirror completeness (I31)', () => {
       tools: new Map<string, Tool>([['web_search', new SmallTool()]]),
       terminalToolName: 'report',
       maxTurns: 5,
+      trace: true,
     });
 
     // The dispatch itself is on the allowlist — at least one mirror exists.
@@ -69,6 +70,7 @@ describe('scenario: trace-tee mirror completeness (I31)', () => {
       tools: new Map<string, Tool>([['web_search', new BigResultTool()]]),
       terminalToolName: 'report',
       maxTurns: 5,
+      trace: true,
     });
 
     const r = I31_traceTeeMirrors(run);

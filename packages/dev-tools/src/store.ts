@@ -14,8 +14,8 @@
  */
 import { createStore } from 'zustand/vanilla';
 import type { StoreApi } from 'zustand/vanilla';
-import { createPaneModel, foldEvent } from './index';
-import type { DevEvent, PaneModel } from './index';
+import { createPaneModel, foldEvent, isLive } from './index.js';
+import type { DevEvent, PaneModel } from './index.js';
 
 /** The bridge slice the pane needs — structurally `window.harness`, minus the
  *  snapshot method the pane deliberately ignores (it folds live only). */
@@ -91,7 +91,10 @@ export function createDevStore(bridge: DevBridge): DevStore {
   const ensureTimer = (): void => {
     if (timer !== null) return;
     timer = setInterval(() => {
-      if (dirty) paint();
+      // While a lane is open the clocks must advance even with no new events
+      // (an all-agents-parked stretch is exactly when the countdown matters);
+      // idle and completed runs stop repainting.
+      if (dirty || isLive(model)) paint();
     }, EDGE_STEP);
   };
 

@@ -816,9 +816,11 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     // The bridge is a Signal: `write` is sync per the TraceWriter contract and
     // cannot yield, so the mirror cannot ride poolChannel directly — a spawned
     // forwarder drains it, the same pattern progressBridge uses for
-    // onProgress. Inert when tracing is off: NullTraceWriter ⇒ no wrapper, no
-    // mirror, no forwarder.
-    const teeOn = !(baseTw instanceof NullTraceWriter);
+    // onProgress. The tee needs BOTH dev intent and a real writer: `trace`
+    // is the pool's dev flag (the templates pass `runner.dev`), so a
+    // production run that happens to trace to disk never mirrors onto the
+    // bus; NullTraceWriter keeps it equally inert when tracing is off.
+    const teeOn = (opts.trace ?? false) && !(baseTw instanceof NullTraceWriter);
     const traceBridge = createSignal<AgentEvent, void>();
     if (teeOn) {
       yield* spawn(function*() {

@@ -56,7 +56,7 @@ function toolOncePolicy(action?: (turn: number) => ProduceAction): AgentPolicy {
   };
 }
 
-async function runPool(writer: CapturingTraceWriter | NullTraceWriter, policy: AgentPolicy, tools: Map<string, Tool>) {
+async function runPool(writer: CapturingTraceWriter | NullTraceWriter, policy: AgentPolicy, tools: Map<string, Tool>, trace = true) {
   const { ctx, store, root } = createMockSdk({ nCtx: 16384, cellsUsed: 1000 });
   // Every turn parses as one tracing_tool call — the PRODUCE nudge path reads
   // the parsed call to name the rejected tool on the trace event.
@@ -80,6 +80,7 @@ async function runPool(writer: CapturingTraceWriter | NullTraceWriter, policy: A
         tools,
         policy,
         maxTurns: 10,
+        trace,
       });
       let next = yield* sub.next();
       while (!next.done) { events.push(next.value); next = yield* sub.next(); }
@@ -127,5 +128,18 @@ describe('trace tee', () => {
     expect(events.some(e => e.type === 'agent:trace')).toBe(false);
     // The stream itself still flowed normally.
     expect(events.some(e => e.type === 'agent:tool_result')).toBe(true);
+  });
+
+  it('a real writer WITHOUT the dev trace flag stays inert on the bus', async () => {
+    const writer = new CapturingTraceWriter();
+    const events = await runPool(
+      writer,
+      toolOncePolicy(),
+      new Map<string, Tool>([['tracing_tool', new TracingTool()]]),
+      false,
+    );
+    // the file still gets its writes — only the MIRROR is dev-gated
+    expect(writer.events.length).toBeGreaterThan(0);
+    expect(events.some(e => e.type === 'agent:trace')).toBe(false);
   });
 });
