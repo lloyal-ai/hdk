@@ -61,6 +61,26 @@ const keyActivate = (fn: () => void) => (e: React.KeyboardEvent): void => {
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(); }
 };
 
+/** A tiny auto-scaled sparkline: the SHAPE carries the trend, the label
+ *  beside it carries the magnitude — min-max over the window, so small
+ *  variation stays visible whatever the absolute level. */
+function MiniSpark({ values, color, w = 44, h = 14 }: {
+  values: readonly number[]; color: string; w?: number; h?: number;
+}): ReactElement | null {
+  if (values.length < 2) return null;
+  let min = Infinity, max = -Infinity;
+  for (const v of values) { if (v < min) min = v; if (v > max) max = v; }
+  const span = Math.max(max - min, 1e-6);
+  const pts = values.map((v, i) =>
+    `${((i / (values.length - 1)) * w).toFixed(1)},${(h - 2 - ((v - min) / span) * (h - 4)).toFixed(1)}`,
+  ).join(' ');
+  return (
+    <svg width={w} height={h} style={{ display: 'block' }}>
+      <polyline fill="none" stroke={color} strokeWidth="1.2" points={pts} />
+    </svg>
+  );
+}
+
 /** Bars over reranker scores: log-odds go NEGATIVE, so score/max explodes
  *  past 100% when the max is negative. Min-max into [0.06, 1] — bars only
  *  ever rank WITHIN one retrieval, so the scale is local by design. */
@@ -492,55 +512,54 @@ function Timeline({ m, rev, store, selAgent, onSelect, toolColor }: {
           <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dim }}>
             {pct === null ? '—' : `${pct}% · ${m.pressure[m.pressure.length - 1]?.cellsUsed.toLocaleString()} / ${m.pressure[m.pressure.length - 1]?.nCtx.toLocaleString()}`}
           </div>
+
+        </div>
+        <div style={{ flex: 1, position: 'relative' }}>
+          {strip.length > 1 && t0 !== null && (() => {
+            const xAt = (at: number): string => ((((secOf(at)) - w0) / span) * track).toFixed(1);
+            // Auto ceiling, floored at 25% and PRINTED — the shape uses the
+            // strip's height while the label keeps the scale honest.
+            const ceil = Math.max(25, ...strip.map((p) => p.pct));
+            const yPct = (v: number): string => (52 - (Math.min(ceil, Math.max(0, v)) / ceil) * 50).toFixed(1);
+            return (
+              <>
+                <svg width="100%" height="54" preserveAspectRatio="none" style={{ display: 'block' }}>
+                  <polyline
+                    fill="rgba(26,115,232,.12)" stroke="none"
+                    points={`${strip.map((p) => `${xAt(p.at)},${yPct(p.pct)}`).join(' ')} ${xAt(strip[strip.length - 1].at)},54 ${xAt(strip[0].at)},54`}
+                  />
+                  <polyline
+                    fill="none" stroke={C.agent} strokeWidth="1.5"
+                    points={strip.map((p) => `${xAt(p.at)},${yPct(p.pct)}`).join(' ')}
+                  />
+                </svg>
+                <span style={{ position: 'absolute', top: 2, left: 6, fontFamily: mono, fontSize: 8.5, color: C.faint }}>
+                  {Math.round(ceil)}%
+                </span>
+              </>
+            );
+          })()}
           {lastHost && (
-            <div style={{ fontFamily: mono, fontSize: 10, display: 'flex', gap: 7 }}
-              title="harness = this process's resident memory (weights + KV + runtime); mem = machine memory in use, honestly counted (vm_stat / MemAvailable); cpu = this process, % of the whole machine">
-              <span style={{ color: HOST_CPU }}>cpu {lastHost.cpu}%</span>
+            <div
+              style={{
+                position: 'absolute', top: 0, right: 10, height: '100%',
+                display: 'flex', alignItems: 'center', gap: 12, fontFamily: mono, fontSize: 10,
+              }}
+              title="harness = this process's resident memory (weights + KV + runtime); mem = machine memory in use, honestly counted (vm_stat / MemAvailable); cpu = this process, % of the whole machine — sparklines auto-scale to their own range, the numbers carry the magnitude"
+            >
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <MiniSpark values={host.slice(-40).map((h) => h.cpu)} color={HOST_CPU} />
+                <span style={{ color: HOST_CPU }}>cpu {lastHost.cpu}%</span>
+              </span>
               {lastHost.memUsedMb !== null && lastHost.memTotalMb > 0 && (
-                <span style={{ color: C.faint }}>mem {(lastHost.memUsedMb / 1024).toFixed(1)}/{Math.round(lastHost.memTotalMb / 1024)}G</span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                  <MiniSpark values={host.slice(-40).filter((h) => h.memUsedMb !== null).map((h) => h.memUsedMb!)} color="#9aa0a6" />
+                  <span style={{ color: C.dim }}>mem {(lastHost.memUsedMb / 1024).toFixed(1)}/{Math.round(lastHost.memTotalMb / 1024)}G</span>
+                </span>
               )}
               <span style={{ color: C.dim }}>harness {(lastHost.rssMb / 1024).toFixed(1)}G</span>
             </div>
           )}
-        </div>
-        <div style={{ flex: 1, position: 'relative' }}>
-          {(strip.length > 1 || host.length > 1) && t0 !== null && (() => {
-            const xAt = (at: number): string => ((((secOf(at)) - w0) / span) * track).toFixed(1);
-            const yPct = (v: number): string => (52 - (Math.min(100, Math.max(0, v)) / 100) * 50).toFixed(1);
-            const hostWin = host.filter((h) => { const sx = secOf(h.at); return sx >= w0 - 3 && sx <= w1 + 3; });
-            return (
-              <svg width="100%" height="54" preserveAspectRatio="none" style={{ display: 'block' }}>
-                {strip.length > 1 && (
-                  <>
-                    <polyline
-                      fill="rgba(26,115,232,.12)" stroke="none"
-                      points={`${strip.map((p) => `${xAt(p.at)},${yPct(p.pct)}`).join(' ')} ${xAt(strip[strip.length - 1].at)},54 ${xAt(strip[0].at)},54`}
-                    />
-                    <polyline
-                      fill="none" stroke={C.agent} strokeWidth="1.5"
-                      points={strip.map((p) => `${xAt(p.at)},${yPct(p.pct)}`).join(' ')}
-                    />
-                  </>
-                )}
-                {hostWin.length > 1 && (
-                  <>
-                    <polyline
-                      fill="none" stroke={HOST_CPU} strokeWidth="1.1"
-                      points={hostWin.map((h) => `${xAt(h.at)},${yPct(h.cpu)}`).join(' ')}
-                    />
-                    {hostWin.some((h) => h.memUsedMb !== null) && (
-                      <polyline
-                        fill="none" stroke={C.faint} strokeWidth="1" strokeDasharray="3 3"
-                        points={hostWin
-                          .filter((h) => h.memUsedMb !== null && h.memTotalMb > 0)
-                          .map((h) => `${xAt(h.at)},${yPct((h.memUsedMb! / h.memTotalMb) * 100)}`).join(' ')}
-                      />
-                    )}
-                  </>
-                )}
-              </svg>
-            );
-          })()}
         </div>
       </div>
 
