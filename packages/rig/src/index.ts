@@ -97,3 +97,5 @@ export type {
 } from './runner';
 export { renderSpine, renderAgentPreamble } from './spine-render';
 export type { RenderSpineOptions } from './spine-render';
+export { buildAbilityDescriptors } from './ability-descriptors';
+export type { AbilityDescriptor } from './ability-descriptors';
