@@ -901,8 +901,9 @@ function AgentFeed({ m, lane, toolColor, onClose, onJump, nowMs, width }: {
           <div style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer' }} onClick={() => toggle(id)}>
             <span style={{ color: C.faint, fontSize: 9, width: 9, flex: 'none' }}>{open ? '▾' : '▸'}</span>
             <Badge color={err ? C.fail : toolColor(r.tool)} letter={letterOf(r.tool)} size={14} />
-            <span style={{ fontFamily: mono, fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{argSummary(r.args)}</span>
+            <span style={{ fontFamily: mono, fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '0 1 auto', minWidth: 0 }}>{argSummary(r.args)}</span>
             {argUrl(r.args) !== null && <LinkOut url={argUrl(r.args)!} />}
+            <span style={{ flex: 1 }} />
             <span style={{ color: err ? C.fail : C.faint, fontSize: 10.5 }}>{status}</span>
           </div>
           {open && (
@@ -910,8 +911,15 @@ function AgentFeed({ m, lane, toolColor, onClose, onJump, nowMs, width }: {
               {r.explore === false && (
                 <div style={{ color: C.faint, marginBottom: 3 }}>exploit — re-ranked against the query</div>
               )}
-              {r.admission?.topResults.map((t, i) => (
-                <div key={i} style={{ padding: '3px 0', borderTop: `1px solid ${C.hair}` }}>
+              {r.admission && r.admission.topResults.length > 0 && (
+                <div style={{ color: C.dim, margin: '2px 0 3px' }}>Sections read:</div>
+              )}
+              {r.admission?.topResults.map((t, i, all) => (
+                <div key={i} style={{
+                  padding: '3px 7px', borderRadius: 3, marginTop: 2,
+                  // admission ORDER is the signal — rank 1 deepest, fading with rank
+                  background: `rgba(26,115,232,${(0.03 + 0.13 * (1 - i / Math.max(1, all.length - 1))).toFixed(3)})`,
+                }}>
                   <b style={{ fontSize: 11 }}>{i + 1} · {t.heading}</b>
                   {t.textPreview && <div style={{ color: C.dim, fontSize: 10.5, lineHeight: 1.45 }}>{t.textPreview}…</div>}
                 </div>
@@ -1033,8 +1041,9 @@ function Sources({ m, toolColor }: { m: PaneModel; toolColor: (t: string) => str
               boxShadow: i === sel ? `inset 3px 0 0 ${C.text}` : undefined,
             }}>
               <Badge color={err ? C.fail : toolColor(x.tool)} letter={letterOf(x.tool)} size={16} />
-              <span style={{ fontFamily: mono, fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{argSummary(x.args)}</span>
+              <span style={{ fontFamily: mono, fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '0 1 auto', minWidth: 0 }}>{argSummary(x.args)}</span>
               {argUrl(x.args) !== null && <LinkOut url={argUrl(x.args)!} />}
+              <span style={{ flex: 1 }} />
               <span style={{ fontFamily: mono, fontSize: 10, color: C.faint }}>
                 {x.settledAt !== null ? fmtS((x.settledAt - x.dispatchedAt) / 1000) : ''}
               </span>
