@@ -83,12 +83,32 @@ export interface AgentLane {
   dropReason: string | null;
   /** Set on the planner while it waits on the user (research's clarify). */
   clarify: ClarifyExchange | null;
-  /** Per-token epistemics, when the wire carries them (`agent:produce`
-   *  under the dev gate): entropy = the model's uncertainty over its next
-   *  token; surprisal = how unexpected the chosen token was. Bounded ring —
-   *  the recent window is the signal. Empty when tracing is off. */
-  entropy: number[];
-  surprisal: number[];
+  /** Per-token epistemics samples (`agent:produce` under the dev gate),
+   *  time-anchored to the lane's span. h = model entropy in nats (how open
+   *  the next-token choice was, over the full vocabulary); s = model
+   *  surprisal in nats (−ln p of the token actually picked). Past the cap
+   *  the array is decimated in place — pairs averaged (h) / maxed (s) — so
+   *  the WHOLE run stays covered rather than a sliding recent window.
+   *  Empty when tracing is off. */
+  epistemics: EpiSample[];
+  /** Running NLL accumulator over produced tokens — never decimated, so
+   *  {@link lanePpl} stays exact for the lane's full lifetime. */
+  nllSum: number;
+  nllCount: number;
+}
+
+/** One per-token epistemics sample, stamped at fold time. */
+export interface EpiSample {
+  at: number;
+  h: number;
+  s: number;
+}
+
+/** Model perplexity over the lane's produced tokens — exp(mean surprisal),
+ *  the same accumulator the pool's branch tracker harvests. The one number
+ *  comparable ACROSS agents; null before any sample. */
+export function lanePpl(lane: AgentLane): number | null {
+  return lane.nllCount === 0 ? null : Math.exp(lane.nllSum / lane.nllCount);
 }
 
 /** A harness intervention the model felt but the UI never showed until now:
@@ -239,7 +259,7 @@ export function createPaneModel(): PaneModel {
 const MAX_PRESSURE_POINTS = 20_000;
 const MAX_RETRIEVALS = 500;
 const MAX_INTERVENTIONS = 200;
-const MAX_EPISTEMICS = 400;
+const MAX_EPISTEMICS = 4096;
 
 /**
  * Fold one bus event into the model — MUTATING (the pane owns its model and
@@ -392,8 +412,9 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
         prunedAt: null,
         dropReason: null,
         clarify: null,
-        entropy: [],
-        surprisal: [],
+        epistemics: [],
+        nllSum: 0,
+        nllCount: 0,
       });
       return;
     }
@@ -402,13 +423,23 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
       if (!lane) return;
       // tokenCount is CUMULATIVE on the wire — take the latest, never sum.
       if (typeof ev.tokenCount === 'number') lane.tokenCount = ev.tokenCount;
-      if (typeof ev.entropy === 'number') {
-        lane.entropy.push(ev.entropy);
-        if (lane.entropy.length > MAX_EPISTEMICS) lane.entropy.shift();
-      }
-      if (typeof ev.surprisal === 'number') {
-        lane.surprisal.push(ev.surprisal);
-        if (lane.surprisal.length > MAX_EPISTEMICS) lane.surprisal.shift();
+      if (typeof ev.entropy === 'number' && Number.isFinite(ev.entropy)
+          && typeof ev.surprisal === 'number' && Number.isFinite(ev.surprisal)) {
+        lane.epistemics.push({ at: now, h: ev.entropy, s: ev.surprisal });
+        lane.nllSum += ev.surprisal;
+        lane.nllCount += 1;
+        if (lane.epistemics.length >= MAX_EPISTEMICS) {
+          const e = lane.epistemics;
+          const half: EpiSample[] = [];
+          for (let i = 0; i + 1 < e.length; i += 2) {
+            half.push({
+              at: (e[i].at + e[i + 1].at) / 2,
+              h: (e[i].h + e[i + 1].h) / 2,
+              s: Math.max(e[i].s, e[i + 1].s),
+            });
+          }
+          lane.epistemics = half;
+        }
       }
       return;
     }
@@ -642,16 +673,6 @@ export function pressureStrip(
 
 const SPARK = '▁▂▃▄▅▆▇█';
 
-/** A fixed-width sparkline over raw values, scaled to their own max — pure,
- *  node-free (the epistemics strips render through this). */
-export function sparkOf(values: readonly number[], width: number): string {
-  if (values.length === 0 || width <= 0) return '';
-  const stride = Math.max(1, Math.floor(values.length / width));
-  const pts: number[] = [];
-  for (let i = 0; i < values.length; i += stride) pts.push(values[i]);
-  const max = Math.max(...pts, 1e-9);
-  return pts.slice(-width).map((v) => SPARK[Math.min(7, Math.floor((v / max) * 8))]).join('');
-}
 
 /** A fixed-width unicode sparkline of the pressure series — pure, node-free
  *  (the ink overlay renders it; anything else may too). */

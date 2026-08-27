@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest';
 import {
   createPaneModel,
   foldEvent,
+  lanePpl,
   pressurePercent,
   pressureStrip,
   sparkline,
@@ -337,14 +338,29 @@ describe('abilities:state (the Settings nav + form source)', () => {
 });
 
 describe('epistemics', () => {
-  it('entropy/surprisal accumulate bounded when the wire carries them, absent otherwise', () => {
+  it('samples are time-anchored and skipped when the wire omits them', () => {
     const m = freshRun();
     foldEvent(m, { type: 'agent:produce', agentId: 2, text: 'x', tokenCount: 1, entropy: 2.1, surprisal: 0.4 }, 2000);
     foldEvent(m, { type: 'agent:produce', agentId: 2, text: 'y', tokenCount: 2 }, 2001);
     const lane = m.lanes.get(2)!;
-    expect(lane.entropy).toEqual([2.1]);
-    expect(lane.surprisal).toEqual([0.4]);
+    expect(lane.epistemics).toEqual([{ at: 2000, h: 2.1, s: 0.4 }]);
     expect(lane.tokenCount).toBe(2);
+    expect(lanePpl(lane)).toBeCloseTo(Math.exp(0.4), 6);
+  });
+
+  it('decimation halves the array but keeps full-run coverage and exact ppl', () => {
+    const m = freshRun();
+    for (let i = 0; i < 4096; i++) {
+      foldEvent(m, { type: 'agent:produce', agentId: 2, text: 'x', tokenCount: i + 1, entropy: 1, surprisal: 0.5 }, 2000 + i);
+    }
+    const lane = m.lanes.get(2)!;
+    expect(lane.epistemics.length).toBe(2048);
+    // pairs averaged in place — the earliest sample time survives (as a pair mean)
+    expect(lane.epistemics[0].at).toBe(2000.5);
+    expect(lane.epistemics[lane.epistemics.length - 1].at).toBe(2000 + 4094.5);
+    // the accumulator is never decimated
+    expect(lane.nllCount).toBe(4096);
+    expect(lanePpl(lane)).toBeCloseTo(Math.exp(0.5), 6);
   });
 });
 

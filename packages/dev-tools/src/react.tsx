@@ -15,7 +15,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { useStore } from 'zustand';
 import {
-  pressureStrip, pressurePercent, readConfigPath, sparkOf, KEY_TIERS,
+  pressureStrip, pressurePercent, readConfigPath, lanePpl, KEY_TIERS,
 } from './index';
 import type {
   AbilityInfo, AgentLane, DevControl, Intervention, PaneModel, PaneTab, Retrieval,
@@ -247,7 +247,7 @@ function Pane({ store, m, rev, controls, title, onClose }: {
         <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
           <Timeline m={m} rev={rev} store={store} selAgent={selAgent} onSelect={setSelAgent} toolColor={toolColor} />
           {selAgent !== null && m.lanes.has(selAgent) && (
-            <AgentFeed m={m} lane={m.lanes.get(selAgent)!} toolColor={toolColor} onClose={() => setSelAgent(null)} onJump={setSelAgent} />
+            <AgentFeed m={m} lane={m.lanes.get(selAgent)!} toolColor={toolColor} onClose={() => setSelAgent(null)} onJump={setSelAgent} nowMs={store.getState().paintedAt} />
           )}
         </div>
       )}
@@ -609,9 +609,112 @@ function Lane({ m, l, px, on, secOf, nowS, live, selected, toolColor, onClick, g
 }
 
 // ═══ agent detail: the story feed ═══
-function AgentFeed({ m, lane, toolColor, onClose, onJump }: {
+/** The epistemics instrument: entropy (area) and surprisal (line) in nats
+ *  over the agent's WHOLE span — x is anchored time, so samples never slide,
+ *  and amber ticks mark where tool results landed (a spike right after one
+ *  means the injected content destabilized the model). The y-ceiling floors
+ *  at 4 nats and clips at p95: a calm run reads calm instead of auto-zooming
+ *  its own noise into drama. Gaps are honest — a tool wait produces no
+ *  tokens, so the chart breaks rather than bridging it. */
+const SURPRISAL_COLOR = '#7c3aed';
+function EpistemicsChart({ m, lane, nowMs }: {
+  m: PaneModel; lane: AgentLane; nowMs: number;
+}): ReactElement | null {
+  const e = lane.epistemics;
+  if (e.length < 2) return null;
+  const t0 = lane.spawnedAt;
+  const t1 = Math.max(lane.doneAt ?? nowMs, e[e.length - 1].at, t0 + 1000);
+  const B = 140;
+  const H = 54;
+
+  // bucket to pixel columns: mean entropy (the band), MAX surprisal (spikes
+  // are the signal — a mean would erase exactly what matters).
+  const hSum: number[] = Array(B).fill(0);
+  const hN: number[] = Array(B).fill(0);
+  const sMax: (number | null)[] = Array(B).fill(null);
+  for (const smp of e) {
+    const i = Math.min(B - 1, Math.max(0, Math.floor(((smp.at - t0) / (t1 - t0)) * B)));
+    hSum[i] += smp.h; hN[i] += 1;
+    sMax[i] = sMax[i] === null ? smp.s : Math.max(sMax[i]!, smp.s);
+  }
+
+  const sorted = e.flatMap((x) => [x.h, x.s]).sort((a, b) => a - b);
+  const yMax = Math.max(4, sorted[Math.floor(sorted.length * 0.95)] ?? 4);
+  const y = (v: number): number => H - (Math.min(v, yMax) / yMax) * (H - 2);
+
+  // runs of consecutive non-empty buckets → separate path segments
+  const segs: number[][] = [];
+  let run: number[] = [];
+  for (let i = 0; i < B; i++) {
+    if (hN[i] > 0) run.push(i);
+    else if (run.length) { segs.push(run); run = []; }
+  }
+  if (run.length) segs.push(run);
+
+  const entropyArea = segs.map((seg) => {
+    const pts = seg.map((i) => `${i + 0.5},${y(hSum[i] / hN[i]).toFixed(1)}`);
+    const x0 = seg[0] + 0.5; const x1 = seg[seg.length - 1] + 0.5;
+    return `M ${x0},${H} L ${pts.join(' L ')} L ${x1},${H} Z`;
+  }).join(' ');
+  const entropyLine = segs.map((seg) =>
+    'M ' + seg.map((i) => `${i + 0.5},${y(hSum[i] / hN[i]).toFixed(1)}`).join(' L ')
+  ).join(' ');
+  const surprisalLine = segs.map((seg) =>
+    'M ' + seg.map((i) => `${i + 0.5},${y(sMax[i]!).toFixed(1)}`).join(' L ')
+  ).join(' ');
+
+  const ticks = m.retrievals
+    .filter((r) => r.agentId === lane.agentId && r.settledAt !== null)
+    .map((r) => ((r.settledAt! - t0) / (t1 - t0)) * B)
+    .filter((x) => x >= 0 && x <= B);
+
+  const last = e[e.length - 1];
+  const ppl = lanePpl(lane);
+  const chip = (color: string, label: string, value: number, title: string): ReactElement => (
+    <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 4, whiteSpace: 'nowrap' }} title={title}>
+      <span style={{ width: 8, height: 8, borderRadius: 2, background: color, alignSelf: 'center' }} />
+      <span style={{ color: C.dim }}>{label}</span>
+      <span style={{ fontFamily: mono, fontSize: 10, color: C.text }}>{value.toFixed(2)}</span>
+    </span>
+  );
+
+  return (
+    <div style={{ borderBottom: `1px solid ${C.border}` }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, padding: '6px 12px 4px' }}>
+        <span style={{ color: C.dim }}>epistemics</span>
+        <span style={{ flex: 1 }} />
+        {chip(C.agent, 'entropy', last.h, 'how open the model\u2019s next-token choice was \u2014 nats, over the full vocabulary')}
+        {chip(SURPRISAL_COLOR, 'surprisal', last.s, 'how unexpected the picked token was \u2014 \u2212ln p, in nats')}
+        {ppl !== null && (
+          <span style={{ fontFamily: mono, fontSize: 10, color: C.faint, whiteSpace: 'nowrap' }}
+            title="perplexity \u2014 exp of mean surprisal over this agent\u2019s tokens; compare agents, lower reads more fluent">
+            ppl {ppl.toFixed(2)}
+          </span>
+        )}
+      </div>
+      <div style={{ position: 'relative', padding: '0 12px 7px' }}>
+        <svg viewBox={`0 0 ${B} ${H}`} preserveAspectRatio="none" style={{ width: '100%', height: H, display: 'block' }}>
+          <line x1={0} y1={y(yMax / 2)} x2={B} y2={y(yMax / 2)} stroke={C.hair} strokeWidth={1} vectorEffect="non-scaling-stroke" />
+          <path d={entropyArea} fill="rgba(26,115,232,.16)" />
+          <path d={entropyLine} fill="none" stroke={C.agent} strokeWidth={1.1} vectorEffect="non-scaling-stroke" />
+          <path d={surprisalLine} fill="none" stroke={SURPRISAL_COLOR} strokeWidth={1} strokeOpacity={0.75} vectorEffect="non-scaling-stroke" />
+          {ticks.map((x, i) => (
+            <line key={i} x1={x} y1={H - 5} x2={x} y2={H} stroke="#e8710a" strokeWidth={2} vectorEffect="non-scaling-stroke">
+              <title>a tool result landed</title>
+            </line>
+          ))}
+        </svg>
+        <span style={{ position: 'absolute', top: 0, left: 14, fontFamily: mono, fontSize: 8.5, color: C.faint }}>
+          {yMax.toFixed(0)} nats
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function AgentFeed({ m, lane, toolColor, onClose, onJump, nowMs }: {
   m: PaneModel; lane: AgentLane; toolColor: (t: string) => string;
-  onClose: () => void; onJump: (id: number) => void;
+  onClose: () => void; onJump: (id: number) => void; nowMs: number;
 }): ReactElement {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['report']));
   const toggle = (id: string): void => {
@@ -754,17 +857,7 @@ function AgentFeed({ m, lane, toolColor, onClose, onJump }: {
         <span style={{ cursor: 'pointer', color: C.dim }} onClick={onClose} title="close — the timeline returns to full width">✕</span>
       </div>
       <div style={{ overflowY: 'auto', flex: 1, fontSize: 11, paddingBottom: 8 }}>
-        {lane.entropy.length > 0 && (
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '6px 12px', borderBottom: `1px solid ${C.border}` }}>
-            <span style={{ color: C.dim, width: 92, flex: 'none' }}>epistemics</span>
-            <span style={{ fontFamily: mono, fontSize: 10, color: C.agent, letterSpacing: 1, flex: 1, minWidth: 0, overflow: 'hidden' }} title="entropy — the model's uncertainty per recent token">
-              {sparkOf(lane.entropy, 36)}
-            </span>
-            <span style={{ fontFamily: mono, fontSize: 10, color: C.faint, flex: 'none', whiteSpace: 'nowrap' }}>
-              H {lane.entropy[lane.entropy.length - 1]?.toFixed(2)} · s {lane.surprisal[lane.surprisal.length - 1]?.toFixed(2)}
-            </span>
-          </div>
-        )}
+        <EpistemicsChart m={m} lane={lane} nowMs={nowMs} />
         {(lane.failReason || lane.dropReason) && (
           <div style={{ display: 'flex', alignItems: 'baseline', padding: '6px 12px', gap: 8 }}>
             <span style={{ color: C.dim, width: 92, flex: 'none' }}>pool said</span>
