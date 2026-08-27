@@ -118,6 +118,23 @@ function Pane({ store, m, rev, controls, title, onClose }: {
   const [tab, setTab] = useState<PaneTab>('timeline');
   const [selAgent, setSelAgent] = useState<number | null>(null);
   const toolColor = useToolColors();
+  const paneRef = useRef<HTMLDivElement | null>(null);
+
+  // The pane is fixed, so the document doesn't know it's there — reserve its
+  // height as body padding while open, so the app's bottom content can always
+  // scroll clear of it. Restored on close/unmount.
+  useEffect(() => {
+    const prev = document.body.style.paddingBottom;
+    const apply = (): void => {
+      if (paneRef.current) document.body.style.paddingBottom = `${paneRef.current.offsetHeight}px`;
+    };
+    apply();
+    window.addEventListener('resize', apply);
+    return () => {
+      window.removeEventListener('resize', apply);
+      document.body.style.paddingBottom = prev;
+    };
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -142,7 +159,7 @@ function Pane({ store, m, rev, controls, title, onClose }: {
   });
 
   return (
-    <div style={{
+    <div ref={paneRef} style={{
       position: 'fixed', left: 0, right: 0, bottom: 0, height: 'min(560px, 72vh)',
       background: '#fff', borderTop: '1px solid #bdc1c6', display: 'flex',
       flexDirection: 'column', zIndex: 50, fontSize: 12, color: C.text,
