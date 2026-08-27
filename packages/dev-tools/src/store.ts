@@ -53,6 +53,25 @@ export interface DevStore extends StoreApi<DevStoreState> {
   destroy(): void;
 }
 
+/** One store per bridge, for the LIFETIME of the page. A React remount
+ *  (fast refresh, StrictMode, lazy mounting) must REATTACH to the running
+ *  fold, not restart it — a fresh store mid-run would miss the wire gate's
+ *  `config:loaded` and every event before it (lanes without roles, empty
+ *  history — the late-subscriber desync). True late-joins (a fresh page
+ *  mid-run) are the driver's seq'd snapshot/replay concern, not the
+ *  pane's; on today's contract a reload starts a new session, whose fresh
+ *  stream re-opens the gate naturally. */
+const STORES = new WeakMap<DevBridge, DevStore>();
+
+export function devStoreFor(bridge: DevBridge): DevStore {
+  let store = STORES.get(bridge);
+  if (!store) {
+    store = createDevStore(bridge);
+    STORES.set(bridge, store);
+  }
+  return store;
+}
+
 export function createDevStore(bridge: DevBridge): DevStore {
   const model = createPaneModel();
   const store = createStore<DevStoreState>(() => ({

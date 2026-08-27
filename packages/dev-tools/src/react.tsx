@@ -20,7 +20,7 @@ import {
 import type {
   AgentLane, DevControl, Intervention, PaneModel, PaneTab, Retrieval,
 } from './index';
-import { createDevStore, EDGE_STEP } from './store';
+import { devStoreFor, EDGE_STEP } from './store';
 import type { DevBridge, DevStore } from './store';
 
 export type { DevBridge } from './store';
@@ -73,11 +73,11 @@ function runEndS(m: PaneModel): number {
 
 // ═══════════════════════════════════════════════════════════════
 export function DevPane({ bridge, controls = [], title }: DevPaneProps): ReactElement | null {
-  // Lazy ref init — one store per mount, created on first render only.
-  const storeRef = useRef<DevStore | null>(null);
-  storeRef.current ??= createDevStore(bridge);
-  const store = storeRef.current;
-  useEffect(() => () => store.destroy(), [store]);
+  // The store is a per-bridge SINGLETON: a remount reattaches to the running
+  // fold (full history intact) instead of restarting it and desyncing. It is
+  // deliberately NOT destroyed on unmount — it lives with the page, like the
+  // bridge itself (dev-gated; a production stream folds nothing).
+  const store = devStoreFor(bridge);
 
   const rev = useStore(store, (s) => s.rev);
   const m = store.getState().model;
