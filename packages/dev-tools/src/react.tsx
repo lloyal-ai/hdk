@@ -420,9 +420,12 @@ function Lane({ m, l, px, on, secOf, nowS, live, selected, toolColor, onClick, g
         boxShadow: selected ? `inset 3px 0 0 ${C.text}` : undefined,
       }}
     >
-      <div style={{ width: gutter, flex: 'none', display: 'flex', alignItems: 'baseline', gap: 5, padding: '12px 0 0 14px', fontSize: 11.5 }}>
+      {/* The gutter carries the STABLE identity — the agentId every surface
+          shares (the app's cards show the same number). Parentage is detail:
+          it lives in the feed header, not on every lane. */}
+      <div style={{ width: gutter, flex: 'none', display: 'flex', alignItems: 'baseline', gap: 6, padding: '12px 0 0 14px', fontSize: 11.5 }}>
         <span style={{ fontWeight: 600 }}>{l.role ?? 'agent'}</span>
-        <span style={{ color: C.faint, fontSize: 10, fontFamily: mono }}>{l.agentId} · p{l.parentAgentId ?? '?'}</span>
+        <span style={{ color: C.dim, fontSize: 10.5, fontFamily: mono }}>#{l.agentId}</span>
       </div>
       <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
         {capR > gutter && capL < px(windowEnd) && (
