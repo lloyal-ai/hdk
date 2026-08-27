@@ -225,11 +225,12 @@ export function DevPane({ bridge, controls = [], title }: DevPaneProps): ReactEl
     // failed this run, blue = agents live right now. Nothing = quiet.
     const liveCount = [...m.lanes.values()].filter((l) => l.doneAt === null).length;
     const failed = [...m.lanes.values()].some((l) => l.outcome === 'failed');
+    // iOS-style badge: always the one red, meaning carried by the glyph —
+    // ? = the planner waits on the user, ! = an agent failed, n = agents live.
     const badge = m.clarifying
-      ? { text: '?', bg: C.warn }
-      : liveCount > 0
-        ? { text: String(liveCount), bg: failed ? C.fail : C.agent }
-        : failed ? { text: '!', bg: C.fail } : null;
+      ? '?'
+      : liveCount > 0 ? String(liveCount)
+        : failed ? '!' : null;
     const fabTitle = m.clarifying
       ? 'the planner is waiting on your answer'
       : liveCount > 0
@@ -249,11 +250,13 @@ export function DevPane({ bridge, controls = [], title }: DevPaneProps): ReactEl
       >
         {badge && (
           <span style={{
-            position: 'absolute', top: -4, right: -4, minWidth: 17, height: 17,
-            borderRadius: 9, background: badge.bg, color: '#fff', fontSize: 10,
-            fontWeight: 700, display: 'grid', placeItems: 'center', padding: '0 4px',
-            border: '2px solid #fff', boxSizing: 'content-box', lineHeight: 1,
-          }}>{badge.text}</span>
+            position: 'absolute', top: -6, right: -6, minWidth: 20, height: 20,
+            borderRadius: 10, background: 'linear-gradient(180deg, #ff544a 0%, #ff2d1f 100%)',
+            color: '#fff', fontSize: 12, fontWeight: 600,
+            display: 'grid', placeItems: 'center', padding: '0 6px', boxSizing: 'border-box',
+            lineHeight: 1, boxShadow: '0 1px 3px rgba(0,0,0,.35)',
+            fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+          }}>{badge}</span>
         )}
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
           <circle cx="12" cy="12" r="3" />
