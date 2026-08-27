@@ -757,10 +757,10 @@ function AgentFeed({ m, lane, toolColor, onClose, onJump }: {
         {lane.entropy.length > 0 && (
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '6px 12px', borderBottom: `1px solid ${C.border}` }}>
             <span style={{ color: C.dim, width: 92, flex: 'none' }}>epistemics</span>
-            <span style={{ fontFamily: mono, fontSize: 10, color: C.agent, letterSpacing: 1 }} title="entropy — the model's uncertainty per recent token">
+            <span style={{ fontFamily: mono, fontSize: 10, color: C.agent, letterSpacing: 1, flex: 1, minWidth: 0, overflow: 'hidden' }} title="entropy — the model's uncertainty per recent token">
               {sparkOf(lane.entropy, 36)}
             </span>
-            <span style={{ fontFamily: mono, fontSize: 10, color: C.faint }}>
+            <span style={{ fontFamily: mono, fontSize: 10, color: C.faint, flex: 'none', whiteSpace: 'nowrap' }}>
               H {lane.entropy[lane.entropy.length - 1]?.toFixed(2)} · s {lane.surprisal[lane.surprisal.length - 1]?.toFixed(2)}
             </span>
           </div>
