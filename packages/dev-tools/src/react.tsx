@@ -1699,7 +1699,9 @@ function AbilityPage({ m, name, send }: { m: PaneModel; name: string; send: (c: 
           </span>
         )}
         <span style={chip}>applies to the next run</span>
-        {info && !info.enabled && <span style={{ ...chip, color: C.fail }}>disabled</span>}
+        {info && !info.enabled && (
+          <span style={chip} title="installed but not enabled — configure it here; it enables at the next session boot">not enabled</span>
+        )}
       </div>
       {info?.description && (
         <p style={{ maxWidth: 480, margin: '6px 0 0', fontSize: 11.5, color: C.dim }}>{info.description}</p>

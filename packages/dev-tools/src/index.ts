@@ -191,7 +191,7 @@ export interface PressurePoint {
   nCtx: number;
 }
 
-/** One enabled ability, as `abilities:state` describes it: manifest-derived
+/** One INSTALLED ability (enabled or not), as `abilities:state` describes it: manifest-derived
  *  display fields, the config schema (field names/types for the Settings
  *  form), and stored config REDACTED to key-presence — values never ride
  *  the bus. */
