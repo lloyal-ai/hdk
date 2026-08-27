@@ -146,6 +146,19 @@ export interface PressurePoint {
   nCtx: number;
 }
 
+/** One enabled ability, as `abilities:state` describes it: manifest-derived
+ *  display fields, the config schema (field names/types for the Settings
+ *  form), and stored config REDACTED to key-presence — values never ride
+ *  the bus. */
+export interface AbilityInfo {
+  name: string;
+  title?: string;
+  description?: string;
+  configSchema?: { properties?: Record<string, { type?: string; description?: string }> };
+  config: Record<string, unknown>;
+  enabled: boolean;
+}
+
 /** The folded pane state. Everything optional is honestly absent until its
  *  event arrives — the pane renders absence, never a placeholder value. */
 export interface PaneModel {
@@ -178,6 +191,10 @@ export interface PaneModel {
   pressure: PressurePoint[];
   /** Guard rejections, nudges, auth rejections — in arrival order. */
   interventions: Intervention[];
+  /** Enabled abilities (`abilities:state`) — the Settings nav + form source.
+   *  Null until the harness says; a harness that never emits it degrades to
+   *  the redacted config keys. */
+  abilities: AbilityInfo[] | null;
   /** The structured plan (`plan` with research intent) — task descriptions
    *  in fanout order, which is also flat-mode spawn order. */
   plan: { intent: string; tasks: string[] } | null;
@@ -202,6 +219,7 @@ export function createPaneModel(): PaneModel {
     retrievals: [],
     pressure: [],
     interventions: [],
+    abilities: null,
     plan: null,
     clarifying: false,
     t0: null,
@@ -324,6 +342,14 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
           model: (facts.model as { id: string; sizeBytes: number }) ?? { id: '', sizeBytes: 0 },
           abilities: Array.isArray(facts.abilities) ? (facts.abilities as string[]) : [],
         };
+      }
+      return;
+    }
+    case 'abilities:state': {
+      if (Array.isArray(ev.abilities)) {
+        m.abilities = (ev.abilities as unknown[])
+          .filter((a): a is AbilityInfo => !!a && typeof (a as AbilityInfo).name === 'string')
+          .map((a) => ({ ...a, config: (a.config ?? {}) as Record<string, unknown> }));
       }
       return;
     }

@@ -316,3 +316,22 @@ describe('parked retries (agent:tool_retry)', () => {
     expect(m.retrievals[0].settledAt).toBe(101_000);
   });
 });
+
+describe('abilities:state (the Settings nav + form source)', () => {
+  it('descriptors fold with redacted config; installed ≠ configured', () => {
+    const m = createPaneModel();
+    foldEvent(m, { type: 'config:loaded', dev: true, config: { abilities: {} }, origin: {} }, 0);
+    foldEvent(m, { type: 'abilities:state', abilities: [
+      { name: 'web', title: 'Web research', description: 'search + fetch',
+        configSchema: { properties: { tavilyKey: { type: 'string', 'x-secret': true } } },
+        config: {}, enabled: true },
+      { name: 'corpus', configSchema: { properties: { corpusPath: { type: 'string' } } },
+        config: { corpusPath: true }, enabled: true },
+    ] }, 100);
+    expect(m.abilities!.map((a) => a.name)).toEqual(['web', 'corpus']);
+    // web is INSTALLED but unconfigured — exactly the ability you need the
+    // form for; the old configured-keys nav could never show it.
+    expect(m.abilities![0].config).toEqual({});
+    expect(m.abilities![1].config.corpusPath).toBe(true);
+  });
+});

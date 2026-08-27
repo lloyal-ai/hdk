@@ -18,7 +18,7 @@ import {
   pressureStrip, pressurePercent, readConfigPath, KEY_TIERS,
 } from './index';
 import type {
-  AgentLane, DevControl, Intervention, PaneModel, PaneTab, Retrieval,
+  AbilityInfo, AgentLane, DevControl, Intervention, PaneModel, PaneTab, Retrieval,
 } from './index';
 import { devStoreFor, EDGE_STEP } from './store';
 import type { DevBridge, DevStore } from './store';
@@ -963,9 +963,15 @@ function Settings({ m, controls, send }: {
 }): ReactElement {
   const [cat, setCat] = useState('harness');
   const [selKey, setSelKey] = useState<string>(controls[0]?.key ?? 'model.path');
-  const abilities = m.config && typeof m.config.abilities === 'object' && m.config.abilities !== null
-    ? Object.keys(m.config.abilities as Record<string, unknown>)
-    : [];
+  // The nav lists INSTALLED abilities (`abilities:state` descriptors) — not
+  // merely configured ones, or the page you'd use to configure an ability
+  // could never appear. Harnesses that don't emit descriptors degrade to the
+  // redacted config keys.
+  const abilities = m.abilities
+    ? m.abilities.map((a) => a.name)
+    : m.config && typeof m.config.abilities === 'object' && m.config.abilities !== null
+      ? Object.keys(m.config.abilities as Record<string, unknown>)
+      : [];
 
   if (!m.config) {
     return (
@@ -993,7 +999,7 @@ function Settings({ m, controls, send }: {
       </div>
       {cat === 'harness'
         ? <HarnessSettings m={m} controls={controls} send={send} selKey={selKey} onSelect={setSelKey} />
-        : <AbilityPage m={m} name={cat} />}
+        : <AbilityPage m={m} name={cat} send={send} />}
     </div>
   );
 }
@@ -1104,29 +1110,130 @@ function HarnessSettings({ m, controls, send, selKey, onSelect }: {
   );
 }
 
-/** An ability's page — the INSPECTOR increment: stored keys are shown as
- *  set/unset (values never travel to the UI); editors arrive with the
- *  per-key config merge. */
-function AbilityPage({ m, name }: { m: PaneModel; name: string }): ReactElement {
-  const stored = (m.config?.abilities as Record<string, Record<string, unknown>> | undefined)?.[name] ?? {};
-  const keys = Object.keys(stored);
+/** Schema-driven field specs, the reference app's grammar: SECRET (x-secret)
+ *  / REQUIRED / OPTIONAL badges off the ability's own configSchema. Stored
+ *  state is key-presence only — values never travel to the UI. */
+interface ConfigFieldSpec {
+  key: string;
+  badge: 'SECRET' | 'REQUIRED' | 'OPTIONAL';
+  secret: boolean;
+  description?: string;
+  stored: boolean;
+}
+
+function fieldsOf(a: AbilityInfo): ConfigFieldSpec[] {
+  const props = a.configSchema?.properties;
+  if (!props) return [];
+  const required = new Set(((a.configSchema as { required?: string[] })?.required) ?? []);
+  return Object.entries(props).map(([key, raw]) => {
+    const prop = (raw ?? {}) as { 'x-secret'?: boolean; description?: string };
+    const secret = prop['x-secret'] === true;
+    return {
+      key,
+      badge: secret ? 'SECRET' : required.has(key) ? 'REQUIRED' : 'OPTIONAL',
+      secret,
+      description: prop.description,
+      stored: a.config[key] !== undefined,
+    };
+  });
+}
+
+/** One editable config field. Values are write-only on this wire — the input
+ *  never prefills; the placeholder carries the set-state. Saving dispatches
+ *  set_app_config with the entered field (whole-replace semantics until the
+ *  per-key merge helper lands — exact for the shipped single-field schemas). */
+function AbilityField({ name, field, send }: {
+  name: string; field: ConfigFieldSpec; send: (c: unknown) => void;
+}): ReactElement {
+  const [draft, setDraft] = useState('');
+  const [saved, setSaved] = useState(false);
+  const save = (): void => {
+    const v = draft.trim();
+    if (!v) return;
+    send({ type: 'set_app_config', name, values: { [field.key]: v } });
+    setDraft('');
+    setSaved(true);
+  };
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ fontFamily: mono, fontSize: 11.5, fontWeight: 500 }}>{field.key}</span>
+        <span style={{
+          ...chip,
+          background: field.secret ? C.warnBg : C.chromeBg,
+          color: field.secret ? C.warn : C.dim,
+        }}>{field.badge}</span>
+        {(field.stored || saved) && <span style={{ color: C.ok, fontSize: 10.5 }}>set ✓</span>}
+      </div>
+      {field.description && (
+        <div style={{ color: C.faint, fontSize: 10.5, marginTop: 2 }}>{field.description}</div>
+      )}
+      <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+        <input
+          type={field.secret ? 'password' : 'text'}
+          value={draft}
+          onChange={(e) => { setDraft(e.target.value); }}
+          onKeyDown={(e) => { if (e.key === 'Enter') save(); }}
+          placeholder={field.stored || saved ? 'set ✓ — enter to replace' : 'not set'}
+          style={{
+            width: 320, fontSize: 11, fontFamily: mono, padding: '5px 8px',
+            border: '1px solid #dadce0', borderRadius: 4,
+          }}
+        />
+        <button
+          type="button"
+          onClick={save}
+          style={{
+            font: 'inherit', fontSize: 11, border: '1px solid #dadce0', background: C.text,
+            color: '#fff', borderRadius: 4, padding: '2px 12px', cursor: 'pointer',
+          }}
+        >save</button>
+      </div>
+    </div>
+  );
+}
+
+/** An ability's page: schema-driven config form (the reference app's field
+ *  grammar), write-only on this wire. Falls back to the redacted key-presence
+ *  inspector when the harness never sent descriptors. */
+function AbilityPage({ m, name, send }: { m: PaneModel; name: string; send: (c: unknown) => void }): ReactElement {
+  const info = m.abilities?.find((a) => a.name === name);
+  const stored = info?.config
+    ?? (m.config?.abilities as Record<string, Record<string, unknown>> | undefined)?.[name]
+    ?? {};
+  const fields = info ? fieldsOf(info) : [];
+  const setCount = fields.length > 0
+    ? fields.filter((f) => f.stored).length
+    : Object.keys(stored).length;
+
   return (
     <div style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: '16px 22px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ fontFamily: mono, fontSize: 13, fontWeight: 500 }}>{name}</span>
-        <span style={{ color: C.ok, fontSize: 10.5 }}>{keys.length} set</span>
+        <span style={{ fontFamily: mono, fontSize: 13, fontWeight: 500 }}>{info?.title ?? name}</span>
+        {fields.length > 0 && (
+          <span style={{ color: setCount === fields.length ? C.ok : C.dim, fontSize: 10.5 }}>
+            {setCount} of {fields.length} set{setCount === fields.length ? ' ✓' : ''}
+          </span>
+        )}
         <span style={chip}>applies to the next run</span>
+        {info && !info.enabled && <span style={{ ...chip, color: C.fail }}>disabled</span>}
       </div>
-      <p style={{ maxWidth: 480, margin: '6px 0 0', fontSize: 11.5, color: C.dim }}>
-        Stored values never travel to the UI — only which keys are set. Secrets are write-only.
+      {info?.description && (
+        <p style={{ maxWidth: 480, margin: '6px 0 0', fontSize: 11.5, color: C.dim }}>{info.description}</p>
+      )}
+      <p style={{ maxWidth: 480, margin: '6px 0 0', fontSize: 11, color: C.faint }}>
+        Values are write-only on this wire — the form shows which keys are set, never what they hold.
       </p>
-      {keys.map((k) => (
+      {fields.map((f) => <AbilityField key={f.key} name={name} field={f} send={send} />)}
+      {fields.length === 0 && Object.keys(stored).map((k) => (
         <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12 }}>
           <span style={{ width: 140, flex: 'none', fontFamily: mono, fontSize: 11.5 }}>{k}</span>
           <span style={{ color: C.ok, fontSize: 11 }}>set ✓</span>
         </div>
       ))}
-      {keys.length === 0 && <p style={{ marginTop: 12, color: C.faint, fontSize: 11 }}>nothing configured</p>}
+      {fields.length === 0 && Object.keys(stored).length === 0 && (
+        <p style={{ marginTop: 12, color: C.faint, fontSize: 11 }}>this ability declares no config</p>
+      )}
     </div>
   );
 }

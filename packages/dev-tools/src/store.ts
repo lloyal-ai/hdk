@@ -30,7 +30,7 @@ export const EDGE_STEP = 1000;
 /** Event types whose arrival repaints immediately — everything a human reads
  *  as "something happened" rather than "the stream is flowing". */
 const STRUCTURAL = new Set([
-  'config:loaded', 'config:updated', 'ready',
+  'config:loaded', 'config:updated', 'ready', 'abilities:state',
   'plan:start', 'query', 'research:start', 'synthesize:start', 'plan',
   'agent:spawn', 'agent:done', 'agent:failed', 'agent:recovered',
   'agent:return', 'agent:tool_call', 'agent:tool_result', 'agent:trace',
