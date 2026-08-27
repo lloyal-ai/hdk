@@ -32,6 +32,8 @@ export { initAgents } from './init';
 export { withSpine } from './spine';
 export { NullTraceWriter, JsonlTraceWriter } from './trace-writer';
 export { traceScope } from './trace-scope';
+export { admitChunks } from './admission';
+export type { AdmitOpts, AdmitResult, AdmitSelect, AdmittedPassage } from './admission';
 export { composePrompt, renderPrompt, renderTemplate } from './prompt';
 export type { PromptState, PromptSection, PromptStep } from './prompt';
 export { reduce } from './combinators';

@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/corpus-ability",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "private": true,
   "description": "HDK reference app — local-corpus research (Source + tools + contract). Distributed via the signed-bundle channel, never public npm.",
   "license": "SEE LICENSE IN LICENSE",
@@ -25,7 +25,7 @@
     "build": "tsc -b"
   },
   "peerDependencies": {
-    "@lloyal-labs/lloyal-agents": "^5.0.0",
+    "@lloyal-labs/lloyal-agents": "^5.3.0",
     "@lloyal-labs/lloyal.node": "^3.1.1",
     "@lloyal-labs/rig": "^5.0.0",
     "effection": "^4.0.2"

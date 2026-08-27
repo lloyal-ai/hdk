@@ -470,37 +470,56 @@ export function createKeylessSearchProvider(
     return dedupResults(cleaned).slice(0, max);
   }
 
+    /** The search outcome crosses the scope boundary as a VALUE. Throwing
+     *  through `scope.run` is an Effection trap: a task failing on a scope
+     *  CRASHES the scope — here that killed the pacer's tick loop and the
+     *  provider resource, so every later `pacer.acquire()` hung forever and,
+     *  once the scope finished dying, `scope.run` rejected instantly with
+     *  "halted". The deliberate rate-limit signal must be data inside the
+     *  scope and become a throw only on the consumer side (observed live
+     *  2026-08-27: one ToolRetryError bricked every subsequent search in the
+     *  session). */
+    type SearchOutcome =
+      | { kind: "ok"; results: SearchResult[] }
+      | { kind: "retry"; message: string; afterMs: number };
+
     const provider: SearchProvider = {
       returnsFullContentMarkdown: false,
       search(query: string, maxResults: number): Promise<SearchResult[]> {
         const q = query.trim();
         if (!q) return Promise.resolve([]);
-        return scope.run(function* () {
-          let primary: PrimaryOutcome = "hard-fail";
-          if (breaker.canProceed()) {
-            primary = yield* doDdg(q, maxResults);
-            if (primary === "hard-fail" || primary === "rate-limited") {
-              breaker.onHardFailure();
-            } else if (Array.isArray(primary)) {
-              breaker.onSuccess();
+        return scope
+          .run<SearchOutcome>(function* () {
+            let primary: PrimaryOutcome = "hard-fail";
+            if (breaker.canProceed()) {
+              primary = yield* doDdg(q, maxResults);
+              if (primary === "hard-fail" || primary === "rate-limited") {
+                breaker.onHardFailure();
+              } else if (Array.isArray(primary)) {
+                breaker.onSuccess();
+              }
+              // soft-fail: breaker state unchanged (neutral)
             }
-            // soft-fail: breaker state unchanged (neutral)
-          }
-          if (Array.isArray(primary)) return postProcess(primary, maxResults);
-          const fallback = yield* doMarginalia(q, maxResults);
-          const processed = postProcess(fallback, maxResults);
-          // Rate-limited primary + nothing from the fallback: throwing (vs
-          // returning []) is the difference between the model thrashing on
-          // "no results" and the pool parking the agent for one quiet retry
-          // (trace-2026-06-11T00-39: nine zero-result retries in 80s).
-          if (primary === "rate-limited" && processed.length === 0) {
-            throw new ToolRetryError(
-              "Search provider rate-limited and fallback returned no results.",
-              RETRY_AFTER_MS,
-            );
-          }
-          return processed;
-        });
+            if (Array.isArray(primary)) return { kind: "ok", results: postProcess(primary, maxResults) };
+            const fallback = yield* doMarginalia(q, maxResults);
+            const processed = postProcess(fallback, maxResults);
+            // Rate-limited primary + nothing from the fallback: a retry signal
+            // (vs returning []) is the difference between the model thrashing
+            // on "no results" and the pool parking the agent for one quiet
+            // retry (trace-2026-06-11T00-39: nine zero-result retries in 80s).
+            if (primary === "rate-limited" && processed.length === 0) {
+              return {
+                kind: "retry",
+                message: "Search provider rate-limited and fallback returned no results.",
+                afterMs: RETRY_AFTER_MS,
+              };
+            }
+            return { kind: "ok", results: processed };
+          })
+          .then((outcome) => {
+            if (outcome.kind === "retry") throw new ToolRetryError(outcome.message, outcome.afterMs);
+            return outcome.results;
+          });
       },
     };
 

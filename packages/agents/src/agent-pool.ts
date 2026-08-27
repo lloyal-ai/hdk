@@ -7,7 +7,13 @@ import { Ctx, Store, Trace, TraceParent, CallingAgent, SpineFmt, GrantStoreCtx, 
 import type { FormatConfig } from './Agent';
 import { buildToolResultDelta, buildTurnDelta, buildUserDelta } from '@lloyal-labs/sdk';
 import { traceScope } from './trace-scope';
+
+/** Brands a tee-wrapping TraceWriter so a nested pool never wraps it again
+ *  (see the teeOn comment at the tee construction). */
+const TEE_MARK = Symbol.for('lloyal.traceTee');
 import type { TraceWriter } from './trace-writer';
+import { NullTraceWriter } from './trace-writer';
+import type { TraceEvent } from './trace-types';
 import type { AgentPolicy, IdleReason, ToolRetryAction } from './AgentPolicy';
 import { Agent } from './Agent';
 import { DefaultAgentPolicy, RECOVERY_PREFILL_OVERHEAD, BATCH_BUFFER } from './AgentPolicy';
@@ -245,9 +251,16 @@ function finiteOrNull(x: number): number | null {
  *  pruned: skip it and let the children's own teardown reclaim the lineage.
  *  Harvests the branch's perplexity first ({@link Agent.harvestMetrics}) — the
  *  metrics die with the branch, and `pool:close` reads the harvest. */
-function safePrune(a: Agent): void {
+function safePrune(a: Agent, tw: TraceWriter, parentTraceId: number | null): void {
   a.harvestMetrics();
-  if (!a.branch.disposed && a.branch.children.length === 0) a.branch.pruneSync();
+  if (!a.branch.disposed && a.branch.children.length === 0) {
+    // The KV free is real and observable: record it (position read BEFORE the
+    // prune — the branch is disposed after) so the trace shows frees, not
+    // only growth (#104).
+    tw.write({ traceId: tw.nextId(), parentTraceId, ts: performance.now(),
+      type: 'branch:prune', branchHandle: a.branch.handle, position: a.branch.position });
+    a.branch.pruneSync();
+  }
 }
 
 /** Extract the terminal-tool result string from a parsed (possibly TRUNCATED)
@@ -357,7 +370,7 @@ function* completeExtraction(
 ): Operation<void> {
   yield* finishRecovery(a, a.rawOutput, a.recoveryTokens, events, tw, parentTraceId, ctx, terminalToolName);
   a.transition('idle');
-  safePrune(a);
+  safePrune(a, tw, parentTraceId);
   const postPressure = new ContextPressure(ctx, pressureOpts);
   yield* events.send({ type: 'agent:tick', cellsUsed: postPressure.cellsUsed, nCtx: postPressure.nCtx });
 }
@@ -395,7 +408,7 @@ function* recoverInline(
     tw.write({ traceId: tw.nextId(), parentTraceId, ts: performance.now(),
       type: 'pool:recoveryFailed', agentId: agent.id, reason, outputExcerpt: agent.rawOutput.slice(0, 200) });
     yield* events.send({ type: 'agent:failed', agentId: agent.id, reason });
-    safePrune(agent);
+    safePrune(agent, tw, parentTraceId);
     return false;
   }
 
@@ -446,7 +459,7 @@ function* recoverInline(
   }
 
   // Always prune after scope exits (success or failure) — child-safe.
-  safePrune(agent);
+  safePrune(agent, tw, parentTraceId);
 
   // Emit tick so TUI updates pressure percentage after prune
   const postPressure = new ContextPressure(ctx, pressureOpts);
@@ -540,6 +553,8 @@ function* handleReturn(
   yield* events.send({ type: 'agent:done', agentId: a.id });
   if (pruneOnReturn && !a.branch.disposed) {
     a.harvestMetrics();
+    tw.write({ traceId: tw.nextId(), parentTraceId, ts: performance.now(),
+      type: 'branch:prune', branchHandle: a.branch.handle, position: a.branch.position });
     a.branch.pruneSync();
   }
 }
@@ -606,7 +621,7 @@ function* handleRecover(
     tw.write({ traceId: tw.nextId(), parentTraceId, ts: performance.now(),
       type: 'pool:recoveryFailed', agentId: a.id, reason, outputExcerpt: a.rawOutput.slice(0, 200) });
     yield* events.send({ type: 'agent:failed', agentId: a.id, reason });
-    safePrune(a);
+    safePrune(a, tw, parentTraceId);
     a.transition('idle');
     return null;
   }
@@ -792,7 +807,66 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         yield* each.next();
       }
     });
-    const tw = yield* Trace.expect();
+    const baseTw = yield* Trace.expect();
+    // ── Dev-gated trace tee ─────────────────────────────────────
+    // Mirrors trace writes onto the bus (`agent:trace`) so a live consumer
+    // (the dev pane) sees what the trace file sees, attributed. Two layers:
+    //   • pool writes — the allowlisted intervention events below mirror with
+    //     the agentId read off the event itself;
+    //   • tool writes — dispatch() sets a per-dispatch `toolTee` as the Trace
+    //     context for the tool's execution, stamping agentId + callId and
+    //     replacing the abilities' hardcoded `parentTraceId: null` with the
+    //     dispatch id (real lineage in the FILE too, not just the bus).
+    // The bridge is a Signal: `write` is sync per the TraceWriter contract and
+    // cannot yield, so the mirror cannot ride poolChannel directly — a spawned
+    // forwarder drains it, the same pattern progressBridge uses for
+    // onProgress. The tee needs BOTH dev intent and a real writer: `trace`
+    // is the pool's dev flag (the templates pass `runner.dev`), so a
+    // production run that happens to trace to disk never mirrors onto the
+    // bus; NullTraceWriter keeps it equally inert when tracing is off.
+    // A nested pool (DelegateTool) sees the OUTER dispatch's toolTee as its
+    // ambient Trace — wrapping that again would mirror every nested write
+    // twice (once per attribution). The mark makes a tee recognizable, so a
+    // nested pool rides the outer tee: its writes mirror ONCE, attributed to
+    // the delegating agent's call.
+    const teeOn = (opts.trace ?? false) && !(baseTw instanceof NullTraceWriter)
+      && !(TEE_MARK in (baseTw as object));
+    const traceBridge = createSignal<AgentEvent, void>();
+    if (teeOn) {
+      yield* spawn(function*() {
+        for (const ev of yield* each(traceBridge)) {
+          yield* poolChannel.send(ev);
+          yield* each.next();
+        }
+      });
+    }
+    const MIRRORED_POOL_EVENTS = new Set<TraceEvent['type']>([
+      'pool:agentNudge', 'tool:authReject', 'pool:agentDrop', 'branch:prune',
+      // The dispatch record carries explore/exploit + callId — the live
+      // consumer keys retrieval metadata off it.
+      'tool:dispatch',
+    ]);
+    const tw: TraceWriter = !teeOn ? baseTw : Object.assign({
+      nextId: () => baseTw.nextId(),
+      flush: () => baseTw.flush(),
+      write: (event: TraceEvent) => {
+        baseTw.write(event);
+        if (!MIRRORED_POOL_EVENTS.has(event.type)) return;
+        const e = event as { agentId?: number; branchHandle?: number };
+        try {
+          traceBridge.send({ type: 'agent:trace', agentId: e.agentId ?? e.branchHandle ?? -1, event });
+        } catch { /* mirror is best-effort — never disrupt the write */ }
+      },
+    }, { [TEE_MARK]: true });
+    const toolTee = (agentId: number, callId: string, dispatchTraceId: number): TraceWriter => Object.assign({
+      nextId: () => baseTw.nextId(),
+      flush: () => baseTw.flush(),
+      write: (event: TraceEvent) => {
+        const stamped = event.parentTraceId == null ? { ...event, parentTraceId: dispatchTraceId } : event;
+        baseTw.write(stamped);
+        try { traceBridge.send({ type: 'agent:trace', agentId, callId, event: stamped }); } catch { /* best-effort */ }
+      },
+    }, { [TEE_MARK]: true });
     const { spine, orchestrate, toolsJson, tools, maxTurns = 100, terminalToolName, trace = false, pruneOnReturn = false, enableThinking = true, eagerGrammar } = opts;
 
     // Tool index map for trace — position in toolkit array
@@ -1453,6 +1527,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
               // shared loop-fiber set the inline path uses).
               yield* TraceParent.set(dispatchTraceId);
               yield* CallingAgent.set(agent);
+              if (teeOn) yield* Trace.set(toolTee(agent.id, callId, dispatchTraceId));
               const result: unknown = yield* scoped(function*() {
                 return yield* call(() => fanoutTool.execute(toolArgs, toolContext));
               });
@@ -1481,6 +1556,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         try {
           yield* TraceParent.set(dispatchTraceId);
           yield* CallingAgent.set(agent);
+          if (teeOn) yield* Trace.set(toolTee(agent.id, callId, dispatchTraceId));
 
           // Unknown-tool messaging branches on toolkit emptiness: a no-tool
           // agent emitting tool calls is imitating markup from its context
@@ -1625,7 +1701,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           yield* poolChannel.send({ type: 'agent:failed', agentId: id, reason: 'user_cancel' });
           cancelledIds.add(id);
           a.transition('idle');
-          safePrune(a);
+          safePrune(a, tw, poolScope.traceId);
         }
       }
 
@@ -1697,7 +1773,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             // report — report-scoped + consistent with the in-loop path's `recoveryTokens`.
             yield* finishRecovery(a, a.rawOutput, ctx.tokenizeSync(a.rawOutput, false).length, poolChannel, tw, poolScope.traceId, ctx, terminalToolName);
             a.transition('idle');
-            safePrune(a);
+            safePrune(a, tw, poolScope.traceId);
           } else if (policy.recoveryShape === 'parallel') {
             // In-loop: inject the recovery turn; SETTLE re-activates it (capped
             // report grammar) and the report decodes bin-packed with live agents.
@@ -1783,7 +1859,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
               }
               nudges.push(yield* handleNudge(a, action.message, parsed.toolCalls[0], ctx, tools));
               tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-                type: 'pool:agentNudge', agentId: a.id, reason: 'nudge', message: action.message });
+                type: 'pool:agentNudge', agentId: a.id, reason: 'nudge', message: action.message,
+                tool: parsed.toolCalls[0]?.name, args: parsed.toolCalls[0]?.arguments, guard: action.guard });
               continue;
             case 'return':
               yield* handleReturn(a, action.result, parsed.toolCalls[0], terminalToolName!, pruneOnReturn, poolChannel, tw, poolScope.traceId);
@@ -1895,6 +1972,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             tw.write({
               traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
               type: 'pool:agentNudge', agentId: a.id, reason: 'settle_reject', message: action.message,
+              tool: item.toolName, args: item.args,
             });
             const nudgeResult = { error: action.message };
             const nudgeTokens = buildToolResultDelta(ctx, JSON.stringify(nudgeResult), item.callId, { enableThinking: a.fmt.enableThinking });

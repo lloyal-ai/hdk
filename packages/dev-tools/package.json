@@ -1,0 +1,67 @@
+{
+  "name": "@lloyal-labs/dev-tools",
+  "version": "0.1.0",
+  "description": "The dev pane for scaffolded harnesses \u2014 timeline, sources, and settings over the event bus, gated by the runner's dev signal",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "default": "./dist/react.js"
+    },
+    "./ink": {
+      "types": "./dist/ink.d.ts",
+      "default": "./dist/ink.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lloyal-ai/hdk.git",
+    "directory": "packages/dev-tools"
+  },
+  "homepage": "https://github.com/lloyal-ai/hdk/tree/main/packages/dev-tools#readme",
+  "bugs": {
+    "url": "https://github.com/lloyal-ai/hdk/issues"
+  },
+  "keywords": [
+    "dev-tools",
+    "observability",
+    "harness",
+    "timeline",
+    "provenance"
+  ],
+  "license": "SEE LICENSE IN LICENSE",
+  "files": [
+    "dist/",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@lloyal-labs/rig": "^5.3.0",
+    "zustand": "^5.0.15"
+  },
+  "peerDependencies": {
+    "ink": "^4.4.0 || ^5.0.0",
+    "react": "^18.0.0"
+  },
+  "peerDependenciesMeta": {
+    "ink": {
+      "optional": true
+    }
+  }
+}

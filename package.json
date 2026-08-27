@@ -8,6 +8,7 @@
     "packages/channel-verify",
     "packages/relay",
     "packages/host",
+    "packages/dev-tools",
     "packages/abilities/*"
   ],
   "scripts": {
