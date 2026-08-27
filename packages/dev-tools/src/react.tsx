@@ -220,11 +220,26 @@ export function DevPane({ bridge, controls = [], title }: DevPaneProps): ReactEl
   if (!m.dev) return null;
 
   if (!open) {
+    // The closed cog still tells the story: amber ? = the planner is waiting
+    // on the USER (the one state that blocks everything), red = an agent
+    // failed this run, blue = agents live right now. Nothing = quiet.
+    const liveCount = [...m.lanes.values()].filter((l) => l.doneAt === null).length;
+    const failed = [...m.lanes.values()].some((l) => l.outcome === 'failed');
+    const badge = m.clarifying
+      ? { text: '?', bg: C.warn }
+      : liveCount > 0
+        ? { text: String(liveCount), bg: failed ? C.fail : C.agent }
+        : failed ? { text: '!', bg: C.fail } : null;
+    const fabTitle = m.clarifying
+      ? 'the planner is waiting on your answer'
+      : liveCount > 0
+        ? `${liveCount} agent${liveCount === 1 ? '' : 's'} live${failed ? ' · one failed' : ''}`
+        : failed ? 'an agent failed — open for the reason' : 'dev pane (LLOYAL_DEV)';
     return (
       <button
         onClick={() => setOpen(true)}
         aria-label="open the dev pane"
-        title="dev pane (LLOYAL_DEV)"
+        title={fabTitle}
         style={{
           position: 'fixed', right: 20, bottom: 20, width: 44, height: 44,
           borderRadius: '50%', background: '#fff', border: `1px solid #dadce0`,
@@ -232,6 +247,14 @@ export function DevPane({ bridge, controls = [], title }: DevPaneProps): ReactEl
           boxShadow: '0 2px 8px rgba(32,33,36,.14)', zIndex: 40, padding: 0,
         }}
       >
+        {badge && (
+          <span style={{
+            position: 'absolute', top: -4, right: -4, minWidth: 17, height: 17,
+            borderRadius: 9, background: badge.bg, color: '#fff', fontSize: 10,
+            fontWeight: 700, display: 'grid', placeItems: 'center', padding: '0 4px',
+            border: '2px solid #fff', boxSizing: 'content-box', lineHeight: 1,
+          }}>{badge.text}</span>
+        )}
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
           <circle cx="12" cy="12" r="3" />
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
@@ -240,7 +263,7 @@ export function DevPane({ bridge, controls = [], title }: DevPaneProps): ReactEl
     );
   }
 
-  return <Pane key={rev >= 0 ? 'pane' : 'pane'} store={store} m={m} rev={rev} controls={controls} title={title} onClose={() => setOpen(false)} />;
+  return <Pane store={store} m={m} rev={rev} controls={controls} title={title} onClose={() => setOpen(false)} />;
 }
 
 // ═══ the docked pane ═══
@@ -301,15 +324,19 @@ function Pane({ store, m, rev, controls, title, onClose }: {
     }}>
       {/* tab strip */}
       <div role="tablist" style={{ height: 30, display: 'flex', alignItems: 'stretch', background: C.chromeBg, borderBottom: '1px solid #d9dce1', flex: 'none' }}>
-        {(['timeline', 'sources', 'settings'] as const).map((t) => (
-          <div
-            key={t} role="tab" tabIndex={0} aria-selected={tab === t}
-            style={tabStyle(tab === t)} onClick={() => setTab(t)}
-            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setTab(t); } }}
-          >
-            {t[0].toUpperCase() + t.slice(1)}
-          </div>
-        ))}
+        {(['timeline', 'sources', 'settings'] as const).map((t) => {
+          const settled = t === 'sources' ? m.retrievals.filter((r) => r.settledAt !== null).length : 0;
+          return (
+            <div
+              key={t} role="tab" tabIndex={0} aria-selected={tab === t}
+              style={tabStyle(tab === t)} onClick={() => setTab(t)}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setTab(t); } }}
+            >
+              {t[0].toUpperCase() + t.slice(1)}
+              {settled > 0 && <span style={{ marginLeft: 5, fontFamily: mono, fontSize: 9.5, color: C.faint }}>{settled}</span>}
+            </div>
+          );
+        })}
         <span style={{ flex: 1 }} />
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '0 12px', fontSize: 10.5, color: C.dim }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
@@ -529,6 +556,16 @@ function Timeline({ m, rev, store, selAgent, onSelect, toolColor }: {
         onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}
         onDoubleClick={() => { setFollow(true); setPanWindow(null); }}
       >
+        {!follow && live && (
+          <button
+            onClick={(e) => { e.stopPropagation(); setFollow(true); setPanWindow(null); }}
+            style={{
+              position: 'absolute', top: 6, right: 10, zIndex: 3, cursor: 'pointer',
+              fontSize: 10.5, padding: '3px 10px', borderRadius: 12, border: `1px solid ${C.border}`,
+              background: '#fff', color: C.agentDark, fontWeight: 600, boxShadow: '0 1px 4px rgba(32,33,36,.12)',
+            }}
+          >⟳ follow live</button>
+        )}
         {/* grid + now */}
         <div style={{ position: 'absolute', left: GUTTER, right: 0, top: 0, bottom: 0, pointerEvents: 'none' }}>
           {ticks.map((t) => (
