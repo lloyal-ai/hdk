@@ -494,10 +494,12 @@ function Timeline({ m, rev, store, selAgent, onSelect, toolColor }: {
           </div>
           {lastHost && (
             <div style={{ fontFamily: mono, fontSize: 10, display: 'flex', gap: 7 }}
-              title="the harness process's cpu (of the whole machine) and rss; system memory in use — macOS counts file cache, so mem reads high there">
+              title="harness = this process's resident memory (weights + KV + runtime); mem = machine memory in use, honestly counted (vm_stat / MemAvailable); cpu = this process, % of the whole machine">
               <span style={{ color: HOST_CPU }}>cpu {lastHost.cpu}%</span>
-              <span style={{ color: C.faint }}>mem {lastHost.mem}%</span>
-              <span style={{ color: C.dim }}>rss {(lastHost.rssMb / 1024).toFixed(1)}G</span>
+              {lastHost.memUsedMb !== null && lastHost.memTotalMb > 0 && (
+                <span style={{ color: C.faint }}>mem {(lastHost.memUsedMb / 1024).toFixed(1)}/{Math.round(lastHost.memTotalMb / 1024)}G</span>
+              )}
+              <span style={{ color: C.dim }}>harness {(lastHost.rssMb / 1024).toFixed(1)}G</span>
             </div>
           )}
         </div>
@@ -526,10 +528,14 @@ function Timeline({ m, rev, store, selAgent, onSelect, toolColor }: {
                       fill="none" stroke={HOST_CPU} strokeWidth="1.1"
                       points={hostWin.map((h) => `${xAt(h.at)},${yPct(h.cpu)}`).join(' ')}
                     />
-                    <polyline
-                      fill="none" stroke={C.faint} strokeWidth="1" strokeDasharray="3 3"
-                      points={hostWin.map((h) => `${xAt(h.at)},${yPct(h.mem)}`).join(' ')}
-                    />
+                    {hostWin.some((h) => h.memUsedMb !== null) && (
+                      <polyline
+                        fill="none" stroke={C.faint} strokeWidth="1" strokeDasharray="3 3"
+                        points={hostWin
+                          .filter((h) => h.memUsedMb !== null && h.memTotalMb > 0)
+                          .map((h) => `${xAt(h.at)},${yPct((h.memUsedMb! / h.memTotalMb) * 100)}`).join(' ')}
+                      />
+                    )}
                   </>
                 )}
               </svg>

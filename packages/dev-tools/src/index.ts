@@ -109,9 +109,12 @@ export interface HostResourcesEvent {
   /** The process's resident set, MB — on a model host this is effectively
    *  weights + KV + runtime. */
   rssMb: number;
-  /** System-wide memory in use, % of total. On macOS the OS counts file
-   *  cache as used, so this reads structurally high there. */
-  sysMemPct: number;
+  /** System-wide memory in use, MB — honest per-platform accounting
+   *  (darwin: vm_stat active+wired+compressed; linux: total − MemAvailable).
+   *  Absent where no honest read exists. */
+  sysMemUsedMb?: number;
+  /** Total machine memory, MB. */
+  sysMemTotalMb?: number;
 }
 
 export interface EpiSample {
@@ -213,6 +216,10 @@ export interface PaneModel {
   /** When the current run began (`query` / `plan:start`) — the timeline's
    *  anchor. Null before the first run. */
   runStartAt: number | null;
+  /** When the run delivered its `answer` — the run-complete marker. The
+   *  phase gap between pools has no open lanes but the run is still LIVE:
+   *  liveness is runStartAt-to-runEndedAt, not lane-counting. */
+  runEndedAt: number | null;
   /** When a clarify continuation re-entered planning — guards the paired
    *  `plan:start` → `query` that follows from resetting the run. */
   runContinuedAt: number | null;
@@ -239,8 +246,9 @@ export interface PaneModel {
   pressure: PressurePoint[];
   /** Host samples (`host:resources`, dev-gated boots only): the harness
    *  process's cpu% of the whole machine, its resident set, and system
-   *  memory in use — the machine-pressure twin of the kv series. */
-  host: { at: number; cpu: number; rssMb: number; mem: number }[];
+   *  memory (used/total MB, null where the platform offers no honest
+   *  read) — the machine-pressure twin of the kv series. */
+  host: { at: number; cpu: number; rssMb: number; memUsedMb: number | null; memTotalMb: number }[];
   /** Guard rejections, nudges, auth rejections — in arrival order. */
   interventions: Intervention[];
   /** Enabled abilities (`abilities:state`) — the Settings nav + form source.
@@ -262,6 +270,7 @@ export function createPaneModel(): PaneModel {
   return {
     runPhase: null,
     runStartAt: null,
+    runEndedAt: null,
     runContinuedAt: null,
     dev: false,
     facts: null,
@@ -323,6 +332,7 @@ function resetRun(m: PaneModel, now: number): void {
   m.interventions = [];
   m.plan = null;
   m.runStartAt = now;
+  m.runEndedAt = null;
 }
 
 /** The retrieval a mirrored trace event belongs to: by callId WITHIN the
@@ -666,11 +676,16 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
       }
       return;
     }
+    case 'answer': {
+      if (m.runStartAt !== null) m.runEndedAt = now;
+      return;
+    }
     case 'host:resources': {
       if (typeof ev.cpuPct !== 'number' || typeof ev.rssMb !== 'number') return;
       m.host.push({
         at: now, cpu: ev.cpuPct, rssMb: ev.rssMb,
-        mem: typeof ev.sysMemPct === 'number' ? ev.sysMemPct : 0,
+        memUsedMb: typeof ev.sysMemUsedMb === 'number' ? ev.sysMemUsedMb : null,
+        memTotalMb: typeof ev.sysMemTotalMb === 'number' ? ev.sysMemTotalMb : 0,
       });
       if (m.host.length > MAX_HOST) m.host.shift();
       return;
@@ -684,6 +699,7 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
  *  clocks (elapsed, park countdowns) must keep advancing even between
  *  events. */
 export function isLive(m: PaneModel): boolean {
+  if (m.runStartAt !== null && m.runEndedAt === null) return true;
   for (const l of m.lanes.values()) if (l.doneAt === null) return true;
   return false;
 }

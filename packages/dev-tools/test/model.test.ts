@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest';
 import {
   createPaneModel,
   foldEvent,
+  isLive,
   lanePpl,
   pressurePercent,
   pressureStrip,
@@ -366,14 +367,26 @@ describe('epistemics', () => {
   });
 });
 
+describe('run liveness', () => {
+  it('the phase gap (all lanes done, no answer yet) is still LIVE', () => {
+    const m = freshRun();
+    foldEvent(m, { type: 'agent:done', agentId: 2 }, 5000);
+    expect([...m.lanes.values()].every((l) => l.doneAt !== null)).toBe(true);
+    expect(isLive(m)).toBe(true); // the run is owed an answer
+    foldEvent(m, { type: 'answer', text: 'done' }, 9000);
+    expect(isLive(m)).toBe(false);
+    expect(m.runEndedAt).toBe(9000);
+  });
+});
+
 describe('host resources', () => {
   it('samples accumulate bounded and clear on a new run', () => {
     const m = freshRun();
-    foldEvent(m, { type: 'host:resources', cpuPct: 12, rssMb: 4200, sysMemPct: 74 }, 2000);
-    foldEvent(m, { type: 'host:resources', cpuPct: 30, rssMb: 4300, sysMemPct: 75 }, 4000);
+    foldEvent(m, { type: 'host:resources', cpuPct: 12, rssMb: 4200, sysMemUsedMb: 21000, sysMemTotalMb: 65536 }, 2000);
+    foldEvent(m, { type: 'host:resources', cpuPct: 30, rssMb: 4300 }, 4000);
     expect(m.host).toEqual([
-      { at: 2000, cpu: 12, rssMb: 4200, mem: 74 },
-      { at: 4000, cpu: 30, rssMb: 4300, mem: 75 },
+      { at: 2000, cpu: 12, rssMb: 4200, memUsedMb: 21000, memTotalMb: 65536 },
+      { at: 4000, cpu: 30, rssMb: 4300, memUsedMb: null, memTotalMb: 0 },
     ]);
     // malformed sample is skipped, never a NaN point
     foldEvent(m, { type: 'host:resources', cpuPct: 'x' }, 5000);
