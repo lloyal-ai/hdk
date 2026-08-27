@@ -7,6 +7,10 @@ import { Ctx, Store, Trace, TraceParent, CallingAgent, SpineFmt, GrantStoreCtx, 
 import type { FormatConfig } from './Agent';
 import { buildToolResultDelta, buildTurnDelta, buildUserDelta } from '@lloyal-labs/sdk';
 import { traceScope } from './trace-scope';
+
+/** Brands a tee-wrapping TraceWriter so a nested pool never wraps it again
+ *  (see the teeOn comment at the tee construction). */
+const TEE_MARK = Symbol.for('lloyal.traceTee');
 import type { TraceWriter } from './trace-writer';
 import { NullTraceWriter } from './trace-writer';
 import type { TraceEvent } from './trace-types';
@@ -820,7 +824,13 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     // is the pool's dev flag (the templates pass `runner.dev`), so a
     // production run that happens to trace to disk never mirrors onto the
     // bus; NullTraceWriter keeps it equally inert when tracing is off.
-    const teeOn = (opts.trace ?? false) && !(baseTw instanceof NullTraceWriter);
+    // A nested pool (DelegateTool) sees the OUTER dispatch's toolTee as its
+    // ambient Trace — wrapping that again would mirror every nested write
+    // twice (once per attribution). The mark makes a tee recognizable, so a
+    // nested pool rides the outer tee: its writes mirror ONCE, attributed to
+    // the delegating agent's call.
+    const teeOn = (opts.trace ?? false) && !(baseTw instanceof NullTraceWriter)
+      && !(TEE_MARK in (baseTw as object));
     const traceBridge = createSignal<AgentEvent, void>();
     if (teeOn) {
       yield* spawn(function*() {
@@ -836,10 +846,10 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       // consumer keys retrieval metadata off it.
       'tool:dispatch',
     ]);
-    const tw: TraceWriter = !teeOn ? baseTw : {
+    const tw: TraceWriter = !teeOn ? baseTw : Object.assign({
       nextId: () => baseTw.nextId(),
       flush: () => baseTw.flush(),
-      write: (event) => {
+      write: (event: TraceEvent) => {
         baseTw.write(event);
         if (!MIRRORED_POOL_EVENTS.has(event.type)) return;
         const e = event as { agentId?: number; branchHandle?: number };
@@ -847,16 +857,16 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           traceBridge.send({ type: 'agent:trace', agentId: e.agentId ?? e.branchHandle ?? -1, event });
         } catch { /* mirror is best-effort — never disrupt the write */ }
       },
-    };
-    const toolTee = (agentId: number, callId: string, dispatchTraceId: number): TraceWriter => ({
+    }, { [TEE_MARK]: true });
+    const toolTee = (agentId: number, callId: string, dispatchTraceId: number): TraceWriter => Object.assign({
       nextId: () => baseTw.nextId(),
       flush: () => baseTw.flush(),
-      write: (event) => {
+      write: (event: TraceEvent) => {
         const stamped = event.parentTraceId == null ? { ...event, parentTraceId: dispatchTraceId } : event;
         baseTw.write(stamped);
         try { traceBridge.send({ type: 'agent:trace', agentId, callId, event: stamped }); } catch { /* best-effort */ }
       },
-    });
+    }, { [TEE_MARK]: true });
     const { spine, orchestrate, toolsJson, tools, maxTurns = 100, terminalToolName, trace = false, pruneOnReturn = false, enableThinking = true, eagerGrammar } = opts;
 
     // Tool index map for trace — position in toolkit array

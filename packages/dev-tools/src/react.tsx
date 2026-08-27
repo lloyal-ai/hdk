@@ -55,6 +55,10 @@ function useToolColors(): (name: string) => string {
   };
 }
 const letterOf = (name: string): string => (name[0] || '?').toUpperCase();
+/** Enter/Space activates a clickable — pairs with role="button" tabIndex={0}. */
+const keyActivate = (fn: () => void) => (e: React.KeyboardEvent): void => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(); }
+};
 
 /** Bars over reranker scores: log-odds go NEGATIVE, so score/max explodes
  *  past 100% when the max is negative. Min-max into [0.06, 1] — bars only
@@ -391,6 +395,18 @@ function Timeline({ m, rev, store, selAgent, onSelect, toolColor }: {
   const [follow, setFollow] = useState(true);
   const [panWindow, setPanWindow] = useState<{ w0: number; w1: number } | null>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
+  // Observed, not read-at-render: a completed run stops repainting, so a
+  // layout change (the detail pane mounting) would leave a render-time
+  // measurement stale forever.
+  const [trackWidth, setTrackWidth] = useState(900);
+  useEffect(() => {
+    const el = trackRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setTrackWidth(el.clientWidth));
+    ro.observe(el);
+    setTrackWidth(el.clientWidth);
+    return () => ro.disconnect();
+  }, []);
   const drag = useRef<{ x: number; w0: number; w1: number } | null>(null);
 
   const t0 = m.runStartAt;
@@ -409,7 +425,7 @@ function Timeline({ m, rev, store, selAgent, onSelect, toolColor }: {
   } else { w0 = -2; w1 = Math.max(SPAN_LIVE, endS + 6); }
 
   const GUTTER = 168;
-  const width = trackRef.current?.clientWidth ?? 900;
+  const width = trackWidth;
   const track = Math.max(50, width - GUTTER);
   const px = (s: number): number => GUTTER + ((s - w0) / (w1 - w0)) * track;
   const on = (s: number): boolean => s >= w0 && s <= w1;
@@ -550,6 +566,8 @@ function Lane({ m, l, px, on, secOf, nowS, live, selected, toolColor, onClick, g
   return (
     <div
       onClick={onClick}
+      role="button" tabIndex={0} onKeyDown={keyActivate(onClick)}
+      aria-label={`open agent ${l.agentId}`}
       style={{
         display: 'flex', height: 38, borderTop: `1px solid ${C.hair}`, position: 'relative', cursor: 'pointer',
         background: selected ? C.chromeBg : undefined,
@@ -604,6 +622,18 @@ function Lane({ m, l, px, on, secOf, nowS, live, selected, toolColor, onClick, g
                 position: 'absolute', left: capR - gutter - 3, top: 15.5, width: 7, height: 7,
                 borderRadius: '50%', background: C.agentDark, zIndex: 2,
               }} />
+            )}
+            {/* KV held past done — the hatched tail ends where branch:prune freed it */}
+            {l.prunedAt !== null && l.doneAt !== null && secOf(l.prunedAt) > e + 0.5 && (
+              <div
+                title="the branch's KV stayed resident until the pool pruned it"
+                style={{
+                  position: 'absolute', top: 12, height: 14,
+                  left: Math.max(px(e), gutter) - gutter,
+                  width: Math.max(2, Math.min(px(Math.min(secOf(l.prunedAt), windowEnd)), px(windowEnd)) - Math.max(px(e), gutter)),
+                  background: 'repeating-linear-gradient(135deg, rgba(95,99,104,.30) 0 4px, rgba(95,99,104,.06) 4px 9px)',
+                  borderRadius: '0 7px 7px 0',
+                }} />
             )}
           </>
         )}
@@ -898,7 +928,7 @@ function AgentFeed({ m, lane, toolColor, onClose, onJump, nowMs, width }: {
       at: r.dispatchedAt,
       el: (
         <div key={id} style={feedItem}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer' }} onClick={() => toggle(id)}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer' }} onClick={() => toggle(id)} role="button" tabIndex={0} onKeyDown={keyActivate(() => toggle(id))}>
             <span style={{ color: C.faint, fontSize: 9, width: 9, flex: 'none' }}>{open ? '▾' : '▸'}</span>
             <Badge color={err ? C.fail : toolColor(r.tool)} letter={letterOf(r.tool)} size={14} />
             <span style={{ fontFamily: mono, fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '0 1 auto', minWidth: 0 }}>{argSummary(r.args)}</span>
@@ -1034,7 +1064,7 @@ function Sources({ m, toolColor }: { m: PaneModel; toolColor: (t: string) => str
         {settled.map((x, i) => {
           const err = x.result !== null && x.result.includes('"error"');
           return (
-            <div key={i} onClick={() => setPinned(i)} style={{
+            <div key={i} onClick={() => setPinned(i)} role="button" tabIndex={0} onKeyDown={keyActivate(() => setPinned(i))} style={{
               display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', fontSize: 11,
               borderBottom: `1px solid ${C.hair}`, cursor: 'pointer',
               background: i === sel ? C.chromeBg : undefined,
@@ -1204,7 +1234,7 @@ function SlopeChart({ r }: { r: Retrieval }): ReactElement {
     <div style={{ display: 'flex', alignItems: 'flex-start', padding: '14px 16px 4px', maxWidth: 900 }}>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ height: HEAD, textAlign: 'right' }}>
-          <div style={label}>for the agent's task</div>
+          <div style={label}>for this call's query</div>
           {agentQ && <div style={{ fontFamily: mono, fontSize: 10, color: C.faint }}>“{agentQ}”</div>}
         </div>
         {byTool.map((x, i) => (
@@ -1222,7 +1252,7 @@ function SlopeChart({ r }: { r: Retrieval }): ReactElement {
       </svg>
       <div style={{ flex: 1.2, minWidth: 0 }}>
         <div style={{ height: HEAD }}>
-          <div style={label}>re-ranked for the query</div>
+          <div style={label}>re-ranked with the agent's task</div>
         </div>
         {byTask.map((x, i) => (
           <div key={x.heading} style={{ height: ROW, display: 'flex', alignItems: 'center', gap: 7 }}>
@@ -1320,7 +1350,7 @@ function Settings({ m, controls, send }: {
   }
 
   const navItem = (name: string, on: boolean): ReactElement => (
-    <div key={name} onClick={() => setCat(name)} style={{
+    <div key={name} onClick={() => setCat(name)} role="button" tabIndex={0} onKeyDown={keyActivate(() => setCat(name))} style={{
       padding: '7px 16px', fontSize: 12, cursor: 'pointer',
       color: on ? C.text : C.dim, fontWeight: on ? 600 : 400,
       background: on ? '#fff' : undefined,
@@ -1364,11 +1394,14 @@ function HarnessSettings({ m, controls, send, selKey, onSelect }: {
       }}>
         <span style={{ fontFamily: mono, fontSize: 11.5, fontWeight: 500 }}>{key}</span>
         <span style={{ flex: 1 }} />
+        {ctl?.note && <span style={{ color: C.faint, fontSize: 10.5, marginRight: 10, flex: 'none' }}>{ctl.note}</span>}
         {ctl ? (
           <span style={{ display: 'flex', border: '1px solid #dadce0', borderRadius: 4, overflow: 'hidden', width: 276, flex: 'none' }}>
             {ctl.values.map((v) => (
               <span key={v}
                 onClick={(e) => { e.stopPropagation(); onSelect(key); send({ type: ctl.command, [ctl.field]: v }); }}
+                role="button" tabIndex={0} aria-pressed={v === value}
+                onKeyDown={keyActivate(() => { onSelect(key); send({ type: ctl.command, [ctl.field]: v }); })}
                 style={{
                   flex: 1, fontSize: 11, padding: '5px 0', textAlign: 'center', cursor: 'pointer',
                   background: v === value ? C.text : '#fff', color: v === value ? '#fff' : C.dim,

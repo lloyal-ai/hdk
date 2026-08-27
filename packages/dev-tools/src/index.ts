@@ -197,6 +197,9 @@ export interface PaneModel {
   /** When the current run began (`query` / `plan:start`) — the timeline's
    *  anchor. Null before the first run. */
   runStartAt: number | null;
+  /** When a clarify continuation re-entered planning — guards the paired
+   *  `plan:start` → `query` that follows from resetting the run. */
+  runContinuedAt: number | null;
   /** The dev gate — `config:loaded.dev`, the boot's LLOYAL_DEV signal carried
    *  on the wire. The FAB renders only when true. */
   dev: boolean;
@@ -239,6 +242,7 @@ export function createPaneModel(): PaneModel {
   return {
     runPhase: null,
     runStartAt: null,
+    runContinuedAt: null,
     dev: false,
     facts: null,
     config: null,
@@ -278,6 +282,7 @@ function resetRun(m: PaneModel, now: number): void {
   // answered and keep everything.
   if (m.clarifying) {
     m.clarifying = false;
+    m.runContinuedAt = now;
     for (const lane of m.lanes.values()) {
       if (lane.clarify && lane.clarify.answeredAt === null) lane.clarify.answeredAt = now;
     }
@@ -285,7 +290,10 @@ function resetRun(m: PaneModel, now: number): void {
   }
   // Idempotent across the back-to-back run-start pair (research emits
   // `plan:start` then `query` within milliseconds) — one reset per run.
-  if (m.runStartAt !== null && now - m.runStartAt < 1500) return;
+  if (m.runStartAt !== null && (
+    now - m.runStartAt < 1500 ||
+    (m.runContinuedAt !== null && now - m.runContinuedAt < 1500)
+  )) return;
   m.lanes = new Map();
   m.retrievals = [];
   m.pressure = [];

@@ -87,7 +87,14 @@ function selectTopChunks(
 
     if (tokenTotal + chunkTokens > tokenBudget) {
       if (selected.length === 0) {
-        const charLimit = tokenBudget * 4;
+        // Slice by THIS chunk's measured token density, not a fixed 4
+        // chars/token — token-dense text (CJK, code) would otherwise blow
+        // past the budget while the trace under-reports it. The marker is
+        // reserved inside the budget, and the reported count is measured
+        // back through the same density.
+        const marker = '\n\n[truncated]';
+        const density = chunkTokens / chunk.text.length;
+        const charLimit = Math.max(1, Math.floor(tokenBudget / density) - marker.length);
         let truncated = chunk.text.slice(0, charLimit);
         const lastBreak = Math.max(
           truncated.lastIndexOf('\n\n'),
@@ -96,10 +103,10 @@ function selectTopChunks(
         if (lastBreak > charLimit * 0.4)
           truncated = truncated.slice(0, lastBreak + 1);
         selected.push({
-          text: truncated + '\n\n[truncated]',
+          text: truncated + marker,
           heading: sc.heading,
           score: sc.score,
-          tokenCount: tokenBudget,
+          tokenCount: Math.ceil((truncated.length + marker.length) * density),
         });
       }
       break;

@@ -142,4 +142,19 @@ describe('trace tee', () => {
     expect(writer.events.length).toBeGreaterThan(0);
     expect(events.some(e => e.type === 'agent:trace')).toBe(false);
   });
+
+  it('an already-teed ambient writer is not wrapped again (nested pools)', async () => {
+    const writer = Object.assign(new CapturingTraceWriter(), {
+      [Symbol.for('lloyal.traceTee')]: true,
+    });
+    const events = await runPool(
+      writer,
+      toolOncePolicy(),
+      new Map<string, Tool>([['tracing_tool', new TracingTool()]]),
+      true,
+    );
+    // the file writes still land; no SECOND mirror is minted here
+    expect(writer.events.length).toBeGreaterThan(0);
+    expect(events.some(e => e.type === 'agent:trace')).toBe(false);
+  });
 });

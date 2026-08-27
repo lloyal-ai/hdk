@@ -287,8 +287,10 @@ describe('plan structure + clarify continuation', () => {
     const lane = m.lanes.get(2)!;
     expect(lane.clarify).toEqual({ questions: ['Which sense?'], askedAt: 3000, answeredAt: null });
     expect(lane.outcome).toBe('running');
-    // The user answers minutes later — plan:start again must NOT reset the run.
+    // The user answers minutes later — the continuation's paired
+    // plan:start → query must BOTH leave the run intact.
     foldEvent(m, { type: 'plan:start' }, 120_000);
+    foldEvent(m, { type: 'query', text: 'the answer' }, 120_040);
     expect(m.lanes.size).toBe(1);
     expect(lane.clarify!.answeredAt).toBe(120_000);
     expect(m.runStartAt).toBe(1000);
