@@ -181,7 +181,7 @@ export function* admitChunks(
   });
 
   // ── Exploit: dual scoring against the original query ────────
-  if (!context?.explore && context?.scorer && scored.length > 0) {
+  if (context?.explore === false && context.scorer && scored.length > 0) {
     type ScoredWithOriginal = ScoredChunk & { _toolQueryScore: number };
     const chunkTexts = scored.map((sc) => {
       const chunk = chunks.find(

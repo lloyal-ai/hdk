@@ -123,6 +123,16 @@ describe('admitChunks — exploit re-rank', () => {
     expect(exploit.chunks[0]).toMatchObject({ heading: 'H2', toolQueryScore: 8, combinedScore: 2 });
   });
 
+  it('an OMITTED explore flag defaults to explore — never exploit by accident', async () => {
+    const { result, tw } = await admit(
+      { tool: 'fetch_page', select: { mode: 'budget', topK: 3, tokenBudget: 10_000 } },
+      mkChunks(3),
+      { agentId: 1, scorer: { scoreRelevanceBatch: async () => [9, 9, 9] } as any },
+    );
+    expect(result.scored.map(s => s.heading)).toEqual(['H0', 'H1', 'H2']);
+    expect(tw.ofType('entailment:content:exploit')).toHaveLength(0);
+  });
+
   it('stays agent-local in explore mode — no exploit event, no reorder', async () => {
     const { result, tw } = await admit(
       { tool: 'fetch_page', select: { mode: 'budget', topK: 3, tokenBudget: 10_000 } },
