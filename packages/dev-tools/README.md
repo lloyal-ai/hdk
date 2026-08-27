@@ -11,6 +11,8 @@ users: without the dev signal the components render nothing.
   shared React view (desktop + web).
 - `@lloyal-labs/dev-tools/ink` — `<DevOverlay>`, a bounded ctrl+g overlay for
   the terminal view.
+- `@lloyal-labs/dev-tools/node` — `startHostResources`, the host sampler a
+  dev-gated Node boot starts beside its trace sink.
 
 The harness itself never imports this package — the pane is a sink on the
 bus, and the commands it dispatches are the same ones the composer already

@@ -244,7 +244,9 @@ const fmtS = (s: number): string =>
   s >= 60 ? `${Math.floor(s / 60)}m${String(Math.round(s % 60)).padStart(2, '0')}s` : `${s.toFixed(1)}s`;
 
 function runEndS(m: PaneModel): number {
-  let end = 0;
+  // The answer can land AFTER the last lane closes (synthesis emits it at
+  // the very end) — the recorded run end wins over lane completions.
+  let end = m.runEndedAt ?? 0;
   for (const l of m.lanes.values()) {
     if (l.doneAt !== null) end = Math.max(end, l.doneAt);
   }
