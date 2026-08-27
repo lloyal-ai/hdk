@@ -742,8 +742,13 @@ function AgentFeed({ m, lane, toolColor, onClose, onJump }: {
         height: 30, flex: 'none', display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px',
         borderBottom: `1px solid ${C.border}`, background: '#f8f9fa',
       }}>
-        <span style={{ fontFamily: mono, fontWeight: 600, fontSize: 11 }}>{lane.role ?? 'agent'} {lane.agentId}</span>
-        <span style={chip}>parent {lane.parentAgentId ?? '?'}</span>
+        <span style={{ fontFamily: mono, fontWeight: 600, fontSize: 11 }}>{lane.role ?? 'agent'} #{lane.agentId}</span>
+        {/* Lineage is shown only when it says something: a RECURSIVE spawn
+            names the agent whose live state it inherited. A top-level spawn's
+            parent is the spine — a constant, so nothing renders. */}
+        {lane.parentAgentId !== null && m.lanes.has(lane.parentAgentId) && (
+          <span style={chip}>forked from #{lane.parentAgentId}</span>
+        )}
         <span style={chip}>{lane.outcome}{lane.doneAt !== null && m.runStartAt !== null ? ` · ${fmtS((lane.doneAt - lane.spawnedAt) / 1000)}` : ''}</span>
         <span style={{ flex: 1 }} />
         <span style={{ cursor: 'pointer', color: C.dim }} onClick={onClose} title="close — the timeline returns to full width">✕</span>
