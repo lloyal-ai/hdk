@@ -271,10 +271,12 @@ function resetRun(m: PaneModel, now: number): void {
   m.runStartAt = now;
 }
 
-/** The retrieval a mirrored trace event belongs to: by callId when the
- *  dispatch mirror stamped one, else the newest unsettled call of the agent. */
+/** The retrieval a mirrored trace event belongs to: by callId WITHIN the
+ *  agent (callIds are per-agent counters — call_0 exists in every agent, so
+ *  a global match attaches one agent's funnel to another's call), else the
+ *  newest unsettled call of the agent. */
 function findRetrieval(m: PaneModel, callId: string | null, agentId: number): Retrieval | undefined {
-  if (callId) return m.retrievals.find((x) => x.callId === callId);
+  if (callId) return m.retrievals.find((x) => x.callId === callId && x.agentId === agentId);
   for (let i = m.retrievals.length - 1; i >= 0; i--) {
     const r = m.retrievals[i];
     if (r.agentId === agentId && r.settledAt === null) return r;

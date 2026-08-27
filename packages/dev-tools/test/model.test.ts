@@ -347,3 +347,25 @@ describe('epistemics', () => {
     expect(lane.tokenCount).toBe(2);
   });
 });
+
+describe('retrieval metadata attribution', () => {
+  it('callId matches WITHIN the agent — call_0 exists in every agent', () => {
+    const m = freshRun();
+    foldEvent(m, { type: 'agent:spawn', agentId: 3, parentAgentId: 1 }, 1200);
+    // Both agents dispatch their own call_0.
+    for (const [agent, tool] of [[2, 'web_search'], [3, 'fetch_page']] as const) {
+      foldEvent(m, { type: 'agent:tool_call', agentId: agent, tool, args: '{}' }, 2000);
+      foldEvent(m, { type: 'agent:trace', agentId: agent, event: {
+        type: 'tool:dispatch', traceId: agent, parentTraceId: null, ts: 1,
+        agentId: agent, tool, toolIndex: 0, toolkitSize: 2, args: {}, callId: 'call_0', explore: true, percentAvailable: 90,
+      } }, 2001);
+    }
+    // Agent 3's rerank must land on agent 3's call — never agent 2's.
+    foldEvent(m, { type: 'agent:trace', agentId: 3, callId: 'call_0', event: {
+      type: 'rerank:end', traceId: 9, parentTraceId: 3, ts: 2,
+      topResults: [], selectedPassageCount: 5, totalChars: 1, durationMs: 1, totalScored: 22,
+    } }, 2002);
+    expect(m.retrievals.find((r) => r.agentId === 2)!.admission).toBeNull();
+    expect(m.retrievals.find((r) => r.agentId === 3)!.admission).not.toBeNull();
+  });
+});

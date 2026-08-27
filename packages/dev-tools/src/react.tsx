@@ -55,6 +55,55 @@ function useToolColors(): (name: string) => string {
   };
 }
 const letterOf = (name: string): string => (name[0] || '?').toUpperCase();
+
+/** Bars over reranker scores: log-odds go NEGATIVE, so score/max explodes
+ *  past 100% when the max is negative. Min-max into [0.06, 1] — bars only
+ *  ever rank WITHIN one retrieval, so the scale is local by design. */
+function relScale(scores: readonly number[]): (v: number) => number {
+  const min = Math.min(...scores);
+  const max = Math.max(...scores);
+  const span = max - min;
+  return (v: number) => (span <= 0 ? 1 : 0.06 + 0.94 * ((v - min) / span));
+}
+
+/** The human argument out of a tool call's JSON args — the query or url the
+ *  agent actually wrote, not the envelope around it. */
+function argSummary(args: string): string {
+  try {
+    const a = JSON.parse(args) as Record<string, unknown>;
+    const v = a.query ?? a.url ?? Object.values(a).find((x) => typeof x === 'string');
+    return typeof v === 'string' ? v : args;
+  } catch { return args; }
+}
+
+/** Shape-driven view of a recorded tool result. No tool names — structure:
+ *  an array of {title|heading, url|file, snippet, score?} renders as result
+ *  rows with RELATIVE score bars; {content, alsoOnPage} renders as a
+ *  preview + topic chips; anything else falls back to the raw record. */
+type ResultRow = { head: string; sub?: string; body?: string; score?: number };
+function resultRows(parsed: unknown): ResultRow[] | null {
+  const arr = Array.isArray(parsed) ? parsed
+    : parsed && typeof parsed === 'object'
+      ? (Array.isArray((parsed as { results?: unknown }).results) ? (parsed as { results: unknown[] }).results
+        : Array.isArray((parsed as { hits?: unknown }).hits) ? (parsed as { hits: unknown[] }).hits
+          : null)
+      : null;
+  if (!arr || arr.length === 0) return null;
+  const rows: ResultRow[] = [];
+  for (const o of arr) {
+    if (!o || typeof o !== 'object') return null;
+    const r = o as Record<string, unknown>;
+    const head = r.title ?? r.heading;
+    if (typeof head !== 'string') return null;
+    rows.push({
+      head,
+      sub: typeof r.url === 'string' ? r.url : typeof r.file === 'string' ? r.file : undefined,
+      body: typeof r.snippet === 'string' ? r.snippet : typeof r.text === 'string' ? r.text : undefined,
+      ...(typeof r.score === 'number' ? { score: r.score } : {}),
+    });
+  }
+  return rows;
+}
 const fmtS = (s: number): string =>
   s >= 60 ? `${Math.floor(s / 60)}m${String(Math.round(s % 60)).padStart(2, '0')}s` : `${s.toFixed(1)}s`;
 
@@ -629,7 +678,7 @@ function AgentFeed({ m, lane, toolColor, onClose, onJump }: {
           <div style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer' }} onClick={() => toggle(id)}>
             <span style={{ color: C.faint, fontSize: 9, width: 9, flex: 'none' }}>{open ? '▾' : '▸'}</span>
             <Badge color={err ? C.fail : toolColor(r.tool)} letter={letterOf(r.tool)} size={14} />
-            <span style={{ fontFamily: mono, fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{r.args}</span>
+            <span style={{ fontFamily: mono, fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{argSummary(r.args)}</span>
             <span style={{ color: err ? C.fail : C.faint, fontSize: 10.5 }}>{status}</span>
           </div>
           {open && (
@@ -769,7 +818,7 @@ function Sources({ m, toolColor }: { m: PaneModel; toolColor: (t: string) => str
               boxShadow: i === sel ? `inset 3px 0 0 ${C.text}` : undefined,
             }}>
               <Badge color={err ? C.fail : toolColor(x.tool)} letter={letterOf(x.tool)} size={16} />
-              <span style={{ fontFamily: mono, fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{x.args}</span>
+              <span style={{ fontFamily: mono, fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{argSummary(x.args)}</span>
               <span style={{ fontFamily: mono, fontSize: 10, color: C.faint }}>
                 {x.settledAt !== null ? fmtS((x.settledAt - x.dispatchedAt) / 1000) : ''}
               </span>
@@ -801,7 +850,7 @@ function AdmissionView({ r }: { r: Retrieval }): ReactElement {
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderBottom: `1px solid ${C.border}`, flexWrap: 'wrap' }}>
-        <span style={{ fontFamily: mono, fontSize: 11 }}>{r.tool} · {r.args.slice(0, 160)}</span>
+        <span style={{ fontFamily: mono, fontSize: 11 }}>{r.tool} · {argSummary(r.args).slice(0, 160)}</span>
         <span style={{ flex: 1 }} />
         {r.explore === false && (
           <span style={{ ...fchip, background: C.warnBg, color: C.warn }}>exploit — re-ranked against the query</span>
@@ -817,19 +866,18 @@ function AdmissionView({ r }: { r: Retrieval }): ReactElement {
         </div>
       )}
 
-      {r.exploitChunks && r.exploitChunks.length > 0 && <SlopeChart r={r} />}
+      {!error && r.exploitChunks && r.exploitChunks.length > 0 && <SlopeChart r={r} />}
 
-      {a && a.topResults.length > 0 && (
+      {!error && a && a.topResults.length > 0 && (
         <div style={{ padding: '6px 16px 2px', maxWidth: 760 }}>
           {a.topResults.map((t, i) => {
-            const maxScore = Math.max(...a.topResults.map((x) => x.score));
-            const rel = maxScore !== 0 ? t.score / maxScore : 1;
+            const rel = relScale(a.topResults.map((x) => x.score))(t.score);
             return (
               <div key={i} style={{ padding: '6px 0', borderTop: i ? `1px solid ${C.hair}` : undefined }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                   <span style={{ width: 14, textAlign: 'right', fontFamily: mono, fontSize: 10, color: C.faint }}>{i + 1}</span>
                   <span style={{ width: 150, flex: 'none' }}>
-                    <span style={{ display: 'block', height: 5, borderRadius: 3, background: C.agent, width: `${Math.max(4, rel * 100)}%` }} />
+                    <span style={{ display: 'block', height: 5, borderRadius: 3, background: C.agent, width: `${Math.round(rel * 100)}%` }} />
                   </span>
                   <b style={{ fontSize: 11 }}>{t.heading}</b>
                   <span style={{ flex: 1 }} />
@@ -856,11 +904,61 @@ function AdmissionView({ r }: { r: Retrieval }): ReactElement {
         </div>
       )}
 
-      {!a && !error && r.result && (
-        <div style={{ padding: '8px 14px', color: C.dim, fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxWidth: 760 }}>
-          {r.result.slice(0, 2000)}{r.result.length > 2000 ? '…' : ''}
-        </div>
-      )}
+      {!error && (() => {
+        if (a && a.topResults.length > 0) return null; // the admission view above already rendered
+        const rows = resultRows(parsed);
+        if (rows) {
+          const scored = rows.some((x) => x.score !== undefined);
+          const rel = relScale(rows.map((x) => x.score ?? 0));
+          return (
+            <div style={{ padding: '6px 16px 10px', maxWidth: 820 }}>
+              {rows.map((x, i) => (
+                <div key={i} style={{ padding: '7px 0', borderTop: i ? `1px solid ${C.hair}` : undefined }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ width: 14, textAlign: 'right', fontFamily: mono, fontSize: 10, color: C.faint }}>{i + 1}</span>
+                    {scored && (
+                      <span style={{ width: 130, flex: 'none' }}>
+                        <span style={{ display: 'block', height: 5, borderRadius: 3, background: C.agent, width: `${Math.round(rel(x.score ?? 0) * 100)}%` }} />
+                      </span>
+                    )}
+                    <b style={{ fontSize: 11.5 }}>{x.head}</b>
+                    {x.sub && <span style={{ color: C.faint, fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{x.sub}</span>}
+                  </div>
+                  {x.body && <p style={{ margin: `2px 0 0 ${scored ? 160 : 22}px`, color: C.dim, fontSize: 11, lineHeight: 1.5 }}>{x.body.slice(0, 280)}{x.body.length > 280 ? '…' : ''}</p>}
+                </div>
+              ))}
+              {scored && <div style={{ padding: '6px 0 0 22px', color: C.faint, fontSize: 10 }}>bars are relative to this retrieval's best match</div>}
+            </div>
+          );
+        }
+        const content = parsed && typeof parsed === 'object' && typeof (parsed as { content?: unknown }).content === 'string'
+          ? (parsed as { content: string }).content : null;
+        if (content !== null) {
+          const also = parsed && Array.isArray((parsed as { alsoOnPage?: unknown }).alsoOnPage)
+            ? ((parsed as { alsoOnPage: string[] }).alsoOnPage) : null;
+          return (
+            <div style={{ padding: '8px 16px 10px', maxWidth: 820 }}>
+              <div style={{ color: C.dim, fontSize: 11, whiteSpace: 'pre-wrap', lineHeight: 1.55 }}>
+                {content.slice(0, 1200)}{content.length > 1200 ? '…' : ''}
+              </div>
+              {also && also.length > 0 && (
+                <div style={{ padding: '8px 0 0', display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                  {also.map((h) => <span key={h} style={{ ...fchip, opacity: 0.7 }}>{h}</span>)}
+                  <span style={{ color: C.faint, fontSize: 10.5 }}>— left on the page, offered to the agent as topics</span>
+                </div>
+              )}
+            </div>
+          );
+        }
+        if (r.result) {
+          return (
+            <div style={{ padding: '8px 14px', color: C.dim, fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxWidth: 760 }}>
+              {r.result.slice(0, 2000)}{r.result.length > 2000 ? '…' : ''}
+            </div>
+          );
+        }
+        return null;
+      })()}
     </div>
   );
 }
