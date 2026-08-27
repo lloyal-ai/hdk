@@ -11,7 +11,7 @@
  *
  * Everything shown is a recorded event field; absence renders as absence.
  */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { useStore } from 'zustand';
 import {
@@ -74,6 +74,90 @@ function argSummary(args: string): string {
     const v = a.query ?? a.url ?? Object.values(a).find((x) => typeof x === 'string');
     return typeof v === 'string' ? v : args;
   } catch { return args; }
+}
+
+/** The launchable page out of a call's args, when the tool took one. */
+function argUrl(args: string): string | null {
+  try {
+    const a = JSON.parse(args) as Record<string, unknown>;
+    return typeof a.url === 'string' && /^https?:\/\//.test(a.url) ? a.url : null;
+  } catch { return null; }
+}
+
+/** ↗ beside a fetched page — opens it in a new tab without toggling the row. */
+function LinkOut({ url }: { url: string }): ReactElement {
+  return (
+    <a
+      href={url} target="_blank" rel="noopener noreferrer" title={url}
+      onClick={(e) => e.stopPropagation()}
+      style={{ color: C.agent, textDecoration: 'none', flex: 'none', fontSize: 11, lineHeight: 1 }}
+    >↗</a>
+  );
+}
+
+/** One tokenizer pass over pretty-printed JSON — keys, strings, numbers,
+ *  and literals get the pane's own palette; everything else stays dim. */
+const JSON_TOKEN = /("(?:[^"\\]|\\.)*")(\s*:)?|(-?\d+\.?\d*(?:[eE][+-]?\d+)?)|(\btrue\b|\bfalse\b|\bnull\b)/g;
+function highlightJson(src: string): ReactElement[] {
+  const out: ReactElement[] = [];
+  let last = 0;
+  let i = 0;
+  let match: RegExpExecArray | null;
+  JSON_TOKEN.lastIndex = 0;
+  while ((match = JSON_TOKEN.exec(src)) !== null) {
+    if (match.index > last) out.push(<span key={i++} style={{ color: C.dim }}>{src.slice(last, match.index)}</span>);
+    if (match[1] !== undefined) {
+      const isKey = match[2] !== undefined;
+      out.push(<span key={i++} style={{ color: isKey ? '#8430ce' : C.ok }}>{match[1]}</span>);
+      if (isKey) out.push(<span key={i++} style={{ color: C.dim }}>{match[2]}</span>);
+    } else if (match[3] !== undefined) {
+      out.push(<span key={i++} style={{ color: C.agent }}>{match[3]}</span>);
+    } else {
+      out.push(<span key={i++} style={{ color: C.warn }}>{match[4]}</span>);
+    }
+    last = JSON_TOKEN.lastIndex;
+  }
+  if (last < src.length) out.push(<span key={i++} style={{ color: C.dim }}>{src.slice(last)}</span>);
+  return out;
+}
+
+/** A tool result in full: pretty-printed and token-colored when it parses as
+ *  JSON, scrollable past ~14 lines, and the copy control carries EVERY byte —
+ *  the block never truncates. */
+function JsonBlock({ text }: { text: string }): ReactElement {
+  const [copied, setCopied] = useState(false);
+  const { pretty, body } = useMemo(() => {
+    try {
+      const p = JSON.stringify(JSON.parse(text), null, 2);
+      return { pretty: p, body: highlightJson(p) };
+    } catch {
+      return { pretty: text, body: null };
+    }
+  }, [text]);
+  const copy = (): void => {
+    navigator.clipboard.writeText(pretty).then(
+      () => { setCopied(true); setTimeout(() => setCopied(false), 1200); },
+      () => { /* clipboard unavailable — the text stays selectable */ },
+    );
+  };
+  return (
+    <div style={{ position: 'relative', margin: '4px 0' }}>
+      <span
+        onClick={copy}
+        style={{
+          position: 'absolute', top: 5, right: 9, zIndex: 1, cursor: 'pointer',
+          fontSize: 9.5, color: copied ? C.ok : C.dim, background: '#f8f9fa',
+          border: `1px solid ${C.border}`, borderRadius: 3, padding: '1px 6px',
+        }}
+      >{copied ? 'copied' : 'copy'}</span>
+      <pre style={{
+        maxHeight: 240, overflow: 'auto', margin: 0, padding: '8px 10px',
+        background: '#f8f9fa', border: `1px solid ${C.border}`, borderRadius: 4,
+        fontFamily: mono, fontSize: 10.5, lineHeight: 1.55,
+        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+      }}>{body ?? pretty}</pre>
+    </div>
+  );
 }
 
 /** Shape-driven view of a recorded tool result. No tool names — structure:
@@ -818,6 +902,7 @@ function AgentFeed({ m, lane, toolColor, onClose, onJump, nowMs, width }: {
             <span style={{ color: C.faint, fontSize: 9, width: 9, flex: 'none' }}>{open ? '▾' : '▸'}</span>
             <Badge color={err ? C.fail : toolColor(r.tool)} letter={letterOf(r.tool)} size={14} />
             <span style={{ fontFamily: mono, fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{argSummary(r.args)}</span>
+            {argUrl(r.args) !== null && <LinkOut url={argUrl(r.args)!} />}
             <span style={{ color: err ? C.fail : C.faint, fontSize: 10.5 }}>{status}</span>
           </div>
           {open && (
@@ -831,11 +916,7 @@ function AgentFeed({ m, lane, toolColor, onClose, onJump, nowMs, width }: {
                   {t.textPreview && <div style={{ color: C.dim, fontSize: 10.5, lineHeight: 1.45 }}>{t.textPreview}…</div>}
                 </div>
               ))}
-              {!r.admission && r.result && (
-                <div style={{ padding: '3px 0', color: err ? C.fail : C.dim, fontSize: 10.5, wordBreak: 'break-word' }}>
-                  {r.result.slice(0, 400)}{r.result.length > 400 ? '…' : ''}
-                </div>
-              )}
+              {!r.admission && r.result && <JsonBlock text={r.result} />}
             </div>
           )}
         </div>
@@ -953,6 +1034,7 @@ function Sources({ m, toolColor }: { m: PaneModel; toolColor: (t: string) => str
             }}>
               <Badge color={err ? C.fail : toolColor(x.tool)} letter={letterOf(x.tool)} size={16} />
               <span style={{ fontFamily: mono, fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{argSummary(x.args)}</span>
+              {argUrl(x.args) !== null && <LinkOut url={argUrl(x.args)!} />}
               <span style={{ fontFamily: mono, fontSize: 10, color: C.faint }}>
                 {x.settledAt !== null ? fmtS((x.settledAt - x.dispatchedAt) / 1000) : ''}
               </span>
@@ -985,6 +1067,7 @@ function AdmissionView({ r }: { r: Retrieval }): ReactElement {
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderBottom: `1px solid ${C.border}`, flexWrap: 'wrap' }}>
         <span style={{ fontFamily: mono, fontSize: 11 }}>{r.tool} · {argSummary(r.args).slice(0, 160)}</span>
+        {argUrl(r.args) !== null && <LinkOut url={argUrl(r.args)!} />}
         <span style={{ flex: 1 }} />
         {r.explore === false && (
           <span style={{ ...fchip, background: C.warnBg, color: C.warn }}>exploit — re-ranked against the query</span>
@@ -1086,8 +1169,8 @@ function AdmissionView({ r }: { r: Retrieval }): ReactElement {
         }
         if (r.result) {
           return (
-            <div style={{ padding: '8px 14px', color: C.dim, fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxWidth: 760 }}>
-              {r.result.slice(0, 2000)}{r.result.length > 2000 ? '…' : ''}
+            <div style={{ padding: '8px 14px', maxWidth: 900 }}>
+              <JsonBlock text={r.result} />
             </div>
           );
         }
