@@ -1549,11 +1549,11 @@ function HarnessSettings({ m, controls, send, selKey, onSelect }: {
   return (
     <>
       <div style={{ flex: 1, minWidth: 0, overflowY: 'auto', paddingBottom: 10 }}>
-        {head('session')}
+        {byTier('session').length > 0 && head('session')}
         {byTier('session').map(row)}
-        {head('reload')}
+        {byTier('reload').length > 0 && head('reload')}
         {byTier('reload').map(row)}
-        {head('boot')}
+        {byTier('boot').length > 0 && head('boot')}
         {byTier('boot').map(row)}
       </div>
       <div style={{ width: 400, flex: 'none', borderLeft: '1px solid #d9dce1', overflowY: 'auto', padding: '16px 20px', background: C.panelBg }}>
