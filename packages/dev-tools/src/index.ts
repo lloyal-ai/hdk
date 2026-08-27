@@ -98,6 +98,22 @@ export interface AgentLane {
 }
 
 /** One per-token epistemics sample, stamped at fold time. */
+/** One host-resources sample on the wire — produced by the node entry's
+ *  sampler (`@lloyal-labs/dev-tools/node`), folded into {@link PaneModel.host}.
+ *  Declared here so a node-free protocol can name it type-only. */
+export interface HostResourcesEvent {
+  type: 'host:resources';
+  /** The harness process's CPU use since the last sample, as % of the
+   *  whole machine (all cores). */
+  cpuPct: number;
+  /** The process's resident set, MB — on a model host this is effectively
+   *  weights + KV + runtime. */
+  rssMb: number;
+  /** System-wide memory in use, % of total. On macOS the OS counts file
+   *  cache as used, so this reads structurally high there. */
+  sysMemPct: number;
+}
+
 export interface EpiSample {
   at: number;
   h: number;
@@ -221,6 +237,10 @@ export interface PaneModel {
   lanes: Map<number, AgentLane>;
   retrievals: Retrieval[];
   pressure: PressurePoint[];
+  /** Host samples (`host:resources`, dev-gated boots only): the harness
+   *  process's cpu% of the whole machine, its resident set, and system
+   *  memory in use — the machine-pressure twin of the kv series. */
+  host: { at: number; cpu: number; rssMb: number; mem: number }[];
   /** Guard rejections, nudges, auth rejections — in arrival order. */
   interventions: Intervention[];
   /** Enabled abilities (`abilities:state`) — the Settings nav + form source.
@@ -251,6 +271,7 @@ export function createPaneModel(): PaneModel {
     lanes: new Map(),
     retrievals: [],
     pressure: [],
+    host: [],
     interventions: [],
     abilities: null,
     plan: null,
@@ -267,6 +288,7 @@ const MAX_PRESSURE_POINTS = 20_000;
 const MAX_RETRIEVALS = 500;
 const MAX_INTERVENTIONS = 200;
 const MAX_EPISTEMICS = 4096;
+const MAX_HOST = 600;
 
 /**
  * Fold one bus event into the model — MUTATING (the pane owns its model and
@@ -297,6 +319,7 @@ function resetRun(m: PaneModel, now: number): void {
   m.lanes = new Map();
   m.retrievals = [];
   m.pressure = [];
+  m.host = [];
   m.interventions = [];
   m.plan = null;
   m.runStartAt = now;
@@ -641,6 +664,15 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
         m.pressure.push({ at: now, cellsUsed: ev.cellsUsed, nCtx: ev.nCtx });
         if (m.pressure.length > MAX_PRESSURE_POINTS) m.pressure.shift();
       }
+      return;
+    }
+    case 'host:resources': {
+      if (typeof ev.cpuPct !== 'number' || typeof ev.rssMb !== 'number') return;
+      m.host.push({
+        at: now, cpu: ev.cpuPct, rssMb: ev.rssMb,
+        mem: typeof ev.sysMemPct === 'number' ? ev.sysMemPct : 0,
+      });
+      if (m.host.length > MAX_HOST) m.host.shift();
       return;
     }
     default:

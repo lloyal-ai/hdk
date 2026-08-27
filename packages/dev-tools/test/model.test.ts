@@ -366,6 +366,25 @@ describe('epistemics', () => {
   });
 });
 
+describe('host resources', () => {
+  it('samples accumulate bounded and clear on a new run', () => {
+    const m = freshRun();
+    foldEvent(m, { type: 'host:resources', cpuPct: 12, rssMb: 4200, sysMemPct: 74 }, 2000);
+    foldEvent(m, { type: 'host:resources', cpuPct: 30, rssMb: 4300, sysMemPct: 75 }, 4000);
+    expect(m.host).toEqual([
+      { at: 2000, cpu: 12, rssMb: 4200, mem: 74 },
+      { at: 4000, cpu: 30, rssMb: 4300, mem: 75 },
+    ]);
+    // malformed sample is skipped, never a NaN point
+    foldEvent(m, { type: 'host:resources', cpuPct: 'x' }, 5000);
+    expect(m.host.length).toBe(2);
+    // a fresh run clears the series with the pressure series
+    foldEvent(m, { type: 'plan:start' }, 60_000);
+    foldEvent(m, { type: 'query', text: 'next' }, 60_010);
+    expect(m.host).toEqual([]);
+  });
+});
+
 describe('retrieval metadata attribution', () => {
   it('callId matches WITHIN the agent — call_0 exists in every agent', () => {
     const m = freshRun();

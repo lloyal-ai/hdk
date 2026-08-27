@@ -48,6 +48,8 @@ jobs:
           test -f packages/dev-tools/dist/react.d.ts
           test -f packages/dev-tools/dist/ink.js
           test -f packages/dev-tools/dist/ink.d.ts
+          test -f packages/dev-tools/dist/node.js
+          test -f packages/dev-tools/dist/node.d.ts
           test -f packages/host/dist/index.js
           test -f packages/host/dist/index.d.ts
           # channel-verify ships a dual build, so BOTH halves must exist —

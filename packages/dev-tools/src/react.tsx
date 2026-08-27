@@ -41,6 +41,7 @@ const C = {
   agent: '#1a73e8', agentDark: '#174ea6', fail: '#b3261e', ok: '#188038',
   warn: '#9a6700', warnBg: '#fef7e0', warnBorder: '#f9d67a',
 };
+const HOST_CPU = '#00897b';
 const TOOL_PALETTE = ['#e8710a', '#8430ce', '#00897b', '#d01884', '#827717', '#0097a7'];
 const mono = 'ui-monospace, "SF Mono", Menlo, Consolas, monospace';
 
@@ -439,6 +440,8 @@ function Timeline({ m, rev, store, selAgent, onSelect, toolColor }: {
   const lanes = [...m.lanes.values()];
   const strip = pressureStrip(m, 200);
   const pct = pressurePercent(m);
+  const host = m.host;
+  const lastHost = host[host.length - 1];
 
   const onMouseDown = (e: React.MouseEvent): void => { drag.current = { x: e.clientX, w0, w1 }; };
   const onMouseMove = (e: React.MouseEvent): void => {
@@ -451,27 +454,57 @@ function Timeline({ m, rev, store, selAgent, onSelect, toolColor }: {
 
   return (
     <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-      {/* pressure strip */}
-      <div style={{ height: 40, borderBottom: `1px solid ${C.border}`, display: 'flex', flex: 'none' }}>
+      {/* pressure strip — model pressure (kv area) and machine pressure
+          (cpu/mem lines) share the 0–100 axis and the timeline's window */}
+      <div style={{ height: 54, borderBottom: `1px solid ${C.border}`, display: 'flex', flex: 'none' }}>
         <div style={{ width: GUTTER, flex: 'none', padding: '5px 0 0 14px' }}>
           <div style={label}>pressure</div>
           <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dim }}>
             {pct === null ? '—' : `${pct}% · ${m.pressure[m.pressure.length - 1]?.cellsUsed.toLocaleString()} / ${m.pressure[m.pressure.length - 1]?.nCtx.toLocaleString()}`}
           </div>
+          {lastHost && (
+            <div style={{ fontFamily: mono, fontSize: 10, display: 'flex', gap: 7 }}
+              title="the harness process's cpu (of the whole machine) and rss; system memory in use — macOS counts file cache, so mem reads high there">
+              <span style={{ color: HOST_CPU }}>cpu {lastHost.cpu}%</span>
+              <span style={{ color: C.faint }}>mem {lastHost.mem}%</span>
+              <span style={{ color: C.dim }}>rss {(lastHost.rssMb / 1024).toFixed(1)}G</span>
+            </div>
+          )}
         </div>
         <div style={{ flex: 1, position: 'relative' }}>
-          {strip.length > 1 && t0 !== null && (
-            <svg width="100%" height="40" preserveAspectRatio="none" style={{ display: 'block' }}>
-              <polyline
-                fill="rgba(26,115,232,.12)" stroke="none"
-                points={`${strip.map((p) => `${(((secOf(p.at) - w0) / span) * track).toFixed(1)},${(38 - (Math.min(100, Math.max(0, p.pct)) / 100) * 36).toFixed(1)}`).join(' ')} ${(((secOf(strip[strip.length - 1].at) - w0) / span) * track).toFixed(1)},40 ${(((secOf(strip[0].at) - w0) / span) * track).toFixed(1)},40`}
-              />
-              <polyline
-                fill="none" stroke={C.agent} strokeWidth="1.5"
-                points={strip.map((p) => `${(((secOf(p.at) - w0) / span) * track).toFixed(1)},${(38 - (Math.min(100, Math.max(0, p.pct)) / 100) * 36).toFixed(1)}`).join(' ')}
-              />
-            </svg>
-          )}
+          {(strip.length > 1 || host.length > 1) && t0 !== null && (() => {
+            const xAt = (at: number): string => ((((secOf(at)) - w0) / span) * track).toFixed(1);
+            const yPct = (v: number): string => (52 - (Math.min(100, Math.max(0, v)) / 100) * 50).toFixed(1);
+            const hostWin = host.filter((h) => { const sx = secOf(h.at); return sx >= w0 - 3 && sx <= w1 + 3; });
+            return (
+              <svg width="100%" height="54" preserveAspectRatio="none" style={{ display: 'block' }}>
+                {strip.length > 1 && (
+                  <>
+                    <polyline
+                      fill="rgba(26,115,232,.12)" stroke="none"
+                      points={`${strip.map((p) => `${xAt(p.at)},${yPct(p.pct)}`).join(' ')} ${xAt(strip[strip.length - 1].at)},54 ${xAt(strip[0].at)},54`}
+                    />
+                    <polyline
+                      fill="none" stroke={C.agent} strokeWidth="1.5"
+                      points={strip.map((p) => `${xAt(p.at)},${yPct(p.pct)}`).join(' ')}
+                    />
+                  </>
+                )}
+                {hostWin.length > 1 && (
+                  <>
+                    <polyline
+                      fill="none" stroke={HOST_CPU} strokeWidth="1.1"
+                      points={hostWin.map((h) => `${xAt(h.at)},${yPct(h.cpu)}`).join(' ')}
+                    />
+                    <polyline
+                      fill="none" stroke={C.faint} strokeWidth="1" strokeDasharray="3 3"
+                      points={hostWin.map((h) => `${xAt(h.at)},${yPct(h.mem)}`).join(' ')}
+                    />
+                  </>
+                )}
+              </svg>
+            );
+          })()}
         </div>
       </div>
 
