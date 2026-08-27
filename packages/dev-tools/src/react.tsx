@@ -67,6 +67,7 @@ const keyActivate = (fn: () => void) => (e: React.KeyboardEvent): void => {
 function MiniSpark({ values, color, w = 44, h = 14 }: {
   values: readonly number[]; color: string; w?: number; h?: number;
 }): ReactElement | null {
+  const gradId = React.useId();
   if (values.length < 2) return null;
   let min = Infinity, max = -Infinity;
   for (const v of values) { if (v < min) min = v; if (v > max) max = v; }
@@ -76,7 +77,14 @@ function MiniSpark({ values, color, w = 44, h = 14 }: {
   ).join(' ');
   return (
     <svg width={w} height={h} style={{ display: 'block' }}>
-      <polyline fill="none" stroke={color} strokeWidth="1.2" points={pts} />
+      <defs>
+        <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={color} stopOpacity="0.35" />
+          <stop offset="100%" stopColor={color} stopOpacity="0.04" />
+        </linearGradient>
+      </defs>
+      <polygon fill={`url(#${gradId})`} stroke="none" points={`0,${h} ${pts} ${w},${h}`} />
+      <polyline fill="none" stroke={color} strokeWidth="1.4" strokeLinejoin="round" strokeLinecap="round" points={pts} />
     </svg>
   );
 }
