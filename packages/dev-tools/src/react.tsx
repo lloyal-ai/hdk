@@ -1252,7 +1252,7 @@ function SlopeChart({ r }: { r: Retrieval }): ReactElement {
       </svg>
       <div style={{ flex: 1.2, minWidth: 0 }}>
         <div style={{ height: HEAD }}>
-          <div style={label}>re-ranked with the agent's task</div>
+          <div style={label}>re-ranked with the run query</div>
         </div>
         {byTask.map((x, i) => (
           <div key={x.heading} style={{ height: ROW, display: 'flex', alignItems: 'center', gap: 7 }}>
@@ -1277,6 +1277,18 @@ const cutline: React.CSSProperties = {
 
 /** What the detail panel knows about each well-known harness key: what it is,
  *  and how to change it. Prose is product copy — one clause per sentence. */
+/** Config path → the ConfigOrigin field carrying its rung, so the
+ *  exception note (env/cli overrode the manifest) fires for read-only rows
+ *  too — full-rung provenance display stays demoted by design. */
+const ORIGIN_KEYS: Readonly<Record<string, string>> = {
+  'model.path': 'modelPath',
+  'model.reranker': 'reranker',
+  'model.nCtx': 'nCtx',
+  'model.gpu': 'gpu',
+  'sources.outputDir': 'outputDir',
+  'defaults.reasoningMode': 'reasoningMode',
+};
+
 const SETTING_META: Readonly<Record<string, { desc: string; how: string }>> = {
   'defaults.effort': {
     desc: 'Run effort preset — agent budget, planner breadth, recovery cap.',
@@ -1387,7 +1399,7 @@ function HarnessSettings({ m, controls, send, selKey, onSelect }: {
     if (value === undefined && !ctl) return null; // skip-if-absent: basic has no defaults block
     const selected = selKey === key;
     return (
-      <div key={key} onClick={() => onSelect(key)} style={{
+      <div key={key} onClick={() => onSelect(key)} role="button" tabIndex={0} onKeyDown={keyActivate(() => onSelect(key))} style={{
         display: 'flex', alignItems: 'center', gap: 8, padding: '5px 14px 5px 11px', minHeight: 36,
         borderLeft: selected ? `3px solid ${C.text}` : '3px solid transparent', cursor: 'pointer',
         background: selected ? C.chromeBg : undefined,
@@ -1430,7 +1442,7 @@ function HarnessSettings({ m, controls, send, selKey, onSelect }: {
   const tier = KEY_TIERS[selKey];
   // The exception case, surfaced exactly when true: something outside the
   // manifest set this value. No badges anywhere else.
-  const originKey = controlFor(selKey)?.originKey;
+  const originKey = controlFor(selKey)?.originKey ?? ORIGIN_KEYS[selKey];
   const origin = originKey && m.origin ? m.origin[originKey] : undefined;
   const overridden = origin === 'env' || origin === 'cli';
 

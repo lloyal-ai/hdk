@@ -1,6 +1,8 @@
 import { call } from 'effection';
 import type { Operation } from 'effection';
 import { Trace } from './context';
+import { NullTraceWriter } from './trace-writer';
+import type { TraceWriter } from './trace-writer';
 import type { Chunk, Reranker, ScoredChunk } from './chunk';
 import type { ToolContext } from './types';
 
@@ -152,7 +154,9 @@ export function* admitChunks(
   context: ToolContext | undefined,
   opts: AdmitOpts,
 ): Operation<AdmitResult> {
-  const tw = yield* Trace.expect();
+  // Direct WebSource/FetchPageTool use outside a pool carries no trace
+  // context — score without tracing rather than throw at the seam.
+  const tw: TraceWriter = (yield* Trace.get()) ?? new NullTraceWriter();
   const t0 = performance.now();
   tw.write({
     traceId: tw.nextId(), parentTraceId: null, ts: t0,
