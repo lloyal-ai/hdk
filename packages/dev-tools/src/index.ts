@@ -83,6 +83,12 @@ export interface AgentLane {
   dropReason: string | null;
   /** Set on the planner while it waits on the user (research's clarify). */
   clarify: ClarifyExchange | null;
+  /** Per-token epistemics, when the wire carries them (`agent:produce`
+   *  under the dev gate): entropy = the model's uncertainty over its next
+   *  token; surprisal = how unexpected the chosen token was. Bounded ring —
+   *  the recent window is the signal. Empty when tracing is off. */
+  entropy: number[];
+  surprisal: number[];
 }
 
 /** A harness intervention the model felt but the UI never showed until now:
@@ -233,6 +239,7 @@ export function createPaneModel(): PaneModel {
 const MAX_PRESSURE_POINTS = 20_000;
 const MAX_RETRIEVALS = 500;
 const MAX_INTERVENTIONS = 200;
+const MAX_EPISTEMICS = 400;
 
 /**
  * Fold one bus event into the model — MUTATING (the pane owns its model and
@@ -383,13 +390,24 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
         prunedAt: null,
         dropReason: null,
         clarify: null,
+        entropy: [],
+        surprisal: [],
       });
       return;
     }
     case 'agent:produce': {
       const lane = m.lanes.get(ev.agentId as number);
+      if (!lane) return;
       // tokenCount is CUMULATIVE on the wire — take the latest, never sum.
-      if (lane && typeof ev.tokenCount === 'number') lane.tokenCount = ev.tokenCount;
+      if (typeof ev.tokenCount === 'number') lane.tokenCount = ev.tokenCount;
+      if (typeof ev.entropy === 'number') {
+        lane.entropy.push(ev.entropy);
+        if (lane.entropy.length > MAX_EPISTEMICS) lane.entropy.shift();
+      }
+      if (typeof ev.surprisal === 'number') {
+        lane.surprisal.push(ev.surprisal);
+        if (lane.surprisal.length > MAX_EPISTEMICS) lane.surprisal.shift();
+      }
       return;
     }
     case 'agent:done': {
@@ -621,6 +639,17 @@ export function pressureStrip(
 }
 
 const SPARK = '▁▂▃▄▅▆▇█';
+
+/** A fixed-width sparkline over raw values, scaled to their own max — pure,
+ *  node-free (the epistemics strips render through this). */
+export function sparkOf(values: readonly number[], width: number): string {
+  if (values.length === 0 || width <= 0) return '';
+  const stride = Math.max(1, Math.floor(values.length / width));
+  const pts: number[] = [];
+  for (let i = 0; i < values.length; i += stride) pts.push(values[i]);
+  const max = Math.max(...pts, 1e-9);
+  return pts.slice(-width).map((v) => SPARK[Math.min(7, Math.floor((v / max) * 8))]).join('');
+}
 
 /** A fixed-width unicode sparkline of the pressure series — pure, node-free
  *  (the ink overlay renders it; anything else may too). */

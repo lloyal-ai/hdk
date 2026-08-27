@@ -335,3 +335,15 @@ describe('abilities:state (the Settings nav + form source)', () => {
     expect(m.abilities![1].config.corpusPath).toBe(true);
   });
 });
+
+describe('epistemics', () => {
+  it('entropy/surprisal accumulate bounded when the wire carries them, absent otherwise', () => {
+    const m = freshRun();
+    foldEvent(m, { type: 'agent:produce', agentId: 2, text: 'x', tokenCount: 1, entropy: 2.1, surprisal: 0.4 }, 2000);
+    foldEvent(m, { type: 'agent:produce', agentId: 2, text: 'y', tokenCount: 2 }, 2001);
+    const lane = m.lanes.get(2)!;
+    expect(lane.entropy).toEqual([2.1]);
+    expect(lane.surprisal).toEqual([0.4]);
+    expect(lane.tokenCount).toBe(2);
+  });
+});

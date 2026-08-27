@@ -15,7 +15,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { useStore } from 'zustand';
 import {
-  pressureStrip, pressurePercent, readConfigPath, KEY_TIERS,
+  pressureStrip, pressurePercent, readConfigPath, sparkOf, KEY_TIERS,
 } from './index';
 import type {
   AbilityInfo, AgentLane, DevControl, Intervention, PaneModel, PaneTab, Retrieval,
@@ -700,6 +700,17 @@ function AgentFeed({ m, lane, toolColor, onClose, onJump }: {
         <span style={{ cursor: 'pointer', color: C.dim }} onClick={onClose} title="close — the timeline returns to full width">✕</span>
       </div>
       <div style={{ overflowY: 'auto', flex: 1, fontSize: 11, paddingBottom: 8 }}>
+        {lane.entropy.length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '6px 12px', borderBottom: `1px solid ${C.border}` }}>
+            <span style={{ color: C.dim, width: 92, flex: 'none' }}>epistemics</span>
+            <span style={{ fontFamily: mono, fontSize: 10, color: C.agent, letterSpacing: 1 }} title="entropy — the model's uncertainty per recent token">
+              {sparkOf(lane.entropy, 36)}
+            </span>
+            <span style={{ fontFamily: mono, fontSize: 10, color: C.faint }}>
+              H {lane.entropy[lane.entropy.length - 1]?.toFixed(2)} · s {lane.surprisal[lane.surprisal.length - 1]?.toFixed(2)}
+            </span>
+          </div>
+        )}
         {(lane.failReason || lane.dropReason) && (
           <div style={{ display: 'flex', alignItems: 'baseline', padding: '6px 12px', gap: 8 }}>
             <span style={{ color: C.dim, width: 92, flex: 'none' }}>pool said</span>
