@@ -9,13 +9,13 @@
  * transitions, trace events, event emissions, ToolContext fields, recovery.
  */
 import { describe, it, expect } from 'vitest';
-import { run, createChannel, spawn, each, scoped, call } from 'effection';
+import { run, createChannel, createSignal, spawn, each, scoped, call } from 'effection';
 import type { Operation, Channel } from 'effection';
 import { MockSessionContext, createMockSdk } from '../../sdk/test/MockSessionContext';
 import type { ChatFormat, ParseChatOutputOptions, ParseChatOutputResult } from '@lloyal-labs/sdk';
 import { useAgentPool } from '../src/agent-pool';
 import { parallel } from '../src/orchestrators';
-import { Ctx, Store, Events, Trace } from '../src/context';
+import { Ctx, Store, Events, Trace, WindDown } from '../src/context';
 import { Tool } from '../src/Tool';
 import type { AgentPolicy } from '../src/AgentPolicy';
 import type { AgentPoolResult, AgentEvent, ToolContext } from '../src/types';
@@ -46,6 +46,8 @@ async function runPool(opts: {
   maxTurns?: number;
   trace?: boolean;
   pruneOnReturn?: boolean;
+  /** Fire the WindDown signal when an emitted event matches (once). */
+  windDownOn?: (ev: AgentEvent) => boolean;
   /** Last-chance ctx mutation hook — runs after fork/sample wiring, before the pool. */
   mutateCtx?: (ctx: MockSessionContext) => void;
 }): Promise<{
@@ -104,6 +106,8 @@ async function runPool(opts: {
     const events: Channel<AgentEvent, void> = createChannel();
     yield* Events.set(events as any);
     yield* Trace.set(traceWriter);
+    const windDownSignal = createSignal<void, void>();
+    if (opts.windDownOn) yield* WindDown.set(windDownSignal);
 
     const taskCount = opts.taskCount ?? 1;
     const toolsJson = opts.tools && opts.tools.size > 0
@@ -128,9 +132,14 @@ async function runPool(opts: {
         pruneOnReturn: opts.pruneOnReturn ?? false,
       });
       // Drain Subscription — collect events, return close value
+      let windDownFired = false;
       let next = yield* sub.next();
       while (!next.done) {
         collectedEvents.push(next.value);
+        if (opts.windDownOn && !windDownFired && opts.windDownOn(next.value)) {
+          windDownFired = true;
+          windDownSignal.send();
+        }
         next = yield* sub.next();
       }
       return next.value;
@@ -1689,6 +1698,37 @@ describe('transient tool failure (park + retry)', () => {
     const retries = events.filter(e => e.type === 'agent:tool_retry');
     expect((retries[0] as { retryAfterMs: number }).retryAfterMs).toBe(20); // policy's 20ms, not the tool's 5s
   });
+
+  it('8e: wind-down abandons a parked retry — the drain never waits out the park', async () => {
+    const flaky = new FlakyTool(99, 60_000); // rate-limited, come back in 60s
+    const tools = new Map<string, Tool>([[flaky.name, flaky]]);
+    // Fire WindDown the moment the park is observed. Without the abandon the
+    // reap can't touch the awaiting_tool agent until the 60s park settles —
+    // this test times out; with it the run finishes in milliseconds.
+    const { events, trace } = await runPool({
+      forkTokenQueues: [[1, STOP]],
+      parseChatOutputFn: callOnFirstTurn,
+      policy: toolCallPolicy({
+        onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),
+      }),
+      tools,
+      trace: true,
+      windDownOn: (ev) => ev.type === 'agent:tool_retry',
+    });
+
+    expect(flaky.calls).toBe(1); // parked, never re-executed
+    // The flip was announced — the pane's feedback signal.
+    expect(events.some(e => e.type === 'run:windingDown')).toBe(true);
+    expect(trace.ofType('pool:windDown')).toHaveLength(1);
+    // The park settled as an honest wind-down failure, not a drained retry.
+    const toolResults = events.filter(e => e.type === 'agent:tool_result');
+    expect(toolResults).toHaveLength(1);
+    expect((toolResults[0] as { result: string }).result).toContain('winding down');
+    // The agent was then reaped by wind-down and recovered.
+    expect(trace.ofType('pool:agentDrop').some(
+      e => (e as { reason?: string }).reason === 'wind_down')).toBe(true);
+    expect(events.some(e => e.type === 'agent:done')).toBe(true);
+  }, 10_000);
 });
 
 // ── Group 11: trace fidelity — pool:tick, agent span, harvested ppl ──

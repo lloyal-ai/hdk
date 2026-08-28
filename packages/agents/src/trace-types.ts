@@ -129,6 +129,7 @@ export type TraceEvent =
   // there are NO native store calls — invariant I32.
   | TraceEventBase & { type: 'pool:pause' }
   | TraceEventBase & { type: 'pool:resume'; pausedMs: number }
+  | TraceEventBase & { type: 'pool:windDown' }
   | TraceEventBase & {
       type: 'pool:agentDrop';
       agentId: number;

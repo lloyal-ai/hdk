@@ -37,7 +37,7 @@ const STRUCTURAL = new Set([
   'plan:start', 'query', 'research:start', 'synthesize:start', 'plan',
   'agent:spawn', 'agent:done', 'agent:failed', 'agent:recovered',
   'agent:return', 'agent:tool_call', 'agent:tool_result', 'agent:trace',
-  'run:paused', 'run:resumed',
+  'run:paused', 'run:resumed', 'run:windingDown',
   'answer', 'error',
 ]);
 

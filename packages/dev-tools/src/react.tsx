@@ -1,8 +1,11 @@
 /**
- * The dev pane's web/desktop surface: a cog FAB that docks a full-width pane
- * over the harness's own view — Timeline · Sources · Settings.
+ * The dev pane's web/desktop surface: the harness view's LAYOUT SHELL. The
+ * app renders inside the shell's scroll container and the pane docks BELOW
+ * it as its own flex region — Timeline · Sources · Settings. Opening the
+ * pane shrinks the app's viewport (the Chrome DevTools anchoring); it never
+ * covers the app.
  *
- * Mounted ONCE beside the app's view; it subscribes to the same bridge stream
+ * Wraps the app's view ONCE (the view is its children); it subscribes to the same bridge stream
  * through {@link createDevStore} (wire-gated: a production stream folds
  * nothing but `config:loaded`). Rendering is hand-rolled — no timeline
  * library: the design's invariants (fixed-span sliding window, stepped live
@@ -12,7 +15,7 @@
  * Everything shown is a recorded event field; absence renders as absence.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type { ReactElement } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 import { useStore } from 'zustand';
 import {
   pressureStrip, pressurePercent, readConfigPath, lanePpl, isLive, KEY_TIERS,
@@ -36,6 +39,10 @@ export interface DevPaneProps {
    *  control only when its command exists (research: all three; basic:
    *  cancelAgent). Command names are the templates' own vocabulary. */
   runCommands?: { stop?: boolean; wrapUp?: boolean; cancelAgent?: boolean; pause?: boolean };
+  /** The harness view itself. The shell renders it in a scroll container
+   *  above the pane; production (no dev on the wire) gets the same shell
+   *  with nothing added, so the tree never remounts when the flag arrives. */
+  children: ReactNode;
 }
 
 // ── palette: monochrome chrome, color reserved for data ──
@@ -278,7 +285,7 @@ function runEndS(m: PaneModel): number {
 }
 
 // ═══════════════════════════════════════════════════════════════
-export function DevPane({ bridge, controls = [], title, runCommands = {} }: DevPaneProps): ReactElement | null {
+export function DevPane({ bridge, controls = [], title, runCommands = {}, children }: DevPaneProps): ReactElement {
   // The store is a per-bridge SINGLETON: a remount reattaches to the running
   // fold (full history intact) instead of restarting it and desyncing. It is
   // deliberately NOT destroyed on unmount — it lives with the page, like the
@@ -293,14 +300,27 @@ export function DevPane({ bridge, controls = [], title, runCommands = {} }: DevP
   const seenAtRef = useRef(0);
   useEffect(() => { if (open) seenAtRef.current = performance.now(); }, [open, rev]);
 
-  // The FAB renders only when the wire said dev — production ships inert.
-  if (!m.dev) return null;
+  // The shell: app above, dev chrome below/over. Rendered in EVERY state —
+  // dev off, cog closed, pane open — so the app subtree keeps its position
+  // in the tree and never remounts when the dev flag or the pane toggles.
+  const shell = (content: ReactElement | null): ReactElement => (
+    <div style={{ height: '100dvh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div style={{ flex: 1, minHeight: 0, overflow: 'auto', position: 'relative' }}>{children}</div>
+      {content}
+    </div>
+  );
+
+  // The cog renders only when the wire said dev — production ships inert.
+  if (!m.dev) return shell(null);
 
   if (!open) {
     // The closed cog still tells the story: amber ? = the planner is waiting
     // on the USER (the one state that blocks everything), red = an agent
     // failed this run, blue = agents live right now. Nothing = quiet.
-    const liveCount = [...m.lanes.values()].filter((l) => l.doneAt === null).length;
+    // A stop can halt lanes without closing them — an ended run counts none.
+    const liveCount = isLive(m)
+      ? [...m.lanes.values()].filter((l) => l.doneAt === null).length
+      : 0;
     // A user cancel is a deliberate cull, not a failure — it never badges.
     const failedLanes = [...m.lanes.values()].filter(
       (l) => l.outcome === 'failed' && l.failReason !== 'user_cancel');
@@ -335,7 +355,7 @@ export function DevPane({ bridge, controls = [], title, runCommands = {} }: DevP
         toastAt = l.doneAt;
       }
     }
-    return (
+    return shell(
       <>
       {toast && (
         <div role="status" aria-live="polite" style={{
@@ -377,7 +397,7 @@ export function DevPane({ bridge, controls = [], title, runCommands = {} }: DevP
     );
   }
 
-  return <Pane store={store} m={m} rev={rev} controls={controls} title={title} runCommands={runCommands} onClose={() => setOpen(false)} />;
+  return shell(<Pane store={store} m={m} rev={rev} controls={controls} title={title} runCommands={runCommands} onClose={() => setOpen(false)} />);
 }
 
 // ═══ the docked pane ═══
@@ -389,23 +409,24 @@ function Pane({ store, m, rev, controls, title, runCommands, onClose }: {
   const [tab, setTab] = useState<PaneTab>('timeline');
   const [selAgent, setSelAgent] = useState<number | null>(null);
   const [feedW, setFeedW] = useState(feedWidthPref);
+  const [paneH, setPaneH] = useState(paneHeightPref);
   const toolColor = useToolColors();
   const paneRef = useRef<HTMLDivElement | null>(null);
 
-  // The pane is fixed, so the document doesn't know it's there — reserve its
-  // height as body padding while open, so the app's bottom content can always
-  // scroll clear of it. Restored on close/unmount.
+  // A dragged height outlives the viewport that fit it — re-clamp on window
+  // resize so the pane can never swallow the whole shell (the app area is
+  // minHeight: 0 and would collapse to nothing).
   useEffect(() => {
-    const prev = document.body.style.paddingBottom;
-    const apply = (): void => {
-      if (paneRef.current) document.body.style.paddingBottom = `${paneRef.current.offsetHeight}px`;
+    const onResize = (): void => {
+      setPaneH((h) => {
+        if (h === null) return h;
+        const clamped = clampPaneH(h);
+        if (clamped !== h) paneHeightPref = clamped;
+        return clamped;
+      });
     };
-    apply();
-    window.addEventListener('resize', apply);
-    return () => {
-      window.removeEventListener('resize', apply);
-      document.body.style.paddingBottom = prev;
-    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
   }, []);
 
   useEffect(() => {
@@ -432,11 +453,13 @@ function Pane({ store, m, rev, controls, title, runCommands, onClose }: {
 
   return (
     <div ref={paneRef} style={{
-      position: 'fixed', left: 0, right: 0, bottom: 0, height: 'min(560px, 72vh)',
+      position: 'relative', flex: 'none',
+      height: paneH !== null ? paneH : 'min(560px, 72vh)',
       background: '#fff', borderTop: '1px solid #bdc1c6', display: 'flex',
-      flexDirection: 'column', zIndex: 50, fontSize: 12, color: C.text,
+      flexDirection: 'column', fontSize: 12, color: C.text,
       fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
     }}>
+      <PaneResizer height={paneH} paneRef={paneRef} onHeight={(h) => { paneHeightPref = h; setPaneH(h); }} />
       {/* tab strip */}
       <div role="tablist" style={{ height: 30, display: 'flex', alignItems: 'stretch', background: C.chromeBg, borderBottom: '1px solid #d9dce1', flex: 'none' }}>
         {(['timeline', 'sources', 'settings'] as const).map((t) => {
@@ -470,21 +493,28 @@ function Pane({ store, m, rev, controls, title, runCommands, onClose }: {
               {runCommands.pause && (
                 <button
                   onClick={() => store.send({ type: m.pausedAt !== null ? 'resume' : 'pause' })}
-                  title={m.pausedAt !== null
-                    ? 'play — the next tick proceeds from the settled state'
-                    : 'pause — hold at the tick boundary; branches stay resident'}
-                  style={m.pausedAt !== null ? { ...runBtn, color: C.ok, borderColor: '#c9e7d4' } : runBtn}
+                  disabled={m.windingDownAt !== null}
+                  title={m.windingDownAt !== null
+                    ? 'finishing — the run is winding down'
+                    : m.pausedAt !== null
+                      ? 'play — the next tick proceeds from the settled state'
+                      : 'pause — hold at the tick boundary; branches stay resident'}
+                  style={m.windingDownAt !== null ? { ...runBtn, opacity: 0.4, cursor: 'default' }
+                    : m.pausedAt !== null ? { ...runBtn, color: C.ok, borderColor: '#c9e7d4' } : runBtn}
                 >{m.pausedAt !== null ? '▶ play' : '⏸ pause'}</button>
               )}
               {runCommands.wrapUp && (
                 <button
                   onClick={() => store.send({ type: 'wrap_up' })}
-                  disabled={m.pausedAt !== null}
-                  title={m.pausedAt !== null
-                    ? 'paused — press play first'
-                    : 'wind down — agents wrap up and report; the trajectory is kept'}
-                  style={m.pausedAt !== null ? { ...runBtn, opacity: 0.4, cursor: 'default' } : runBtn}
-                >wind down</button>
+                  disabled={m.pausedAt !== null || m.windingDownAt !== null}
+                  title={m.windingDownAt !== null
+                    ? 'agents are wrapping up and reporting'
+                    : m.pausedAt !== null
+                      ? 'paused — press play first'
+                      : 'finish up — agents wrap up and report; the trajectory is kept'}
+                  style={m.pausedAt !== null || m.windingDownAt !== null
+                    ? { ...runBtn, opacity: 0.4, cursor: 'default' } : runBtn}
+                >{m.windingDownAt !== null ? 'finishing…' : 'finish up'}</button>
               )}
               {runCommands.stop && (
                 <button
@@ -497,7 +527,9 @@ function Pane({ store, m, rev, controls, title, runCommands, onClose }: {
           )}
           <span style={{ fontFamily: mono, display: 'inline-flex', alignItems: 'center', gap: 7 }}>
             <span style={{ width: 7, height: 7, borderRadius: '50%', background: live ? (m.pausedAt !== null ? C.warn : C.ok) : C.faint }} />
-            {live ? (m.pausedAt !== null ? 'paused' : 'live') : m.runStartAt === null ? 'idle' : 'run complete'}
+            {live
+              ? (m.pausedAt !== null ? 'paused' : m.windingDownAt !== null ? 'finishing' : 'live')
+              : m.runStartAt === null ? 'idle' : 'run complete'}
           </span>
           <span style={{ cursor: 'pointer', color: C.dim }} onClick={onClose} title="collapse to the cog">✕</span>
         </div>
@@ -945,15 +977,34 @@ function Lane({ m, l, px, on, secOf, nowS, live, selected, toolColor, onClick, g
  *  own border stays the visual line. Width persists for the page session. */
 const FEED_W_DEFAULT = 420;
 let feedWidthPref = FEED_W_DEFAULT;
+const feedMax = (): number => Math.max(480, window.innerWidth - 380);
+const clampFeedW = (w: number): number => Math.round(Math.min(Math.max(w, 320), feedMax()));
 function FeedResizer({ width, onWidth }: {
   width: number; onWidth: (w: number) => void;
 }): ReactElement {
   const drag = useRef<{ x: number; w: number } | null>(null);
   return (
     <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="resize the agent feed"
+      aria-valuemin={320}
+      aria-valuemax={feedMax()}
+      aria-valuenow={Math.round(width)}
+      tabIndex={0}
       style={{ width: 7, margin: '0 -3.5px', flex: 'none', cursor: 'col-resize', zIndex: 3, position: 'relative', userSelect: 'none', touchAction: 'none' }}
       title="drag to resize \u00b7 double-click to reset"
       onDoubleClick={() => { feedWidthPref = FEED_W_DEFAULT; onWidth(FEED_W_DEFAULT); }}
+      onKeyDown={(e) => {
+        if (e.key === 'ArrowLeft') onWidth(clampFeedW(width + 32));
+        else if (e.key === 'ArrowRight') onWidth(clampFeedW(width - 32));
+        else if (e.key === 'Home') onWidth(320);
+        else if (e.key === 'End') onWidth(feedMax());
+        else if (e.key === 'Enter') { feedWidthPref = FEED_W_DEFAULT; onWidth(FEED_W_DEFAULT); }
+        else return;
+        e.preventDefault();
+        e.stopPropagation();
+      }}
       onPointerDown={(e) => {
         e.preventDefault();
         drag.current = { x: e.clientX, w: width };
@@ -961,13 +1012,72 @@ function FeedResizer({ width, onWidth }: {
       }}
       onPointerMove={(e) => {
         if (!drag.current) return;
-        const w = drag.current.w + (drag.current.x - e.clientX);
-        onWidth(Math.round(Math.min(Math.max(w, 320), Math.max(480, window.innerWidth - 380))));
+        onWidth(clampFeedW(drag.current.w + (drag.current.x - e.clientX)));
       }}
       onPointerUp={(e) => {
         drag.current = null;
-        e.currentTarget.releasePointerCapture(e.pointerId);
+        if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
       }}
+      onPointerCancel={() => { drag.current = null; }}
+      onLostPointerCapture={() => { drag.current = null; }}
+    />
+  );
+}
+
+/** Drag handle on the pane's TOP edge — pull up for a taller pane, exactly
+ *  the Chrome DevTools gesture; double-click (or Enter) restores the
+ *  responsive default (min(560px, 72vh)). Same invisible-strip affordance as
+ *  FeedResizer: the cursor is the hint, the pane's own border stays the
+ *  line. Height persists for the page session. Keyboard: a focusable
+ *  horizontal separator — arrows step, Home/End jump to the bounds. */
+let paneHeightPref: number | null = null;
+const PANE_MIN = 180;
+const paneMax = (): number => Math.max(PANE_MIN, window.innerHeight - 48);
+const clampPaneH = (h: number): number => Math.round(Math.min(Math.max(h, PANE_MIN), paneMax()));
+function PaneResizer({ height, paneRef, onHeight }: {
+  height: number | null;
+  paneRef: React.RefObject<HTMLDivElement | null>;
+  onHeight: (h: number | null) => void;
+}): ReactElement {
+  const drag = useRef<{ y: number; h: number } | null>(null);
+  const current = (): number => height ?? (paneRef.current?.offsetHeight ?? 560);
+  return (
+    <div
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="resize the pane"
+      aria-valuemin={PANE_MIN}
+      aria-valuemax={paneMax()}
+      aria-valuenow={Math.round(current())}
+      tabIndex={0}
+      style={{ position: 'absolute', top: -3.5, left: 0, right: 0, height: 7, cursor: 'ns-resize', zIndex: 3, userSelect: 'none', touchAction: 'none' }}
+      title="drag to resize \u00b7 double-click to reset"
+      onDoubleClick={() => onHeight(null)}
+      onKeyDown={(e) => {
+        if (e.key === 'ArrowUp') onHeight(clampPaneH(current() + 32));
+        else if (e.key === 'ArrowDown') onHeight(clampPaneH(current() - 32));
+        else if (e.key === 'Home') onHeight(PANE_MIN);
+        else if (e.key === 'End') onHeight(paneMax());
+        else if (e.key === 'Enter') onHeight(null);
+        else return;
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+      onPointerDown={(e) => {
+        e.preventDefault();
+        drag.current = { y: e.clientY, h: current() };
+        e.currentTarget.setPointerCapture(e.pointerId);
+      }}
+      onPointerMove={(e) => {
+        if (!drag.current) return;
+        onHeight(clampPaneH(drag.current.h + (drag.current.y - e.clientY)));
+      }}
+      onPointerUp={(e) => {
+        drag.current = null;
+        if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+      }}
+      onPointerCancel={() => { drag.current = null; }}
+      onLostPointerCapture={() => { drag.current = null; }}
     />
   );
 }
