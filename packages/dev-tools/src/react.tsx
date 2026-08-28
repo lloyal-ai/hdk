@@ -1958,7 +1958,7 @@ function fieldsOf(a: AbilityInfo): ConfigFieldSpec[] {
 
 /** One editable config field. Values are write-only on this wire — the input
  *  never prefills; the placeholder carries the set-state. Saving dispatches
- *  set_app_config with the entered field (whole-replace semantics until the
+ *  set_ability_config with the entered field (whole-replace semantics until the
  *  per-key merge helper lands — exact for the shipped single-field schemas). */
 function AbilityField({ name, field, send }: {
   name: string; field: ConfigFieldSpec; send: (c: unknown) => void;
@@ -1968,7 +1968,7 @@ function AbilityField({ name, field, send }: {
   const save = (): void => {
     const v = draft.trim();
     if (!v) return;
-    send({ type: 'set_app_config', name, values: { [field.key]: v } });
+    send({ type: 'set_ability_config', name, values: { [field.key]: v } });
     setDraft('');
     setSaved(true);
   };
