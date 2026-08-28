@@ -451,6 +451,7 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
       return;
     }
     case 'agent:spawn': {
+      if (typeof ev.agentId !== 'number') return; // type-only frame — never corrupt the lane map
       const id = ev.agentId as number;
       m.lanes.set(id, {
         agentId: id,
@@ -539,7 +540,8 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
       return;
     }
     case 'agent:tool_call': {
-      const agentId = ev.agentId as number;
+      if (typeof ev.agentId !== 'number') return;
+      const agentId = ev.agentId;
       const lane = m.lanes.get(agentId);
       const tool = typeof ev.tool === 'string' ? ev.tool : '';
       if (lane) lane.inflightTool = tool;
@@ -561,7 +563,8 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
       return;
     }
     case 'agent:tool_result': {
-      const agentId = ev.agentId as number;
+      if (typeof ev.agentId !== 'number') return;
+      const agentId = ev.agentId;
       const tool = typeof ev.tool === 'string' ? ev.tool : '';
       const lane = m.lanes.get(agentId);
       // Clear only the matching in-flight marker — a late result for an

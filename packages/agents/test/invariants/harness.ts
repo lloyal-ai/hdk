@@ -289,6 +289,9 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
       let windDownFired = false;
       let cancelFired = false;
       let pauseFired = false;
+      // The controller waits on the OBSERVED run:paused — a fixed sleep
+      // cannot establish that the pool reached its hold on a slow tick.
+      const pausedSeen = createSignal<void, void>();
       while (!next.done) {
         channelEvents.push(next.value);
         evCount++;
@@ -303,15 +306,18 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
             cancelSignal.send({ agentId: cancelId });
           }
         }
+        if (next.value.type === 'run:paused') pausedSeen.send();
         if (!pauseFired && spec.pauseAfter?.(next.value, evCount)) {
           pauseFired = true;
           // The controller runs on its OWN fiber so this drain loop keeps
           // consuming (the real UI never stops nexting) — the hold truly
           // holds through whilePaused, and in-hold work (cancel drains)
-          // flows out as events while frozen.
+          // flows out as events while frozen. It proceeds only once the
+          // drain loop has SEEN run:paused — deterministic, not timed.
           yield* spawn(function* () {
+            const seen = yield* pausedSeen;
             pauseSignal.send(true);
-            yield* sleep(20);
+            yield* seen.next();
             if (spec.whilePaused) {
               yield* call(() => spec.whilePaused!({
                 cancel: (agentId: number) => cancelSignal.send({ agentId }),

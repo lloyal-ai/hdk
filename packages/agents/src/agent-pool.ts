@@ -844,8 +844,11 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     }
     const MIRRORED_POOL_EVENTS = new Set<TraceEvent['type']>([
       'pool:agentNudge', 'tool:authReject', 'pool:agentDrop', 'branch:prune',
-      // The compiled per-agent prompt — what the model actually saw. The
-      // pane's feed renders it; the agentId stamp is the attribution.
+      // The compiled per-agent prompt SUFFIX. In shared-spine mode the
+      // system+tool header lives on the spine prefix (inherited via fork)
+      // and is deliberately not repeated here — the mirror carries what
+      // this spawn formatted, honestly labeled by the pane. agentId is
+      // the attribution.
       'prompt:format',
       // The dispatch record carries explore/exploit + callId — the live
       // consumer keys retrieval metadata off it.

@@ -64,6 +64,19 @@ function useToolColors(): (name: string) => string {
   };
 }
 const letterOf = (name: string): string => (name[0] || '?').toUpperCase();
+/** Invisible companion that forces one re-render when a toast expires —
+ *  the store stops repainting after the run ends, and a toast must never
+ *  outlive its 8 seconds on a frozen clock. */
+function ToastDismiss({ at }: { at: number }): null {
+  const [, force] = useState(0);
+  useEffect(() => {
+    const left = Math.max(0, 8000 - (performance.now() - at)) + 50;
+    const t = setTimeout(() => force((n) => n + 1), left);
+    return () => clearTimeout(t);
+  }, [at]);
+  return null;
+}
+
 /** Enter/Space activates a clickable — pairs with role="button" tabIndex={0}. */
 const keyActivate = (fn: () => void) => (e: React.KeyboardEvent): void => {
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(); }
@@ -184,16 +197,19 @@ function highlightJson(src: string): ReactElement[] {
 /** A tool result in full: pretty-printed and token-colored when it parses as
  *  JSON, scrollable past ~14 lines, and the copy control carries EVERY byte —
  *  the block never truncates. */
-function JsonBlock({ text }: { text: string }): ReactElement {
+function JsonBlock({ text, raw = false }: { text: string; raw?: boolean }): ReactElement {
   const [copied, setCopied] = useState(false);
   const { pretty, body } = useMemo(() => {
+    // raw: byte-for-byte — a compiled prompt that HAPPENS to be valid JSON
+    // must never be reformatted; what you copy is what the model saw.
+    if (raw) return { pretty: text, body: null };
     try {
       const p = JSON.stringify(JSON.parse(text), null, 2);
       return { pretty: p, body: highlightJson(p) };
     } catch {
       return { pretty: text, body: null };
     }
-  }, [text]);
+  }, [text, raw]);
   const copy = (): void => {
     navigator.clipboard.writeText(pretty).then(
       () => { setCopied(true); setTimeout(() => setCopied(false), 1200); },
@@ -272,10 +288,10 @@ export function DevPane({ bridge, controls = [], title, runCommands = {} }: DevP
   const rev = useStore(store, (s) => s.rev);
   const m = store.getState().model;
   const [open, setOpen] = useState(false);
-  // Opening the pane during a run marks that run's troubles SEEN — the
-  // failure badge survives run end only until then.
-  const seenRunRef = useRef<number | null>(null);
-  useEffect(() => { if (open) seenRunRef.current = m.runStartAt; }, [open, m.runStartAt]);
+  // While the pane is open, everything is seen live; the failure badge
+  // shows only failures newer than the last moment the pane was open.
+  const seenAtRef = useRef(0);
+  useEffect(() => { if (open) seenAtRef.current = performance.now(); }, [open, rev]);
 
   // The FAB renders only when the wire said dev — production ships inert.
   if (!m.dev) return null;
@@ -285,41 +301,51 @@ export function DevPane({ bridge, controls = [], title, runCommands = {} }: DevP
     // on the USER (the one state that blocks everything), red = an agent
     // failed this run, blue = agents live right now. Nothing = quiet.
     const liveCount = [...m.lanes.values()].filter((l) => l.doneAt === null).length;
-    const failed = [...m.lanes.values()].some((l) => l.outcome === 'failed');
+    // A user cancel is a deliberate cull, not a failure — it never badges.
+    const failedLanes = [...m.lanes.values()].filter(
+      (l) => l.outcome === 'failed' && l.failReason !== 'user_cancel');
+    const failed = failedLanes.length > 0;
+    const lastFailAt = failedLanes.reduce((mx, l) => Math.max(mx, l.doneAt ?? 0), 0);
     // iOS-style badge: always the one red, meaning carried by the glyph —
-    // ? = the planner waits on the user, ! = an agent failed, n = agents live.
-    const unseen = seenRunRef.current !== m.runStartAt;
+    // ? = the planner waits on the user, ! = an unseen failure, n = agents live.
     const badge = m.clarifying
       ? '?'
       : liveCount > 0 ? String(liveCount)
-        : failed && unseen ? '!' : null;
+        : failed && lastFailAt > seenAtRef.current ? '!' : null;
     const fabTitle = m.clarifying
       ? 'the planner is waiting on your answer'
       : liveCount > 0
         ? `${liveCount} agent${liveCount === 1 ? '' : 's'} live${failed ? ' · one failed' : ''}`
         : failed ? 'an agent failed — open for the reason' : 'dev pane (LLOYAL_DEV)';
     // A park or failure in the last 8s surfaces as a one-line toast beside
-    // the cog — the pane's story leaks out just enough to be noticed.
-    const nowP = store.getState().paintedAt;
+    // the cog. Age reads the REAL clock (paintedAt freezes when the run
+    // ends) and a timer forces the dismissal render — no immortal toasts.
+    const nowP = performance.now();
     let toast: string | null = null;
+    let toastAt = 0;
     for (const r of m.retrievals) {
       if (r.retry && nowP - r.retry.at < 8000 && r.settledAt === null) {
         toast = `${r.tool} rate-limited · retrying`;
+        toastAt = r.retry.at;
       }
     }
-    for (const l of m.lanes.values()) {
-      if (l.outcome === 'failed' && l.doneAt !== null && nowP - l.doneAt < 8000) {
+    for (const l of failedLanes) {
+      if (l.doneAt !== null && nowP - l.doneAt < 8000) {
         toast = `agent #${l.agentId} failed — open for the reason`;
+        toastAt = l.doneAt;
       }
     }
     return (
       <>
       {toast && (
-        <div style={{
+        <div role="status" aria-live="polite" style={{
           position: 'fixed', right: 74, bottom: 28, zIndex: 40,
           background: '#fff', border: `1px solid ${C.warnBorder}`, borderRadius: 8,
           padding: '6px 12px', fontSize: 11.5, color: C.warn, boxShadow: '0 2px 8px rgba(32,33,36,.14)',
-        }}>{toast}</div>
+        }}>
+          {toast}
+          <ToastDismiss at={toastAt} />
+        </div>
       )}
       <button
         onClick={() => setOpen(true)}
@@ -1226,13 +1252,13 @@ function AgentFeed({ m, lane, toolColor, onClose, onJump, nowMs, width, send, ca
               role="button" tabIndex={0}
               onClick={() => toggle('prompt')} onKeyDown={keyActivate(() => toggle('prompt'))}
               style={{ display: 'flex', alignItems: 'baseline', gap: 7, cursor: 'pointer', padding: '2px 0' }}
-              title="the COMPILED prompt that seeded this agent — post-template, post-tool-schemas: exactly what the model saw"
+              title="the compiled prompt suffix that seeded this agent. In shared-spine mode the system + tool header lives on the spine PREFIX (inherited via fork) and is not repeated here; recursive agents inherit further parent context the same way"
             >
               <span style={{ color: C.faint, fontSize: 9, width: 9, flex: 'none' }}>{expanded.has('prompt') ? '▾' : '▸'}</span>
               <span style={{ color: C.dim }}>prompt</span>
               <span style={{ fontFamily: mono, fontSize: 10, color: C.faint }}>{lane.prompt.tokenCount.toLocaleString()} tok</span>
             </div>
-            {expanded.has('prompt') && <JsonBlock text={lane.prompt.text} />}
+            {expanded.has('prompt') && <JsonBlock text={lane.prompt.text} raw />}
           </div>
         )}
         {(lane.failReason || lane.dropReason) && (
