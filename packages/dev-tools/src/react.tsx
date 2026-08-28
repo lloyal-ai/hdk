@@ -389,6 +389,7 @@ function Pane({ store, m, rev, controls, title, runCommands, onClose }: {
   const [tab, setTab] = useState<PaneTab>('timeline');
   const [selAgent, setSelAgent] = useState<number | null>(null);
   const [feedW, setFeedW] = useState(feedWidthPref);
+  const [paneH, setPaneH] = useState(paneHeightPref);
   const toolColor = useToolColors();
   const paneRef = useRef<HTMLDivElement | null>(null);
 
@@ -406,7 +407,7 @@ function Pane({ store, m, rev, controls, title, runCommands, onClose }: {
       window.removeEventListener('resize', apply);
       document.body.style.paddingBottom = prev;
     };
-  }, []);
+  }, [paneH]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -432,11 +433,13 @@ function Pane({ store, m, rev, controls, title, runCommands, onClose }: {
 
   return (
     <div ref={paneRef} style={{
-      position: 'fixed', left: 0, right: 0, bottom: 0, height: 'min(560px, 72vh)',
+      position: 'fixed', left: 0, right: 0, bottom: 0,
+      height: paneH !== null ? paneH : 'min(560px, 72vh)',
       background: '#fff', borderTop: '1px solid #bdc1c6', display: 'flex',
       flexDirection: 'column', zIndex: 50, fontSize: 12, color: C.text,
       fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
     }}>
+      <PaneResizer height={paneH} paneRef={paneRef} onHeight={(h) => { paneHeightPref = h; setPaneH(h); }} />
       {/* tab strip */}
       <div role="tablist" style={{ height: 30, display: 'flex', alignItems: 'stretch', background: C.chromeBg, borderBottom: '1px solid #d9dce1', flex: 'none' }}>
         {(['timeline', 'sources', 'settings'] as const).map((t) => {
@@ -482,9 +485,9 @@ function Pane({ store, m, rev, controls, title, runCommands, onClose }: {
                   disabled={m.pausedAt !== null}
                   title={m.pausedAt !== null
                     ? 'paused — press play first'
-                    : 'wind down — agents wrap up and report; the trajectory is kept'}
+                    : 'finish up — agents wrap up and report; the trajectory is kept'}
                   style={m.pausedAt !== null ? { ...runBtn, opacity: 0.4, cursor: 'default' } : runBtn}
-                >wind down</button>
+                >finish up</button>
               )}
               {runCommands.stop && (
                 <button
@@ -963,6 +966,41 @@ function FeedResizer({ width, onWidth }: {
         if (!drag.current) return;
         const w = drag.current.w + (drag.current.x - e.clientX);
         onWidth(Math.round(Math.min(Math.max(w, 320), Math.max(480, window.innerWidth - 380))));
+      }}
+      onPointerUp={(e) => {
+        drag.current = null;
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }}
+    />
+  );
+}
+
+/** Drag handle on the pane's TOP edge — pull up for a taller pane, exactly
+ *  the Chrome DevTools gesture; double-click restores the responsive default
+ *  (min(560px, 72vh)). Same invisible-strip affordance as FeedResizer: the
+ *  cursor is the hint, the pane's own border stays the line. Height persists
+ *  for the page session. */
+let paneHeightPref: number | null = null;
+function PaneResizer({ height, paneRef, onHeight }: {
+  height: number | null;
+  paneRef: React.RefObject<HTMLDivElement | null>;
+  onHeight: (h: number | null) => void;
+}): ReactElement {
+  const drag = useRef<{ y: number; h: number } | null>(null);
+  return (
+    <div
+      style={{ position: 'absolute', top: -3.5, left: 0, right: 0, height: 7, cursor: 'ns-resize', zIndex: 3, userSelect: 'none', touchAction: 'none' }}
+      title="drag to resize \u00b7 double-click to reset"
+      onDoubleClick={() => onHeight(null)}
+      onPointerDown={(e) => {
+        e.preventDefault();
+        drag.current = { y: e.clientY, h: height ?? (paneRef.current?.offsetHeight ?? 560) };
+        e.currentTarget.setPointerCapture(e.pointerId);
+      }}
+      onPointerMove={(e) => {
+        if (!drag.current) return;
+        const h = drag.current.h + (drag.current.y - e.clientY);
+        onHeight(Math.round(Math.min(Math.max(h, 180), window.innerHeight - 48)));
       }}
       onPointerUp={(e) => {
         drag.current = null;
