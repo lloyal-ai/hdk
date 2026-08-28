@@ -41,7 +41,11 @@ export interface DevPaneProps {
   runCommands?: { stop?: boolean; wrapUp?: boolean; cancelAgent?: boolean; pause?: boolean };
   /** The harness view itself. The shell renders it in a scroll container
    *  above the pane; production (no dev on the wire) gets the same shell
-   *  with nothing added, so the tree never remounts when the flag arrives. */
+   *  with nothing added, so the tree never remounts when the flag arrives.
+   *  SIZING CONTRACT: the shell owns the viewport and reserves rows for
+   *  the status bar / open pane — a full-height view must use
+   *  `height: 100%`, never `100vh`/`100dvh`, or its bottom edge renders
+   *  under the dev chrome. Flowing (page-scroll) views need nothing. */
   children: ReactNode;
 }
 
