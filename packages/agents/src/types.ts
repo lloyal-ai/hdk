@@ -317,7 +317,8 @@ export type AgentExitReason =
   | 'pressure_critical'
   | 'policy_exit'
   | 'pressure_softcut'
-  | 'maxTurns';
+  | 'maxTurns'
+  | 'report_cap';
 
 export interface AgentResult {
   /** Stable agent identifier (branch handle at creation time) */

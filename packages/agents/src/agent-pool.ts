@@ -1799,6 +1799,11 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       // them, so the whole cohort's reports fit without one agent claiming it all.
       const aliveCount = agents.filter(x => x.status === 'active' || x.status === 'awaiting_tool').length;
 
+      // A VOLUNTARY terminal report is bounded too: past the cap a stream is
+      // repeating, not deepening. The word advisory (tokenBudgetAsWords) is
+      // the primary cap; this is the same guillotine recovery reports get.
+      const voluntaryReportCap = Math.min(policy.reportBudget ?? MAX_REPORT_BUDGET, MAX_REPORT_BUDGET);
+
       const entries: [Branch, number][] = [];
       const toolCalls: { agent: Agent; tc: ParsedToolCall }[] = [];
       const nudges: SettledTool[] = [];
@@ -1881,6 +1886,23 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         // and exhaust KV. The prompt budget is the primary cap; this is the guillotine.
         if (a.extracting && a.recoveryTokens >= a.recoveryBudget) {
           yield* completeExtraction(a, poolChannel, tw, poolScope.traceId, ctx, pressureOpts, terminalToolName);
+          continue;
+        }
+
+        // The voluntary report's guillotine: an agent emitting its OWN
+        // terminal call past the cap is force-finished exactly like the
+        // pressure-kill salvage — the partial call parses (truncation-
+        // tolerant), the report lands, the branch is pruned. Without this,
+        // a degenerating report decodes until KV death.
+        if (!a.extracting && isEmittingTerminal(a, terminalToolName) && a.turnTokens >= voluntaryReportCap) {
+          a.exitReason = 'report_cap';
+          tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+            type: 'pool:agentDrop', agentId: a.id, reason: 'report_cap' });
+          traceAgentDone(tw, poolScope.traceId, a.id);
+          yield* poolChannel.send({ type: 'agent:done', agentId: a.id });
+          yield* finishRecovery(a, a.rawOutput, a.turnTokens, poolChannel, tw, poolScope.traceId, ctx, terminalToolName);
+          a.transition('idle');
+          safePrune(a, tw, poolScope.traceId);
           continue;
         }
 

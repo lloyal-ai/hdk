@@ -167,6 +167,9 @@ export class Agent {
   // the cap counts ONLY the report's tokens (resetTurn clears rawOutput, not _tokenCount).
   private _recoveryBudget = 0;
   private _recoveryTokenBase = 0;
+  // Base for `turnTokens` — re-snapshotted by resetTurn, so the voluntary
+  // report cap counts only the CURRENT turn's tokens.
+  private _turnTokenBase = 0;
 
   /** The agent that called the tool which spawned this agent's pool (null for top-level) */
   readonly parent: Agent | null = null;
@@ -257,6 +260,8 @@ export class Agent {
   get recoveryBudget(): number { return this._recoveryBudget; }
   /** Tokens produced SINCE recovery entry — what the token-stop backstop checks. */
   get recoveryTokens(): number { return this._tokenCount - this._recoveryTokenBase; }
+  /** Tokens produced in the CURRENT turn — what the voluntary report cap checks. */
+  get turnTokens(): number { return this._tokenCount - this._turnTokenBase; }
   /** Mark the agent as producing its recovery report (idempotent, one-way). Records
    *  the per-report budget `b` and snapshots the token base for the cap. */
   markExtracting(budget: number): void {
@@ -321,6 +326,7 @@ export class Agent {
     this._currentTool = null;
     this._toolObserved = false;
     this._parsed = null;
+    this._turnTokenBase = this._tokenCount;
   }
 
   /** Increment turn counter */

@@ -328,10 +328,25 @@ describe('DefaultAgentPolicy', () => {
       for (let i = 0; i < 101; i++) a.accumulateToken('x');
       // pressure(remaining=5000) → budgetTokens = max(50, 5000-150-512) = 4338
       // → words = floor(4338 * 0.7 / 10) * 10 = 3030
+      // …but the advisory is capped at 1200: past that, a big number reads
+      // as an invitation to pad and repeat toward it.
       const result = p.onRecovery(a, pressure() as any) as { type: 'extract'; prompt: { system: string; user: string } };
       expect(result.type).toBe('extract');
-      expect(result.prompt.system).toBe('Budget: 3030 words.');
-      expect(result.prompt.user).toBe('Report within 3030.');
+      expect(result.prompt.system).toBe('Budget: 1200 words.');
+      expect(result.prompt.user).toBe('Report within 1200.');
+    });
+
+    it('renders the exact budget when genuinely below the 1200-word cap', () => {
+      const prompt = {
+        system: 'Budget: <%= it.budget %> words.',
+        user: 'Report within <%= it.budget %>.',
+      };
+      const p = new DefaultAgentPolicy({ recovery: { prompt } });
+      const a = makeAgent({ toolCallCount: 3 });
+      for (let i = 0; i < 101; i++) a.accumulateToken('x');
+      // budgetTokensOverride 1000 → words = floor(1000 * 0.7 / 10) * 10 = 700 (< cap)
+      const result = p.onRecovery(a, pressure() as any, 1000) as { type: 'extract'; prompt: { system: string } };
+      expect(result.prompt.system).toBe('Budget: 700 words.');
     });
   });
 
@@ -356,14 +371,14 @@ describe('DefaultAgentPolicy', () => {
       expect(action.type).toBe('idle');
     });
 
-    it('nudge message matches expected string (includes budget in words)', () => {
+    it('nudge message caps the advertised budget at 1200 words', () => {
       const a = makeAgent({ toolCallCount: 2 });
       // pressure(remaining=5000, hardLimit=128) → budgetTokens = 4872
-      // budgetTokens → words: floor(4872 * 0.7 / 10) * 10 = floor(341.04) * 10 = 3410
+      // → uncapped words would be 3410; the advisory caps at 1200.
       const action = policy.onSettleReject(a, 5000, pressure(), BASE_CONFIG);
       expect(action).toEqual({
         type: 'nudge',
-        message: 'Tool result too large for remaining KV. Report your findings now within 3410 words.',
+        message: 'Tool result too large for remaining KV. Report your findings now within 1200 words.',
       });
     });
   });
@@ -470,9 +485,9 @@ describe('DefaultAgentPolicy', () => {
       const a = makeAgent({ toolCallCount: 3 });
       const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
       // pressure(remaining=5000, hardLimit=128) → budgetTokens = 4872
-      // → words = floor(4872 * 0.7 / 10) * 10 = 3410
+      // → uncapped words would be 3410; the advisory caps at 1200.
       const action = p.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect((action as any).message).toBe('Time limit reached — report your findings now within 3410 words.');
+      expect((action as any).message).toBe('Time limit reached — report your findings now within 1200 words.');
     });
   });
 

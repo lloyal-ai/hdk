@@ -150,6 +150,37 @@ function MetricCell({ heading, value, values, color, title, last = false }: {
   );
 }
 
+/** A status-bar-sized echo of one metric cell: the same min-max auto-scaled
+ *  shape at 14px tall, so the closed bar carries the live trends. */
+function MiniSpark({ heading, value, values, color }: {
+  heading: string; value: string; values: readonly number[]; color: string;
+}): ReactElement | null {
+  const gradId = React.useId();
+  if (values.length < 2) return null;
+  let min = Infinity, max = -Infinity;
+  for (const v of values) { if (v < min) min = v; if (v > max) max = v; }
+  const spanV = Math.max(max - min, 1e-6);
+  const pts = values.map((v, i) =>
+    `${((i / (values.length - 1)) * 100).toFixed(2)},${(13 - ((v - min) / spanV) * 10).toFixed(2)}`,
+  ).join(' ');
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+      <span style={label}>{heading}</span>
+      <svg viewBox="0 0 100 14" preserveAspectRatio="none" style={{ width: 44, height: 14, display: 'block' }}>
+        <defs>
+          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity="0.35" />
+            <stop offset="100%" stopColor={color} stopOpacity="0.04" />
+          </linearGradient>
+        </defs>
+        <polygon fill={`url(#${gradId})`} stroke="none" points={`0,14 ${pts} 100,14`} />
+        <polyline fill="none" stroke={color} strokeWidth="1.2" vectorEffect="non-scaling-stroke" strokeLinejoin="round" points={pts} />
+      </svg>
+      <span style={{ fontFamily: mono, fontSize: 10, color: C.text, fontWeight: 600 }}>{value}</span>
+    </span>
+  );
+}
+
 /** Bars over reranker scores: log-odds go NEGATIVE, so score/max explodes
  *  past 100% when the max is negative. Min-max into [0.06, 1] — bars only
  *  ever rank WITHIN one retrieval, so the scale is local by design. */
@@ -366,6 +397,12 @@ export function DevPane({ bridge, controls = [], title, runCommands = {}, childr
         ? `${liveCount} agent${liveCount === 1 ? '' : 's'} live${failed ? ' · one failed' : ''}`
         : unseenFail ? 'an agent failed — open for the reason'
           : isLive(m) ? 'run in progress' : 'idle';
+    // Mini echoes of the expanded metric row, aria-hidden: the values change
+    // every poll and would make the button's accessible name chatty.
+    const barStrip = pressureStrip(m, 60);
+    const barPct = pressurePercent(m);
+    const barHost = m.host.slice(-60);
+    const barLast = barHost[barHost.length - 1];
     return shell(
       <div
         onClick={() => setOpen(true)}
@@ -407,6 +444,30 @@ export function DevPane({ bridge, controls = [], title, runCommands = {}, childr
           <span>{summary}</span>
         </button>
         {toast && <Notice at={toastAt} text={toast} />}
+        <span style={{ flex: 1 }} />
+        <span aria-hidden="true" style={{ display: 'inline-flex', alignItems: 'center', gap: 14 }}>
+          <MiniSpark
+            heading="context" color={C.agent}
+            values={barStrip.map((p) => p.pct)}
+            value={barPct === null ? '—' : `${barPct}%`}
+          />
+          <MiniSpark
+            heading="cpu" color={HOST_CPU}
+            values={barHost.map((h) => h.cpu)}
+            value={barLast ? `${barLast.cpu}%` : '—'}
+          />
+          <MiniSpark
+            heading="mem" color="#9aa0a6"
+            values={barHost.filter((h) => h.memUsedMb !== null).map((h) => h.memUsedMb!)}
+            value={barLast && barLast.memUsedMb !== null && barLast.memTotalMb > 0
+              ? `${(barLast.memUsedMb / 1024).toFixed(1)} / ${Math.round(barLast.memTotalMb / 1024)}G` : '—'}
+          />
+          <MiniSpark
+            heading="harness" color="#5f6368"
+            values={barHost.map((h) => h.rssMb)}
+            value={barLast ? `${(barLast.rssMb / 1024).toFixed(1)}G` : '—'}
+          />
+        </span>
         <span style={{ flex: 1 }} />
         <span style={{ color: C.faint }} aria-hidden="true">click to expand</span>
       </div>,
@@ -680,7 +741,7 @@ function Timeline({ m, rev, store, selAgent, onSelect, toolColor }: {
           process's resident memory (weights + KV + runtime). */}
       <div style={{ height: 54, borderBottom: `1px solid ${C.border}`, display: 'flex', flex: 'none' }}>
         <MetricCell
-          heading="pressure" color={C.agent}
+          heading="context" color={C.agent}
           values={strip.slice(-60).map((p) => p.pct)}
           value={pct === null ? '—' : `${pct}% · ${m.pressure[m.pressure.length - 1]?.cellsUsed.toLocaleString()} / ${m.pressure[m.pressure.length - 1]?.nCtx.toLocaleString()}`}
           title="kv cells used — context pressure on the model side"

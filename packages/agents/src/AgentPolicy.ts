@@ -19,9 +19,14 @@ export const BATCH_BUFFER = 512;
  * reflected in training data. Applies a 0.7 words/token ratio (vs the
  * typical ~0.75) to under-advertise the budget, rounds down to the nearest
  * 10, and floors at 10 so the model always has a non-zero target.
+ *
+ * Capped at 1200: these advisories shape PRESSURE reports (wrap-up nudges,
+ * recovery extraction), where a huge headroom figure reads as an invitation
+ * to fill it — models pad and repeat toward the number they're given. The
+ * exact figure still shows whenever headroom is genuinely below the cap.
  */
 export function tokenBudgetAsWords(budgetTokens: number): number {
-  return Math.max(10, Math.floor(budgetTokens * 0.7 / 10) * 10);
+  return Math.min(1200, Math.max(10, Math.floor(budgetTokens * 0.7 / 10) * 10));
 }
 
 // ── Declarative tool guards ─────────────────────────────
