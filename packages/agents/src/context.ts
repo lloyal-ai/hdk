@@ -172,7 +172,10 @@ export const GrantStoreCtx = createContext<GrantStore>('lloyal.grantStore');
  * agents, reaps active ones to recovery, and lets in-flight tool calls **drain**
  * (complete + settle) before reaping — then the termination sweep runs each
  * policy's `onRecovery`. Answer-agnostic: what recovery yields (a report, or
- * `skip`) is the policy's call.
+ * `skip`) is the policy's call. Parked tool RETRIES are the one thing not
+ * drained: a rate-limit park (often 60–90s) is abandoned with an honest
+ * failure result, because the drain reports with what agents have. The flip
+ * is announced on the bus as `run:windingDown`.
  *
  * This is NOT abort — aborting everything (including in-flight tools) is `halt()`'s
  * job (kill the run scope). Absent context = no wind-down capability (the pool runs

@@ -502,6 +502,11 @@ export type AgentEvent =
   | { type: 'run:paused' }
   /** The hold released. `pausedMs` = the span excluded from run time. */
   | { type: 'run:resumed'; pausedMs: number }
+  /** Wind-down began (the {@link WindDown} signal fired): the orchestrator
+   *  is halted and agents drain to recovery reports. Parked tool retries are
+   *  abandoned rather than waited out — the drain reports with what agents
+   *  HAVE. A UI's cue to show the run as finishing. */
+  | { type: 'run:windingDown' }
   /** Dev-gated trace tee: a trace event mirrored onto the bus, stamped with
    *  the agent it belongs to. Tool-scoped writes carry the `callId` of the
    *  dispatch that produced them; pool-side interventions (nudges, drops,

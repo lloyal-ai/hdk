@@ -1342,6 +1342,9 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     // orchestrator (stop spawning — its `finally` sets orchestratorDone), and
     // wakes any all-parked nap via toolWake. The reap is pool-internal (no policy
     // surface); in-flight tools are NOT halted (they drain) — only `halt` aborts.
+    // Parked RETRIES are abandoned at the next DISPATCH (see Phase 4): a drain
+    // reports with what agents have, it never waits out a rate-limit park. The
+    // flip is announced as `pool:windDown` (trace) + `run:windingDown` (bus).
     let windingDown = false;
     if (windDownSignal) {
       const wd = windDownSignal;
@@ -1359,6 +1362,13 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         yield* orchestratorTask.halt();
         windingDown = true;
         toolWake.send();
+        // Announce the flip (trace + bus) — the consumer's cue to show the
+        // run as finishing. Emitted here, not at the first reap: with every
+        // agent parked in a retry there IS no immediate reap, and the click
+        // would read as ignored.
+        tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+          type: 'pool:windDown' });
+        yield* poolChannel.send({ type: 'run:windingDown' });
       });
     }
 
@@ -2108,6 +2118,30 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       }
 
       // -- Phase 4: DISPATCH
+      // Wind-down abandons parked retries: the drain reports with what agents
+      // HAVE — waiting out infrastructure weather (a rate-limit park can be
+      // 60–90s) to gather MORE evidence contradicts it, and the reap can't
+      // touch an awaiting_tool agent until its park settles. Settle an honest
+      // failure through the normal path instead; the agent turns active on
+      // settle and the next tick's reap recovers its report. An agent
+      // cancelled WHILE parked left its entry behind (it is idle/pruned) —
+      // discarded here rather than re-executed.
+      const abandoned: SettledTool[] = [];
+      if (windingDown && pendingRetries.length > 0) {
+        for (const r of pendingRetries.splice(0)) {
+          if (r.agent.status !== 'awaiting_tool') continue;
+          const result = { error:
+            `${r.tc.name} is unavailable (rate-limited) and the run is winding down — ` +
+            `report your findings with what you have.` };
+          const resultStr = JSON.stringify(result);
+          yield* poolChannel.send({ type: 'agent:tool_result', agentId: r.agent.id, tool: r.tc.name, result: resultStr });
+          const prefillTokens = buildToolResultDelta(ctx, resultStr, r.callId, { enableThinking: r.agent.fmt.enableThinking });
+          tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+            type: 'tool:result', agentId: r.agent.id, tool: r.tc.name,
+            result, prefillTokenCount: prefillTokens.length, durationMs: 0 });
+          abandoned.push({ agentId: r.agent.id, prefillTokens, toolName: r.tc.name, callId: r.callId, args: r.tc.arguments, probe: undefined });
+        }
+      }
       // Due retries re-enter first — their agents have been parked since the
       // ToolRetryError and re-execute the same call (same callId, no counter
       // increments).
@@ -2122,7 +2156,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       ]);
 
       // Deferred + new dispatch results → next tick's SETTLE
-      pendingSettled = [...deferred, ...dispatched];
+      pendingSettled = [...deferred, ...dispatched, ...abandoned];
 
       // -- Termination + recovery
       // Wait for the orchestrator to finish before closing — it may spawn more agents.

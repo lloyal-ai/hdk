@@ -477,21 +477,28 @@ function Pane({ store, m, rev, controls, title, runCommands, onClose }: {
               {runCommands.pause && (
                 <button
                   onClick={() => store.send({ type: m.pausedAt !== null ? 'resume' : 'pause' })}
-                  title={m.pausedAt !== null
-                    ? 'play — the next tick proceeds from the settled state'
-                    : 'pause — hold at the tick boundary; branches stay resident'}
-                  style={m.pausedAt !== null ? { ...runBtn, color: C.ok, borderColor: '#c9e7d4' } : runBtn}
+                  disabled={m.windingDownAt !== null}
+                  title={m.windingDownAt !== null
+                    ? 'finishing — the run is winding down'
+                    : m.pausedAt !== null
+                      ? 'play — the next tick proceeds from the settled state'
+                      : 'pause — hold at the tick boundary; branches stay resident'}
+                  style={m.windingDownAt !== null ? { ...runBtn, opacity: 0.4, cursor: 'default' }
+                    : m.pausedAt !== null ? { ...runBtn, color: C.ok, borderColor: '#c9e7d4' } : runBtn}
                 >{m.pausedAt !== null ? '▶ play' : '⏸ pause'}</button>
               )}
               {runCommands.wrapUp && (
                 <button
                   onClick={() => store.send({ type: 'wrap_up' })}
-                  disabled={m.pausedAt !== null}
-                  title={m.pausedAt !== null
-                    ? 'paused — press play first'
-                    : 'finish up — agents wrap up and report; the trajectory is kept'}
-                  style={m.pausedAt !== null ? { ...runBtn, opacity: 0.4, cursor: 'default' } : runBtn}
-                >finish up</button>
+                  disabled={m.pausedAt !== null || m.windingDownAt !== null}
+                  title={m.windingDownAt !== null
+                    ? 'agents are wrapping up and reporting'
+                    : m.pausedAt !== null
+                      ? 'paused — press play first'
+                      : 'finish up — agents wrap up and report; the trajectory is kept'}
+                  style={m.pausedAt !== null || m.windingDownAt !== null
+                    ? { ...runBtn, opacity: 0.4, cursor: 'default' } : runBtn}
+                >{m.windingDownAt !== null ? 'finishing…' : 'finish up'}</button>
               )}
               {runCommands.stop && (
                 <button
@@ -504,7 +511,9 @@ function Pane({ store, m, rev, controls, title, runCommands, onClose }: {
           )}
           <span style={{ fontFamily: mono, display: 'inline-flex', alignItems: 'center', gap: 7 }}>
             <span style={{ width: 7, height: 7, borderRadius: '50%', background: live ? (m.pausedAt !== null ? C.warn : C.ok) : C.faint }} />
-            {live ? (m.pausedAt !== null ? 'paused' : 'live') : m.runStartAt === null ? 'idle' : 'run complete'}
+            {live
+              ? (m.pausedAt !== null ? 'paused' : m.windingDownAt !== null ? 'finishing' : 'live')
+              : m.runStartAt === null ? 'idle' : 'run complete'}
           </span>
           <span style={{ cursor: 'pointer', color: C.dim }} onClick={onClose} title="collapse to the cog">✕</span>
         </div>

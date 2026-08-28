@@ -231,6 +231,10 @@ export interface PaneModel {
    *  at this instant — the gap to the advancing now-line IS the pause,
    *  drawn honestly (no decode happened there). */
   pausedAt: number | null;
+  /** Set when wind-down begins (`run:windingDown`): agents are draining to
+   *  their reports. Cleared on the next run. The transport cluster's cue to
+   *  read "finishing" and refuse a second wrap-up or a pause. */
+  windingDownAt: number | null;
   /** The dev gate — `config:loaded.dev`, the boot's LLOYAL_DEV signal carried
    *  on the wire. The FAB renders only when true. */
   dev: boolean;
@@ -280,6 +284,7 @@ export function createPaneModel(): PaneModel {
     runStartAt: null,
     runEndedAt: null,
     pausedAt: null,
+    windingDownAt: null,
     runContinuedAt: null,
     dev: false,
     facts: null,
@@ -343,6 +348,7 @@ function resetRun(m: PaneModel, now: number): void {
   m.runStartAt = now;
   m.runEndedAt = null;
   m.pausedAt = null;
+  m.windingDownAt = null;
 }
 
 /** The retrieval a mirrored trace event belongs to: by callId WITHIN the
@@ -706,6 +712,10 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
     }
     case 'run:resumed': {
       m.pausedAt = null;
+      return;
+    }
+    case 'run:windingDown': {
+      m.windingDownAt = now;
       return;
     }
     case 'answer': {
