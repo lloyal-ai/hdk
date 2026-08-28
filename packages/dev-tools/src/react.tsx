@@ -78,14 +78,24 @@ const letterOf = (name: string): string => (name[0] || '?').toUpperCase();
 /** Invisible companion that forces one re-render when a toast expires —
  *  the store stops repainting after the run ends, and a toast must never
  *  outlive its 8 seconds on a frozen clock. */
-function ToastDismiss({ at }: { at: number }): null {
-  const [, force] = useState(0);
+/** A transient status-bar notice that removes ITSELF after its 8s window —
+ *  it owns the render, so expiry works even when the store has stopped
+ *  repainting (a completed run emits nothing further). Keyed by `at` from
+ *  the caller so a fresh notice restarts the window. */
+function Notice({ at, text }: { at: number; text: string }): ReactElement | null {
+  const [expired, setExpired] = useState(false);
   useEffect(() => {
+    setExpired(false);
     const left = Math.max(0, 8000 - (performance.now() - at)) + 50;
-    const t = setTimeout(() => force((n) => n + 1), left);
+    const t = setTimeout(() => setExpired(true), left);
     return () => clearTimeout(t);
   }, [at]);
-  return null;
+  if (expired) return null;
+  return (
+    <span role="status" aria-live="polite" style={{ color: C.warn, whiteSpace: 'nowrap' }}>
+      {text}
+    </span>
+  );
 }
 
 /** Enter/Space activates a clickable — pairs with role="button" tabIndex={0}. */
@@ -358,11 +368,7 @@ export function DevPane({ bridge, controls = [], title, runCommands = {}, childr
           : isLive(m) ? 'run in progress' : 'idle';
     return shell(
       <div
-        role="button"
-        tabIndex={0}
-        aria-label="open the dev pane"
         onClick={() => setOpen(true)}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(true); } }}
         style={{
           height: 28, flex: 'none', display: 'flex', alignItems: 'center', gap: 10,
           padding: '0 12px', background: C.chromeBg, borderTop: '1px solid #d9dce1',
@@ -370,32 +376,39 @@ export function DevPane({ bridge, controls = [], title, runCommands = {}, childr
           fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
         }}
       >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-          <circle cx="12" cy="12" r="3" />
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-        </svg>
-        <span style={{ fontWeight: 600, color: C.text }}>dev</span>
-        {(m.clarifying || liveCount > 0 || unseenFail) && (
-          <span style={{
-            display: 'inline-flex', alignItems: 'center', gap: 5, fontWeight: 600,
-            color: m.clarifying ? C.warn : liveCount > 0 ? C.agent : C.fail,
-          }}>
+        {/* The one real control — AT interacts here; the row's onClick is a
+            mouse convenience. The live region below stays OUTSIDE it: button
+            descendants are presentational in accessibility trees. */}
+        <button
+          onClick={(e) => { e.stopPropagation(); setOpen(true); }}
+          aria-label="open the dev pane"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 10, background: 'none',
+            border: 0, padding: 0, font: 'inherit', color: 'inherit', cursor: 'pointer',
+          }}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+          <span style={{ fontWeight: 600, color: C.text }}>dev</span>
+          {(m.clarifying || liveCount > 0 || unseenFail) && (
             <span style={{
-              width: 7, height: 7, borderRadius: '50%',
-              background: m.clarifying ? C.warn : liveCount > 0 ? C.agent : C.fail,
-            }} />
-            {m.clarifying ? '?' : liveCount > 0 ? liveCount : '!'}
-          </span>
-        )}
-        <span>{summary}</span>
-        {toast && (
-          <span role="status" aria-live="polite" style={{ color: C.warn }}>
-            · {toast}
-            <ToastDismiss at={toastAt} />
-          </span>
-        )}
+              display: 'inline-flex', alignItems: 'center', gap: 5, fontWeight: 600,
+              color: m.clarifying ? C.warn : liveCount > 0 ? C.agent : C.fail,
+            }}>
+              <span style={{
+                width: 7, height: 7, borderRadius: '50%',
+                background: m.clarifying ? C.warn : liveCount > 0 ? C.agent : C.fail,
+              }} />
+              {m.clarifying ? '?' : liveCount > 0 ? liveCount : '!'}
+            </span>
+          )}
+          <span>{summary}</span>
+        </button>
+        {toast && <Notice at={toastAt} text={toast} />}
         <span style={{ flex: 1 }} />
-        <span style={{ color: C.faint }}>click to expand</span>
+        <span style={{ color: C.faint }} aria-hidden="true">click to expand</span>
       </div>,
     );
   }
