@@ -1,8 +1,11 @@
 /**
- * The dev pane's web/desktop surface: a cog FAB that docks a full-width pane
- * over the harness's own view — Timeline · Sources · Settings.
+ * The dev pane's web/desktop surface: the harness view's LAYOUT SHELL. The
+ * app renders inside the shell's scroll container and the pane docks BELOW
+ * it as its own flex region — Timeline · Sources · Settings. Opening the
+ * pane shrinks the app's viewport (the Chrome DevTools anchoring); it never
+ * covers the app.
  *
- * Mounted ONCE beside the app's view; it subscribes to the same bridge stream
+ * Wraps the app's view ONCE (the view is its children); it subscribes to the same bridge stream
  * through {@link createDevStore} (wire-gated: a production stream folds
  * nothing but `config:loaded`). Rendering is hand-rolled — no timeline
  * library: the design's invariants (fixed-span sliding window, stepped live
@@ -12,7 +15,7 @@
  * Everything shown is a recorded event field; absence renders as absence.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type { ReactElement } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 import { useStore } from 'zustand';
 import {
   pressureStrip, pressurePercent, readConfigPath, lanePpl, isLive, KEY_TIERS,
@@ -36,6 +39,10 @@ export interface DevPaneProps {
    *  control only when its command exists (research: all three; basic:
    *  cancelAgent). Command names are the templates' own vocabulary. */
   runCommands?: { stop?: boolean; wrapUp?: boolean; cancelAgent?: boolean; pause?: boolean };
+  /** The harness view itself. The shell renders it in a scroll container
+   *  above the pane; production (no dev on the wire) gets the same shell
+   *  with nothing added, so the tree never remounts when the flag arrives. */
+  children: ReactNode;
 }
 
 // ── palette: monochrome chrome, color reserved for data ──
@@ -278,7 +285,7 @@ function runEndS(m: PaneModel): number {
 }
 
 // ═══════════════════════════════════════════════════════════════
-export function DevPane({ bridge, controls = [], title, runCommands = {} }: DevPaneProps): ReactElement | null {
+export function DevPane({ bridge, controls = [], title, runCommands = {}, children }: DevPaneProps): ReactElement {
   // The store is a per-bridge SINGLETON: a remount reattaches to the running
   // fold (full history intact) instead of restarting it and desyncing. It is
   // deliberately NOT destroyed on unmount — it lives with the page, like the
@@ -293,14 +300,27 @@ export function DevPane({ bridge, controls = [], title, runCommands = {} }: DevP
   const seenAtRef = useRef(0);
   useEffect(() => { if (open) seenAtRef.current = performance.now(); }, [open, rev]);
 
-  // The FAB renders only when the wire said dev — production ships inert.
-  if (!m.dev) return null;
+  // The shell: app above, dev chrome below/over. Rendered in EVERY state —
+  // dev off, cog closed, pane open — so the app subtree keeps its position
+  // in the tree and never remounts when the dev flag or the pane toggles.
+  const shell = (content: ReactElement | null): ReactElement => (
+    <div style={{ height: '100dvh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div style={{ flex: 1, minHeight: 0, overflow: 'auto', position: 'relative' }}>{children}</div>
+      {content}
+    </div>
+  );
+
+  // The cog renders only when the wire said dev — production ships inert.
+  if (!m.dev) return shell(null);
 
   if (!open) {
     // The closed cog still tells the story: amber ? = the planner is waiting
     // on the USER (the one state that blocks everything), red = an agent
     // failed this run, blue = agents live right now. Nothing = quiet.
-    const liveCount = [...m.lanes.values()].filter((l) => l.doneAt === null).length;
+    // A stop can halt lanes without closing them — an ended run counts none.
+    const liveCount = isLive(m)
+      ? [...m.lanes.values()].filter((l) => l.doneAt === null).length
+      : 0;
     // A user cancel is a deliberate cull, not a failure — it never badges.
     const failedLanes = [...m.lanes.values()].filter(
       (l) => l.outcome === 'failed' && l.failReason !== 'user_cancel');
@@ -335,7 +355,7 @@ export function DevPane({ bridge, controls = [], title, runCommands = {} }: DevP
         toastAt = l.doneAt;
       }
     }
-    return (
+    return shell(
       <>
       {toast && (
         <div role="status" aria-live="polite" style={{
@@ -377,7 +397,7 @@ export function DevPane({ bridge, controls = [], title, runCommands = {} }: DevP
     );
   }
 
-  return <Pane store={store} m={m} rev={rev} controls={controls} title={title} runCommands={runCommands} onClose={() => setOpen(false)} />;
+  return shell(<Pane store={store} m={m} rev={rev} controls={controls} title={title} runCommands={runCommands} onClose={() => setOpen(false)} />);
 }
 
 // ═══ the docked pane ═══
@@ -392,22 +412,6 @@ function Pane({ store, m, rev, controls, title, runCommands, onClose }: {
   const [paneH, setPaneH] = useState(paneHeightPref);
   const toolColor = useToolColors();
   const paneRef = useRef<HTMLDivElement | null>(null);
-
-  // The pane is fixed, so the document doesn't know it's there — reserve its
-  // height as body padding while open, so the app's bottom content can always
-  // scroll clear of it. Restored on close/unmount.
-  useEffect(() => {
-    const prev = document.body.style.paddingBottom;
-    const apply = (): void => {
-      if (paneRef.current) document.body.style.paddingBottom = `${paneRef.current.offsetHeight}px`;
-    };
-    apply();
-    window.addEventListener('resize', apply);
-    return () => {
-      window.removeEventListener('resize', apply);
-      document.body.style.paddingBottom = prev;
-    };
-  }, [paneH]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -433,10 +437,10 @@ function Pane({ store, m, rev, controls, title, runCommands, onClose }: {
 
   return (
     <div ref={paneRef} style={{
-      position: 'fixed', left: 0, right: 0, bottom: 0,
+      position: 'relative', flex: 'none',
       height: paneH !== null ? paneH : 'min(560px, 72vh)',
       background: '#fff', borderTop: '1px solid #bdc1c6', display: 'flex',
-      flexDirection: 'column', zIndex: 50, fontSize: 12, color: C.text,
+      flexDirection: 'column', fontSize: 12, color: C.text,
       fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
     }}>
       <PaneResizer height={paneH} paneRef={paneRef} onHeight={(h) => { paneHeightPref = h; setPaneH(h); }} />
