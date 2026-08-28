@@ -1,4 +1,4 @@
-import { run, createChannel, scoped, createSignal } from 'effection';
+import { run, createChannel, scoped, createSignal, sleep, call } from 'effection';
 import type { Channel } from 'effection';
 import { MockSessionContext } from '../../../sdk/test/MockSessionContext';
 import { Branch } from '../../../sdk/src/Branch';
@@ -7,7 +7,7 @@ import type { ChatFormat, ParseChatOutputOptions, ParseChatOutputResult } from '
 import { useAgentPool } from '../../src/agent-pool';
 import type { Orchestrator } from '../../src/orchestrators';
 import { parallel, chain } from '../../src/orchestrators';
-import { Ctx, Store, Events, Trace, WindDown, CancelAgent } from '../../src/context';
+import { Ctx, Store, Events, Trace, WindDown, CancelAgent, Pause } from '../../src/context';
 import type { AgentPolicy } from '../../src/AgentPolicy';
 import type { AgentPoolResult, AgentEvent } from '../../src/types';
 import type { TraceEvent } from '../../src/trace-types';
@@ -141,6 +141,14 @@ export interface PoolSpec {
    */
   cancelAfter?: (ev: AgentEvent, count: number) => number | null;
   /**
+   * Fire `Pause(true)` the FIRST time this predicate matches, await
+   * {@link whilePaused} (the world is frozen — resolve deferred tools,
+   * assert nothing settles), then fire `Pause(false)`. Resume cannot be
+   * event-driven: no events flow while paused — which is the feature.
+   */
+  pauseAfter?: (ev: AgentEvent, count: number) => boolean;
+  whilePaused?: () => Promise<void>;
+  /**
    * Escape hatch to wrap/override any `ctx` method AFTER the instrumented mock is
    * built but BEFORE the pool runs — the same affordance the harness uses
    * internally for `_branchSample` / `parseChatOutput`. Recovery scenarios use it
@@ -248,6 +256,8 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
     if (spec.windDownAfter) yield* WindDown.set(windDownSignal);
     const cancelSignal = createSignal<{ agentId: number }, void>();
     if (spec.cancelAfter) yield* CancelAgent.set(cancelSignal);
+    const pauseSignal = createSignal<boolean, void>();
+    if (spec.pauseAfter) yield* Pause.set(pauseSignal);
 
     const taskCount = spec.taskCount ?? spec.scripts.length;
     const taskSpecs = Array.from({ length: taskCount }, (_, i) => ({
@@ -275,6 +285,7 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
       let evCount = 0;
       let windDownFired = false;
       let cancelFired = false;
+      let pauseFired = false;
       while (!next.done) {
         channelEvents.push(next.value);
         evCount++;
@@ -288,6 +299,14 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
             cancelFired = true;
             cancelSignal.send({ agentId: cancelId });
           }
+        }
+        if (!pauseFired && spec.pauseAfter?.(next.value, evCount)) {
+          pauseFired = true;
+          pauseSignal.send(true);
+          // Let the loop reach the hold, run the frozen-world hook, resume.
+          yield* sleep(20);
+          if (spec.whilePaused) yield* call(() => spec.whilePaused!());
+          pauseSignal.send(false);
         }
         next = yield* sub.next();
       }

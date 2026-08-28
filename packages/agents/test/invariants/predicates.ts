@@ -272,3 +272,36 @@ export function formatResult(name: string, r: PredicateResult): string {
   if (r.ok) return `${name}: ok`;
   return `${name}: ${r.violations.map(v => `[${v.invariant}] ${v.detail}`).join('; ')}`;
 }
+
+/**
+ * I32 — pause means paused: between each `pool:pause` and its `pool:resume`
+ * trace marker, NO native call starts. The branches sit resident; the loop
+ * holds; nothing decodes, prefills, commits, or samples. The one invariant
+ * that makes "pause" an honest word.
+ */
+export function I32_pauseHoldsNative(run: PoolRun): PredicateResult {
+  const spans: Array<{ from: number; to: number }> = [];
+  let openAt: number | null = null;
+  for (const te of run.traceEvents) {
+    if (te.type === 'pool:pause') openAt = te.ts;
+    if (te.type === 'pool:resume' && openAt !== null) {
+      spans.push({ from: openAt, to: te.ts });
+      openAt = null;
+    }
+  }
+  if (openAt !== null) return fail('I32', 'pool:pause with no matching pool:resume');
+  if (spans.length === 0) return fail('I32', 'no pause span found — the driver never paused');
+  for (const span of spans) {
+    for (const c of run.nativeCalls) {
+      if (c.tStart > span.from && c.tStart < span.to) {
+        return fail(
+          'I32',
+          `native ${c.op} (seq ${c.seq}) started at ${c.tStart.toFixed(1)} inside the pause span ` +
+          `[${span.from.toFixed(1)}, ${span.to.toFixed(1)}]`,
+          c.tStart,
+        );
+      }
+    }
+  }
+  return ok();
+}

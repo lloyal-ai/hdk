@@ -497,6 +497,11 @@ export type AgentEvent =
   | { type: 'agent:failed'; agentId: number; reason: string }
   | { type: 'agent:done'; agentId: number }
   | { type: 'agent:tick'; cellsUsed: number; nCtx: number }
+  /** The run held at a tick boundary (the {@link Pause} signal). Nothing
+   *  decodes until `run:resumed`; branches stay resident. */
+  | { type: 'run:paused' }
+  /** The hold released. `pausedMs` = the span excluded from run time. */
+  | { type: 'run:resumed'; pausedMs: number }
   /** Dev-gated trace tee: a trace event mirrored onto the bus, stamped with
    *  the agent it belongs to. Tool-scoped writes carry the `callId` of the
    *  dispatch that produced them; pool-side interventions (nudges, drops,

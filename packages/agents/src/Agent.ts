@@ -131,6 +131,7 @@ export class Agent {
   private _status: AgentStatus = 'idle';
   private _statusSignal: Signal<AgentStatus, void> = createSignal<AgentStatus, void>();
   private _startedAt: number | null = null;
+  private readonly _clock: () => number;
   private _rawOutput = '';
   private _tokenCount = 0;
   private _toolCallCount = 0;
@@ -181,6 +182,10 @@ export class Agent {
     task?: string;
     /** Optional non-enforcing ability label — see {@link assignedAbility}. */
     assignedAbility?: string | null;
+    /** The clock `startedAt` stamps through — the pool passes its run clock
+     *  (wall time minus paused spans) so time budgets never count a pause.
+     *  @default performance.now */
+    clock?: () => number;
   }) {
     this.id = opts.id;
     this.parentId = opts.parentId;
@@ -189,6 +194,7 @@ export class Agent {
     this.task = opts.task ?? '';
     this.parent = opts.parent ?? null;
     this.assignedAbility = opts.assignedAbility ?? null;
+    this._clock = opts.clock ?? (() => performance.now());
   }
 
   // ── Status ──────────────────────────────────────────────
@@ -224,7 +230,7 @@ export class Agent {
     }
     this._status = to;
     if (to === 'active' && this._startedAt === null) {
-      this._startedAt = performance.now();
+      this._startedAt = this._clock();
     }
     this._statusSignal.send(to);
   }

@@ -32,6 +32,10 @@ export interface DevPaneProps {
   controls?: readonly DevControl[];
   /** Shown in the status area. */
   title?: string;
+  /** The run commands THIS template's harness handles — the pane renders a
+   *  control only when its command exists (research: all three; basic:
+   *  cancelAgent). Command names are the templates' own vocabulary. */
+  runCommands?: { stop?: boolean; wrapUp?: boolean; cancelAgent?: boolean; pause?: boolean };
 }
 
 // ── palette: monochrome chrome, color reserved for data ──
@@ -44,6 +48,10 @@ const C = {
 const HOST_CPU = '#00897b';
 const TOOL_PALETTE = ['#e8710a', '#8430ce', '#00897b', '#d01884', '#827717', '#0097a7'];
 const mono = 'ui-monospace, "SF Mono", Menlo, Consolas, monospace';
+const runBtn: React.CSSProperties = {
+  fontSize: 10.5, padding: '2px 10px', borderRadius: 11, cursor: 'pointer',
+  border: '1px solid #dadce0', background: '#fff', color: C.dim, fontWeight: 600,
+};
 
 /** Per-tool color, assigned first-seen — stable within a run. */
 function useToolColors(): (name: string) => string {
@@ -254,7 +262,7 @@ function runEndS(m: PaneModel): number {
 }
 
 // ═══════════════════════════════════════════════════════════════
-export function DevPane({ bridge, controls = [], title }: DevPaneProps): ReactElement | null {
+export function DevPane({ bridge, controls = [], title, runCommands = {} }: DevPaneProps): ReactElement | null {
   // The store is a per-bridge SINGLETON: a remount reattaches to the running
   // fold (full history intact) instead of restarting it and desyncing. It is
   // deliberately NOT destroyed on unmount — it lives with the page, like the
@@ -264,6 +272,10 @@ export function DevPane({ bridge, controls = [], title }: DevPaneProps): ReactEl
   const rev = useStore(store, (s) => s.rev);
   const m = store.getState().model;
   const [open, setOpen] = useState(false);
+  // Opening the pane during a run marks that run's troubles SEEN — the
+  // failure badge survives run end only until then.
+  const seenRunRef = useRef<number | null>(null);
+  useEffect(() => { if (open) seenRunRef.current = m.runStartAt; }, [open, m.runStartAt]);
 
   // The FAB renders only when the wire said dev — production ships inert.
   if (!m.dev) return null;
@@ -276,16 +288,39 @@ export function DevPane({ bridge, controls = [], title }: DevPaneProps): ReactEl
     const failed = [...m.lanes.values()].some((l) => l.outcome === 'failed');
     // iOS-style badge: always the one red, meaning carried by the glyph —
     // ? = the planner waits on the user, ! = an agent failed, n = agents live.
+    const unseen = seenRunRef.current !== m.runStartAt;
     const badge = m.clarifying
       ? '?'
       : liveCount > 0 ? String(liveCount)
-        : failed ? '!' : null;
+        : failed && unseen ? '!' : null;
     const fabTitle = m.clarifying
       ? 'the planner is waiting on your answer'
       : liveCount > 0
         ? `${liveCount} agent${liveCount === 1 ? '' : 's'} live${failed ? ' · one failed' : ''}`
         : failed ? 'an agent failed — open for the reason' : 'dev pane (LLOYAL_DEV)';
+    // A park or failure in the last 8s surfaces as a one-line toast beside
+    // the cog — the pane's story leaks out just enough to be noticed.
+    const nowP = store.getState().paintedAt;
+    let toast: string | null = null;
+    for (const r of m.retrievals) {
+      if (r.retry && nowP - r.retry.at < 8000 && r.settledAt === null) {
+        toast = `${r.tool} rate-limited · retrying`;
+      }
+    }
+    for (const l of m.lanes.values()) {
+      if (l.outcome === 'failed' && l.doneAt !== null && nowP - l.doneAt < 8000) {
+        toast = `agent #${l.agentId} failed — open for the reason`;
+      }
+    }
     return (
+      <>
+      {toast && (
+        <div style={{
+          position: 'fixed', right: 74, bottom: 28, zIndex: 40,
+          background: '#fff', border: `1px solid ${C.warnBorder}`, borderRadius: 8,
+          padding: '6px 12px', fontSize: 11.5, color: C.warn, boxShadow: '0 2px 8px rgba(32,33,36,.14)',
+        }}>{toast}</div>
+      )}
       <button
         onClick={() => setOpen(true)}
         aria-label="open the dev pane"
@@ -312,16 +347,18 @@ export function DevPane({ bridge, controls = [], title }: DevPaneProps): ReactEl
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
         </svg>
       </button>
+      </>
     );
   }
 
-  return <Pane store={store} m={m} rev={rev} controls={controls} title={title} onClose={() => setOpen(false)} />;
+  return <Pane store={store} m={m} rev={rev} controls={controls} title={title} runCommands={runCommands} onClose={() => setOpen(false)} />;
 }
 
 // ═══ the docked pane ═══
-function Pane({ store, m, rev, controls, title, onClose }: {
+function Pane({ store, m, rev, controls, title, runCommands, onClose }: {
   store: DevStore; m: PaneModel; rev: number;
   controls: readonly DevControl[]; title?: string; onClose: () => void;
+  runCommands: NonNullable<DevPaneProps['runCommands']>;
 }): ReactElement {
   const [tab, setTab] = useState<PaneTab>('timeline');
   const [selAgent, setSelAgent] = useState<number | null>(null);
@@ -402,9 +439,39 @@ function Pane({ store, m, rev, controls, title, onClose }: {
               <Badge color={toolColor(t)} letter={letterOf(t)} size={15} /> {t}
             </span>
           ))}
+          {live && (runCommands.pause || runCommands.wrapUp || runCommands.stop) && (
+            <span style={{ display: 'inline-flex', gap: 6 }}>
+              {runCommands.pause && (
+                <button
+                  onClick={() => store.send({ type: m.pausedAt !== null ? 'resume' : 'pause' })}
+                  title={m.pausedAt !== null
+                    ? 'play — the next tick proceeds from the settled state'
+                    : 'pause — hold at the tick boundary; branches stay resident'}
+                  style={m.pausedAt !== null ? { ...runBtn, color: C.ok, borderColor: '#c9e7d4' } : runBtn}
+                >{m.pausedAt !== null ? '▶ play' : '⏸ pause'}</button>
+              )}
+              {runCommands.wrapUp && (
+                <button
+                  onClick={() => store.send({ type: 'wrap_up' })}
+                  disabled={m.pausedAt !== null}
+                  title={m.pausedAt !== null
+                    ? 'paused — press play first'
+                    : 'wind down — agents wrap up and report; the trajectory is kept'}
+                  style={m.pausedAt !== null ? { ...runBtn, opacity: 0.4, cursor: 'default' } : runBtn}
+                >wind down</button>
+              )}
+              {runCommands.stop && (
+                <button
+                  onClick={() => store.send({ type: 'stop' })}
+                  title="halt the run"
+                  style={{ ...runBtn, color: C.fail, borderColor: '#f0c4c1' }}
+                >stop</button>
+              )}
+            </span>
+          )}
           <span style={{ fontFamily: mono, display: 'inline-flex', alignItems: 'center', gap: 7 }}>
-            <span style={{ width: 7, height: 7, borderRadius: '50%', background: live ? C.ok : C.faint }} />
-            {live ? 'live' : m.runStartAt === null ? 'idle' : 'run complete'}
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: live ? (m.pausedAt !== null ? C.warn : C.ok) : C.faint }} />
+            {live ? (m.pausedAt !== null ? 'paused' : 'live') : m.runStartAt === null ? 'idle' : 'run complete'}
           </span>
           <span style={{ cursor: 'pointer', color: C.dim }} onClick={onClose} title="collapse to the cog">✕</span>
         </div>
@@ -417,7 +484,7 @@ function Pane({ store, m, rev, controls, title, onClose }: {
           {selAgent !== null && m.lanes.has(selAgent) && (
             <>
               <FeedResizer width={feedW} onWidth={(w) => { feedWidthPref = w; setFeedW(w); }} />
-              <AgentFeed m={m} lane={m.lanes.get(selAgent)!} toolColor={toolColor} onClose={() => setSelAgent(null)} onJump={setSelAgent} nowMs={store.getState().paintedAt} width={feedW} />
+              <AgentFeed m={m} lane={m.lanes.get(selAgent)!} toolColor={toolColor} onClose={() => setSelAgent(null)} onJump={setSelAgent} nowMs={store.getState().paintedAt} width={feedW} send={(c) => store.send(c)} canCancel={!!runCommands.cancelAgent} />
             </>
           )}
         </div>
@@ -586,6 +653,11 @@ function Timeline({ m, rev, store, selAgent, onSelect, toolColor }: {
         onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}
         onDoubleClick={() => { setFollow(true); setPanWindow(null); }}
       >
+        {m.runStartAt === null && (
+          <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: C.faint, fontSize: 11.5, pointerEvents: 'none' }}>
+            run a query — agents appear here live
+          </div>
+        )}
         {!follow && live && (
           <button
             onClick={(e) => { e.stopPropagation(); setFollow(true); setPanWindow(null); }}
@@ -634,7 +706,11 @@ function Lane({ m, l, px, on, secOf, nowS, live, selected, toolColor, onClick, g
   toolColor: (t: string) => string; onClick: () => void; gutter: number; windowEnd: number;
 }): ReactElement {
   const s = secOf(l.spawnedAt);
-  const e = l.doneAt === null ? nowS : secOf(l.doneAt);
+  // A paused run's lanes freeze at the hold — the widening gap to the
+  // now-line IS the pause, drawn honestly (no decode happened there).
+  const e = l.doneAt === null
+    ? (m.pausedAt !== null ? Math.min(nowS, secOf(m.pausedAt)) : nowS)
+    : secOf(l.doneAt);
   const capL = px(s);
   const capR = px(Math.min(e, windowEnd));
   const running = l.doneAt === null;
@@ -920,6 +996,10 @@ function EpistemicsChart({ m, lane, nowMs }: {
 
   const last = e[e.length - 1];
   const ppl = lanePpl(lane);
+  const tail = e.slice(-64);
+  const recentPpl = tail.length >= 16
+    ? Math.exp(tail.reduce((a, x) => a + x.s, 0) / tail.length)
+    : null;
   const chip = (color: string, label: string, value: number, title: string): ReactElement => (
     <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 4, whiteSpace: 'nowrap' }} title={title}>
       <span style={{ width: 8, height: 8, borderRadius: 2, background: color, alignSelf: 'center' }} />
@@ -937,8 +1017,8 @@ function EpistemicsChart({ m, lane, nowMs }: {
         {chip(SURPRISAL_COLOR, 'surprisal', last.s, 'how unexpected the picked token was \u2014 \u2212ln p, in nats')}
         {ppl !== null && (
           <span style={{ fontFamily: mono, fontSize: 10, color: C.faint, whiteSpace: 'nowrap' }}
-            title="perplexity \u2014 exp of mean surprisal over this agent\u2019s tokens; compare agents, lower reads more fluent">
-            ppl {ppl.toFixed(2)}
+            title="ppl = exp of mean surprisal over ALL this agent's tokens (compare agents); recent = the same over the last ~64 — the live fluency signal, e.g. across quants">
+            ppl {ppl.toFixed(2)}{recentPpl !== null ? ` · recent ${recentPpl.toFixed(2)}` : ''}
           </span>
         )}
       </div>
@@ -962,9 +1042,10 @@ function EpistemicsChart({ m, lane, nowMs }: {
   );
 }
 
-function AgentFeed({ m, lane, toolColor, onClose, onJump, nowMs, width }: {
+function AgentFeed({ m, lane, toolColor, onClose, onJump, nowMs, width, send, canCancel }: {
   m: PaneModel; lane: AgentLane; toolColor: (t: string) => string;
   onClose: () => void; onJump: (id: number) => void; nowMs: number; width: number;
+  send: (c: unknown) => void; canCancel: boolean;
 }): ReactElement {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['report']));
   const toggle = (id: string): void => {
@@ -1109,10 +1190,37 @@ function AgentFeed({ m, lane, toolColor, onClose, onJump, nowMs, width }: {
         )}
         <span style={chip}>{lane.outcome}{lane.doneAt !== null && m.runStartAt !== null ? ` · ${fmtS((lane.doneAt - lane.spawnedAt) / 1000)}` : ''}</span>
         <span style={{ flex: 1 }} />
+        {canCancel && lane.doneAt === null && (
+          <button
+            onClick={() => send({ type: 'cancel_agent', agentId: lane.agentId })}
+            disabled={m.pausedAt !== null}
+            title={m.pausedAt !== null
+              ? 'paused — press play first'
+              : 'cancel this agent — its branch is reclaimed; siblings continue'}
+            style={m.pausedAt !== null
+              ? { ...runBtn, opacity: 0.4, cursor: 'default' }
+              : { ...runBtn, color: C.fail, borderColor: '#f0c4c1' }}
+          >cancel</button>
+        )}
         <span style={{ cursor: 'pointer', color: C.dim }} onClick={onClose} title="close — the timeline returns to full width">✕</span>
       </div>
       <div style={{ overflowY: 'auto', flex: 1, fontSize: 11, paddingBottom: 8 }}>
         <EpistemicsChart m={m} lane={lane} nowMs={nowMs} />
+        {lane.prompt && (
+          <div style={{ borderBottom: `1px solid ${C.border}`, padding: '4px 12px 6px' }}>
+            <div
+              role="button" tabIndex={0}
+              onClick={() => toggle('prompt')} onKeyDown={keyActivate(() => toggle('prompt'))}
+              style={{ display: 'flex', alignItems: 'baseline', gap: 7, cursor: 'pointer', padding: '2px 0' }}
+              title="the COMPILED prompt that seeded this agent — post-template, post-tool-schemas: exactly what the model saw"
+            >
+              <span style={{ color: C.faint, fontSize: 9, width: 9, flex: 'none' }}>{expanded.has('prompt') ? '▾' : '▸'}</span>
+              <span style={{ color: C.dim }}>prompt</span>
+              <span style={{ fontFamily: mono, fontSize: 10, color: C.faint }}>{lane.prompt.tokenCount.toLocaleString()} tok</span>
+            </div>
+            {expanded.has('prompt') && <JsonBlock text={lane.prompt.text} />}
+          </div>
+        )}
         {(lane.failReason || lane.dropReason) && (
           <div style={{ display: 'flex', alignItems: 'baseline', padding: '6px 12px', gap: 8 }}>
             <span style={{ color: C.dim, width: 92, flex: 'none' }}>pool said</span>

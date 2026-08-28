@@ -200,3 +200,29 @@ export const WindDown = createContext<Signal<void, void>>('lloyal.windDown');
  * @category Agents
  */
 export const CancelAgent = createContext<Signal<{ agentId: number }, void>>('lloyal.cancelAgent');
+
+/**
+ * Effection context holding an optional pause {@link Signal}.
+ *
+ * A consumer that wants pause/play provides a `createSignal<boolean, void>()`
+ * in the pool's run scope and `.send(true)`s / `.send(false)`s it. The pool
+ * reads it at boot (`yield* Pause.get()`); while paused the tick loop HOLDS at
+ * the tick boundary — no produce, no commit, no settle, no dispatch. Branches
+ * stay resident (KV untouched); in-flight tools complete and their results
+ * queue as data, settling on the first tick after play. Policy time budgets
+ * measure RUN time (paused spans excluded); retry parks stay on the wall
+ * clock — rate limits elapse in the real world.
+ *
+ * Pause takes effect at the next tick boundary: an in-flight recovery decode
+ * (`recoverInline`, the termination sweep) completes first. Lifecycle
+ * sequencing is the harness's job — the pool holds while paused regardless of
+ * other signals; conflicting commands (wind-down while paused) are the
+ * consumer's to refuse. Absent context = no pause capability.
+ *
+ * This is the whole-run sibling of {@link WindDown} (drain) and
+ * {@link CancelAgent} (targeted discard); `halt()` remains the discard-now
+ * control. Pause keeps everything and goes nowhere.
+ *
+ * @category Agents
+ */
+export const Pause = createContext<Signal<boolean, void>>('lloyal.pause');

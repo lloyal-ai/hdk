@@ -272,6 +272,14 @@ export interface AgentPolicy {
   resetTick?(): void;
 
   /**
+   * Bind the pool's run clock — wall time minus paused spans. Called once at
+   * pool boot when the pool has a {@link Pause} signal, so time budgets
+   * measure the RUN's effort, never a pause. Optional — a policy without
+   * time knobs can ignore it; absent binding, time reads `performance.now`.
+   */
+  bindClock?(clock: () => number): void;
+
+  /**
    * Recovery: should we force a report from this reaped agent (no result)?
    *
    * Called when an agent is reaped without a voluntary result. Return
@@ -446,6 +454,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
   private _terminalToolName: string | null;
   private _maxToolRetries: number;
   private _startTime: number;
+  private _clock: () => number = () => performance.now();
 
   constructor(opts?: DefaultAgentPolicyOpts) {
     this._minToolCalls = opts?.minToolCallsBeforeReturn ?? 2;
@@ -479,7 +488,14 @@ export class DefaultAgentPolicy implements AgentPolicy {
    */
   private _elapsed(agent?: Agent): number {
     const started = agent?.startedAt ?? this._startTime;
-    return performance.now() - started;
+    return this._clock() - started;
+  }
+
+  /** Bind the pool's run clock (wall minus paused spans). `_startTime` was
+   *  stamped pre-pool with the wall clock, when the two domains coincide —
+   *  no rebasing needed; `agent.startedAt` stamps through the same clock. */
+  bindClock(clock: () => number): void {
+    this._clock = clock;
   }
 
   /** KV pressure thresholds for ContextPressure construction.

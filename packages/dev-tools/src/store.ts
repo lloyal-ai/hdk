@@ -20,7 +20,10 @@ import type { DevEvent, PaneModel } from './index.js';
 /** The bridge slice the pane needs — structurally `window.harness`, minus the
  *  snapshot method the pane deliberately ignores (it folds live only). */
 export interface DevBridge {
-  onEvent(cb: (envelope: { ev: DevEvent }) => void): () => void;
+  /** The envelope's `ev` needs only a `type` — the fold typeof-guards every
+   *  field it reads, and demanding more (an index signature) rejects
+   *  interface-typed wire unions for no safety gain. */
+  onEvent(cb: (envelope: { ev: { type: string } }) => void): () => void;
   send(command: unknown): void;
 }
 
@@ -34,6 +37,7 @@ const STRUCTURAL = new Set([
   'plan:start', 'query', 'research:start', 'synthesize:start', 'plan',
   'agent:spawn', 'agent:done', 'agent:failed', 'agent:recovered',
   'agent:return', 'agent:tool_call', 'agent:tool_result', 'agent:trace',
+  'run:paused', 'run:resumed',
   'answer', 'error',
 ]);
 
@@ -103,7 +107,7 @@ export function createDevStore(bridge: DevBridge): DevStore {
     // Truly wire-gated: until config:loaded says dev, fold ONLY that event —
     // a production stream pays one string compare per event, nothing more.
     if (!model.dev && ev.type !== 'config:loaded') return;
-    foldEvent(model, ev, performance.now());
+    foldEvent(model, ev as DevEvent, performance.now());
     if (!model.dev) return;
     ensureTimer();
     if (STRUCTURAL.has(ev.type)) paint();
