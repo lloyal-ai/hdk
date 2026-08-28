@@ -32,6 +32,10 @@ export interface DevPaneProps {
   controls?: readonly DevControl[];
   /** Shown in the status area. */
   title?: string;
+  /** The run commands THIS template's harness handles — the pane renders a
+   *  control only when its command exists (research: all three; basic:
+   *  cancelAgent). Command names are the templates' own vocabulary. */
+  runCommands?: { stop?: boolean; wrapUp?: boolean; cancelAgent?: boolean; pause?: boolean };
 }
 
 // ── palette: monochrome chrome, color reserved for data ──
@@ -44,6 +48,10 @@ const C = {
 const HOST_CPU = '#00897b';
 const TOOL_PALETTE = ['#e8710a', '#8430ce', '#00897b', '#d01884', '#827717', '#0097a7'];
 const mono = 'ui-monospace, "SF Mono", Menlo, Consolas, monospace';
+const runBtn: React.CSSProperties = {
+  fontSize: 10.5, padding: '2px 10px', borderRadius: 11, cursor: 'pointer',
+  border: '1px solid #dadce0', background: '#fff', color: C.dim, fontWeight: 600,
+};
 
 /** Per-tool color, assigned first-seen — stable within a run. */
 function useToolColors(): (name: string) => string {
@@ -56,6 +64,19 @@ function useToolColors(): (name: string) => string {
   };
 }
 const letterOf = (name: string): string => (name[0] || '?').toUpperCase();
+/** Invisible companion that forces one re-render when a toast expires —
+ *  the store stops repainting after the run ends, and a toast must never
+ *  outlive its 8 seconds on a frozen clock. */
+function ToastDismiss({ at }: { at: number }): null {
+  const [, force] = useState(0);
+  useEffect(() => {
+    const left = Math.max(0, 8000 - (performance.now() - at)) + 50;
+    const t = setTimeout(() => force((n) => n + 1), left);
+    return () => clearTimeout(t);
+  }, [at]);
+  return null;
+}
+
 /** Enter/Space activates a clickable — pairs with role="button" tabIndex={0}. */
 const keyActivate = (fn: () => void) => (e: React.KeyboardEvent): void => {
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(); }
@@ -176,16 +197,19 @@ function highlightJson(src: string): ReactElement[] {
 /** A tool result in full: pretty-printed and token-colored when it parses as
  *  JSON, scrollable past ~14 lines, and the copy control carries EVERY byte —
  *  the block never truncates. */
-function JsonBlock({ text }: { text: string }): ReactElement {
+function JsonBlock({ text, raw = false }: { text: string; raw?: boolean }): ReactElement {
   const [copied, setCopied] = useState(false);
   const { pretty, body } = useMemo(() => {
+    // raw: byte-for-byte — a compiled prompt that HAPPENS to be valid JSON
+    // must never be reformatted; what you copy is what the model saw.
+    if (raw) return { pretty: text, body: null };
     try {
       const p = JSON.stringify(JSON.parse(text), null, 2);
       return { pretty: p, body: highlightJson(p) };
     } catch {
       return { pretty: text, body: null };
     }
-  }, [text]);
+  }, [text, raw]);
   const copy = (): void => {
     navigator.clipboard.writeText(pretty).then(
       () => { setCopied(true); setTimeout(() => setCopied(false), 1200); },
@@ -254,7 +278,7 @@ function runEndS(m: PaneModel): number {
 }
 
 // ═══════════════════════════════════════════════════════════════
-export function DevPane({ bridge, controls = [], title }: DevPaneProps): ReactElement | null {
+export function DevPane({ bridge, controls = [], title, runCommands = {} }: DevPaneProps): ReactElement | null {
   // The store is a per-bridge SINGLETON: a remount reattaches to the running
   // fold (full history intact) instead of restarting it and desyncing. It is
   // deliberately NOT destroyed on unmount — it lives with the page, like the
@@ -264,6 +288,10 @@ export function DevPane({ bridge, controls = [], title }: DevPaneProps): ReactEl
   const rev = useStore(store, (s) => s.rev);
   const m = store.getState().model;
   const [open, setOpen] = useState(false);
+  // While the pane is open, everything is seen live; the failure badge
+  // shows only failures newer than the last moment the pane was open.
+  const seenAtRef = useRef(0);
+  useEffect(() => { if (open) seenAtRef.current = performance.now(); }, [open, rev]);
 
   // The FAB renders only when the wire said dev — production ships inert.
   if (!m.dev) return null;
@@ -273,19 +301,52 @@ export function DevPane({ bridge, controls = [], title }: DevPaneProps): ReactEl
     // on the USER (the one state that blocks everything), red = an agent
     // failed this run, blue = agents live right now. Nothing = quiet.
     const liveCount = [...m.lanes.values()].filter((l) => l.doneAt === null).length;
-    const failed = [...m.lanes.values()].some((l) => l.outcome === 'failed');
+    // A user cancel is a deliberate cull, not a failure — it never badges.
+    const failedLanes = [...m.lanes.values()].filter(
+      (l) => l.outcome === 'failed' && l.failReason !== 'user_cancel');
+    const failed = failedLanes.length > 0;
+    const lastFailAt = failedLanes.reduce((mx, l) => Math.max(mx, l.doneAt ?? 0), 0);
     // iOS-style badge: always the one red, meaning carried by the glyph —
-    // ? = the planner waits on the user, ! = an agent failed, n = agents live.
+    // ? = the planner waits on the user, ! = an unseen failure, n = agents live.
     const badge = m.clarifying
       ? '?'
       : liveCount > 0 ? String(liveCount)
-        : failed ? '!' : null;
+        : failed && lastFailAt > seenAtRef.current ? '!' : null;
     const fabTitle = m.clarifying
       ? 'the planner is waiting on your answer'
       : liveCount > 0
         ? `${liveCount} agent${liveCount === 1 ? '' : 's'} live${failed ? ' · one failed' : ''}`
         : failed ? 'an agent failed — open for the reason' : 'dev pane (LLOYAL_DEV)';
+    // A park or failure in the last 8s surfaces as a one-line toast beside
+    // the cog. Age reads the REAL clock (paintedAt freezes when the run
+    // ends) and a timer forces the dismissal render — no immortal toasts.
+    const nowP = performance.now();
+    let toast: string | null = null;
+    let toastAt = 0;
+    for (const r of m.retrievals) {
+      if (r.retry && nowP - r.retry.at < 8000 && r.settledAt === null) {
+        toast = `${r.tool} rate-limited · retrying`;
+        toastAt = r.retry.at;
+      }
+    }
+    for (const l of failedLanes) {
+      if (l.doneAt !== null && nowP - l.doneAt < 8000) {
+        toast = `agent #${l.agentId} failed — open for the reason`;
+        toastAt = l.doneAt;
+      }
+    }
     return (
+      <>
+      {toast && (
+        <div role="status" aria-live="polite" style={{
+          position: 'fixed', right: 74, bottom: 28, zIndex: 40,
+          background: '#fff', border: `1px solid ${C.warnBorder}`, borderRadius: 8,
+          padding: '6px 12px', fontSize: 11.5, color: C.warn, boxShadow: '0 2px 8px rgba(32,33,36,.14)',
+        }}>
+          {toast}
+          <ToastDismiss at={toastAt} />
+        </div>
+      )}
       <button
         onClick={() => setOpen(true)}
         aria-label="open the dev pane"
@@ -312,16 +373,18 @@ export function DevPane({ bridge, controls = [], title }: DevPaneProps): ReactEl
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
         </svg>
       </button>
+      </>
     );
   }
 
-  return <Pane store={store} m={m} rev={rev} controls={controls} title={title} onClose={() => setOpen(false)} />;
+  return <Pane store={store} m={m} rev={rev} controls={controls} title={title} runCommands={runCommands} onClose={() => setOpen(false)} />;
 }
 
 // ═══ the docked pane ═══
-function Pane({ store, m, rev, controls, title, onClose }: {
+function Pane({ store, m, rev, controls, title, runCommands, onClose }: {
   store: DevStore; m: PaneModel; rev: number;
   controls: readonly DevControl[]; title?: string; onClose: () => void;
+  runCommands: NonNullable<DevPaneProps['runCommands']>;
 }): ReactElement {
   const [tab, setTab] = useState<PaneTab>('timeline');
   const [selAgent, setSelAgent] = useState<number | null>(null);
@@ -402,9 +465,39 @@ function Pane({ store, m, rev, controls, title, onClose }: {
               <Badge color={toolColor(t)} letter={letterOf(t)} size={15} /> {t}
             </span>
           ))}
+          {live && (runCommands.pause || runCommands.wrapUp || runCommands.stop) && (
+            <span style={{ display: 'inline-flex', gap: 6 }}>
+              {runCommands.pause && (
+                <button
+                  onClick={() => store.send({ type: m.pausedAt !== null ? 'resume' : 'pause' })}
+                  title={m.pausedAt !== null
+                    ? 'play — the next tick proceeds from the settled state'
+                    : 'pause — hold at the tick boundary; branches stay resident'}
+                  style={m.pausedAt !== null ? { ...runBtn, color: C.ok, borderColor: '#c9e7d4' } : runBtn}
+                >{m.pausedAt !== null ? '▶ play' : '⏸ pause'}</button>
+              )}
+              {runCommands.wrapUp && (
+                <button
+                  onClick={() => store.send({ type: 'wrap_up' })}
+                  disabled={m.pausedAt !== null}
+                  title={m.pausedAt !== null
+                    ? 'paused — press play first'
+                    : 'wind down — agents wrap up and report; the trajectory is kept'}
+                  style={m.pausedAt !== null ? { ...runBtn, opacity: 0.4, cursor: 'default' } : runBtn}
+                >wind down</button>
+              )}
+              {runCommands.stop && (
+                <button
+                  onClick={() => store.send({ type: 'stop' })}
+                  title="halt the run"
+                  style={{ ...runBtn, color: C.fail, borderColor: '#f0c4c1' }}
+                >stop</button>
+              )}
+            </span>
+          )}
           <span style={{ fontFamily: mono, display: 'inline-flex', alignItems: 'center', gap: 7 }}>
-            <span style={{ width: 7, height: 7, borderRadius: '50%', background: live ? C.ok : C.faint }} />
-            {live ? 'live' : m.runStartAt === null ? 'idle' : 'run complete'}
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: live ? (m.pausedAt !== null ? C.warn : C.ok) : C.faint }} />
+            {live ? (m.pausedAt !== null ? 'paused' : 'live') : m.runStartAt === null ? 'idle' : 'run complete'}
           </span>
           <span style={{ cursor: 'pointer', color: C.dim }} onClick={onClose} title="collapse to the cog">✕</span>
         </div>
@@ -417,7 +510,7 @@ function Pane({ store, m, rev, controls, title, onClose }: {
           {selAgent !== null && m.lanes.has(selAgent) && (
             <>
               <FeedResizer width={feedW} onWidth={(w) => { feedWidthPref = w; setFeedW(w); }} />
-              <AgentFeed m={m} lane={m.lanes.get(selAgent)!} toolColor={toolColor} onClose={() => setSelAgent(null)} onJump={setSelAgent} nowMs={store.getState().paintedAt} width={feedW} />
+              <AgentFeed m={m} lane={m.lanes.get(selAgent)!} toolColor={toolColor} onClose={() => setSelAgent(null)} onJump={setSelAgent} nowMs={store.getState().paintedAt} width={feedW} send={(c) => store.send(c)} canCancel={!!runCommands.cancelAgent} />
             </>
           )}
         </div>
@@ -586,6 +679,11 @@ function Timeline({ m, rev, store, selAgent, onSelect, toolColor }: {
         onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}
         onDoubleClick={() => { setFollow(true); setPanWindow(null); }}
       >
+        {m.runStartAt === null && (
+          <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: C.faint, fontSize: 11.5, pointerEvents: 'none' }}>
+            run a query — agents appear here live
+          </div>
+        )}
         {!follow && live && (
           <button
             onClick={(e) => { e.stopPropagation(); setFollow(true); setPanWindow(null); }}
@@ -634,7 +732,11 @@ function Lane({ m, l, px, on, secOf, nowS, live, selected, toolColor, onClick, g
   toolColor: (t: string) => string; onClick: () => void; gutter: number; windowEnd: number;
 }): ReactElement {
   const s = secOf(l.spawnedAt);
-  const e = l.doneAt === null ? nowS : secOf(l.doneAt);
+  // A paused run's lanes freeze at the hold — the widening gap to the
+  // now-line IS the pause, drawn honestly (no decode happened there).
+  const e = l.doneAt === null
+    ? (m.pausedAt !== null ? Math.min(nowS, secOf(m.pausedAt)) : nowS)
+    : secOf(l.doneAt);
   const capL = px(s);
   const capR = px(Math.min(e, windowEnd));
   const running = l.doneAt === null;
@@ -657,10 +759,14 @@ function Lane({ m, l, px, on, secOf, nowS, live, selected, toolColor, onClick, g
 
   const glyph = l.outcome === 'failed' ? '✗' : l.outcome === 'recovered' ? '↻' : '✓';
   const glyphBg = l.outcome === 'failed' ? C.fail : l.outcome === 'recovered' ? C.agent : C.ok;
+  // A user cancel is a deliberate cull, not a failure of the agent's own —
+  // the row wears it: faint red wash, red identity, a 'cancelled' pill.
+  const cancelled = l.outcome === 'failed' && l.failReason === 'user_cancel';
   const endLabel = l.role === 'planner' && m.plan
     ? `plan · ${m.plan.tasks.length} tasks · ${fmtS(e - s)}`
     : l.outcome === 'recovered' ? `recovered · ${fmtS(e - s)}`
-      : l.outcome === 'failed' ? `${l.failReason ?? l.dropReason ?? 'failed'} · ${fmtS(e - s)}` : fmtS(e - s);
+      : cancelled ? fmtS(e - s)
+        : l.outcome === 'failed' ? `${l.failReason ?? l.dropReason ?? 'failed'} · ${fmtS(e - s)}` : fmtS(e - s);
   const endColor = l.outcome === 'failed' ? C.fail : l.outcome === 'recovered' ? C.agent : '#3c4043';
 
   return (
@@ -670,16 +776,23 @@ function Lane({ m, l, px, on, secOf, nowS, live, selected, toolColor, onClick, g
       aria-label={`open agent ${l.agentId}`}
       style={{
         display: 'flex', height: 38, borderTop: `1px solid ${C.hair}`, position: 'relative', cursor: 'pointer',
-        background: selected ? C.chromeBg : undefined,
+        background: selected ? C.chromeBg : cancelled ? 'rgba(179,38,30,.05)' : undefined,
         boxShadow: selected ? `inset 3px 0 0 ${C.text}` : undefined,
       }}
     >
+      {cancelled && (
+        <span style={{
+          position: 'absolute', right: 10, top: 10, zIndex: 2,
+          fontSize: 9.5, fontWeight: 600, padding: '2px 9px', borderRadius: 9,
+          color: C.fail, background: 'rgba(179,38,30,.08)', border: '1px solid #f0c4c1',
+        }}>cancelled</span>
+      )}
       {/* The gutter carries the STABLE identity — the agentId every surface
           shares (the app's cards show the same number). Parentage is detail:
           it lives in the feed header, not on every lane. */}
       <div style={{ width: gutter, flex: 'none', display: 'flex', alignItems: 'baseline', gap: 6, padding: '12px 0 0 14px', fontSize: 11.5 }}>
-        <span style={{ fontWeight: 600 }}>{l.role ?? 'agent'}</span>
-        <span style={{ color: C.dim, fontSize: 10.5, fontFamily: mono }}>#{l.agentId}</span>
+        <span style={{ fontWeight: 600, color: cancelled ? C.fail : undefined }}>{l.role ?? 'agent'}</span>
+        <span style={{ color: cancelled ? C.fail : C.dim, fontSize: 10.5, fontFamily: mono }}>#{l.agentId}</span>
       </div>
       <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
         {capR > gutter && capL < px(windowEnd) && (
@@ -920,6 +1033,10 @@ function EpistemicsChart({ m, lane, nowMs }: {
 
   const last = e[e.length - 1];
   const ppl = lanePpl(lane);
+  const tail = e.slice(-64);
+  const recentPpl = tail.length >= 16
+    ? Math.exp(tail.reduce((a, x) => a + x.s, 0) / tail.length)
+    : null;
   const chip = (color: string, label: string, value: number, title: string): ReactElement => (
     <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 4, whiteSpace: 'nowrap' }} title={title}>
       <span style={{ width: 8, height: 8, borderRadius: 2, background: color, alignSelf: 'center' }} />
@@ -937,8 +1054,8 @@ function EpistemicsChart({ m, lane, nowMs }: {
         {chip(SURPRISAL_COLOR, 'surprisal', last.s, 'how unexpected the picked token was \u2014 \u2212ln p, in nats')}
         {ppl !== null && (
           <span style={{ fontFamily: mono, fontSize: 10, color: C.faint, whiteSpace: 'nowrap' }}
-            title="perplexity \u2014 exp of mean surprisal over this agent\u2019s tokens; compare agents, lower reads more fluent">
-            ppl {ppl.toFixed(2)}
+            title="ppl = exp of mean surprisal over ALL this agent's tokens (compare agents); recent = the same over the last ~64 — the live fluency signal, e.g. across quants">
+            ppl {ppl.toFixed(2)}{recentPpl !== null ? ` · recent ${recentPpl.toFixed(2)}` : ''}
           </span>
         )}
       </div>
@@ -962,9 +1079,10 @@ function EpistemicsChart({ m, lane, nowMs }: {
   );
 }
 
-function AgentFeed({ m, lane, toolColor, onClose, onJump, nowMs, width }: {
+function AgentFeed({ m, lane, toolColor, onClose, onJump, nowMs, width, send, canCancel }: {
   m: PaneModel; lane: AgentLane; toolColor: (t: string) => string;
   onClose: () => void; onJump: (id: number) => void; nowMs: number; width: number;
+  send: (c: unknown) => void; canCancel: boolean;
 }): ReactElement {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['report']));
   const toggle = (id: string): void => {
@@ -1109,10 +1227,40 @@ function AgentFeed({ m, lane, toolColor, onClose, onJump, nowMs, width }: {
         )}
         <span style={chip}>{lane.outcome}{lane.doneAt !== null && m.runStartAt !== null ? ` · ${fmtS((lane.doneAt - lane.spawnedAt) / 1000)}` : ''}</span>
         <span style={{ flex: 1 }} />
+        {canCancel && lane.doneAt === null && (
+          <button
+            onClick={() => send({ type: 'cancel_agent', agentId: lane.agentId })}
+            aria-label="cancel this agent"
+            title="cancel this agent — its branch is reclaimed; siblings continue. Works while paused: evaluate trajectories, cull, play"
+            style={{ ...runBtn, color: C.fail, borderColor: '#f0c4c1', padding: '2px 7px', display: 'inline-flex', alignItems: 'center' }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+              <line x1="10" y1="11" x2="10" y2="17" />
+              <line x1="14" y1="11" x2="14" y2="17" />
+            </svg>
+          </button>
+        )}
         <span style={{ cursor: 'pointer', color: C.dim }} onClick={onClose} title="close — the timeline returns to full width">✕</span>
       </div>
       <div style={{ overflowY: 'auto', flex: 1, fontSize: 11, paddingBottom: 8 }}>
         <EpistemicsChart m={m} lane={lane} nowMs={nowMs} />
+        {lane.prompt && (
+          <div style={{ borderBottom: `1px solid ${C.border}`, padding: '4px 12px 6px' }}>
+            <div
+              role="button" tabIndex={0}
+              onClick={() => toggle('prompt')} onKeyDown={keyActivate(() => toggle('prompt'))}
+              style={{ display: 'flex', alignItems: 'baseline', gap: 7, cursor: 'pointer', padding: '2px 0' }}
+              title="the compiled prompt suffix that seeded this agent. In shared-spine mode the system + tool header lives on the spine PREFIX (inherited via fork) and is not repeated here; recursive agents inherit further parent context the same way"
+            >
+              <span style={{ color: C.faint, fontSize: 9, width: 9, flex: 'none' }}>{expanded.has('prompt') ? '▾' : '▸'}</span>
+              <span style={{ color: C.dim }}>prompt</span>
+              <span style={{ fontFamily: mono, fontSize: 10, color: C.faint }}>{lane.prompt.tokenCount.toLocaleString()} tok</span>
+            </div>
+            {expanded.has('prompt') && <JsonBlock text={lane.prompt.text} raw />}
+          </div>
+        )}
         {(lane.failReason || lane.dropReason) && (
           <div style={{ display: 'flex', alignItems: 'baseline', padding: '6px 12px', gap: 8 }}>
             <span style={{ color: C.dim, width: 92, flex: 'none' }}>pool said</span>

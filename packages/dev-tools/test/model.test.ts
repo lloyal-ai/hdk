@@ -367,6 +367,17 @@ describe('epistemics', () => {
   });
 });
 
+describe('pause', () => {
+  it('run:paused freezes the model marker; run:resumed clears it; still live', () => {
+    const m = freshRun();
+    foldEvent(m, { type: 'run:paused' }, 5000);
+    expect(m.pausedAt).toBe(5000);
+    expect(isLive(m)).toBe(true); // paused is a live state — the run is owed an answer
+    foldEvent(m, { type: 'run:resumed', pausedMs: 4000 }, 9000);
+    expect(m.pausedAt).toBe(null);
+  });
+});
+
 describe('run liveness', () => {
   it('the phase gap (all lanes done, no answer yet) is still LIVE', () => {
     const m = freshRun();
@@ -376,6 +387,17 @@ describe('run liveness', () => {
     foldEvent(m, { type: 'answer', text: 'done' }, 9000);
     expect(isLive(m)).toBe(false);
     expect(m.runEndedAt).toBe(9000);
+  });
+});
+
+describe('compiled prompt', () => {
+  it('the prompt:format mirror attaches to its lane by agentId', () => {
+    const m = freshRun();
+    foldEvent(m, {
+      type: 'agent:trace', agentId: 2,
+      event: { type: 'prompt:format', agentId: 2, promptText: 'SYSTEM...', tokenCount: 812, role: 'agentSuffix' },
+    }, 2000);
+    expect(m.lanes.get(2)!.prompt).toEqual({ text: 'SYSTEM...', tokenCount: 812 });
   });
 });
 

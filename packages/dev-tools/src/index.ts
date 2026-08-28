@@ -83,6 +83,10 @@ export interface AgentLane {
   dropReason: string | null;
   /** Set on the planner while it waits on the user (research's clarify). */
   clarify: ClarifyExchange | null;
+  /** The compiled prompt that seeded this agent — the `prompt:format`
+   *  mirror (role agentSuffix), attributed by its agentId stamp. What the
+   *  model ACTUALLY saw, post-template, post-tool-schemas. */
+  prompt: { text: string; tokenCount: number } | null;
   /** Per-token epistemics samples (`agent:produce` under the dev gate),
    *  time-anchored to the lane's span. h = model entropy in nats (how open
    *  the next-token choice was, over the full vocabulary); s = model
@@ -223,6 +227,10 @@ export interface PaneModel {
   /** When a clarify continuation re-entered planning — guards the paired
    *  `plan:start` → `query` that follows from resetting the run. */
   runContinuedAt: number | null;
+  /** Set while the run is HELD (`run:paused` → `run:resumed`). Lanes freeze
+   *  at this instant — the gap to the advancing now-line IS the pause,
+   *  drawn honestly (no decode happened there). */
+  pausedAt: number | null;
   /** The dev gate — `config:loaded.dev`, the boot's LLOYAL_DEV signal carried
    *  on the wire. The FAB renders only when true. */
   dev: boolean;
@@ -271,6 +279,7 @@ export function createPaneModel(): PaneModel {
     runPhase: null,
     runStartAt: null,
     runEndedAt: null,
+    pausedAt: null,
     runContinuedAt: null,
     dev: false,
     facts: null,
@@ -333,6 +342,7 @@ function resetRun(m: PaneModel, now: number): void {
   m.plan = null;
   m.runStartAt = now;
   m.runEndedAt = null;
+  m.pausedAt = null;
 }
 
 /** The retrieval a mirrored trace event belongs to: by callId WITHIN the
@@ -441,6 +451,7 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
       return;
     }
     case 'agent:spawn': {
+      if (typeof ev.agentId !== 'number') return; // type-only frame — never corrupt the lane map
       const id = ev.agentId as number;
       m.lanes.set(id, {
         agentId: id,
@@ -456,6 +467,7 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
         prunedAt: null,
         dropReason: null,
         clarify: null,
+        prompt: null,
         epistemics: [],
         nllSum: 0,
         nllCount: 0,
@@ -528,7 +540,8 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
       return;
     }
     case 'agent:tool_call': {
-      const agentId = ev.agentId as number;
+      if (typeof ev.agentId !== 'number') return;
+      const agentId = ev.agentId;
       const lane = m.lanes.get(agentId);
       const tool = typeof ev.tool === 'string' ? ev.tool : '';
       if (lane) lane.inflightTool = tool;
@@ -550,7 +563,8 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
       return;
     }
     case 'agent:tool_result': {
-      const agentId = ev.agentId as number;
+      if (typeof ev.agentId !== 'number') return;
+      const agentId = ev.agentId;
       const tool = typeof ev.tool === 'string' ? ev.tool : '';
       const lane = m.lanes.get(agentId);
       // Clear only the matching in-flight marker — a late result for an
@@ -602,6 +616,16 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
         case 'pool:agentDrop': {
           const lane = m.lanes.get(agentId);
           if (lane && typeof te.reason === 'string') lane.dropReason = te.reason;
+          return;
+        }
+        case 'prompt:format': {
+          const lane = m.lanes.get(agentId);
+          if (lane && typeof te.promptText === 'string') {
+            lane.prompt = {
+              text: te.promptText,
+              tokenCount: typeof te.tokenCount === 'number' ? te.tokenCount : 0,
+            };
+          }
           return;
         }
         case 'branch:prune': {
@@ -674,6 +698,14 @@ export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
         m.pressure.push({ at: now, cellsUsed: ev.cellsUsed, nCtx: ev.nCtx });
         if (m.pressure.length > MAX_PRESSURE_POINTS) m.pressure.shift();
       }
+      return;
+    }
+    case 'run:paused': {
+      m.pausedAt = now;
+      return;
+    }
+    case 'run:resumed': {
+      m.pausedAt = null;
       return;
     }
     case 'answer': {

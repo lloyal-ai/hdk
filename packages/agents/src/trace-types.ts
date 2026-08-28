@@ -41,6 +41,9 @@ export type TraceEvent =
   // ── Prompt events ───────────────────────────
   | TraceEventBase & {
       type: 'prompt:format';
+      /** The spawned agent this prompt seeds (role 'agentSuffix' writes) —
+       *  the tee's attribution key; absent on spine/generate writes. */
+      agentId?: number;
       promptText: string;
       taskContent?: string;
       tokenCount: number;
@@ -109,6 +112,8 @@ export type TraceEvent =
       }>;
       totalTokens: number;
       steps: number;
+      /** WALL-clock duration — includes paused spans (observability keeps
+       *  real time; only policy budgets exclude pauses). */
       durationMs: number;
     }
   | TraceEventBase & {
@@ -119,6 +124,11 @@ export type TraceEvent =
        *  (`nCtx <= 0` — they'd otherwise be Infinity, which JSON can't carry). */
       pressure: { remaining: number | null; cellsUsed: number; nCtx: number; headroom: number | null };
     }
+  // The pause hold, in the file's pool dialect (the bus twin is
+  // `run:paused`/`run:resumed`). Between a pool:pause and its pool:resume
+  // there are NO native store calls — invariant I32.
+  | TraceEventBase & { type: 'pool:pause' }
+  | TraceEventBase & { type: 'pool:resume'; pausedMs: number }
   | TraceEventBase & {
       type: 'pool:agentDrop';
       agentId: number;

@@ -9,7 +9,7 @@ export {
   AbilityConfigStoreCtx,
   GrantStoreCtx,
   WindDown,
-  CancelAgent,
+  CancelAgent, Pause,
 } from './context';
 export { Tool, ToolRetryError } from './Tool';
 export { Agent } from './Agent';

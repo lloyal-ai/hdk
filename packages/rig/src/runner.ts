@@ -125,6 +125,9 @@ export interface Runner<
   windDown: Signal<void, void>;
   /** Persistent per-agent cancel signal. */
   cancelAgent: Signal<{ agentId: number }, void>;
+  /** Persistent pause/play signal — `.send(true)` holds the run at the tick
+   *  boundary, `.send(false)` releases it. */
+  pauseRun: Signal<boolean, void>;
   /** Observability sink threaded into `initAgents`. */
   traceWriter: TraceWriter;
   /** True when the boot mounted dev observability (trace sink + pool
@@ -228,6 +231,7 @@ function makeRunner<
   let sessionOrigin = { ...opts.origin };
   const windDown = createSignal<void, void>();
   const cancelAgent = createSignal<{ agentId: number }, void>();
+  const pauseRun = createSignal<boolean, void>();
   const frozenConfig = opts.frozen?.config ?? DEFAULT_FROZEN_CONFIG;
   const frozenOrigin = opts.frozen?.origin ?? DEFAULT_FROZEN_ORIGIN;
   void servedPath;
@@ -268,6 +272,7 @@ function makeRunner<
     },
     windDown,
     cancelAgent,
+    pauseRun,
     traceWriter: opts.traceWriter ?? new NullTraceWriter(),
     dev: opts.dev ?? false,
     replayCheckpoint: null,

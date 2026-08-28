@@ -3,7 +3,7 @@ import type { Operation, Subscription, Task, Signal } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import { CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, GrammarTriggerType, type ParsedToolCall, type SessionContext } from '@lloyal-labs/sdk';
 import type { BranchStore } from '@lloyal-labs/sdk';
-import { Ctx, Store, Trace, TraceParent, CallingAgent, SpineFmt, GrantStoreCtx, WindDown, CancelAgent } from './context';
+import { Ctx, Store, Trace, TraceParent, CallingAgent, SpineFmt, GrantStoreCtx, WindDown, CancelAgent, Pause } from './context';
 import type { FormatConfig } from './Agent';
 import { buildToolResultDelta, buildTurnDelta, buildUserDelta } from '@lloyal-labs/sdk';
 import { traceScope } from './trace-scope';
@@ -649,6 +649,7 @@ function* setupAgent(
   task: AgentTaskSpec,
   ctx: SessionContext,
   enableThinking: boolean,
+  clock?: () => number,
 ): Operation<{ agent: Agent; suffixTokens: number[]; formattedPrompt: string }> {
   // Probe shared-mode. When set, the spine already has the [system + tools]
   // chat header prefilled and we MUST NOT re-emit them in the agent's
@@ -732,6 +733,7 @@ function* setupAgent(
     task: task.content,
     fmt: fmtConfig,
     assignedAbility,
+    clock,
   });
 
   return { agent, suffixTokens, formattedPrompt: fmt.prompt };
@@ -842,6 +844,12 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     }
     const MIRRORED_POOL_EVENTS = new Set<TraceEvent['type']>([
       'pool:agentNudge', 'tool:authReject', 'pool:agentDrop', 'branch:prune',
+      // The compiled per-agent prompt SUFFIX. In shared-spine mode the
+      // system+tool header lives on the spine prefix (inherited via fork)
+      // and is deliberately not repeated here — the mirror carries what
+      // this spawn formatted, honestly labeled by the pane. agentId is
+      // the attribution.
+      'prompt:format',
       // The dispatch record carries explore/exploit + callId — the live
       // consumer keys retrieval metadata off it.
       'tool:dispatch',
@@ -887,6 +895,10 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     // agent:failed (user_cancel), prune its branch to reclaim KV. Absent ⇒ no cancel.
     let cancelSignal: Signal<{ agentId: number }, void> | null = null;
     try { cancelSignal = (yield* CancelAgent.get()) ?? null; } catch { /* no cancel provided */ }
+    // Optional pause signal: while true the tick loop HOLDS at the tick
+    // boundary. See the Pause context. Absent ⇒ no pause capability.
+    let pauseSignal: Signal<boolean, void> | null = null;
+    try { pauseSignal = (yield* Pause.get()) ?? null; } catch { /* no pause provided */ }
     const poolScope = traceScope(tw, poolParentTraceId, 'pool', { maxTurns, terminalToolName });
 
     // Whether the pool's tool registry contains tools besides the terminal tool.
@@ -910,6 +922,15 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     const terminalTool = terminalToolName ? tools.get(terminalToolName) : undefined;
     const terminalGrammar = terminalTool ? buildTerminalGrammar(ctx, terminalTool) : null;
     const policy = opts.policy ?? new DefaultAgentPolicy();
+    // ── Pause state: two values and a pure function ──────────────────
+    // `paused` is fed by the watcher below; `pausedTotal` accumulates inside
+    // the hold. The run clock derives from them — policy time budgets and
+    // agent.startedAt stamps measure RUN time, never a pause. Retry parks
+    // and trace `ts` stay on the wall clock (external-world time).
+    let paused = false;
+    let pausedTotal = 0;
+    const runNow = (): number => performance.now() - pausedTotal;
+    policy.bindClock?.(runNow);
     const pressureOpts: PressureThresholds = policy.pressureThresholds
       ?? { softLimit: ContextPressure.DEFAULT_SOFT_LIMIT, hardLimit: ContextPressure.DEFAULT_HARD_LIMIT };
 
@@ -1066,7 +1087,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
 
         // Synchronous setup — fork, tokenize suffix, pressure check.
         // No native store call yet; that's the tick loop's SPAWN phase's job.
-        const { agent, suffixTokens, formattedPrompt } = yield* setupAgent(parent, task, ctx, enableThinking);
+        const { agent, suffixTokens, formattedPrompt } = yield* setupAgent(parent, task, ctx, enableThinking, runNow);
 
         const pressure = new ContextPressure(ctx, pressureOpts);
         // Reserve for batch-mates: spawns/extends admitted earlier this tick
@@ -1360,6 +1381,53 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       });
     }
 
+    /** Discard queued user-cancels: halt the agent's in-flight tool (aborting
+     *  the fetch; its `ensure` removes it from inflightTasks), emit a terminal
+     *  agent:failed (NO recovery — the user killed it deliberately), then
+     *  idle + prune to free KV for siblings. Only agent:failed is emitted (no
+     *  preceding agent:done) so the UI resolves straight to "cancelled" with
+     *  no recovering flash. safePrune only reclaims childless leaves — a
+     *  parent/chain agent no-ops (its findings still feed dependents).
+     *  Runs ONLY on the loop fiber, at its two stable points: the tick top,
+     *  and INSIDE the pause hold — reclamation needs no decode, so the user
+     *  can pause, evaluate trajectories, and cull an off-track agent live.
+     *  Pause holds progression, not the axe. */
+    function* drainCancels(): Operation<void> {
+      for (const id of pendingCancels.splice(0)) {
+        const a = agentById.get(id);
+        if (!a || (a.status !== 'active' && a.status !== 'awaiting_tool')) continue;
+        const tool = inflightTasks.get(id);
+        if (tool) yield* tool.halt();
+        tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+          type: 'pool:agentDrop', agentId: id, reason: 'user_cancel' });
+        yield* poolChannel.send({ type: 'agent:failed', agentId: id, reason: 'user_cancel' });
+        cancelledIds.add(id);
+        a.transition('idle');
+        safePrune(a, tw, poolScope.traceId);
+      }
+    }
+
+    // ── Pause watcher ───────────────────────────────────────────────────
+    // Multi-fire like CancelAgent (pause toggles repeatedly). `pauseWake`
+    // releases the hold on play; `toolWake` breaks an all-parked nap so the
+    // loop reaches the hold promptly on pause. Sequencing conflicts
+    // (wind-down while paused) are the consumer's to refuse — the pool
+    // holds while paused, regardless.
+    const pauseWake = createSignal<void, void>();
+    if (pauseSignal) {
+      const ps = pauseSignal;
+      yield* spawn(function*() {
+        const sub = yield* ps;
+        for (;;) {
+          const next = yield* sub.next();
+          if (next.done) break;
+          paused = next.value;
+          pauseWake.send();
+          toolWake.send();
+        }
+      });
+    }
+
     /** Post-process one tool completion ON THE LOOP FIBER: tokenize the result,
      *  send events, write traces, and return a SettledTool to prefill — or null
      *  for a retry-park / error-kill. Shared by the inline path (called inline)
@@ -1593,6 +1661,32 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     // ── Four-phase tick loop ─────────────────────────────────
     let recoveryAttempted = false;
     for (;;) {
+      // -- Pause: hold at the tick boundary. Branches stay resident; tool
+      // completions queue as data and settle on the first tick after play.
+      // Policy time reads runNow (this hold is excluded); retry parks stay
+      // on the wall clock — rate limits elapse in the real world.
+      if (paused) {
+        const heldAt = performance.now();
+        tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: heldAt, type: 'pool:pause' });
+        yield* poolChannel.send({ type: 'run:paused' });
+        // Subscribe BEFORE re-checking `paused`: emissions buffer on a live
+        // subscription, so a play (or wake) landing during subscription setup
+        // is never missed. toolWake is raced too — a user cancel arriving
+        // mid-hold drains HERE, on this suspended loop fiber (no decode in
+        // flight — the safest prune there is): pause, evaluate trajectories,
+        // cull the off-track agent, play. Pause holds progression, not the axe.
+        const pauseSub = yield* pauseWake;
+        const toolSub = yield* toolWake;
+        while (paused) {
+          yield* race([pauseSub.next(), toolSub.next()]);
+          if (pendingCancels.length > 0) yield* drainCancels();
+        }
+        const pausedMs = performance.now() - heldAt;
+        pausedTotal += pausedMs;
+        tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(), type: 'pool:resume', pausedMs });
+        yield* poolChannel.send({ type: 'run:resumed', pausedMs });
+      }
+
       // Idle until orchestrator enqueues work (spawn or extend) or completes.
       // Include pendingExtends: the final extend after the last task in chain
       // mode must drain before the loop exits, otherwise the orchestrator fiber
@@ -1656,7 +1750,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           });
           tw.write({
             traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-            type: 'prompt:format', promptText: s.formattedPrompt,
+            type: 'prompt:format', agentId: s.agent.id, promptText: s.formattedPrompt,
             taskContent: s.task.content, tokenCount: s.suffixTokens.length,
             messages: JSON.stringify([
               { role: 'system', content: s.task.systemPrompt },
@@ -1682,28 +1776,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       // normally — SPAWN always transitions to active), nothing to produce. Loop back.
       if (agents.length === 0) continue;
 
-      // -- Targeted cancel (user_cancel): discard one agent, reclaim its KV ---------
-      // Drained here (loop fiber, before PRODUCE) so teardown lands at a stable point,
-      // never mid-decode/mid-settle. Cancel = DISCARD: halt the agent's in-flight tool
-      // (aborting the fetch; its `ensure` removes it from inflightTasks), emit a terminal
-      // agent:failed (NO recovery — the user killed it deliberately), then idle + prune to
-      // free KV for siblings. Only agent:failed is emitted (no preceding agent:done) so the
-      // UI resolves straight to "cancelled" with no recovering flash. safePrune only reclaims
-      // childless leaves — a parent/chain agent no-ops (its findings still feed dependents).
-      if (pendingCancels.length > 0) {
-        for (const id of pendingCancels.splice(0)) {
-          const a = agentById.get(id);
-          if (!a || (a.status !== 'active' && a.status !== 'awaiting_tool')) continue;
-          const tool = inflightTasks.get(id);
-          if (tool) yield* tool.halt();
-          tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-            type: 'pool:agentDrop', agentId: id, reason: 'user_cancel' });
-          yield* poolChannel.send({ type: 'agent:failed', agentId: id, reason: 'user_cancel' });
-          cancelledIds.add(id);
-          a.transition('idle');
-          safePrune(a, tw, poolScope.traceId);
-        }
-      }
+      // -- Targeted cancel (user_cancel) — drained at the stable point.
+      if (pendingCancels.length > 0) yield* drainCancels();
 
       // -- Phase 1: PRODUCE -- sample from active agents, collect tool calls
       policy.resetTick?.();
