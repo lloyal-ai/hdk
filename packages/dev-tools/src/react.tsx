@@ -733,10 +733,14 @@ function Lane({ m, l, px, on, secOf, nowS, live, selected, toolColor, onClick, g
 
   const glyph = l.outcome === 'failed' ? '✗' : l.outcome === 'recovered' ? '↻' : '✓';
   const glyphBg = l.outcome === 'failed' ? C.fail : l.outcome === 'recovered' ? C.agent : C.ok;
+  // A user cancel is a deliberate cull, not a failure of the agent's own —
+  // the row wears it: faint red wash, red identity, a 'cancelled' pill.
+  const cancelled = l.outcome === 'failed' && l.failReason === 'user_cancel';
   const endLabel = l.role === 'planner' && m.plan
     ? `plan · ${m.plan.tasks.length} tasks · ${fmtS(e - s)}`
     : l.outcome === 'recovered' ? `recovered · ${fmtS(e - s)}`
-      : l.outcome === 'failed' ? `${l.failReason ?? l.dropReason ?? 'failed'} · ${fmtS(e - s)}` : fmtS(e - s);
+      : cancelled ? fmtS(e - s)
+        : l.outcome === 'failed' ? `${l.failReason ?? l.dropReason ?? 'failed'} · ${fmtS(e - s)}` : fmtS(e - s);
   const endColor = l.outcome === 'failed' ? C.fail : l.outcome === 'recovered' ? C.agent : '#3c4043';
 
   return (
@@ -746,16 +750,23 @@ function Lane({ m, l, px, on, secOf, nowS, live, selected, toolColor, onClick, g
       aria-label={`open agent ${l.agentId}`}
       style={{
         display: 'flex', height: 38, borderTop: `1px solid ${C.hair}`, position: 'relative', cursor: 'pointer',
-        background: selected ? C.chromeBg : undefined,
+        background: selected ? C.chromeBg : cancelled ? 'rgba(179,38,30,.05)' : undefined,
         boxShadow: selected ? `inset 3px 0 0 ${C.text}` : undefined,
       }}
     >
+      {cancelled && (
+        <span style={{
+          position: 'absolute', right: 10, top: 10, zIndex: 2,
+          fontSize: 9.5, fontWeight: 600, padding: '2px 9px', borderRadius: 9,
+          color: C.fail, background: 'rgba(179,38,30,.08)', border: '1px solid #f0c4c1',
+        }}>cancelled</span>
+      )}
       {/* The gutter carries the STABLE identity — the agentId every surface
           shares (the app's cards show the same number). Parentage is detail:
           it lives in the feed header, not on every lane. */}
       <div style={{ width: gutter, flex: 'none', display: 'flex', alignItems: 'baseline', gap: 6, padding: '12px 0 0 14px', fontSize: 11.5 }}>
-        <span style={{ fontWeight: 600 }}>{l.role ?? 'agent'}</span>
-        <span style={{ color: C.dim, fontSize: 10.5, fontFamily: mono }}>#{l.agentId}</span>
+        <span style={{ fontWeight: 600, color: cancelled ? C.fail : undefined }}>{l.role ?? 'agent'}</span>
+        <span style={{ color: cancelled ? C.fail : C.dim, fontSize: 10.5, fontFamily: mono }}>#{l.agentId}</span>
       </div>
       <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
         {capR > gutter && capL < px(windowEnd) && (
@@ -1193,9 +1204,17 @@ function AgentFeed({ m, lane, toolColor, onClose, onJump, nowMs, width, send, ca
         {canCancel && lane.doneAt === null && (
           <button
             onClick={() => send({ type: 'cancel_agent', agentId: lane.agentId })}
+            aria-label="cancel this agent"
             title="cancel this agent — its branch is reclaimed; siblings continue. Works while paused: evaluate trajectories, cull, play"
-            style={{ ...runBtn, color: C.fail, borderColor: '#f0c4c1' }}
-          >cancel</button>
+            style={{ ...runBtn, color: C.fail, borderColor: '#f0c4c1', padding: '2px 7px', display: 'inline-flex', alignItems: 'center' }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+              <line x1="10" y1="11" x2="10" y2="17" />
+              <line x1="14" y1="11" x2="14" y2="17" />
+            </svg>
+          </button>
         )}
         <span style={{ cursor: 'pointer', color: C.dim }} onClick={onClose} title="close — the timeline returns to full width">✕</span>
       </div>
