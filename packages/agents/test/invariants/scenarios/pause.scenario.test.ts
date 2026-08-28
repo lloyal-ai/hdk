@@ -103,4 +103,39 @@ describe('scenario: pause/play', () => {
     expect(drops).toHaveLength(0);
     expect(run.channelEvents.some(e => e.type === 'run:resumed')).toBe(true);
   });
+
+  it('a cancel DURING the pause drops the agent live; siblings resume on play', async () => {
+    let spawnedId: number | null = null;
+    const run = await runPool({
+      nCtx: 16384, cellsUsed: 1000,
+      scripts: [toolSpec, toolSpec],
+      taskCount: 2,
+      policy: new DefaultAgentPolicy({ terminalToolName: 'report' }),
+      tools: new Map<string, Tool>([['web_search', new SmallTool()]]),
+      terminalToolName: 'report', maxTurns: 5,
+      pauseAfter: (ev) => {
+        if (ev.type === 'agent:spawn' && spawnedId === null) spawnedId = ev.agentId;
+        return ev.type === 'agent:spawn';
+      },
+      whilePaused: async (h) => {
+        h.cancel(spawnedId!);
+        await new Promise((r) => setTimeout(r, 40)); // let the hold drain it
+      },
+    });
+    const pausedIdx = run.channelEvents.findIndex(e => e.type === 'run:paused');
+    const resumedIdx = run.channelEvents.findIndex(e => e.type === 'run:resumed');
+    const failedIdx = run.channelEvents.findIndex(
+      e => e.type === 'agent:failed' && (e as { reason?: string }).reason === 'user_cancel');
+    // the drop landed INSIDE the hold — live feedback while frozen
+    expect(failedIdx).toBeGreaterThan(pausedIdx);
+    expect(failedIdx).toBeLessThan(resumedIdx);
+    // the prune (reclamation) is traced inside the span; I32 still holds —
+    // prune is not progression and was never in the ledger's ops
+    const r = I32_pauseHoldsNative(run);
+    expect(r.ok, formatResult('I32', r)).toBe(true);
+    // the sibling still finished after play
+    const doneAfterResume = run.channelEvents.filter(
+      (e, idx) => e.type === 'agent:done' && idx > resumedIdx);
+    expect(doneAfterResume.length).toBeGreaterThan(0);
+  });
 });

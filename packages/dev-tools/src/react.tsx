@@ -1193,13 +1193,8 @@ function AgentFeed({ m, lane, toolColor, onClose, onJump, nowMs, width, send, ca
         {canCancel && lane.doneAt === null && (
           <button
             onClick={() => send({ type: 'cancel_agent', agentId: lane.agentId })}
-            disabled={m.pausedAt !== null}
-            title={m.pausedAt !== null
-              ? 'paused — press play first'
-              : 'cancel this agent — its branch is reclaimed; siblings continue'}
-            style={m.pausedAt !== null
-              ? { ...runBtn, opacity: 0.4, cursor: 'default' }
-              : { ...runBtn, color: C.fail, borderColor: '#f0c4c1' }}
+            title="cancel this agent — its branch is reclaimed; siblings continue. Works while paused: evaluate trajectories, cull, play"
+            style={{ ...runBtn, color: C.fail, borderColor: '#f0c4c1' }}
           >cancel</button>
         )}
         <span style={{ cursor: 'pointer', color: C.dim }} onClick={onClose} title="close — the timeline returns to full width">✕</span>

@@ -1,4 +1,4 @@
-import { run, createChannel, scoped, createSignal, sleep, call } from 'effection';
+import { run, createChannel, scoped, createSignal, sleep, call, spawn } from 'effection';
 import type { Channel } from 'effection';
 import { MockSessionContext } from '../../../sdk/test/MockSessionContext';
 import { Branch } from '../../../sdk/src/Branch';
@@ -147,7 +147,10 @@ export interface PoolSpec {
    * event-driven: no events flow while paused — which is the feature.
    */
   pauseAfter?: (ev: AgentEvent, count: number) => boolean;
-  whilePaused?: () => Promise<void>;
+  /** Runs while the world is frozen. `h.cancel(agentId)` fires the
+   *  CancelAgent signal — cancels drain INSIDE the hold (reclamation is
+   *  not progression), so the cancelled lane fails live during the pause. */
+  whilePaused?: (h: { cancel: (agentId: number) => void }) => Promise<void>;
   /**
    * Escape hatch to wrap/override any `ctx` method AFTER the instrumented mock is
    * built but BEFORE the pool runs — the same affordance the harness uses
@@ -255,7 +258,7 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
     const windDownSignal = createSignal<void, void>();
     if (spec.windDownAfter) yield* WindDown.set(windDownSignal);
     const cancelSignal = createSignal<{ agentId: number }, void>();
-    if (spec.cancelAfter) yield* CancelAgent.set(cancelSignal);
+    if (spec.cancelAfter || spec.pauseAfter) yield* CancelAgent.set(cancelSignal);
     const pauseSignal = createSignal<boolean, void>();
     if (spec.pauseAfter) yield* Pause.set(pauseSignal);
 
@@ -302,11 +305,20 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
         }
         if (!pauseFired && spec.pauseAfter?.(next.value, evCount)) {
           pauseFired = true;
-          pauseSignal.send(true);
-          // Let the loop reach the hold, run the frozen-world hook, resume.
-          yield* sleep(20);
-          if (spec.whilePaused) yield* call(() => spec.whilePaused!());
-          pauseSignal.send(false);
+          // The controller runs on its OWN fiber so this drain loop keeps
+          // consuming (the real UI never stops nexting) — the hold truly
+          // holds through whilePaused, and in-hold work (cancel drains)
+          // flows out as events while frozen.
+          yield* spawn(function* () {
+            pauseSignal.send(true);
+            yield* sleep(20);
+            if (spec.whilePaused) {
+              yield* call(() => spec.whilePaused!({
+                cancel: (agentId: number) => cancelSignal.send({ agentId }),
+              }));
+            }
+            pauseSignal.send(false);
+          });
         }
         next = yield* sub.next();
       }

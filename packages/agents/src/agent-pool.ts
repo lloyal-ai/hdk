@@ -1378,6 +1378,32 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       });
     }
 
+    /** Discard queued user-cancels: halt the agent's in-flight tool (aborting
+     *  the fetch; its `ensure` removes it from inflightTasks), emit a terminal
+     *  agent:failed (NO recovery — the user killed it deliberately), then
+     *  idle + prune to free KV for siblings. Only agent:failed is emitted (no
+     *  preceding agent:done) so the UI resolves straight to "cancelled" with
+     *  no recovering flash. safePrune only reclaims childless leaves — a
+     *  parent/chain agent no-ops (its findings still feed dependents).
+     *  Runs ONLY on the loop fiber, at its two stable points: the tick top,
+     *  and INSIDE the pause hold — reclamation needs no decode, so the user
+     *  can pause, evaluate trajectories, and cull an off-track agent live.
+     *  Pause holds progression, not the axe. */
+    function* drainCancels(): Operation<void> {
+      for (const id of pendingCancels.splice(0)) {
+        const a = agentById.get(id);
+        if (!a || (a.status !== 'active' && a.status !== 'awaiting_tool')) continue;
+        const tool = inflightTasks.get(id);
+        if (tool) yield* tool.halt();
+        tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+          type: 'pool:agentDrop', agentId: id, reason: 'user_cancel' });
+        yield* poolChannel.send({ type: 'agent:failed', agentId: id, reason: 'user_cancel' });
+        cancelledIds.add(id);
+        a.transition('idle');
+        safePrune(a, tw, poolScope.traceId);
+      }
+    }
+
     // ── Pause watcher ───────────────────────────────────────────────────
     // Multi-fire like CancelAgent (pause toggles repeatedly). `pauseWake`
     // releases the hold on play; `toolWake` breaks an all-parked nap so the
@@ -1640,9 +1666,17 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         const heldAt = performance.now();
         tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: heldAt, type: 'pool:pause' });
         yield* poolChannel.send({ type: 'run:paused' });
+        // Subscribe BEFORE re-checking `paused`: emissions buffer on a live
+        // subscription, so a play (or wake) landing during subscription setup
+        // is never missed. toolWake is raced too — a user cancel arriving
+        // mid-hold drains HERE, on this suspended loop fiber (no decode in
+        // flight — the safest prune there is): pause, evaluate trajectories,
+        // cull the off-track agent, play. Pause holds progression, not the axe.
+        const pauseSub = yield* pauseWake;
+        const toolSub = yield* toolWake;
         while (paused) {
-          const sub = yield* pauseWake;
-          yield* sub.next();
+          yield* race([pauseSub.next(), toolSub.next()]);
+          if (pendingCancels.length > 0) yield* drainCancels();
         }
         const pausedMs = performance.now() - heldAt;
         pausedTotal += pausedMs;
@@ -1739,28 +1773,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       // normally — SPAWN always transitions to active), nothing to produce. Loop back.
       if (agents.length === 0) continue;
 
-      // -- Targeted cancel (user_cancel): discard one agent, reclaim its KV ---------
-      // Drained here (loop fiber, before PRODUCE) so teardown lands at a stable point,
-      // never mid-decode/mid-settle. Cancel = DISCARD: halt the agent's in-flight tool
-      // (aborting the fetch; its `ensure` removes it from inflightTasks), emit a terminal
-      // agent:failed (NO recovery — the user killed it deliberately), then idle + prune to
-      // free KV for siblings. Only agent:failed is emitted (no preceding agent:done) so the
-      // UI resolves straight to "cancelled" with no recovering flash. safePrune only reclaims
-      // childless leaves — a parent/chain agent no-ops (its findings still feed dependents).
-      if (pendingCancels.length > 0) {
-        for (const id of pendingCancels.splice(0)) {
-          const a = agentById.get(id);
-          if (!a || (a.status !== 'active' && a.status !== 'awaiting_tool')) continue;
-          const tool = inflightTasks.get(id);
-          if (tool) yield* tool.halt();
-          tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-            type: 'pool:agentDrop', agentId: id, reason: 'user_cancel' });
-          yield* poolChannel.send({ type: 'agent:failed', agentId: id, reason: 'user_cancel' });
-          cancelledIds.add(id);
-          a.transition('idle');
-          safePrune(a, tw, poolScope.traceId);
-        }
-      }
+      // -- Targeted cancel (user_cancel) — drained at the stable point.
+      if (pendingCancels.length > 0) yield* drainCancels();
 
       // -- Phase 1: PRODUCE -- sample from active agents, collect tool calls
       policy.resetTick?.();
