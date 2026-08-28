@@ -1,8 +1,9 @@
 # @lloyal-labs/dev-tools
 
-The dev pane for scaffolded harnesses. A cog appears when the harness runs
-under `LLOYAL_DEV=1`; it opens a pane docked below the app — Timeline,
-Sources, Settings — fed entirely by the event bus the harness already emits.
+The dev pane for scaffolded harnesses. A slim status bar docks below the
+app when the harness runs under `LLOYAL_DEV=1`; clicking it expands the
+pane — Timeline, Sources, Settings — fed entirely by the event bus the
+harness already emits.
 Nothing ships to end users: without the dev signal, only the shell's plain
 layout containers render — no cog, no pane, no listeners beyond the fold.
 
