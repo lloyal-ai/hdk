@@ -413,6 +413,22 @@ function Pane({ store, m, rev, controls, title, runCommands, onClose }: {
   const toolColor = useToolColors();
   const paneRef = useRef<HTMLDivElement | null>(null);
 
+  // A dragged height outlives the viewport that fit it — re-clamp on window
+  // resize so the pane can never swallow the whole shell (the app area is
+  // minHeight: 0 and would collapse to nothing).
+  useEffect(() => {
+    const onResize = (): void => {
+      setPaneH((h) => {
+        if (h === null) return h;
+        const clamped = clampPaneH(h);
+        if (clamped !== h) paneHeightPref = clamped;
+        return clamped;
+      });
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== 'Escape') return;
@@ -961,15 +977,34 @@ function Lane({ m, l, px, on, secOf, nowS, live, selected, toolColor, onClick, g
  *  own border stays the visual line. Width persists for the page session. */
 const FEED_W_DEFAULT = 420;
 let feedWidthPref = FEED_W_DEFAULT;
+const feedMax = (): number => Math.max(480, window.innerWidth - 380);
+const clampFeedW = (w: number): number => Math.round(Math.min(Math.max(w, 320), feedMax()));
 function FeedResizer({ width, onWidth }: {
   width: number; onWidth: (w: number) => void;
 }): ReactElement {
   const drag = useRef<{ x: number; w: number } | null>(null);
   return (
     <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="resize the agent feed"
+      aria-valuemin={320}
+      aria-valuemax={feedMax()}
+      aria-valuenow={Math.round(width)}
+      tabIndex={0}
       style={{ width: 7, margin: '0 -3.5px', flex: 'none', cursor: 'col-resize', zIndex: 3, position: 'relative', userSelect: 'none', touchAction: 'none' }}
       title="drag to resize \u00b7 double-click to reset"
       onDoubleClick={() => { feedWidthPref = FEED_W_DEFAULT; onWidth(FEED_W_DEFAULT); }}
+      onKeyDown={(e) => {
+        if (e.key === 'ArrowLeft') onWidth(clampFeedW(width + 32));
+        else if (e.key === 'ArrowRight') onWidth(clampFeedW(width - 32));
+        else if (e.key === 'Home') onWidth(320);
+        else if (e.key === 'End') onWidth(feedMax());
+        else if (e.key === 'Enter') { feedWidthPref = FEED_W_DEFAULT; onWidth(FEED_W_DEFAULT); }
+        else return;
+        e.preventDefault();
+        e.stopPropagation();
+      }}
       onPointerDown={(e) => {
         e.preventDefault();
         drag.current = { x: e.clientX, w: width };
@@ -977,48 +1012,72 @@ function FeedResizer({ width, onWidth }: {
       }}
       onPointerMove={(e) => {
         if (!drag.current) return;
-        const w = drag.current.w + (drag.current.x - e.clientX);
-        onWidth(Math.round(Math.min(Math.max(w, 320), Math.max(480, window.innerWidth - 380))));
+        onWidth(clampFeedW(drag.current.w + (drag.current.x - e.clientX)));
       }}
       onPointerUp={(e) => {
         drag.current = null;
-        e.currentTarget.releasePointerCapture(e.pointerId);
+        if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
       }}
+      onPointerCancel={() => { drag.current = null; }}
+      onLostPointerCapture={() => { drag.current = null; }}
     />
   );
 }
 
 /** Drag handle on the pane's TOP edge — pull up for a taller pane, exactly
- *  the Chrome DevTools gesture; double-click restores the responsive default
- *  (min(560px, 72vh)). Same invisible-strip affordance as FeedResizer: the
- *  cursor is the hint, the pane's own border stays the line. Height persists
- *  for the page session. */
+ *  the Chrome DevTools gesture; double-click (or Enter) restores the
+ *  responsive default (min(560px, 72vh)). Same invisible-strip affordance as
+ *  FeedResizer: the cursor is the hint, the pane's own border stays the
+ *  line. Height persists for the page session. Keyboard: a focusable
+ *  horizontal separator — arrows step, Home/End jump to the bounds. */
 let paneHeightPref: number | null = null;
+const PANE_MIN = 180;
+const paneMax = (): number => Math.max(PANE_MIN, window.innerHeight - 48);
+const clampPaneH = (h: number): number => Math.round(Math.min(Math.max(h, PANE_MIN), paneMax()));
 function PaneResizer({ height, paneRef, onHeight }: {
   height: number | null;
   paneRef: React.RefObject<HTMLDivElement | null>;
   onHeight: (h: number | null) => void;
 }): ReactElement {
   const drag = useRef<{ y: number; h: number } | null>(null);
+  const current = (): number => height ?? (paneRef.current?.offsetHeight ?? 560);
   return (
     <div
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="resize the pane"
+      aria-valuemin={PANE_MIN}
+      aria-valuemax={paneMax()}
+      aria-valuenow={Math.round(current())}
+      tabIndex={0}
       style={{ position: 'absolute', top: -3.5, left: 0, right: 0, height: 7, cursor: 'ns-resize', zIndex: 3, userSelect: 'none', touchAction: 'none' }}
       title="drag to resize \u00b7 double-click to reset"
       onDoubleClick={() => onHeight(null)}
+      onKeyDown={(e) => {
+        if (e.key === 'ArrowUp') onHeight(clampPaneH(current() + 32));
+        else if (e.key === 'ArrowDown') onHeight(clampPaneH(current() - 32));
+        else if (e.key === 'Home') onHeight(PANE_MIN);
+        else if (e.key === 'End') onHeight(paneMax());
+        else if (e.key === 'Enter') onHeight(null);
+        else return;
+        e.preventDefault();
+        e.stopPropagation();
+      }}
       onPointerDown={(e) => {
         e.preventDefault();
-        drag.current = { y: e.clientY, h: height ?? (paneRef.current?.offsetHeight ?? 560) };
+        drag.current = { y: e.clientY, h: current() };
         e.currentTarget.setPointerCapture(e.pointerId);
       }}
       onPointerMove={(e) => {
         if (!drag.current) return;
-        const h = drag.current.h + (drag.current.y - e.clientY);
-        onHeight(Math.round(Math.min(Math.max(h, 180), window.innerHeight - 48)));
+        onHeight(clampPaneH(drag.current.h + (drag.current.y - e.clientY)));
       }}
       onPointerUp={(e) => {
         drag.current = null;
-        e.currentTarget.releasePointerCapture(e.pointerId);
+        if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
       }}
+      onPointerCancel={() => { drag.current = null; }}
+      onLostPointerCapture={() => { drag.current = null; }}
     />
   );
 }
