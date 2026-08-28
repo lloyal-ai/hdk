@@ -1,8 +1,9 @@
 # @lloyal-labs/dev-tools
 
-The dev pane for scaffolded harnesses. A cog appears when the harness runs
-under `LLOYAL_DEV=1`; it opens a pane docked below the app — Timeline,
-Sources, Settings — fed entirely by the event bus the harness already emits.
+The dev pane for scaffolded harnesses. A slim status bar docks below the
+app when the harness runs under `LLOYAL_DEV=1`; clicking it expands the
+pane — Timeline, Sources, Settings — fed entirely by the event bus the
+harness already emits.
 Nothing ships to end users: without the dev signal, only the shell's plain
 layout containers render — no cog, no pane, no listeners beyond the fold.
 
@@ -12,7 +13,9 @@ layout containers render — no cog, no pane, no listeners beyond the fold.
   wrap the shared React view in it once (desktop + web) —
   `<DevPane bridge={window.harness}><App/></DevPane>`. The app renders in
   the shell's scroll container and the pane docks below as its own flex
-  region, so an open pane shrinks the app instead of covering it.
+  region, so an open pane shrinks the app instead of covering it. Sizing
+  contract: a full-height view uses `height: 100%` — never `100vh`/
+  `100dvh`, which would push its bottom edge under the status bar.
 - `@lloyal-labs/dev-tools/ink` — `<DevOverlay>`, a bounded ctrl+g overlay for
   the terminal view.
 - `@lloyal-labs/dev-tools/node` — `startHostResources`, the host sampler a

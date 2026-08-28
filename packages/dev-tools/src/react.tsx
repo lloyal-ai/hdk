@@ -41,7 +41,11 @@ export interface DevPaneProps {
   runCommands?: { stop?: boolean; wrapUp?: boolean; cancelAgent?: boolean; pause?: boolean };
   /** The harness view itself. The shell renders it in a scroll container
    *  above the pane; production (no dev on the wire) gets the same shell
-   *  with nothing added, so the tree never remounts when the flag arrives. */
+   *  with nothing added, so the tree never remounts when the flag arrives.
+   *  SIZING CONTRACT: the shell owns the viewport and reserves rows for
+   *  the status bar / open pane — a full-height view must use
+   *  `height: 100%`, never `100vh`/`100dvh`, or its bottom edge renders
+   *  under the dev chrome. Flowing (page-scroll) views need nothing. */
   children: ReactNode;
 }
 
@@ -74,14 +78,24 @@ const letterOf = (name: string): string => (name[0] || '?').toUpperCase();
 /** Invisible companion that forces one re-render when a toast expires —
  *  the store stops repainting after the run ends, and a toast must never
  *  outlive its 8 seconds on a frozen clock. */
-function ToastDismiss({ at }: { at: number }): null {
-  const [, force] = useState(0);
+/** A transient status-bar notice that removes ITSELF after its 8s window —
+ *  it owns the render, so expiry works even when the store has stopped
+ *  repainting (a completed run emits nothing further). Keyed by `at` from
+ *  the caller so a fresh notice restarts the window. */
+function Notice({ at, text }: { at: number; text: string }): ReactElement | null {
+  const [expired, setExpired] = useState(false);
   useEffect(() => {
+    setExpired(false);
     const left = Math.max(0, 8000 - (performance.now() - at)) + 50;
-    const t = setTimeout(() => force((n) => n + 1), left);
+    const t = setTimeout(() => setExpired(true), left);
     return () => clearTimeout(t);
   }, [at]);
-  return null;
+  if (expired) return null;
+  return (
+    <span role="status" aria-live="polite" style={{ color: C.warn, whiteSpace: 'nowrap' }}>
+      {text}
+    </span>
+  );
 }
 
 /** Enter/Space activates a clickable — pairs with role="button" tabIndex={0}. */
@@ -314,9 +328,10 @@ export function DevPane({ bridge, controls = [], title, runCommands = {}, childr
   if (!m.dev) return shell(null);
 
   if (!open) {
-    // The closed cog still tells the story: amber ? = the planner is waiting
-    // on the USER (the one state that blocks everything), red = an agent
-    // failed this run, blue = agents live right now. Nothing = quiet.
+    // The closed pane is a slim DOCKED status bar — never an overlay, so it
+    // can't collide with the app's own chrome. It still tells the story:
+    // amber ? = the planner waits on the USER, red ! = an unseen failure,
+    // blue n = agents live right now. Nothing = quiet.
     // A stop can halt lanes without closing them — an ended run counts none.
     const liveCount = isLive(m)
       ? [...m.lanes.values()].filter((l) => l.doneAt === null).length
@@ -326,20 +341,10 @@ export function DevPane({ bridge, controls = [], title, runCommands = {}, childr
       (l) => l.outcome === 'failed' && l.failReason !== 'user_cancel');
     const failed = failedLanes.length > 0;
     const lastFailAt = failedLanes.reduce((mx, l) => Math.max(mx, l.doneAt ?? 0), 0);
-    // iOS-style badge: always the one red, meaning carried by the glyph —
-    // ? = the planner waits on the user, ! = an unseen failure, n = agents live.
-    const badge = m.clarifying
-      ? '?'
-      : liveCount > 0 ? String(liveCount)
-        : failed && lastFailAt > seenAtRef.current ? '!' : null;
-    const fabTitle = m.clarifying
-      ? 'the planner is waiting on your answer'
-      : liveCount > 0
-        ? `${liveCount} agent${liveCount === 1 ? '' : 's'} live${failed ? ' · one failed' : ''}`
-        : failed ? 'an agent failed — open for the reason' : 'dev pane (LLOYAL_DEV)';
-    // A park or failure in the last 8s surfaces as a one-line toast beside
-    // the cog. Age reads the REAL clock (paintedAt freezes when the run
-    // ends) and a timer forces the dismissal render — no immortal toasts.
+    const unseenFail = failed && lastFailAt > seenAtRef.current;
+    // A park or failure in the last 8s surfaces inline on the bar. Age reads
+    // the REAL clock (paintedAt freezes when the run ends) and a timer
+    // forces the dismissal render — no immortal toasts.
     const nowP = performance.now();
     let toast: string | null = null;
     let toastAt = 0;
@@ -355,45 +360,56 @@ export function DevPane({ bridge, controls = [], title, runCommands = {}, childr
         toastAt = l.doneAt;
       }
     }
+    const summary = m.clarifying
+      ? 'the planner is waiting on your answer'
+      : liveCount > 0
+        ? `${liveCount} agent${liveCount === 1 ? '' : 's'} live${failed ? ' · one failed' : ''}`
+        : unseenFail ? 'an agent failed — open for the reason'
+          : isLive(m) ? 'run in progress' : 'idle';
     return shell(
-      <>
-      {toast && (
-        <div role="status" aria-live="polite" style={{
-          position: 'fixed', right: 74, bottom: 28, zIndex: 40,
-          background: '#fff', border: `1px solid ${C.warnBorder}`, borderRadius: 8,
-          padding: '6px 12px', fontSize: 11.5, color: C.warn, boxShadow: '0 2px 8px rgba(32,33,36,.14)',
-        }}>
-          {toast}
-          <ToastDismiss at={toastAt} />
-        </div>
-      )}
-      <button
+      <div
         onClick={() => setOpen(true)}
-        aria-label="open the dev pane"
-        title={fabTitle}
         style={{
-          position: 'fixed', right: 20, bottom: 20, width: 44, height: 44,
-          borderRadius: '50%', background: '#fff', border: `1px solid #dadce0`,
-          display: 'grid', placeItems: 'center', color: C.dim, cursor: 'pointer',
-          boxShadow: '0 2px 8px rgba(32,33,36,.14)', zIndex: 40, padding: 0,
+          height: 28, flex: 'none', display: 'flex', alignItems: 'center', gap: 10,
+          padding: '0 12px', background: C.chromeBg, borderTop: '1px solid #d9dce1',
+          fontSize: 11.5, color: C.dim, cursor: 'pointer', userSelect: 'none',
+          fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
         }}
       >
-        {badge && (
-          <span style={{
-            position: 'absolute', top: -6, right: -6, minWidth: 20, height: 20,
-            borderRadius: 10, background: 'linear-gradient(180deg, #ff544a 0%, #ff2d1f 100%)',
-            color: '#fff', fontSize: 12, fontWeight: 600,
-            display: 'grid', placeItems: 'center', padding: '0 6px', boxSizing: 'border-box',
-            lineHeight: 1, boxShadow: '0 1px 3px rgba(0,0,0,.35)',
-            fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-          }}>{badge}</span>
-        )}
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
-          <circle cx="12" cy="12" r="3" />
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-        </svg>
-      </button>
-      </>
+        {/* The one real control — AT interacts here; the row's onClick is a
+            mouse convenience. The live region below stays OUTSIDE it: button
+            descendants are presentational in accessibility trees. */}
+        <button
+          onClick={(e) => { e.stopPropagation(); setOpen(true); }}
+          aria-label="open the dev pane"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 10, background: 'none',
+            border: 0, padding: 0, font: 'inherit', color: 'inherit', cursor: 'pointer',
+          }}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+          <span style={{ fontWeight: 600, color: C.text }}>dev</span>
+          {(m.clarifying || liveCount > 0 || unseenFail) && (
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5, fontWeight: 600,
+              color: m.clarifying ? C.warn : liveCount > 0 ? C.agent : C.fail,
+            }}>
+              <span style={{
+                width: 7, height: 7, borderRadius: '50%',
+                background: m.clarifying ? C.warn : liveCount > 0 ? C.agent : C.fail,
+              }} />
+              {m.clarifying ? '?' : liveCount > 0 ? liveCount : '!'}
+            </span>
+          )}
+          <span>{summary}</span>
+        </button>
+        {toast && <Notice at={toastAt} text={toast} />}
+        <span style={{ flex: 1 }} />
+        <span style={{ color: C.faint }} aria-hidden="true">click to expand</span>
+      </div>,
     );
   }
 

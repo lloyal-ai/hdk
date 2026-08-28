@@ -25,13 +25,12 @@
     "examples:reflect": "npx tsx examples/reflection/main.ts"
   },
   "devDependencies": {
-    "@lloyal-labs/lloyal.node": "^3.1.1",
     "@types/node": "^25.3.0",
-    "@types/react": "^18.3.28",
+    "@types/react": "^19.2.0",
     "@types/semver": "^7.7.1",
     "fast-check": "^4.7.0",
-    "ink": "^4.4.1",
-    "react": "^18.3.1",
+    "ink": "^7.1.1",
+    "react": "^19.2.0",
     "tsx": "^4.21.0",
     "typedoc": "^0.28.0",
     "typedoc-rhineai-theme": "^1.0.0",
