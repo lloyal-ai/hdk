@@ -24,6 +24,7 @@ import type {
   AbilityInfo, AgentLane, DevControl, Intervention, PaneModel, PaneTab, Retrieval,
 } from './index.js';
 import { devStoreFor, EDGE_STEP } from './store.js';
+import type { RunFraming } from './index.js';
 import type { DevBridge, DevStore } from './store.js';
 
 export type { DevBridge } from './store.js';
@@ -39,6 +40,11 @@ export interface DevPaneProps {
    *  control only when its command exists (research: all three; basic:
    *  cancelAgent). Command names are the templates' own vocabulary. */
   runCommands?: { stop?: boolean; wrapUp?: boolean; cancelAgent?: boolean; pause?: boolean };
+  /** The harness's run framing, as data — which of its OWN events open and
+   *  close a run and which mark phases (the labels its agent lanes wear).
+   *  Declare it beside the other wiring and edit it when your pipeline
+   *  gains or renames a stage. Default: the stock templates' grammar. */
+  framing?: RunFraming;
   /** The harness view itself. The shell renders it in a scroll container
    *  above the pane; production (no dev on the wire) gets the same shell
    *  with nothing added, so the tree never remounts when the flag arrives.
@@ -53,7 +59,7 @@ export interface DevPaneProps {
 const C = {
   text: '#202124', dim: '#5f6368', faint: '#9aa0a6', border: '#e8eaed',
   hair: '#f4f5f7', chromeBg: '#f1f3f4', panelBg: '#fafbfc',
-  agent: '#1a73e8', agentDark: '#174ea6', fail: '#b3261e', ok: '#188038',
+  agent: '#1a73e8', agentDark: '#174ea6', recon: '#7cacf8', fail: '#b3261e', ok: '#188038',
   warn: '#9a6700', warnBg: '#fef7e0', warnBorder: '#f9d67a',
 };
 const HOST_CPU = '#00897b';
@@ -330,12 +336,12 @@ function runEndS(m: PaneModel): number {
 }
 
 // ═══════════════════════════════════════════════════════════════
-export function DevPane({ bridge, controls = [], title, runCommands = {}, children }: DevPaneProps): ReactElement {
+export function DevPane({ bridge, controls = [], title, runCommands = {}, framing, children }: DevPaneProps): ReactElement {
   // The store is a per-bridge SINGLETON: a remount reattaches to the running
   // fold (full history intact) instead of restarting it and desyncing. It is
   // deliberately NOT destroyed on unmount — it lives with the page, like the
   // bridge itself (dev-gated; a production stream folds nothing).
-  const store = devStoreFor(bridge);
+  const store = devStoreFor(bridge, framing);
 
   const rev = useStore(store, (s) => s.rev);
   const m = store.getState().model;
@@ -849,8 +855,16 @@ function Lane({ m, l, px, on, secOf, nowS, live, selected, toolColor, onClick, g
   const capL = px(s);
   const capR = px(Math.min(e, windowEnd));
   const running = l.doneAt === null;
-  const color = l.outcome === 'failed' ? C.fail : l.role === 'synth' ? C.agentDark : C.agent;
-  const rgb = l.outcome === 'failed' ? '179,38,30' : l.role === 'synth' ? '23,78,166' : '26,115,232';
+  const color =
+    l.outcome === 'failed' ? C.fail
+    : l.role === 'synth' ? C.agentDark
+    : l.role === 'recon' ? C.recon
+    : C.agent;
+  const rgb =
+    l.outcome === 'failed' ? '179,38,30'
+    : l.role === 'synth' ? '23,78,166'
+    : l.role === 'recon' ? '124,172,248'
+    : '26,115,232';
 
   const myCalls = m.retrievals.filter((r) => r.agentId === l.agentId);
   const myGuards = m.interventions.filter((iv) => iv.agentId === l.agentId && iv.kind !== 'nudge');

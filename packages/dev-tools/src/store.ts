@@ -14,8 +14,8 @@
  */
 import { createStore } from 'zustand/vanilla';
 import type { StoreApi } from 'zustand/vanilla';
-import { createPaneModel, foldEvent, isLive } from './index.js';
-import type { DevEvent, PaneModel } from './index.js';
+import { createPaneModel, foldEvent, isLive, DEFAULT_FRAMING } from './index.js';
+import type { DevEvent, PaneModel, RunFraming } from './index.js';
 
 /** The bridge slice the pane needs — structurally `window.harness`, minus the
  *  snapshot method the pane deliberately ignores (it folds live only). */
@@ -32,14 +32,13 @@ export const EDGE_STEP = 1000;
 
 /** Event types whose arrival repaints immediately — everything a human reads
  *  as "something happened" rather than "the stream is flowing". */
-const STRUCTURAL = new Set([
-  'config:loaded', 'config:updated', 'ready', 'abilities:state',
-  'plan:start', 'query', 'research:start', 'synthesize:start', 'plan',
+const STRUCTURAL = [
+  'config:loaded', 'config:updated', 'ready', 'abilities:state', 'plan',
   'agent:spawn', 'agent:done', 'agent:failed', 'agent:recovered',
   'agent:return', 'agent:tool_call', 'agent:tool_result', 'agent:trace',
   'run:paused', 'run:resumed', 'run:windingDown',
   'answer', 'error',
-]);
+];
 
 export interface DevStoreState {
   /** The folded model — MUTATED by the fold; renderers key off `rev`. */
@@ -67,17 +66,21 @@ export interface DevStore extends StoreApi<DevStoreState> {
  *  stream re-opens the gate naturally. */
 const STORES = new WeakMap<DevBridge, DevStore>();
 
-export function devStoreFor(bridge: DevBridge): DevStore {
+export function devStoreFor(bridge: DevBridge, framing?: RunFraming): DevStore {
   let store = STORES.get(bridge);
   if (!store) {
-    store = createDevStore(bridge);
+    store = createDevStore(bridge, framing);
     STORES.set(bridge, store);
   }
   return store;
 }
 
-export function createDevStore(bridge: DevBridge): DevStore {
+export function createDevStore(bridge: DevBridge, framing: RunFraming = DEFAULT_FRAMING): DevStore {
   const model = createPaneModel();
+  // Framing markers repaint immediately too — they are run boundaries.
+  const structural = new Set([
+    ...STRUCTURAL, ...framing.open, ...framing.close, ...Object.keys(framing.phases),
+  ]);
   const store = createStore<DevStoreState>(() => ({
     model,
     rev: 0,
@@ -107,10 +110,10 @@ export function createDevStore(bridge: DevBridge): DevStore {
     // Truly wire-gated: until config:loaded says dev, fold ONLY that event —
     // a production stream pays one string compare per event, nothing more.
     if (!model.dev && ev.type !== 'config:loaded') return;
-    foldEvent(model, ev as DevEvent, performance.now());
+    foldEvent(model, ev as DevEvent, performance.now(), framing);
     if (!model.dev) return;
     ensureTimer();
-    if (STRUCTURAL.has(ev.type)) paint();
+    if (structural.has(ev.type)) paint();
     else dirty = true;
   });
 

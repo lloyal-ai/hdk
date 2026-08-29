@@ -60,10 +60,10 @@ export interface ClarifyExchange {
 export interface AgentLane {
   agentId: number;
   parentAgentId: number | null;
-  /** The run phase current at spawn — research's own markers (`plan:start`,
-   *  `research:start`, `synthesize:start`) when the template emits them;
-   *  null when the wire says nothing (basic). Never guessed. */
-  role: 'planner' | 'research' | 'synth' | null;
+  /** The phase label current at spawn — from the harness's own
+   *  {@link RunFraming} declaration; null when its wire marks nothing.
+   *  Never guessed. */
+  role: string | null;
   spawnedAt: number;
   doneAt: number | null;
   /** Terminal outcome, when known. `failed` carries the reason. */
@@ -213,10 +213,44 @@ export interface AbilityInfo {
 
 /** The folded pane state. Everything optional is honestly absent until its
  *  event arrives — the pane renders absence, never a placeholder value. */
+/** The run's framing, declared by the HARNESS as data — the pane knows no
+ *  pipeline's event names. `phases` maps a marker event to the label every
+ *  agent spawned under it wears; `open` events reset the run (the timeline
+ *  anchor); `close` events end it. A scaffold passes its own grammar beside
+ *  the other DevPane wiring and EDITS it when a stage is added or renamed;
+ *  the default covers the stock templates. */
+export interface RunFraming {
+  phases: Record<string, string>;
+  /** The submission's start markers IN PIPELINE ORDER. Within one run they
+   *  only advance (preflight → plan:start → query); a marker at or before
+   *  the last one seen is a NEW submission superseding an unclosed run —
+   *  the halt-and-resubmit path emits no close event. */
+  open: readonly string[];
+  close: readonly string[];
+}
+
+export const DEFAULT_FRAMING: RunFraming = {
+  phases: {
+    'preflight:start': 'recon',
+    'plan:start': 'planner',
+    'research:start': 'research',
+    'synthesize:start': 'synth',
+  },
+  open: ['preflight:start', 'plan:start', 'query'],
+  close: ['complete', 'ui:error', 'ui:composer'],
+};
+
 export interface PaneModel {
-  /** The current run's phase cursor — set by the template's own phase events;
+  /** The current run's phase cursor — set by the framing's marker events;
    *  tags each spawn with a role. */
-  runPhase: 'planner' | 'research' | 'synth' | null;
+  runPhase: string | null;
+  /** A run is OPEN from its first open-marker until a close-marker ends it —
+   *  the reset guard, replacing the old 1.5s timing window (recon can hold
+   *  the start markers apart for minutes). */
+  runOpen: boolean;
+  /** Position (in `framing.open`) of the last open-marker seen — the
+   *  supersede detector: a marker at or before it starts a NEW run. */
+  lastOpenIdx: number;
   /** When the current run began (`query` / `plan:start`) — the timeline's
    *  anchor. Null before the first run. */
   runStartAt: number | null;
@@ -281,6 +315,8 @@ export interface PaneModel {
 export function createPaneModel(): PaneModel {
   return {
     runPhase: null,
+    runOpen: false,
+    lastOpenIdx: -1,
     runStartAt: null,
     runEndedAt: null,
     pausedAt: null,
@@ -321,24 +357,23 @@ const MAX_HOST = 600;
 /** A new run begins: the timeline shows THE RUN, not wall-clock since page
  *  load — clear the run-scoped collections and anchor the axis. Idempotent
  *  (research emits `plan:start` then `query` back-to-back). */
-function resetRun(m: PaneModel, now: number): void {
-  // A clarify answer re-enters planning WITHIN the same run: the planner
-  // asked, the user answered, the cycle continues — mark the exchange
-  // answered and keep everything.
-  if (m.clarifying) {
-    m.clarifying = false;
-    m.runContinuedAt = now;
-    for (const lane of m.lanes.values()) {
-      if (lane.clarify && lane.clarify.answeredAt === null) lane.clarify.answeredAt = now;
-    }
-    return;
+/** A clarify answer re-enters planning WITHIN the same run: the planner
+ *  asked, the user answered, the cycle continues — mark the exchange
+ *  answered and keep everything. */
+function continueRun(m: PaneModel, now: number): void {
+  m.clarifying = false;
+  m.runContinuedAt = now;
+  for (const lane of m.lanes.values()) {
+    if (lane.clarify && lane.clarify.answeredAt === null) lane.clarify.answeredAt = now;
   }
-  // Idempotent across the back-to-back run-start pair (research emits
-  // `plan:start` then `query` within milliseconds) — one reset per run.
-  if (m.runStartAt !== null && (
-    now - m.runStartAt < 1500 ||
-    (m.runContinuedAt !== null && now - m.runContinuedAt < 1500)
-  )) return;
+}
+
+function resetRun(m: PaneModel, now: number): void {
+  // Idempotent across a run's OWN start markers — recon opens the run
+  // minutes before `plan:start`/`query` arrive, so this is a flag, not a
+  // timing window. A close-marker (or supersede) re-arms it.
+  if (m.runOpen) return;
+  m.runOpen = true;
   m.lanes = new Map();
   m.retrievals = [];
   m.pressure = [];
@@ -364,29 +399,38 @@ function findRetrieval(m: PaneModel, callId: string | null, agentId: number): Re
   return undefined;
 }
 
-export function foldEvent(m: PaneModel, ev: DevEvent, now: number): void {
+export function foldEvent(
+  m: PaneModel,
+  ev: DevEvent,
+  now: number,
+  framing: RunFraming = DEFAULT_FRAMING,
+): void {
   m.eventCount++;
   if (m.t0 === null) m.t0 = now;
 
+  // ── run framing: the harness's OWN declared markers, as data ──
+  if (framing.close.includes(ev.type)) {
+    m.runOpen = false;
+    m.lastOpenIdx = -1;
+  }
+  const openIdx = framing.open.indexOf(ev.type);
+  if (openIdx !== -1) {
+    if (m.clarifying) {
+      // An answered clarify CONTINUES this run — never a reset.
+      continueRun(m, now);
+    } else {
+      // Same submission's markers only ADVANCE through `open`; at-or-before
+      // means a new submission superseded an unclosed run (halt-and-resubmit
+      // emits no close marker).
+      if (m.runOpen && openIdx <= m.lastOpenIdx) m.runOpen = false;
+      resetRun(m, now);
+    }
+    m.lastOpenIdx = openIdx;
+  }
+  const phaseLabel = framing.phases[ev.type];
+  if (phaseLabel !== undefined) m.runPhase = phaseLabel;
+
   switch (ev.type) {
-    // ── run phases: the template's OWN markers tag spawns with roles ──
-    case 'plan:start': {
-      resetRun(m, now);
-      m.runPhase = 'planner';
-      return;
-    }
-    case 'query': {
-      resetRun(m, now);
-      return;
-    }
-    case 'research:start': {
-      m.runPhase = 'research';
-      return;
-    }
-    case 'synthesize:start': {
-      m.runPhase = 'synth';
-      return;
-    }
     case 'plan': {
       const intent = typeof ev.intent === 'string' ? ev.intent : 'research';
       if (intent === 'clarify') {
