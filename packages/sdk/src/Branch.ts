@@ -1,4 +1,4 @@
-import type { SessionContext, SamplingParams, Produced, GrammarTrigger } from './types';
+import type { SessionContext, SamplingParams, Produced, GrammarTrigger, MultimodalPrefillResult } from './types';
 import { GrammarTriggerType } from './types';
 
 /**
@@ -204,6 +204,35 @@ export class Branch {
   async prefill(tokens: number[]): Promise<void> {
     this._ensureNotDisposed();
     await this._ctx._storePrefill([this._handle], [tokens]);
+  }
+
+  /**
+   * Prefill a templated prompt with images into this branch's KV
+   *
+   * The multimodal counterpart of {@link prefill}. The prompt carries one
+   * `<__media__>` marker per image (build it with
+   * `buildUserDeltaMultimodal`); the native layer tokenizes it, decodes
+   * text on the token rail and image rows on the embedding rail, in order.
+   * Requires a context created with `mmprojPath`.
+   *
+   * The image lands as an ordinary shared prefix: fork afterwards and every
+   * child attends it with zero re-encode.
+   *
+   * @param prompt - Templated prompt containing the media markers
+   * @param bitmaps - Encoded image bytes (jpg/png/bmp/gif), one per marker
+   * @param sepTokens - Optional leading token run (e.g. a turn separator)
+   * @returns Counts — see `MultimodalPrefillResult` (JS can't know
+   *   multimodal token counts; the native walk reports them)
+   */
+  async prefillMultimodal(
+    prompt: string,
+    bitmaps: Uint8Array[],
+    sepTokens: number[] = [],
+  ): Promise<MultimodalPrefillResult> {
+    this._ensureNotDisposed();
+    const [result] = await this._ctx._storePrefillMultimodal(
+      [this._handle], [sepTokens], [prompt], [bitmaps]);
+    return result;
   }
 
   /**

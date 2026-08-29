@@ -4,8 +4,8 @@ export { BranchStore } from './BranchStore';
 export { Session } from './Session';
 export { Rerank, RerankCalibrationError, RerankInternalError, RETRIEVAL_INSTRUCTION } from './Rerank';
 export type { RerankOpts, RerankTruncation, RerankInstruction } from './Rerank';
-export { buildUserDelta, buildAssistantDelta, buildToolResultDelta, buildTurnDelta } from './deltas';
-export type { DeltaOpts } from './deltas';
+export { buildUserDelta, buildUserDeltaMultimodal, buildAssistantDelta, buildToolResultDelta, buildTurnDelta, MEDIA_MARKER } from './deltas';
+export type { DeltaOpts, MultimodalDelta } from './deltas';
 
 // ── Enums + constants ────────────────────────────────────────
 export { PoolingType, CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, ReasoningFormat, GrammarTriggerType } from './types';
@@ -30,6 +30,7 @@ export type {
   AdvancedSamplingParams,
   SamplingParams,
   SessionContext,
+  MultimodalPrefillResult,
   Produced,
   RerankOptions,
   RerankResult,

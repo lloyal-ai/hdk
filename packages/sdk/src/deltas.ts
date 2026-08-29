@@ -1,6 +1,37 @@
 import type { SessionContext } from './types';
 
 /**
+ * The media marker — one per image in a prompt
+ *
+ * mtmd's literal placeholder: the native tokenizer splits the templated
+ * prompt on this marker and replaces each occurrence with that image's
+ * encoded rows. Injected as a `media_marker` content part (the chat
+ * layer's native part type — never spliced into a content string).
+ *
+ * @category Agents
+ */
+export const MEDIA_MARKER = '<__media__>';
+
+/**
+ * A multimodal turn delta — the string-stage counterpart of a token delta
+ *
+ * Token deltas end at `number[]` because JS owns tokenization on the text
+ * path. On the multimodal path mtmd owns tokenization, so the delta stops
+ * at the string stage: sep tokens + the templated prompt (markers embedded)
+ * + the image bytes, ready for {@link Branch.prefillMultimodal}.
+ *
+ * @category Agents
+ */
+export interface MultimodalDelta {
+  /** Turn separator tokens (decoded ahead of the prompt) */
+  sep: number[];
+  /** Templated prompt containing one {@link MEDIA_MARKER} per image */
+  prompt: string;
+  /** Encoded image bytes (jpg/png/bmp/gif), one per marker, in order */
+  bitmaps: Uint8Array[];
+}
+
+/**
  * Options common to all delta builders.
  *
  * `enableThinking` controls whether the chat template delimits `<think>`
@@ -61,6 +92,46 @@ export function buildUserDelta(
   );
   const delta = ctx.tokenizeSync(prompt, false);
   return [...sep, ...delta];
+}
+
+/**
+ * Build a multimodal delta for a user turn with images
+ *
+ * The multimodal counterpart of {@link buildUserDelta}: same composition,
+ * same options, but the user content carries one `media_marker` part per
+ * image and the delta stops at the string stage (mtmd owns tokenization —
+ * tokenizing the prompt here would double-tokenize).
+ *
+ * @param ctx - Active session context (created with `mmprojPath`)
+ * @param content - User message text
+ * @param images - Encoded image bytes, one marker emitted per image
+ * @param opts - Same as {@link buildUserDelta}
+ * @returns Delta ready for {@link Branch.prefillMultimodal}
+ *
+ * @category Agents
+ */
+export function buildUserDeltaMultimodal(
+  ctx: SessionContext,
+  content: string,
+  images: Uint8Array[],
+  opts: { tools?: string; system?: string } & DeltaOpts = {}
+): MultimodalDelta {
+  const sep = ctx.getTurnSeparator();
+  const fmtOpts: Record<string, unknown> = {};
+  if (opts.tools) fmtOpts.tools = opts.tools;
+  if (opts.enableThinking !== undefined) fmtOpts.enableThinking = opts.enableThinking;
+  const userContent = [
+    { type: 'text', text: content },
+    ...images.map(() => ({ type: 'media_marker', text: MEDIA_MARKER })),
+  ];
+  const { prompt } = ctx.formatChatSync(
+    JSON.stringify([
+      { role: 'system', content: opts.system ?? '' },
+      { role: 'user', content: userContent },
+    ]),
+    fmtOpts
+  );
+  return { sep, prompt, bitmaps: images };
 }
 
 /**

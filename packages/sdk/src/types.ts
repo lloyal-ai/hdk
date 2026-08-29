@@ -241,6 +241,54 @@ export interface ContextOptions {
    * Default: 'f16'
    */
   typeV?: KvCacheType;
+
+  /**
+   * Path to the model's multimodal projector (mmproj .gguf)
+   *
+   * Enables image input: the projector encodes images into embedding rows
+   * that prefill into a branch's KV beside text (see
+   * {@link Branch.prefillMultimodal}). Any llama.cpp-supported VL model
+   * works — the projector decides the position mode at runtime.
+   *
+   * Fail-loud: a configured mmproj that cannot load throws at
+   * `createContext` — never a silent fall back to text-only.
+   */
+  mmprojPath?: string;
+
+  /**
+   * Minimum tokens per image (multimodal)
+   *
+   * Per-image token budget floor for models with dynamic resolution.
+   * Default: model metadata. Only relevant with {@link mmprojPath}.
+   */
+  imageMinTokens?: number;
+
+  /**
+   * Maximum tokens per image (multimodal)
+   *
+   * Per-image token budget cap — the lever for fitting many images (or
+   * video frames) into a context. Default: model metadata. Only relevant
+   * with {@link mmprojPath}.
+   */
+  imageMaxTokens?: number;
+}
+
+/**
+ * Per-branch result of a multimodal prefill
+ *
+ * The native layer owns multimodal tokenization (the projector's token
+ * counts aren't knowable from JS), so the prefill reports what it decoded:
+ * `tokensDecoded` is KV cells added; `positionAdvance` is how far the
+ * branch position moved. Under M-RoPE the two differ for images (cells
+ * grow by rows, position by max(nx, ny)).
+ *
+ * @category Branching
+ */
+export interface MultimodalPrefillResult {
+  /** KV cells added (sep + text + image rows) */
+  tokensDecoded: number;
+  /** Branch position advance (< tokensDecoded under M-RoPE with images) */
+  positionAdvance: number;
 }
 
 /**
@@ -891,6 +939,23 @@ export interface SessionContext {
   kvCacheLoad(sequenceId: number, state: Buffer): Promise<void>;
 
   /**
+   * True when the loaded mmproj has a vision encoder
+   *
+   * `false` when no {@link ContextOptions.mmprojPath} was configured.
+   * Gate image features on this rather than on configuration.
+   */
+  supportsVision(): boolean;
+
+  /**
+   * True when the loaded mmproj has an audio encoder
+   *
+   * `false` when no mmproj was configured, and for vision-only projectors.
+   * Audio input has no API surface yet — a prefill that routes audio bytes
+   * throws rather than silently skipping.
+   */
+  supportsAudio(): boolean;
+
+  /**
    * Clear all KV cache (fresh start)
    *
    * Removes all cached tokens. Model returns to initial state
@@ -1464,6 +1529,17 @@ export interface SessionContext {
 
   /** @internal */
   _storePrefill(handles: number[], tokenArrays: number[][]): Promise<void>;
+
+  /** @internal — multimodal prefill: per-branch sep tokens + templated
+   *  prompt (with `<__media__>` markers) + image bytes. The native worker
+   *  walks TEXT/IMAGE chunks in order (token rail / embedding rail) and
+   *  returns per-branch counts. See {@link Branch.prefillMultimodal}. */
+  _storePrefillMultimodal(
+    handles: number[],
+    sepTokens: number[][],
+    prompts: string[],
+    bitmaps: Uint8Array[][],
+  ): Promise<MultimodalPrefillResult[]>;
 
   /** @internal — additively merge experts' logits_snapshot into dst's:
    *  dst[t] += alpha * sum(experts[i][t]). Pure CPU op, no GPU dispatch. */

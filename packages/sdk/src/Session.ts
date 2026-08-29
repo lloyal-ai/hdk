@@ -1,7 +1,7 @@
 import { Branch } from './Branch';
 import type { BranchStore } from './BranchStore';
 import type { SessionContext } from './types';
-import { buildUserDelta, buildAssistantDelta, buildToolResultDelta, buildTurnDelta } from './deltas';
+import { buildUserDelta, buildUserDeltaMultimodal, buildAssistantDelta, buildToolResultDelta, buildTurnDelta } from './deltas';
 
 /**
  * Observer invoked after each trunk conversation prefill lands.
@@ -105,6 +105,30 @@ export class Session {
     const tokens = buildUserDelta(this._ctx, content, opts);
     await this._trunk!.prefill(tokens);
     this._onPrefill?.({ role: 'user', content, tokenCount: tokens.length, branchHandle: this._trunk!.handle });
+  }
+
+  /**
+   * Prefill a user turn with images into trunk
+   *
+   * The multimodal counterpart of {@link prefillUser}: same composition,
+   * with one media marker per image in the user content. The images land
+   * as a shared prefix on the trunk — a spine forked from it (and every
+   * agent forked from the spine) attends them with zero re-encode.
+   *
+   * Requires a context created with `mmprojPath`.
+   *
+   * @param content - User message text
+   * @param images - Encoded image bytes (jpg/png/bmp/gif)
+   * @param opts - Optional tools JSON string
+   */
+  async prefillUserMultimodal(
+    content: string,
+    images: Uint8Array[],
+    opts: { tools?: string } = {},
+  ): Promise<void> {
+    const { sep, prompt, bitmaps } = buildUserDeltaMultimodal(this._ctx, content, images, opts);
+    const { tokensDecoded } = await this._trunk!.prefillMultimodal(prompt, bitmaps, sep);
+    this._onPrefill?.({ role: 'user', content, tokenCount: tokensDecoded, branchHandle: this._trunk!.handle });
   }
 
   /**
