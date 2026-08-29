@@ -1,6 +1,6 @@
 import { call } from "effection";
 import type { Operation } from "effection";
-import { Branch } from "@lloyal-labs/sdk";
+import { Branch, MEDIA_MARKER } from "@lloyal-labs/sdk";
 import type { SessionContext } from "@lloyal-labs/sdk";
 import { Ctx, Trace, TraceParent, SpineFmt } from "./context";
 import { traceScope } from "./trace-scope";
@@ -75,6 +75,19 @@ export interface SpineOptions {
    * @default true
    */
   enableThinking?: boolean;
+  /**
+   * Images prefilled into the spine's chat-format header at setup — the
+   * shared reference the whole pool attends. One media marker is emitted
+   * into the system content per image; the header decodes ONCE (text on
+   * the token rail, image rows on the embedding rail) and every agent
+   * forking from the spine inherits the images via fork prefix-share —
+   * encoded exactly once, zero re-encode per agent.
+   *
+   * Requires a context created with `mmprojPath`. Like `tools`, only
+   * applied when `systemPrompt` is also set (shared mode); ignored
+   * otherwise.
+   */
+  bitmaps?: Uint8Array[];
 }
 
 /**
@@ -172,7 +185,18 @@ export function* withSpine<T>(
   let spineFmt: FormatConfig | null = null;
   if (opts.systemPrompt !== undefined) {
     const enableThinking = opts.enableThinking ?? true;
-    const messages = JSON.stringify([{ role: "system", content: opts.systemPrompt }]);
+    const bitmaps = opts.bitmaps ?? [];
+    // With bitmaps, the system content carries one media_marker part per
+    // image (the chat layer's native part type); the marker survives the
+    // template verbatim and the native walk replaces it with the image's
+    // encoded rows.
+    const systemContent = bitmaps.length > 0
+      ? [
+          { type: "text", text: opts.systemPrompt },
+          ...bitmaps.map(() => ({ type: "media_marker", text: MEDIA_MARKER })),
+        ]
+      : opts.systemPrompt;
+    const messages = JSON.stringify([{ role: "system", content: systemContent }]);
     const fmtOpts: Record<string, unknown> = {
       enableThinking,
       // Header ends at <|im_end|>; agents append <|im_start|>user…assistant
@@ -184,7 +208,21 @@ export function* withSpine<T>(
       fmtOpts.tools = createToolkit(opts.tools).toolsJson;
     }
     const formatted = ctx.formatChatSync(messages, fmtOpts);
-    const headerTokens = ctx.tokenizeSync(formatted.prompt, false);
+    // Header token count: JS-tokenized on the text path; on the multimodal
+    // path mtmd owns tokenization, so the count comes from the native
+    // prefill's return (below) and the trace events emit AFTER the prefill.
+    let headerTokenCount = 0;
+    if (bitmaps.length > 0) {
+      const counts = yield* call(() =>
+        spine.prefillMultimodal(formatted.prompt, bitmaps));
+      headerTokenCount = counts.tokensDecoded;
+    } else {
+      const headerTokens = ctx.tokenizeSync(formatted.prompt, false);
+      headerTokenCount = headerTokens.length;
+      if (headerTokens.length > 0) {
+        yield* call(() => spine.prefill(headerTokens));
+      }
+    }
     // Spine-seed emission for trace replay (`extractSpineSeed`). Captures
     // the rendered chat prompt verbatim so a later `reconstructBranch`
     // can rebuild this exact KV state in a fresh context. The token-count
@@ -196,22 +234,21 @@ export function* withSpine<T>(
       ts: performance.now(),
       type: "prompt:format",
       promptText: formatted.prompt,
-      tokenCount: headerTokens.length,
+      tokenCount: headerTokenCount,
       messages,
       tools: opts.tools && opts.tools.length > 0
         ? createToolkit(opts.tools).toolsJson
         : undefined,
       role: "spine",
     });
-    if (headerTokens.length > 0) {
-      yield* call(() => spine.prefill(headerTokens));
+    if (headerTokenCount > 0) {
       tw.write({
         traceId: tw.nextId(),
         parentTraceId: scope.traceId,
         ts: performance.now(),
         type: "branch:prefill",
         branchHandle: spine.handle,
-        tokenCount: headerTokens.length,
+        tokenCount: headerTokenCount,
         role: "spineHeader",
       });
     }

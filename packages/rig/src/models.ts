@@ -22,8 +22,10 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
 /** The model roles a harness provisions. `llm` always; `reranker` when an ability
- *  requires it; `embedding` reserved for the first consumer. */
-export type ModelRole = 'llm' | 'reranker' | 'embedding';
+ *  requires it; `mmproj` rides its llm entry (vision — resolved in the boot
+ *  beside the llm, never a Service); `embedding` reserved for the first
+ *  consumer. */
+export type ModelRole = 'llm' | 'reranker' | 'embedding' | 'mmproj';
 
 /**
  * A curated default model. `sha256` is the platform trust root — every catalog
@@ -44,6 +46,12 @@ export interface ModelCatalogEntry {
   sizeBytes: number;
   /** Suggested `context` (nCtx) when the harness doesn't set one. */
   recommendedContext?: number;
+  /** LLM entries only: the id of this model's multimodal projector (role
+   *  `mmproj`). One vision tower serves every quant of the same model. The
+   *  boot resolves the llm, then its linked mmproj, and passes `mmprojPath`
+   *  into `createContext` — vision rides the llm choice, never a separate
+   *  pick. */
+  mmproj?: string;
 }
 
 const USER_AGENT = '@lloyal-labs/rig model-fetch';
@@ -80,6 +88,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     sha256: '00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4',
     sizeBytes: 2_600_000_000,
     recommendedContext: 32768,
+    mmproj: 'qwen3.5-4b-mmproj',
   },
   {
     id: 'qwen3.8-27b-q4',
@@ -94,6 +103,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     sha256: '322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482',
     sizeBytes: 16_464_440_224,
     recommendedContext: 32768,
+    mmproj: 'qwen3.8-27b-mmproj',
   },
   {
     id: 'qwen3.8-27b-iq1',
@@ -105,6 +115,29 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     sha256: '3895b6eaa91e705c06ad1938d16c22e86f073c6a67df86260a1da79be3d1f887',
     sizeBytes: 6_192_222_208,
     recommendedContext: 32768,
+    mmproj: 'qwen3.8-27b-mmproj',
+  },
+  {
+    id: 'qwen3.5-4b-mmproj',
+    role: 'mmproj',
+    label: 'Qwen3.5 4B vision projector · F16',
+    // Upstream only: models.lloyal.ai does not carry the mmprojs yet — add
+    // the mirror URL when seeded, never a fallback that cannot serve.
+    urls: [
+      'https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/mmproj-F16.gguf',
+    ],
+    sha256: 'cd88edcf8d031894960bb0c9c5b9b7e1fea6ebee02b9f7ce925a00d12891f864',
+    sizeBytes: 672_423_616,
+  },
+  {
+    id: 'qwen3.8-27b-mmproj',
+    role: 'mmproj',
+    label: 'Qwen3.8 27B vision projector · F16',
+    urls: [
+      'https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.gguf',
+    ],
+    sha256: 'cbb841a9ee0636b2ec172f5bb8df2ea8dfeb01e90fe7c6126581d662a0b4e43e',
+    sizeBytes: 927_607_488,
   },
   {
     id: 'qwen3-reranker-0.6b-q8',

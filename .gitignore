@@ -19,3 +19,8 @@ packages/harness-cli/templates/*/dist-web/
 packages/harness-cli/templates/*/traces/
 packages/harness-cli/templates/*/*.log
 packages/harness-cli/templates/*/models/**/*.gguf
+
+# Provisioned model weights (too large for git). rig's resolveModel fetches
+# into <projectRoot>/models/<role>/<id>.gguf — at the repo root when tests
+# or examples run here. Mirrors lloyal.node's rule.
+models/
