@@ -71,8 +71,10 @@ export interface ToolHistoryEntry {
   name: string;
   /** Summarized arguments (e.g. query string, URL) */
   args: string;
-  /** Number of tokens prefilled for this tool's result */
-  resultTokenCount: number;
+  /** KV CELLS this tool's result cost — not tokens. Equal on the token rail;
+   *  on the embedding rail a returned image costs cells that no token count
+   *  describes, and this is the number admission actually spent. */
+  resultCells: number;
   /** Context available percent after this result settled */
   contextAfterPercent: number;
   /** Timestamp (performance.now) when result was recorded */

@@ -1,0 +1,62 @@
+{
+  // Type-checks the test suites, which no other project covers: every package
+  // tsconfig is `include: ["src/**/*.ts"]` with `rootDir: "src"`, and vitest
+  // transpiles through esbuild without checking. The consequence was that a
+  // double could claim `implements AttachmentStore`, drift from the interface,
+  // and keep passing — and that a change to a shared type produced zero errors
+  // from the 97 test files that use it.
+  //
+  // `paths` maps every workspace package to its SOURCE, not its `dist`. That is
+  // load-bearing, not a convenience: tests import a mix of `../../sdk/src/X`
+  // and `@lloyal-labs/sdk`, and without this the two resolve to different
+  // declarations of the same type ("`src/BranchStore` is not assignable to
+  // `dist/BranchStore`"). Mapping to source gives one identity, and it also
+  // resolves subpath entries (`rig/node`) that `moduleResolution: "Node"`
+  // cannot read from an `exports` map.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    // Vitest transpiles with esbuild in ESM, so the tests legitimately use
+    // `import.meta` and top-level await; the CommonJS default inherited from
+    // the base config rejects both. DOM is here because several rig tests mock
+    // `fetch` and WebCrypto (`RequestInfo`, `CryptoKeyPair`) — web types the
+    // Node-only src projects rightly do not carry.
+    // "Preserve" (TS 5.4+) accepts all three things this program contains:
+    // `import.meta` and top-level await in the vitest suites, AND the
+    // `import x = require()` in `rig/src/resources/files.ts` that ESNext
+    // rejects. Source files are reachable from the tests, so this project must
+    // tolerate what their own projects already compile.
+    "module": "Preserve",
+    // `downlevelIteration` for the same reason: DOM brings `NodeListOf`, which
+    // `rig/src/sources/chunking.ts` spreads.
+    "downlevelIteration": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "baseUrl": ".",
+    "paths": {
+      "@lloyal-labs/sdk": ["packages/sdk/src/index.ts"],
+      "@lloyal-labs/lloyal-agents": ["packages/agents/src/index.ts"],
+      "@lloyal-labs/rig": ["packages/rig/src/index.ts"],
+      "@lloyal-labs/rig/node": ["packages/rig/src/node.ts"],
+      "@lloyal-labs/media": ["packages/media/src/index.ts"],
+      "@lloyal-labs/media/node": ["packages/media/src/node.ts"],
+      "@lloyal-labs/binding": ["packages/binding/src/index.ts"],
+      "@lloyal-labs/binding/node": ["packages/binding/src/node.ts"],
+      "@lloyal-labs/binding/web": ["packages/binding/src/web.ts"],
+      "@lloyal-labs/channel-verify": ["packages/channel-verify/src/index.ts"],
+      "@lloyal-labs/dev-tools": ["packages/dev-tools/src/index.ts"],
+      "@lloyal-labs/dev-tools/node": ["packages/dev-tools/src/node.ts"],
+      "@lloyal-labs/host": ["packages/host/src/index.ts"],
+      "@lloyal-labs/relay": ["packages/relay/src/index.ts"],
+      "@lloyal-labs/corpus-ability": ["packages/abilities/corpus/src/index.ts"],
+      "@lloyal-labs/web-ability": ["packages/abilities/web/src/index.ts"],
+      "@lloyal-labs/wikipedia-ability": ["packages/abilities/wikipedia/src/index.ts"]
+    }
+  },
+  "include": [
+    "packages/*/test/**/*.ts",
+    "packages/abilities/*/test/**/*.ts"
+  ]
+}

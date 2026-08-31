@@ -289,6 +289,18 @@ export interface MultimodalPrefillResult {
   tokensDecoded: number;
   /** Branch position advance (< tokensDecoded under M-RoPE with images) */
   positionAdvance: number;
+  /** Why THIS entry failed, when it did — the cohort keeps going.
+   *
+   *  A rejected promise would lose which entries landed, and the caller needs
+   *  that: six agents settling images must not lose five because one page was
+   *  corrupt, and pruning the right branch requires knowing which one it was.
+   *  Set ⇒ this branch is POISONED, not merely unchanged: `decode_segments` is
+   *  not atomic and partial-range KV ops are meaningless on recurrent layers,
+   *  so the contract is prune and replay from content, never resume.
+   *
+   *  `Branch.prefillMultimodal` throws instead of setting this — it is a
+   *  cohort of one, where a throw is the friendlier shape. */
+  error?: string;
 }
 
 /**
@@ -1540,6 +1552,15 @@ export interface SessionContext {
     prompts: string[],
     bitmaps: Uint8Array[][],
   ): Promise<MultimodalPrefillResult[]>;
+
+  /** @internal — KV cells a multimodal prefill WOULD consume, known before
+   *  anything decodes. Pays bitmap decode + tokenization, not the vision-tower
+   *  encode. Wrapped by {@link deltaCells}. */
+  _cellsMultimodal(
+    sepTokens: number[],
+    prompt: string,
+    bitmaps: Uint8Array[],
+  ): Promise<number>;
 
   /** @internal — additively merge experts' logits_snapshot into dst's:
    *  dst[t] += alpha * sum(experts[i][t]). Pure CPU op, no GPU dispatch. */

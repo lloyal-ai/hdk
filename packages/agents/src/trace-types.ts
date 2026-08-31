@@ -1,4 +1,5 @@
 import type { ToolHistoryEntry } from './Agent';
+import type { Attachment } from '@lloyal-labs/media';
 
 /**
  * Monotonically increasing trace ID
@@ -46,7 +47,13 @@ export type TraceEvent =
       agentId?: number;
       promptText: string;
       taskContent?: string;
-      tokenCount: number;
+      /** What the prompt tokenizes to, when that is knowable BEFORE the
+       *  prefill it seeds. Absent on the embedding rail: mtmd owns
+       *  tokenization there, and this event is written write-ahead so a
+       *  failed prefill still leaves something to replay from. The cost that
+       *  actually landed is `branch:prefill.tokenCount`, which is written
+       *  only after the KV moved. */
+      tokenCount?: number;
       messages: string;
       tools?: string;
       grammar?: string;
@@ -64,7 +71,16 @@ export type TraceEvent =
   | TraceEventBase & {
       type: 'branch:prefill';
       branchHandle: number;
-      tokenCount: number;
+      /** KV CELLS this prefill added — not tokens.
+       *
+       *  The two are equal on the token rail and are NOT equal on the
+       *  embedding rail: M-RoPE decouples cells from positions, so one image
+       *  costs hundreds of cells while advancing position far less. `cells` is
+       *  the general unit (a token occupies one cell), which is why it names
+       *  the field for every role rather than only the media ones. Compare it
+       *  against `SegmentSource::cells()` and `DecodeSegmentsResult::cells`,
+       *  which share the word so the numbers can be compared. */
+      cells: number;
       role: 'spineHeader' | 'agentSuffix' | 'toolResult' | 'warmDelta' | 'probe' | 'recovery';
       probeText?: string;
       /** Verbatim prefilled text. Populated for `warmDelta` (session-trunk
@@ -73,6 +89,23 @@ export type TraceEvent =
        *  pool-side prefills (spineHeader/toolResult/recovery), whose text is
        *  already recoverable from prompt:format / tool:result / pool:recovery*. */
       content?: string;
+      /** Images that entered the cache in this prefill, in marker order.
+       *  Present only when the run has an attachment store recording them;
+       *  `digest` resolves to the bytes through it. The prefill's `role`
+       *  names which ingress they came through, which is what replay needs
+       *  to rebuild the same delta rather than a differently-shaped one.
+       *
+       *  Deliberately no per-image cell count: image cost is not additive.
+       *  A model that pairs images temporally charges the same cells for two
+       *  as for one (measured on Qwen3.5: 1 and 2 images both cost 580 cells,
+       *  3 and 4 both cost 1142), so a per-image share would be a fiction.
+       *  `tokenCount` above is the whole prefill's real cost.
+       *
+       *  `readonly`, matching `PreparedContent.attachments` — every value that
+       *  reaches this field comes from there, and the two disagreeing was the
+       *  only reason three call sites cast. A trace event is a record; nothing
+       *  downstream has any business mutating it. */
+      attachments?: readonly Attachment[];
     }
   | TraceEventBase & { type: 'branch:prune'; branchHandle: number; position: number }
 
@@ -184,7 +217,34 @@ export type TraceEvent =
       type: 'pool:recoveryFailed';
       agentId: number;
       reason: string;
+      /** The MODEL'S output, truncated — which is what makes this a recovery
+       *  diagnostic and not a general failure event. Two admission failures
+       *  used to be reported here with a native error string in this field,
+       *  making its own invariant false; they now have
+       *  {@link TraceEvent} `pool:settleFailed`. */
       outputExcerpt: string;
+    }
+
+  // ── Admission failure ───────────────────────
+  /** A tool result could not enter the cache, on either rail, so the agent is
+   *  DISCARDED — terminal `agent:failed`, branch pruned, never resumed.
+   *
+   *  Separate from `pool:recoveryFailed` because it is a different event about
+   *  a different thing: nothing was recovered, nothing was produced, and the
+   *  string worth recording is the failure's own, not the model's. On the
+   *  embedding rail the branch is additionally POISONED — `decode_segments` is
+   *  not atomic and partial-range KV ops are meaningless on recurrent layers —
+   *  which is why the contract is prune and replay from content, never
+   *  resume. */
+  | TraceEventBase & {
+      type: 'pool:settleFailed';
+      agentId: number;
+      /** `media_prefill_failed` (the embedding rail, branch poisoned) or
+       *  `tool_result_failed` (the result could not be processed). */
+      reason: 'media_prefill_failed' | 'tool_result_failed';
+      /** Why it failed, from the failure itself — a native decode message or a
+       *  thrown error. NOT the model's output. */
+      detail: string;
     }
 
   // ── Agent lifecycle span ─────────────────────
@@ -245,7 +305,9 @@ export type TraceEvent =
   // serial path it equals dispatch order; emitted uniformly either way.
   | TraceEventBase & {
       type: 'tool:settle_order';
-      batch: Array<{ agentId: number; callId: string; tokenCount: number }>;
+      /** `cells`, not tokens — a media item's admission cost is measured, and
+       *  this is the same number SETTLE spent against headroom. */
+      batch: Array<{ agentId: number; callId: string; cells: number }>;
     }
   | TraceEventBase & { type: 'tool:error'; agentId: number; tool: string; error: string }
   // Transient tool failure (ToolRetryError — e.g. provider rate-limited).

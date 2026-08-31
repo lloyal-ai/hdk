@@ -3,10 +3,12 @@ import type { Operation, Channel } from 'effection';
 import { BranchStore } from '@lloyal-labs/sdk';
 import { Session } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
-import { Ctx, Store, Events, Trace } from './context';
+import { Ctx, Store, Events, Trace, Attachments } from './context';
 import type { AgentEvent } from './types';
 import type { TraceWriter } from './trace-writer';
 import { NullTraceWriter } from './trace-writer';
+import type { Attachment, AttachmentStore } from '@lloyal-labs/media';
+import { NullAttachmentStore } from '@lloyal-labs/media';
 
 /**
  * Handle returned by {@link initAgents} containing all agent resources
@@ -62,10 +64,11 @@ export interface AgentHandle<E = AgentEvent> {
  */
 export function* initAgents<E = AgentEvent>(
   ctx: SessionContext,
-  opts?: { traceWriter?: TraceWriter },
+  opts?: { traceWriter?: TraceWriter; attachmentStore?: AttachmentStore },
 ): Operation<AgentHandle<E>> {
   const store = new BranchStore(ctx);
   const tw = opts?.traceWriter ?? new NullTraceWriter();
+  const attachments = opts?.attachmentStore ?? new NullAttachmentStore();
   // Make the session trunk's conversation prefills (prefillUser /
   // prefillAssistant / commitTurn) visible in the engine trace. They are
   // single-branch `Branch.prefill` calls made by Session — below the Trace
@@ -73,19 +76,33 @@ export function* initAgents<E = AgentEvent>(
   // `warmDelta` is the role reserved for exactly this; `content` carries the
   // verbatim turn. Pure observability: runs after each prefill, never affects
   // it; a NullTraceWriter makes it a no-op when untraced.
+  //
+  // `attachments` is the trunk ingress — a turn the user attached pictures to.
+  // They arrive already normalized and committed: the caller runs the barrier
+  // BEFORE prefilling, so a failure produces no prefill at all rather than
+  // media in the cache that can never be replayed. Nothing is stored here; the
+  // roots are simply carried onto the trace.
   const session = new Session({
     ctx,
     store,
-    onPrefill: ({ branchHandle, tokenCount, content }) => {
+    onPrefill: ({ branchHandle, cells, content, attachments: roots }) => {
       tw.write({
         traceId: tw.nextId(),
         parentTraceId: null,
         ts: performance.now(),
         type: 'branch:prefill',
         branchHandle,
-        tokenCount,
+        cells,
         role: 'warmDelta',
         content,
+        // The SDK carries these STRUCTURALLY (`{digest, mediaType, size}`)
+        // because it has no attachment concept and must not grow one — the
+        // same layering rule that keeps agent concepts out of liblloyal. They
+        // are genuine roots: the caller got them from `prepareBatch` and
+        // prefilled with them in the same breath. This re-narrows what the
+        // boundary erased, and it is the only such claim made outside a store.
+        ...(roots && roots.length > 0
+          ? { attachments: roots as readonly Attachment[] } : {}),
       });
     },
   });
@@ -95,6 +112,7 @@ export function* initAgents<E = AgentEvent>(
   yield* Store.set(store);
   yield* Events.set(events as unknown as Channel<AgentEvent, void>);
   yield* Trace.set(tw);
+  yield* Attachments.set(attachments);
 
   yield* ensure(function*() {
     const tw = yield* Trace.expect();

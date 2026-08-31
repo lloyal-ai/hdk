@@ -42,6 +42,11 @@ export interface DevControl {
   command: string;
   /** The command field carrying the selected value. */
   field: string;
+  /** How to draw the choice. `segmented` (default) is the button row;
+   *  `slider` is the same ordered `values`, stepped — right when they form a
+   *  scale rather than a set, so the ordering is the information. Both
+   *  dispatch the identical command, so this changes the picture only. */
+  render?: 'segmented' | 'slider';
   /** One clause shown beside the control, e.g. `applies next run`. */
   note?: string;
   /** Read the current value out of the live config object. */
@@ -856,6 +861,8 @@ export const KEY_TIERS: Readonly<Record<string, ConfigTier>> = {
   'model.path': 'reload',
   'model.reranker': 'reload',
   'model.gpu': 'reload',
+  'model.imageMinTokens': 'reload',
+  'model.imageMaxTokens': 'reload',
   'model.nCtx': 'boot',
   'model.branches': 'boot',
   'model.kvCache': 'boot',

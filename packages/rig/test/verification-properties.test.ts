@@ -55,13 +55,11 @@ const appArb = fc.record({
 }).map(({ name, protocolName, useWhen, tools }): Ability => {
   const manifest: AbilityManifest = {
     name,
-    version: '1.0.0',
     abilityProtocolVersion: '3.0',
     protocol: { name: protocolName, useWhen, tools: [...new Set(tools)] },
   };
   return {
     name,
-    version: '1.0.0',
     manifest,
     source: { name } as Ability['source'],
     tools: [],

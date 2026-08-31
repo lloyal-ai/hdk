@@ -3,11 +3,15 @@ import type { Channel } from 'effection';
 import { MockSessionContext } from '../../../sdk/test/MockSessionContext';
 import { Branch } from '../../../sdk/src/Branch';
 import { BranchStore } from '../../../sdk/src/BranchStore';
-import type { ChatFormat, ParseChatOutputOptions, ParseChatOutputResult } from '@lloyal-labs/sdk';
+import type { ChatFormat, ParseChatOutputOptions, ParseChatOutputResult, MultimodalPrefillResult } from '@lloyal-labs/sdk';
 import { useAgentPool } from '../../src/agent-pool';
 import type { Orchestrator } from '../../src/orchestrators';
 import { parallel, chain } from '../../src/orchestrators';
-import { Ctx, Store, Events, Trace, WindDown, CancelAgent, Pause } from '../../src/context';
+import { Ctx, Store, Events, Trace, WindDown, CancelAgent, Pause, Attachments, Ingress } from '../../src/context';
+import type { AttachmentStore } from '@lloyal-labs/media';
+import type { ContentIngress } from '@lloyal-labs/media';
+import { MemoryAttachmentStore } from '../helpers/memory-store';
+import { rawIngress } from '../helpers/raw-ingress';
 import type { AgentPolicy } from '../../src/AgentPolicy';
 import type { AgentPoolResult, AgentEvent } from '../../src/types';
 import type { TraceEvent } from '../../src/trace-types';
@@ -16,7 +20,7 @@ import { CapturingTraceWriter } from '../helpers/capturing-trace';
 
 const STOP = 999;
 
-export type NativeOp = 'prefill' | 'commit' | 'sample';
+export type NativeOp = 'prefill' | 'commit' | 'sample' | 'prefillMultimodal';
 
 export interface NativeCall {
   seq: number;
@@ -61,6 +65,34 @@ export class InstrumentedMockSessionContext extends MockSessionContext {
       branchCount: handles.length,
       tokenCount: tokenArrays.reduce((s, a) => s + a.length, 0),
     });
+  }
+
+  /**
+   * The embedding rail, recorded like the token rail.
+   *
+   * Without this override every multimodal prefill is invisible in
+   * `nativeCalls`, so `I1_nativeStoreSingleFiber` and `I32_pauseHoldsNative`
+   * — both of which reason about native access — silently do not cover media
+   * at all. `tokenCount` is the CELL count the mock reports, which is the unit
+   * admission actually spends.
+   */
+  async _storePrefillMultimodal(
+    handles: number[],
+    sepTokens: number[][],
+    prompts: string[],
+    bitmaps: Uint8Array[][],
+  ): Promise<MultimodalPrefillResult[]> {
+    const tStart = performance.now();
+    const seq = this._seq++;
+    const out = await super._storePrefillMultimodal(handles, sepTokens, prompts, bitmaps);
+    const tEnd = performance.now();
+    this.nativeCalls.push({
+      seq, op: 'prefillMultimodal', tStart, tEnd,
+      branchCount: handles.length,
+      // CELLS, not tokens — the unit admission actually spends on this rail.
+      tokenCount: out.reduce((n, r) => n + (r?.tokensDecoded ?? 0), 0),
+    });
+    return out;
   }
 
   async _storeCommit(handles: number[], tokens: number[]): Promise<void> {
@@ -160,6 +192,20 @@ export interface PoolSpec {
    * `maxLength` budget out of `jsonSchemaToGrammar`.
    */
   instrument?: (ctx: InstrumentedMockSessionContext) => void;
+  /**
+   * The run's content store. Defaults to an in-memory one, so media WORKS by
+   * default — previously the harness set neither context, `Ingress` fell back
+   * to `NoContentIngress`, every media path rejected, and the throw unwound to
+   * the tick loop's own catch, which closes with a partial result and no
+   * error. A media invariant written against that would have passed vacuously.
+   */
+  attachments?: AttachmentStore;
+  /**
+   * The run's ingress. Defaults to `rawIngress` over `attachments` — it
+   * commits bytes verbatim, exercising the RAIL without pulling `sharp` into
+   * the agents test run. Pass a rejecting one to exercise the barrier.
+   */
+  ingress?: ContentIngress;
   /** Capture a thrown pool run into `PoolRun.error` instead of rejecting — for scenarios
    *  that expect a throw AND need the events emitted before it. Default: re-throw (fail-loud). */
   captureError?: boolean;
@@ -176,8 +222,6 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
     nCtx: spec.nCtx,
     cellsUsed: spec.cellsUsed,
   });
-  spec.instrument?.(ctx);
-
   // Wire scripted _branchSample: index by forkCount, advance per sample.
   let forkCount = 0;
   const branchForkIndex = new Map<number, number>();
@@ -236,6 +280,14 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
     return { content: script?.content ?? '', reasoningContent: '', toolCalls: [] };
   };
 
+  // AFTER the fork/sample/parse wiring, not before it. The previous call site
+  // ran first, so an `instrument` that overrode `_branchSample` or
+  // `parseChatOutput` was silently clobbered by the harness a few lines later
+  // — while its own docstring promised it was the same affordance the harness
+  // uses. Plain field writes (`mockImageCells`, `throwOnCommitToken`) were
+  // unaffected, which is why nothing noticed.
+  spec.instrument?.(ctx);
+
   const trace = new CapturingTraceWriter();
   const channelEvents: AgentEvent[] = [];
 
@@ -255,6 +307,12 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
     const events: Channel<AgentEvent, void> = createChannel();
     yield* Events.set(events as any);
     yield* Trace.set(trace);
+    // Media contexts, always installed. A real harness that accepts media wires
+    // both; a harness that does not never reaches them, and an in-memory store
+    // costs a text-only run nothing.
+    const contentStore = spec.attachments ?? new MemoryAttachmentStore();
+    yield* Attachments.set(contentStore);
+    yield* Ingress.set(spec.ingress ?? rawIngress(contentStore));
     const windDownSignal = createSignal<void, void>();
     if (spec.windDownAfter) yield* WindDown.set(windDownSignal);
     const cancelSignal = createSignal<{ agentId: number }, void>();

@@ -1,5 +1,6 @@
 import type { Branch } from './Branch';
-import type { SessionContext } from './types';
+import type { SessionContext, MultimodalPrefillResult } from './types';
+import type { MultimodalDelta } from './deltas';
 
 /**
  * High-throughput multi-branch decode operations
@@ -132,6 +133,44 @@ export class BranchStore {
       tokenArrays.push(tokens);
     }
     await this._ctx._storePrefill(handles, tokenArrays);
+  }
+
+  /**
+   * Prefill multimodal deltas across branches in one call.
+   *
+   * The embedding-rail mirror of {@link prefill}. `llama_batch` is
+   * token-XOR-embd, so an image is always its own dispatch and these cannot be
+   * bin-packed with token prefills — they are a separate call, not a separate
+   * strategy. How many dispatches (and vision-tower encodes) the cohort costs
+   * is the native worker's business, which is what lets that get cheaper later
+   * without any caller changing.
+   *
+   * **Reports failures rather than throwing.** Unlike {@link prefill}, a bad
+   * entry does not reject the call: it comes back with `error` set on its own
+   * result, and the rest still land. A rejected promise would lose which
+   * branches were mutated, and every caller here needs that — see
+   * {@link MultimodalPrefillResult.error}. A failed entry's branch is
+   * POISONED: prune it and replay from content.
+   *
+   * @param entries - One `[branch, delta]` pair per prefill, in dispatch order
+   * @returns One result per entry, positionally
+   * @throws Only if a branch is disposed — a caller bug, not an input failure
+   */
+  async prefillMultimodal(
+    entries: [Branch, MultimodalDelta][],
+  ): Promise<MultimodalPrefillResult[]> {
+    const handles: number[] = [];
+    const sepTokens: number[][] = [];
+    const prompts: string[] = [];
+    const bitmaps: Uint8Array[][] = [];
+    for (const [branch, delta] of entries) {
+      if (branch.disposed) throw new Error('BranchStore.prefillMultimodal: branch is disposed');
+      handles.push(branch.handle);
+      sepTokens.push(delta.sep);
+      prompts.push(delta.prompt);
+      bitmaps.push(delta.bitmaps);
+    }
+    return this._ctx._storePrefillMultimodal(handles, sepTokens, prompts, bitmaps);
   }
 
   /**

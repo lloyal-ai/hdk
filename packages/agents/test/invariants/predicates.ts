@@ -1,5 +1,6 @@
 import type { AgentExitReason } from '../../src/types';
 import type { PoolRun, NativeCall } from './harness';
+import type { AgentEvent } from '../../src/types';
 import type { TraceEvent } from '../../src/trace-types';
 
 export interface Violation {
@@ -200,7 +201,7 @@ export function I30_exitReasonMatchesTrace(run: PoolRun): PredicateResult {
   const dropped = new Map<number, string>();
   for (const e of run.traceEvents) {
     if (e.type !== 'pool:agentDrop') continue;
-    const reason = (e as any).reason as string;
+    const reason = (e as { reason: AgentExitReason }).reason;
     if (!RECORDED_EXIT_REASONS.has(reason)) continue;
     dropped.set((e as any).agentId, reason);
   }
@@ -303,5 +304,76 @@ export function I32_pauseHoldsNative(run: PoolRun): PredicateResult {
       }
     }
   }
+  return ok();
+}
+
+/**
+ * I33 Agent-failure-is-isolated — a SCENARIO predicate, not a global invariant.
+ *
+ * It cannot be global. A legitimate run may have one agent; every agent may
+ * fail independently; a sibling may have finished BEFORE the failure. "Some
+ * other agent reached a terminal event" is false in all three and says nothing
+ * about isolation.
+ *
+ * What isolation actually means is causal: an agent that was still LIVE at the
+ * moment another failed must go on to reach a terminal event of its own, and
+ * the pool must close normally. That distinguishes "one agent pruned, siblings
+ * survived" from "the failure took the run down with it" — which is exactly
+ * the shape the pool's outer catch produces, since it closes with a partial
+ * result and no error at all.
+ *
+ * @param run   the pool run
+ * @param reason optional `agent:failed` reason to scope to (e.g.
+ *               `'media_prefill_failed'`); omit to check every failure.
+ */
+export function I33_agentFailureIsIsolated(
+  run: PoolRun,
+  reason?: string,
+): PredicateResult {
+  const evs = run.channelEvents;
+  const idOf = (e: AgentEvent): number | undefined =>
+    (e as { agentId?: number }).agentId;
+  const TERMINAL = new Set(['agent:return', 'agent:recovered', 'agent:failed', 'agent:done']);
+
+  // FIRST, and unconditionally: a torn-down run emits NO `agent:failed` at all,
+  // so keying the whole check off failures makes it vacuous exactly when the
+  // bug is present. Measured: a refused ingress yields spawn×2, one tool_call,
+  // zero failures, and no `pool:close` — the tick loop's outer catch closes the
+  // channel with a partial result and swallows the reason.
+  if (!run.traceEvents.some(e => e.type === 'pool:close')) {
+    return fail('I33', 'pool never emitted pool:close — the run was torn down, not completed');
+  }
+
+  const failures = evs
+    .map((e, i) => ({ e, i }))
+    .filter(({ e }) => e.type === 'agent:failed'
+      && (reason === undefined || (e as { reason?: string }).reason === reason));
+  if (failures.length === 0) return ok();
+
+  for (const { e: failure, i: at } of failures) {
+    const deadId = idOf(failure);
+    // Live at the instant of the failure: spawned before it, and no terminal
+    // event of its own before it. Ordering is the whole point — a sibling that
+    // had already finished proves nothing about isolation.
+    const live = new Set<number>();
+    for (let j = 0; j < at; j++) {
+      const id = idOf(evs[j]);
+      if (id === undefined || id === deadId) continue;
+      if (evs[j].type === 'agent:spawn') live.add(id);
+      if (TERMINAL.has(evs[j].type)) live.delete(id);
+    }
+    for (const id of live) {
+      const survived = evs.slice(at + 1).some(e => idOf(e) === id && TERMINAL.has(e.type));
+      if (!survived) {
+        return fail(
+          'I33',
+          `agent ${id} was live when agent ${deadId} failed` +
+            `${reason ? ` (${reason})` : ''} and never reached a terminal event — ` +
+            'the failure took its sibling down with it',
+        );
+      }
+    }
+  }
+
   return ok();
 }

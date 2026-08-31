@@ -10,15 +10,31 @@ import { buildUserDelta, buildUserDeltaMultimodal, buildAssistantDelta, buildToo
  * agents-layer tracer emits a `branch:prefill` event) WITHOUT coupling
  * Session to any trace type — the callback is sdk-native. Pure
  * observability: it runs after the prefill and never affects it. `content`
- * is the verbatim turn text; `tokenCount` is the prefilled delta length.
+ * is the verbatim turn text; `cells` is what the prefill added to the cache.
  *
  * @category Branching
  */
 export type TrunkPrefillObserver = (info: {
   role: 'user' | 'assistant' | 'turn' | 'tool';
   content: string;
-  tokenCount: number;
+  /** KV CELLS the prefill added — not tokens.
+   *
+   *  Equal on the token rail, where this is the delta length. NOT equal on the
+   *  multimodal path, which reports `tokensDecoded` — itself documented as
+   *  "KV cells added", a name inherited from the native contract and shared
+   *  with lloyal.node, so it cannot be corrected from here. This field is
+   *  sdk-native and can be, so it is. */
+  cells: number;
   branchHandle: number;
+  /** Roots of the content this prefill put into the cache, in marker order —
+   *  present only on the multimodal path.
+   *
+   *  Descriptors, NOT bytes: by the time a prefill happens the caller has
+   *  already normalized and committed the content, because media that reaches
+   *  the cache unaddressed produces a run that cannot be replayed. So there is
+   *  nothing left to store here — only a reference to record. Structural on
+   *  purpose: the SDK has no attachment concept and does not want one. */
+  attachments?: readonly { digest: string; mediaType: string; size: number }[];
 }) => void;
 
 /**
@@ -104,7 +120,7 @@ export class Session {
   async prefillUser(content: string, opts: { tools?: string } = {}): Promise<void> {
     const tokens = buildUserDelta(this._ctx, content, opts);
     await this._trunk!.prefill(tokens);
-    this._onPrefill?.({ role: 'user', content, tokenCount: tokens.length, branchHandle: this._trunk!.handle });
+    this._onPrefill?.({ role: 'user', content, cells: tokens.length, branchHandle: this._trunk!.handle });
   }
 
   /**
@@ -117,18 +133,44 @@ export class Session {
    *
    * Requires a context created with `mmprojPath`.
    *
+   * Handles warm/cold internally, like {@link commitTurn} and unlike
+   * {@link prefillUser}:
+   * - **Warm** (trunk exists): appends separator + delta to the existing trunk
+   * - **Cold** (no trunk): creates a branch at position 0, prefills WITHOUT a
+   *   separator (fresh branch — no prior turn to separate from), promotes it
+   *
+   * The cold path is what a composer needs. An image attached to the FIRST
+   * question has no trunk yet, and the trunk is otherwise not established
+   * until a run ends; without this the image could only reach the model as a
+   * per-agent copy. Landing it on the trunk first is what lets every agent
+   * forked from it attend the same encoded rows.
+   *
    * @param content - User message text
-   * @param images - Encoded image bytes (jpg/png/bmp/gif)
+   * @param images - Encoded image bytes in a format the projector decodes
    * @param opts - Optional tools JSON string
    */
   async prefillUserMultimodal(
     content: string,
     images: Uint8Array[],
-    opts: { tools?: string } = {},
+    opts: {
+      tools?: string;
+      /** Roots for the content in `images`, already committed by the caller's
+       *  barrier. Passed through to the prefill observer so the trace records
+       *  what was admitted; the Session itself never inspects them. */
+      attachments?: readonly { digest: string; mediaType: string; size: number }[];
+    } = {},
   ): Promise<void> {
     const { sep, prompt, bitmaps } = buildUserDeltaMultimodal(this._ctx, content, images, opts);
-    const { tokensDecoded } = await this._trunk!.prefillMultimodal(prompt, bitmaps, sep);
-    this._onPrefill?.({ role: 'user', content, tokenCount: tokensDecoded, branchHandle: this._trunk!.handle });
+    const attachments = opts.attachments;
+    if (this._trunk) {
+      const { tokensDecoded } = await this._trunk.prefillMultimodal(prompt, bitmaps, sep);
+      this._onPrefill?.({ role: 'user', content, cells: tokensDecoded, branchHandle: this._trunk.handle, ...(attachments ? { attachments } : {}) });
+    } else {
+      const trunk = Branch.create(this._ctx, 0, {});
+      const { tokensDecoded } = await trunk.prefillMultimodal(prompt, bitmaps, []);
+      await this.promote(trunk);
+      this._onPrefill?.({ role: 'user', content, cells: tokensDecoded, branchHandle: trunk.handle, ...(attachments ? { attachments } : {}) });
+    }
   }
 
   /**
@@ -149,7 +191,7 @@ export class Session {
   async prefillAssistant(content: string, opts: { enableThinking?: boolean } = {}): Promise<void> {
     const tokens = buildAssistantDelta(this._ctx, content, opts);
     await this._trunk!.prefill(tokens);
-    this._onPrefill?.({ role: 'assistant', content, tokenCount: tokens.length, branchHandle: this._trunk!.handle });
+    this._onPrefill?.({ role: 'assistant', content, cells: tokens.length, branchHandle: this._trunk!.handle });
   }
 
   /**
@@ -161,7 +203,7 @@ export class Session {
   async prefillToolResult(resultStr: string, callId: string): Promise<void> {
     const tokens = buildToolResultDelta(this._ctx, resultStr, callId);
     await this._trunk!.prefill(tokens);
-    this._onPrefill?.({ role: 'tool', content: resultStr, tokenCount: tokens.length, branchHandle: this._trunk!.handle });
+    this._onPrefill?.({ role: 'tool', content: resultStr, cells: tokens.length, branchHandle: this._trunk!.handle });
   }
 
   /**
@@ -181,7 +223,7 @@ export class Session {
       // conversations; no thinking blocks should be embedded.
       const tokens = buildTurnDelta(this._ctx, query, response, { enableThinking: false });
       await this._trunk.prefill(tokens);
-      this._onPrefill?.({ role: 'turn', content: `${query}\n\n${response}`, tokenCount: tokens.length, branchHandle: this._trunk.handle });
+      this._onPrefill?.({ role: 'turn', content: `${query}\n\n${response}`, cells: tokens.length, branchHandle: this._trunk.handle });
     } else {
       // Cold path: create trunk at position 0, prefill without separator
       // (fresh branch — no prior turn to separate from), then promote.
@@ -196,7 +238,7 @@ export class Session {
       const trunk = Branch.create(this._ctx, 0, {});
       await trunk.prefill(tokens);
       await this.promote(trunk);
-      this._onPrefill?.({ role: 'turn', content: `${query}\n\n${response}`, tokenCount: tokens.length, branchHandle: trunk.handle });
+      this._onPrefill?.({ role: 'turn', content: `${query}\n\n${response}`, cells: tokens.length, branchHandle: trunk.handle });
     }
   }
 

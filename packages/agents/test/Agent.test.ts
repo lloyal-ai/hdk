@@ -2,10 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { Agent } from '../src/Agent';
 import { createMockBranch } from './helpers/mock-branch';
 
-const FMT = {
-  format: 0, reasoningFormat: 0, generationPrompt: '',
-  parser: '', grammar: '', grammarLazy: false, grammarTriggers: [],
-};
+import { FMT } from './helpers/format-config';
 
 function makeAgent(opts?: { parent?: Agent; id?: number }) {
   const branch = createMockBranch({ handle: opts?.id ?? 1 });
@@ -137,7 +134,7 @@ describe('Agent', () => {
       const a = makeAgent();
       a.recordToolResult({
         name: 'web_search', args: 'test query',
-        resultTokenCount: 100, contextAfterPercent: 80, timestamp: 0,
+        resultCells: 100, contextAfterPercent: 80, timestamp: 0,
       });
       expect(a.toolHistory).toHaveLength(1);
       expect(a.toolHistory[0].name).toBe('web_search');
@@ -147,7 +144,7 @@ describe('Agent', () => {
   describe('walkAncestors', () => {
     it('returns own data when no parent', () => {
       const a = makeAgent();
-      a.recordToolResult({ name: 'search', args: 'q', resultTokenCount: 0, contextAfterPercent: 100, timestamp: 0 });
+      a.recordToolResult({ name: 'search', args: 'q', resultCells: 0, contextAfterPercent: 100, timestamp: 0 });
       const result = a.walkAncestors((agent) => agent.toolHistory);
       expect(result).toHaveLength(1);
       expect(result[0].name).toBe('search');
@@ -155,13 +152,13 @@ describe('Agent', () => {
 
     it('traverses self → parent → grandparent', () => {
       const grandparent = makeAgent({ id: 1 });
-      grandparent.recordToolResult({ name: 'gp', args: '', resultTokenCount: 0, contextAfterPercent: 100, timestamp: 0 });
+      grandparent.recordToolResult({ name: 'gp', args: '', resultCells: 0, contextAfterPercent: 100, timestamp: 0 });
 
       const parent = makeAgent({ id: 2, parent: grandparent });
-      parent.recordToolResult({ name: 'p', args: '', resultTokenCount: 0, contextAfterPercent: 100, timestamp: 0 });
+      parent.recordToolResult({ name: 'p', args: '', resultCells: 0, contextAfterPercent: 100, timestamp: 0 });
 
       const child = makeAgent({ id: 3, parent });
-      child.recordToolResult({ name: 'c', args: '', resultTokenCount: 0, contextAfterPercent: 100, timestamp: 0 });
+      child.recordToolResult({ name: 'c', args: '', resultCells: 0, contextAfterPercent: 100, timestamp: 0 });
 
       const names = child.walkAncestors((a) => a.toolHistory).map((h) => h.name);
       expect(names).toEqual(['c', 'p', 'gp']);

@@ -10,6 +10,7 @@ export {
   GrantStoreCtx,
   WindDown,
   CancelAgent, Pause,
+  Attachments, Ingress,
 } from './context';
 export { Tool, ToolRetryError } from './Tool';
 export { Agent } from './Agent';
@@ -31,7 +32,16 @@ export { createToolkit } from './toolkit';
 export { initAgents } from './init';
 export { withSpine } from './spine';
 export { NullTraceWriter, JsonlTraceWriter } from './trace-writer';
-export { traceScope } from './trace-scope';
+// The content vocabulary is NOT re-exported. It lives in `@lloyal-labs/media`
+// and eighteen symbols of it used to surface here, in the package whose job is
+// orchestration — `agents` NAMES attachments, it does not define them. What it
+// does own is the barrier that drives the two ports across a batch.
+export { prepareBatch } from './prepare-content';
+// The one member of the framework-channel namespace a TOOL writes. The other
+// two are framework→model and no tool author ever sets them, so they stay
+// internal rather than growing the surface to describe a convention.
+export { TOOL_MEDIA_KEY } from './Tool';
+export { useTraceScope } from './trace-scope';
 export { admitChunks } from './admission';
 export type { AdmitOpts, AdmitResult, AdmitSelect, AdmittedPassage } from './admission';
 export { composePrompt, renderPrompt, renderTemplate } from './prompt';

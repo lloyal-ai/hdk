@@ -40,7 +40,7 @@ export class NullTraceWriter implements TraceWriter {
  *
  * Buffers up to 64 events in memory before flushing to the underlying
  * file descriptor with `fs.writeSync`. Flush also occurs at every
- * {@link traceScope} close boundary to guarantee scope pairs are
+ * {@link useTraceScope} close boundary to guarantee scope pairs are
  * persisted promptly.
  *
  * Construct with an open file descriptor (e.g. from `fs.openSync`).

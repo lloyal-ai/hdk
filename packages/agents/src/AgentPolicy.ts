@@ -229,10 +229,19 @@ export interface AgentPolicy {
    * error payload (carries the budget in its message). Return
    * `{type: 'idle', reason: 'pressure_settle_reject'}` to drop the agent.
    * If the hook is absent, the pool falls back to `settle_stall_break`.
+   *
+   * OPTIONAL, and that is the contract the pool actually implements:
+   * `agent-pool.ts:2184` calls it as `policy.onSettleReject?.(…)`. Declaring it
+   * required contradicted both that call site and the sentence above, and made
+   * every policy double that legitimately omits it fail to typecheck.
    */
-  onSettleReject(
+  onSettleReject?(
     agent: Agent,
-    resultTokens: number,
+    /** KV CELLS the pending result will cost — not tokens. A media result's
+     *  cost is measured, never a token length; this used to be handed
+     *  `prefillTokens.length`, which for that rail is `[]` and reported a
+     *  confident zero. */
+    resultCells: number,
     pressure: ContextPressure,
     config: PolicyConfig,
   ): SettleAction;

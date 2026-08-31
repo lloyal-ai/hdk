@@ -13,6 +13,35 @@ import type { SessionContext } from './types';
 export const MEDIA_MARKER = '<__media__>';
 
 /**
+ * Chat content carrying one media marker per image
+ *
+ * The ONE place `media_marker` parts are emitted. Every ingress — a user turn,
+ * a spine header, a tool result — renders its text through this, so the marker
+ * grammar cannot drift between them.
+ *
+ * Returns the bare string when there are no images, so a caller can route text
+ * and multimodal content through the same expression without branching.
+ *
+ * Structured parts, never string splicing: `media_marker` is the chat layer's
+ * native part type, and the part-joiner owns newline hygiene around markers.
+ *
+ * @param text - The message text the markers follow
+ * @param images - One marker is emitted per entry; bytes are not read here
+ *
+ * @category Agents
+ */
+export function mediaContent(
+  text: string,
+  images: readonly Uint8Array[],
+): string | Array<{ type: string; text: string }> {
+  if (images.length === 0) return text;
+  return [
+    { type: 'text', text },
+    ...images.map(() => ({ type: 'media_marker', text: MEDIA_MARKER })),
+  ];
+}
+
+/**
  * A multimodal turn delta — the string-stage counterpart of a token delta
  *
  * Token deltas end at `number[]` because JS owns tokenization on the text
@@ -27,7 +56,7 @@ export interface MultimodalDelta {
   sep: number[];
   /** Templated prompt containing one {@link MEDIA_MARKER} per image */
   prompt: string;
-  /** Encoded image bytes (jpg/png/bmp/gif), one per marker, in order */
+  /** Encoded image bytes in a format the projector decodes, one per marker, in order */
   bitmaps: Uint8Array[];
 }
 
@@ -120,10 +149,7 @@ export function buildUserDeltaMultimodal(
   const fmtOpts: Record<string, unknown> = {};
   if (opts.tools) fmtOpts.tools = opts.tools;
   if (opts.enableThinking !== undefined) fmtOpts.enableThinking = opts.enableThinking;
-  const userContent = [
-    { type: 'text', text: content },
-    ...images.map(() => ({ type: 'media_marker', text: MEDIA_MARKER })),
-  ];
+  const userContent = mediaContent(content, images);
   const { prompt } = ctx.formatChatSync(
     JSON.stringify([
       { role: 'system', content: opts.system ?? '' },
@@ -253,4 +279,84 @@ export function buildToolResultDelta(
     genTokens = ctx.tokenizeSync(generationPrompt, false);
   }
   return [...sep, ...delta, ...genTokens];
+}
+
+/**
+ * Build a multimodal delta for a tool result carrying images
+ *
+ * The multimodal counterpart of {@link buildToolResultDelta}: a tool that
+ * returns media (a rasterized document page, a rendered chart) has its result
+ * text rendered with one marker per image, and the delta stops at the string
+ * stage because mtmd owns tokenization.
+ *
+ * The generation prompt is concatenated onto the prompt STRING rather than
+ * tokenized and appended as {@link buildToolResultDelta} does. On the token
+ * path the caller owns tokenization and can append ids; here mtmd tokenizes
+ * the whole prompt, so anything appended after the fact would never reach it.
+ *
+ * @param ctx - Active session context (created with `mmprojPath`)
+ * @param resultStr - JSON-serialized tool result, with the media stripped out
+ * @param callId - Tool call identifier from the model's parsed output
+ * @param images - Encoded image bytes, one marker emitted per image
+ * @param opts - Optional thinking flag; see {@link DeltaOpts}
+ * @returns Delta ready for {@link Branch.prefillMultimodal}
+ *
+ * @category Agents
+ */
+export function buildToolResultDeltaMultimodal(
+  ctx: SessionContext,
+  resultStr: string,
+  callId: string,
+  images: Uint8Array[],
+  opts: DeltaOpts = {},
+): MultimodalDelta {
+  const sep = ctx.getTurnSeparator();
+  const fmtOpts: Record<string, unknown> = {};
+  if (opts.enableThinking !== undefined) fmtOpts.enableThinking = opts.enableThinking;
+  const { prompt, generationPrompt } = ctx.formatChatSync(
+    JSON.stringify([
+      { role: 'system', content: '' },
+      { role: 'tool', content: mediaContent(resultStr, images), tool_call_id: callId },
+    ]),
+    fmtOpts,
+  );
+  const withGen =
+    generationPrompt && !prompt.endsWith(generationPrompt)
+      ? prompt + generationPrompt
+      : prompt;
+  return { sep, prompt: withGen, bitmaps: images };
+}
+
+/**
+ * KV cells a multimodal delta will consume, measured before it decodes
+ *
+ * The admission cost. `decode_segments` is not atomic, so a caller that
+ * discovers the overflow midway has poisoned the branch and must prune it;
+ * one that refuses up front has spent nothing. Text can be measured by
+ * tokenizing it — the token path gets its count for free from
+ * `prefillTokens.length` — but an image cannot, because the caller holds bytes
+ * and the row count depends on the projector's geometry. Without this, media
+ * is the one input that reaches KV ungated.
+ *
+ * Deliberately NOT computed inside the delta builders: they are pure
+ * `formatChatSync` composition, and this does native work (bitmap decode plus
+ * tokenization). Measuring where a cost is actually needed keeps that work off
+ * every caller that only wants to build a delta.
+ *
+ * Cells, not positions or tokens: a KV budget is spent in cells, and under
+ * M-RoPE an image costs far more cells than it advances position. The number
+ * is directly comparable with `ContextPressure.headroom` and with the
+ * `tokensDecoded` the prefill reports back.
+ *
+ * @param ctx - Active session context (created with `mmprojPath`)
+ * @param delta - Built by any of the multimodal delta builders
+ * @returns Cells the prefill would add — sep + text + image rows
+ *
+ * @category Agents
+ */
+export async function deltaCells(
+  ctx: SessionContext,
+  delta: MultimodalDelta,
+): Promise<number> {
+  return ctx._cellsMultimodal(delta.sep, delta.prompt, delta.bitmaps);
 }

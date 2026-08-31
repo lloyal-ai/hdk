@@ -7,7 +7,7 @@
  * cancel and the branch stays non-disposed. The termination sweep recovers any agent left
  * `idle && !result && !branch.disposed` — so pre-fix it would `recoverInline()` the
  * cancelled agent, emitting a SECOND terminal event (here `agent:failed(recovery_skipped)`)
- * after the `agent:failed(user_cancel)`. The `cancelledIds` guard excludes it.
+ * after the `agent:failed(user_cancel)`. The `discardedIds` guard excludes it.
  *
  * (PR #26 Copilot review, agent-pool.ts:1911.)
  */

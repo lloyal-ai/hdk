@@ -22,7 +22,14 @@ const { createContext, fakeCtx } = vi.hoisted(() => {
     tokenize: async () => [1],
     dispose: vi.fn(),
   };
-  return { fakeCtx, createContext: vi.fn(async () => fakeCtx) };
+  // Declare the parameter: `vi.fn(async () => …)` types `mock.calls` as an
+  // EMPTY tuple, so `calls[0][0]` is a type error and every read needs a cast
+  // through `undefined`. Naming the argument is what makes the assertions below
+  // check a real shape instead of an `unknown`.
+  return {
+    fakeCtx,
+    createContext: vi.fn(async (_opts: Record<string, unknown>) => fakeCtx),
+  };
 });
 
 // The native binding and Rerank's boot gates both need a real model; neither is
@@ -63,21 +70,21 @@ describe('createReranker — KV precision', () => {
   it('requests q4_0 for both KV types when the caller specifies neither', async () => {
     await load();
     expect(createContext).toHaveBeenCalledTimes(1);
-    const args = createContext.mock.calls[0][0] as Record<string, unknown>;
+    const args = createContext.mock.calls[0][0];
     expect(args.typeK).toBe('q4_0');
     expect(args.typeV).toBe('q4_0');
   });
 
   it('requests the caller\'s KV types when given', async () => {
     await load({ typeK: 'f16', typeV: 'f16' });
-    const args = createContext.mock.calls[0][0] as Record<string, unknown>;
+    const args = createContext.mock.calls[0][0];
     expect(args.typeK).toBe('f16');
     expect(args.typeV).toBe('f16');
   });
 
   it('still honours the sizing options', async () => {
     await load({ nSeqMax: 6, nCtx: 2048 });
-    const args = createContext.mock.calls[0][0] as Record<string, unknown>;
+    const args = createContext.mock.calls[0][0];
     expect(args.nSeqMax).toBe(6);
     expect(args.nCtx).toBe(2048);
     // nBatch derives from the two above when not given.

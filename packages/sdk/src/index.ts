@@ -4,7 +4,9 @@ export { BranchStore } from './BranchStore';
 export { Session } from './Session';
 export { Rerank, RerankCalibrationError, RerankInternalError, RETRIEVAL_INSTRUCTION } from './Rerank';
 export type { RerankOpts, RerankTruncation, RerankInstruction } from './Rerank';
-export { buildUserDelta, buildUserDeltaMultimodal, buildAssistantDelta, buildToolResultDelta, buildTurnDelta, MEDIA_MARKER } from './deltas';
+export { buildUserDelta, buildUserDeltaMultimodal, buildAssistantDelta, buildToolResultDelta,
+         buildToolResultDeltaMultimodal, buildTurnDelta, mediaContent, deltaCells,
+         MEDIA_MARKER } from './deltas';
 export type { DeltaOpts, MultimodalDelta } from './deltas';
 
 // ── Enums + constants ────────────────────────────────────────

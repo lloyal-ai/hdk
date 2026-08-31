@@ -1747,6 +1747,14 @@ const SETTING_META: Readonly<Record<string, { desc: string; how: string }>> = {
     desc: 'flat runs one research wave over the plan; deep lets agents recurse into sub-plans.',
     how: 'Change it here; it applies to your next run.',
   },
+  'model.imageMaxTokens': {
+    desc: 'Ceiling on what ONE image costs in KV. Measured on Qwen3.5 with a 176 KB photo: 564 cells uncapped, 251 at 256. Lower it to fit more images into a context; auto lets the model metadata decide.',
+    how: 'Change it here and the runtime reloads on the new value. It does NOT shrink the projector\u2019s warmup allocation, so it will not rescue a boot that runs out of GPU memory before any image arrives.',
+  },
+  'model.imageMinTokens': {
+    desc: 'Floor on per-image detail. Grounding tasks need it high \u2014 llama.cpp warns Qwen-VL wants at least 1024 to read positions reliably.',
+    how: 'Change it here and the runtime reloads on the new value. Raise it if the model reads an image but places things wrongly in it.',
+  },
   'sources.outputDir': {
     desc: 'Where per-query run-dirs and the session trace are written. Empty means where the harness started.',
     how: 'Edit harness.yml → sources.outputDir; the next run picks it up.',
@@ -1833,6 +1841,45 @@ function Settings({ m, controls, send }: {
   );
 }
 
+/** A DevControl drawn as a stepped slider: the steps ARE `ctl.values`, in the
+ *  order the template declared them, so there is no numeric range to keep in
+ *  sync with the option list and no value can be selected that the command
+ *  would not accept. Commits on release, not on drag \u2014 each change reloads
+ *  the runtime, and every intermediate step would be a reload nobody asked
+ *  for. */
+function SteppedSlider({ ctl, value, onSelect, send }: {
+  ctl: DevControl; value: string | undefined;
+  onSelect: () => void; send: (c: unknown) => void;
+}): ReactElement {
+  const at = Math.max(0, ctl.values.indexOf(value ?? ''));
+  const [dragging, setDragging] = useState<number | null>(null);
+  const shown = dragging ?? at;
+  const commit = (i: number): void => {
+    setDragging(null);
+    if (ctl.values[i] !== value) { onSelect(); send({ type: ctl.command, [ctl.field]: ctl.values[i] }); }
+  };
+  return (
+    <span
+      onClick={(e) => e.stopPropagation()}
+      style={{ display: 'flex', alignItems: 'center', gap: 10, width: 276, flex: 'none' }}
+    >
+      <input
+        type="range" min={0} max={ctl.values.length - 1} step={1} value={shown}
+        aria-label={ctl.key}
+        onChange={(e) => setDragging(Number(e.target.value))}
+        onPointerUp={(e) => commit(Number((e.target as HTMLInputElement).value))}
+        onKeyUp={(e) => commit(Number((e.target as HTMLInputElement).value))}
+        onBlur={() => setDragging(null)}
+        style={{ flex: 1, accentColor: C.text, cursor: 'pointer', minWidth: 0 }}
+      />
+      <span style={{
+        fontFamily: mono, fontSize: 11, color: C.text, width: 46, flex: 'none',
+        textAlign: 'right', fontVariantNumeric: 'tabular-nums',
+      }}>{ctl.values[shown]}</span>
+    </span>
+  );
+}
+
 function HarnessSettings({ m, controls, send, selKey, onSelect }: {
   m: PaneModel; controls: readonly DevControl[]; send: (c: unknown) => void;
   selKey: string; onSelect: (k: string) => void;
@@ -1856,7 +1903,14 @@ function HarnessSettings({ m, controls, send, selKey, onSelect }: {
         <span style={{ fontFamily: mono, fontSize: 11.5, fontWeight: 500 }}>{key}</span>
         <span style={{ flex: 1 }} />
         {ctl?.note && <span style={{ color: C.faint, fontSize: 10.5, marginRight: 10, flex: 'none' }}>{ctl.note}</span>}
-        {ctl ? (
+        {ctl?.render === 'slider' ? (
+          <SteppedSlider
+            ctl={ctl}
+            value={value === undefined || value === null ? undefined : String(value)}
+            onSelect={() => onSelect(key)}
+            send={send}
+          />
+        ) : ctl ? (
           <span style={{ display: 'flex', border: '1px solid #dadce0', borderRadius: 4, overflow: 'hidden', width: 276, flex: 'none' }}>
             {ctl.values.map((v) => (
               <span key={v}

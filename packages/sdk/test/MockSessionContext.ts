@@ -45,6 +45,7 @@ import type {
   FormatChatOptions,
   ParseChatOutputResult,
   ParseChatOutputOptions,
+  MultimodalPrefillResult,
 } from '../src/types';
 import { Branch } from '../src/Branch';
 import { BranchStore } from '../src/BranchStore';
@@ -124,7 +125,12 @@ export class MockSessionContext implements SessionContext {
 
   _branchPrune(handle: number): void {
     const b = this._branches.get(handle);
-    if (!b) return;
+    // A stale handle is INERT, mirroring the kernel: `reset_slot` bumps the
+    // slot generation ("Prevent ABA") and `BranchStore::get` refuses a handle
+    // whose generation no longer matches, so `prune()` returns early. Pruning
+    // twice is therefore safe THERE, and this mock must not be stricter than
+    // the thing it stands in for.
+    if (!b || b.disposed) return;
     // Decrement cellsUsed by unique cells (matches C++ BranchStore::release)
     const unique = Math.max(0, b.position - b.forkHead);
     this.cellsUsed = Math.max(0, this.cellsUsed - unique);
@@ -186,6 +192,101 @@ export class MockSessionContext implements SessionContext {
       }
     }
   }
+
+  /**
+   * Multimodal prefill. Records every call so a test can assert that an
+   * ingress routed here rather than down the token rail.
+   *
+   * Models the property that separates this rail from the token one: an image
+   * occupies more KV cells than it advances position (under M-RoPE, cells =
+   * rows while position advances by max(nx, ny)). `mockImageCells` and
+   * `mockImagePositions` stand in for the projector's geometry, so a test can
+   * assert cells and position independently instead of assuming they match.
+   */
+  readonly multimodalPrefills: Array<{
+    handles: number[];
+    sepTokens: number[][];
+    prompts: string[];
+    bitmapCounts: number[];
+    /** What the call reported back — the counts a caller must not re-derive. */
+    results: MultimodalPrefillResult[];
+  }> = [];
+
+  /** Cells one mock image occupies. */
+  mockImageCells = 16;
+  /** Position advance one mock image costs — deliberately below mockImageCells. */
+  mockImagePositions = 4;
+
+  async _storePrefillMultimodal(
+    handles: number[],
+    sepTokens: number[][],
+    prompts: string[],
+    bitmaps: Uint8Array[][],
+  ): Promise<MultimodalPrefillResult[]> {
+    const out: MultimodalPrefillResult[] = [];
+    this.multimodalPrefills.push({
+      handles: [...handles],
+      sepTokens: sepTokens.map((s) => [...s]),
+      prompts: [...prompts],
+      bitmapCounts: bitmaps.map((b) => b.length),
+      results: out,
+    });
+
+    for (let i = 0; i < handles.length; i++) {
+      // Per-entry failure, the property the native worker guarantees: a bad
+      // image reports on ITS OWN result and the cohort keeps going.
+      const failure = this.mockMultimodalError?.(prompts[i], bitmaps[i]) ?? null;
+      if (failure) {
+        out.push({ tokensDecoded: 0, positionAdvance: 0, error: failure });
+        continue;
+      }
+      const tokensDecoded = this._mockCells(sepTokens[i], prompts[i], bitmaps[i].length);
+      const positionAdvance = this._mockPositions(sepTokens[i], prompts[i], bitmaps[i].length);
+
+      const b = this._branches.get(handles[i]);
+      if (b && !b.disposed) {
+        b.position += positionAdvance;
+        this.cellsUsed += tokensDecoded;
+      }
+      out.push({ tokensDecoded, positionAdvance });
+    }
+    return out;
+  }
+
+  /** Fail selected cohort entries. Returns a message to fail that entry, null
+   *  to let it through — lets a test drive the one-bad-image-among-siblings
+   *  case the native worker's per-entry try/catch exists for. */
+  mockMultimodalError?: (prompt: string, bitmaps: Uint8Array[]) => string | null;
+
+  /** Cells one multimodal prefill consumes. Text stands in at one cell per 4
+   *  chars, matching tokenizeSync, minus the markers the native walk replaces
+   *  with image rows. Shared by the prefill and the cost query so the mock
+   *  cannot quote one number and charge another — the property the real
+   *  `MtmdSource::cells()` guarantees by counting before it encodes. */
+  private _mockCells(sep: number[], prompt: string, markers: number): number {
+    const textCells = Math.ceil(prompt.replace(/<__media__>/g, '').length / 4);
+    return sep.length + textCells + markers * this.mockImageCells;
+  }
+
+  /** Position advance for the same prefill — deliberately below the cell count
+   *  (the M-RoPE decoupling this mock exists to model). */
+  private _mockPositions(sep: number[], prompt: string, markers: number): number {
+    const textCells = Math.ceil(prompt.replace(/<__media__>/g, '').length / 4);
+    return sep.length + textCells + markers * this.mockImagePositions;
+  }
+
+  async _cellsMultimodal(
+    sepTokens: number[],
+    prompt: string,
+    bitmaps: Uint8Array[],
+  ): Promise<number> {
+    return this._mockCells(sepTokens, prompt, bitmaps.length);
+  }
+
+  /** Whether the mock stands in for a vision-capable projector. */
+  mockSupportsVision = true;
+  supportsVision(): boolean { return this.mockSupportsVision; }
+  supportsAudio(): boolean { return false; }
 
   _storeMergeLogits(_dstHandle: number, _srcHandles: number[], _alpha: number): void {
     /* mock no-op */

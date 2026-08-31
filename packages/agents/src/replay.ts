@@ -1,8 +1,10 @@
 import { call, ensure } from 'effection';
 import type { Operation } from 'effection';
-import { Branch, buildTurnDelta } from '@lloyal-labs/sdk';
-import { Ctx, Store } from './context';
+import { Branch, buildTurnDelta, MEDIA_MARKER } from '@lloyal-labs/sdk';
+import { Ctx, Store, Attachments } from './context';
 import type { TraceEvent } from './trace-types';
+import type { Attachment } from '@lloyal-labs/media';
+import { materialize } from '@lloyal-labs/media';
 
 /**
  * Serialized state needed to reconstruct a Branch deterministically.
@@ -21,6 +23,11 @@ import type { TraceEvent } from './trace-types';
 export interface BranchCheckpoint {
   seedPrompt: string;
   turns: Array<{ userContent: string; assistantContent: string }>;
+  /** Images the spine was seeded with, in marker order — one per
+   *  {@link MEDIA_MARKER} in `seedPrompt`. Absent for a text-seeded spine.
+   *  These are references, not bytes: {@link reconstructBranch} resolves them
+   *  through the run's attachment store. */
+  seedAttachments?: readonly Attachment[];
 }
 
 /**
@@ -44,7 +51,24 @@ export function extractSpineSeed(events: TraceEvent[]): BranchCheckpoint {
       'extractSpineSeed: no prompt:format event with role=spine found in trace',
     );
   }
-  return { seedPrompt: seed.promptText, turns: [] };
+  // The seed prompt and the images it marks arrive on two different events:
+  // `prompt:format` carries the text, `branch:prefill` carries the
+  // attachments. They are paired by scope — the spine setup emits both under
+  // the same parent trace id — which is what keeps a nested pool's spine from
+  // claiming an outer one's images.
+  const header = events.find(
+    (e): e is Extract<TraceEvent, { type: 'branch:prefill' }> =>
+      e.type === 'branch:prefill' &&
+      e.role === 'spineHeader' &&
+      e.parentTraceId === seed.parentTraceId &&
+      e.attachments !== undefined,
+  );
+
+  return {
+    seedPrompt: seed.promptText,
+    turns: [],
+    ...(header?.attachments ? { seedAttachments: header.attachments } : {}),
+  };
 }
 
 /**
@@ -73,7 +97,11 @@ export function extractSpineCheckpoint(
     if (opts.poolTraceId != null && e.parentTraceId !== opts.poolTraceId) continue;
     turns.push({ userContent: e.userContent, assistantContent: e.assistantContent });
   }
-  return { seedPrompt: seed.seedPrompt, turns };
+  return {
+    seedPrompt: seed.seedPrompt,
+    turns,
+    ...(seed.seedAttachments ? { seedAttachments: seed.seedAttachments } : {}),
+  };
 }
 
 /**
@@ -88,6 +116,12 @@ export function extractSpineCheckpoint(
  * Pass the returned branch as `parent` to `agentPool` to run a replacement
  * stage (synth re-run, single-agent replay with modified prompt, etc.) against
  * the reconstructed KV state.
+ *
+ * A spine seeded with images (`withSpine({ bitmaps })`) replays too, provided
+ * the run's attachment store still holds them and the active context has a
+ * projector loaded. Everything that cannot rebuild the ORIGINAL KV state
+ * throws rather than falling back to the text path — a marker tokenized as
+ * text is a different state wearing the same prompt.
  *
  * @example Replay a pool-start (parallel orchestration) with a modified task
  * ```ts
@@ -119,12 +153,71 @@ export function extractSpineCheckpoint(
 export function* reconstructBranch(checkpoint: BranchCheckpoint): Operation<Branch> {
   const ctx = yield* Ctx.expect();
   const store = yield* Store.expect();
+  const attachments = yield* Attachments.expect();
+
+  // A marker in the seed means this spine was seeded with images. Tokenizing
+  // that marker as text would rebuild a DIFFERENT KV state — marker tokens
+  // where the encoded image rows belong — so every path below either restores
+  // the bytes or throws. Silently degrading to text is the one thing it must
+  // never do, because the result looks like a successful replay.
+  const markers = checkpoint.seedPrompt.split(MEDIA_MARKER).length - 1;
+
+  let bitmaps: Uint8Array[] = [];
+  if (markers > 0) {
+    const refs = checkpoint.seedAttachments ?? [];
+    if (refs.length === 0) {
+      throw new Error(
+        `reconstructBranch: this spine was seeded with ${markers} marker(s), ` +
+          'but the checkpoint carries no attachment references. The trace ' +
+          'records the marker, not the pixels, so its KV state cannot be ' +
+          'rebuilt. Re-run the pool with the original images via ' +
+          'withSpine({ bitmaps }).',
+      );
+    }
+    // Runtime capability, checked before any KV is touched: a replay tool that
+    // built its context without `mmprojPath` would otherwise fail deep inside
+    // the native prefill, after the spine exists and with a worse message.
+    if (!ctx.supportsVision()) {
+      throw new Error(
+        'reconstructBranch: this spine was seeded with images, but the active ' +
+          'context has no vision projector loaded. Pass `mmprojPath` to ' +
+          'createContext() to replay it.',
+      );
+    }
+    // One resolution path, not two: `materialize` IS this walk, and replay
+    // reimplementing it by hand is how the two silently drift. A batch that
+    // materializes at ingress is one that can be rebuilt here, by construction
+    // rather than by assertion.
+    bitmaps = [...materialize(attachments, refs).bitmaps];
+
+    // The count that must match is REPRESENTATIONS, not attachments. One
+    // manifest is one image (1 representation) but also one video (N sampled
+    // frames) or one live capture — so comparing attachment count would reject
+    // every media type except a plain image. Checked AFTER resolution because
+    // only expanding the manifests reveals how many the seed actually holds.
+    if (bitmaps.length !== markers) {
+      throw new Error(
+        `reconstructBranch: the seed prompt has ${markers} media marker(s), ` +
+          `but its ${refs.length} attachment(s) expand to ${bitmaps.length} ` +
+          'representation(s). Rebuilding would put a different number of ' +
+          'images into the cache than the prompt marks — a different KV state ' +
+          'wearing the same prompt.',
+      );
+    }
+  }
 
   const spine = Branch.create(ctx, 0, {});
   yield* ensure(() => { if (!spine.disposed) spine.pruneSubtreeSync(); });
 
-  const seedTokens = ctx.tokenizeSync(checkpoint.seedPrompt, false);
-  yield* call(() => spine.prefill(seedTokens));
+  // Routed by how the seed was built, not by what is convenient here: the
+  // multimodal path re-runs mtmd's tokenizer over the same prompt and bytes,
+  // which is what makes the rebuilt cells match the originals.
+  if (bitmaps.length > 0) {
+    yield* call(() => spine.prefillMultimodal(checkpoint.seedPrompt, bitmaps));
+  } else {
+    const seedTokens = ctx.tokenizeSync(checkpoint.seedPrompt, false);
+    yield* call(() => spine.prefill(seedTokens));
+  }
 
   for (const turn of checkpoint.turns) {
     const delta = buildTurnDelta(ctx, turn.userContent, turn.assistantContent);

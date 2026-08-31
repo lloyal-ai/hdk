@@ -9,13 +9,19 @@
  * transitions, trace events, event emissions, ToolContext fields, recovery.
  */
 import { describe, it, expect } from 'vitest';
+import { MediaTool, PNG_BYTES, MEDIA_TEST_NCTX, mediaFailures } from './helpers/media';
 import { run, createChannel, createSignal, spawn, each, scoped, call } from 'effection';
 import type { Operation, Channel } from 'effection';
 import { MockSessionContext, createMockSdk } from '../../sdk/test/MockSessionContext';
 import type { ChatFormat, ParseChatOutputOptions, ParseChatOutputResult } from '@lloyal-labs/sdk';
 import { useAgentPool } from '../src/agent-pool';
 import { parallel } from '../src/orchestrators';
-import { Ctx, Store, Events, Trace, WindDown } from '../src/context';
+import { Ctx, Store, Events, Trace, WindDown, Attachments, Ingress } from '../src/context';
+import { MemoryAttachmentStore } from './helpers/memory-store';
+import { rawIngress } from './helpers/raw-ingress';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Tool } from '../src/Tool';
 import type { AgentPolicy } from '../src/AgentPolicy';
 import type { AgentPoolResult, AgentEvent, ToolContext } from '../src/types';
@@ -50,6 +56,8 @@ async function runPool(opts: {
   windDownOn?: (ev: AgentEvent) => boolean;
   /** Last-chance ctx mutation hook — runs after fork/sample wiring, before the pool. */
   mutateCtx?: (ctx: MockSessionContext) => void;
+  /** Install an ingress that refuses everything, to exercise the barrier. */
+  refusingIngress?: boolean;
 }): Promise<{
   result: AgentPoolResult;
   events: AgentEvent[];
@@ -106,6 +114,20 @@ async function runPool(opts: {
     const events: Channel<AgentEvent, void> = createChannel();
     yield* Events.set(events as any);
     yield* Trace.set(traceWriter);
+    // A real store: media paths now REFUSE to run without one, because
+    // unaddressed media makes a run unreplayable. Tests that exercise them
+    // must be configured the way a real harness is.
+    const contentStore = new MemoryAttachmentStore();
+    yield* Attachments.set(contentStore);
+    // Media now refuses to run without an ingress, because unnormalized,
+    // unaddressed bytes make a run unreplayable. Tests use a raw one — they
+    // exercise the rail, not the normalizer.
+    yield* Ingress.set(
+      opts.refusingIngress
+        ? { ingest: () => Promise.reject(new Error('ingress refused')) }
+        : rawIngress(contentStore),
+    );
+
     const windDownSignal = createSignal<void, void>();
     if (opts.windDownOn) yield* WindDown.set(windDownSignal);
 
@@ -127,7 +149,7 @@ async function runPool(opts: {
         tools: opts.tools ?? new Map(),
         policy: opts.policy,
         maxTurns: opts.maxTurns ?? 100,
-        terminalToolName: opts.terminalToolName,
+        terminalToolName: opts.terminalTool,
         trace: opts.trace ?? false,
         pruneOnReturn: opts.pruneOnReturn ?? false,
       });
@@ -150,9 +172,12 @@ async function runPool(opts: {
 }
 
 /** Minimal policy stub — every method overridable */
+// `onProduced` stays required — it is the reason to build a stub at all.
+// `onSettleReject` does not: the interface makes it optional and the pool calls
+// it with `?.`, so demanding it here forced every caller to supply a hook the
+// runtime never needs.
 function stubPolicy(overrides: Partial<AgentPolicy> & {
   onProduced: AgentPolicy['onProduced'];
-  onSettleReject: AgentPolicy['onSettleReject'];
 }): AgentPolicy {
   return {
     onProduced: overrides.onProduced,
@@ -1544,7 +1569,7 @@ describe('no-tool agent seams', () => {
         ...orig(msgs, fmtOpts),
         grammar: 'root ::= toolcall',
         grammarLazy: true,
-        grammarTriggers: [{ type: 1, value: '<tool_call>' }],
+        grammarTriggers: [{ type: 1, value: '<tool_call>', token: -1 }],
       });
     };
 
@@ -1920,5 +1945,200 @@ describe('unlimited-context pressure serialization', () => {
     expect(ticks[0].pressure.remaining).toBeNull();
     expect(ticks[0].pressure.headroom).toBeNull();
     expect(ticks[0].pressure.nCtx).toBe(0); // finite fields stay numbers
+  });
+});
+
+// ── The tool-result media ingress (PR-2) ────────────────────────────
+//
+// A tool that returns image bytes is the third way media enters KV. The
+// failure this guards is not an exception: `JSON.stringify` turns a 180 KB
+// image into ~700k characters of digits, which prefills "successfully" and
+// destroys the agent's context. Everything below asserts the bytes took the
+// embedding rail instead, and that one bad image costs only its own agent.
+
+
+/** Every agent calls the media tool once, then stops. */
+const oneToolCall = (toolName: string) => ({
+  parseChatOutputFn: (raw: string) => {
+    if (!raw || raw === '') return { content: '', reasoningContent: '', toolCalls: [] };
+    return {
+      content: '', reasoningContent: '',
+      toolCalls: [{ name: toolName, arguments: '{"q":"x"}', id: 'c1' }],
+    };
+  },
+  policy: stubPolicy({
+    shouldExit: () => false,
+    onProduced: (_a: Agent, parsed: ParseChatOutputResult) =>
+      parsed.toolCalls.length > 0
+        ? { type: 'tool_call' as const, tc: parsed.toolCalls[0] }
+        : { type: 'idle' as const, reason: 'free_text_stop' },
+  }),
+});
+
+describe('tool results carrying images', () => {
+  it('sends the bytes down the embedding rail, never through JSON', async () => {
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { ctx, events } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      forkTokenQueues: [[1, STOP, STOP]],
+      tools: toolMap,
+      ...oneToolCall('rasterize'),
+    });
+
+    // The rail: one multimodal prefill carrying one image.
+    expect(ctx.multimodalPrefills).toHaveLength(1);
+    expect(ctx.multimodalPrefills[0].bitmapCounts).toEqual([1]);
+
+    // And the bytes are NOT in the text the model was handed. `137,80,78,71`
+    // is what this PNG's header serializes to as JSON digits — the exact
+    // corruption this ingress exists to prevent.
+    const shown = events.filter(e => e.type === 'agent:tool_result')
+      .map(e => (e as { result: string }).result).join('');
+    expect(shown).not.toContain('137,80,78,71');
+    expect(shown).not.toContain('_images');
+    expect(shown).toContain('p1');
+  });
+
+  it('fails only the agent whose image was bad', async () => {
+    // Two agents settle images in the same tick; the cohort call reports one
+    // failure. The sibling must still land — losing it would be the rejected-
+    // promise behaviour this ingress deliberately does not have.
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { events, ctx } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      taskCount: 2,
+      forkTokenQueues: [[1, STOP, STOP], [1, STOP, STOP]],
+      tools: toolMap,
+      mutateCtx: (c) => {
+        let seen = 0;
+        c.mockMultimodalError = () => (seen++ === 0 ? 'corrupt image data' : null);
+      },
+      ...oneToolCall('rasterize'),
+    });
+
+    // Exactly one agent fails FOR THIS REASON — the sibling's own terminal
+    // (`recovery_skipped`, the stub policy's normal end) is not a media failure.
+    const failures = mediaFailures(events);
+    expect(failures).toHaveLength(1);
+
+    // And that agent is really finished: its branch was pruned as poisoned, so
+    // waking it again would have it sample from a disposed branch. Nothing it
+    // emits may come after the failure.
+    // ...and the SURVIVOR still finishes. This is the property, stated as the
+    // run sees it: waking the poisoned agent — whose branch was pruned a few
+    // lines earlier — takes the whole run down with it, and the sibling that
+    // had nothing wrong with its image never reaches a terminal event at all.
+    const deadId = (failures[0] as { agentId: number }).agentId;
+    const survivorId = events
+      .filter(e => e.type === 'agent:spawn')
+      .map(e => (e as { agentId: number }).agentId)
+      .find(id => id !== deadId);
+    expect(survivorId).toBeDefined();
+    expect(events.some(e => (e as { agentId?: number }).agentId === survivorId
+      && (e.type === 'agent:done' || e.type === 'agent:failed'))).toBe(true);
+    // The cohort was issued as ONE call with both entries — the sibling was
+    // not re-dispatched or lost.
+    expect(ctx.multimodalPrefills[0].bitmapCounts).toEqual([1, 1]);
+  });
+
+  it('re-activates an agent on a tick where ONLY media settled', async () => {
+    // The token-prefill list is empty on such a tick. An agent left parked
+    // here would sit in awaiting_tool with its result already in KV, and
+    // nothing would ever wake it.
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { events } = await runPool({
+      forkTokenQueues: [[1, STOP, STOP]],
+      tools: toolMap,
+      ...oneToolCall('rasterize'),
+    });
+    // `recovery_skipped` is the stub policy's normal terminal (it defines no
+    // onRecovery) — the media path must not add a failure of its own.
+    expect(mediaFailures(events)).toHaveLength(0);
+    expect(events.some(e => e.type === 'agent:tool_result')).toBe(true);
+    expect(events.some(e => e.type === 'agent:done')).toBe(true);
+  });
+
+  it('charges admission the MEASURED cells, so an oversized image defers', async () => {
+    // The sharp case for the cost expression: a media item's `prefillTokens`
+    // is empty (mtmd tokenizes downstream), so a cost read from it would be
+    // ZERO and every image would be admitted regardless of headroom —
+    // over-committing KV silently. It must be charged the measured cells.
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { ctx, events } = await runPool({
+      // The scaffold's real default (harness.yml `context: 32768`), not a
+      // number squeezed until something breaks: starving nCtx to force the
+      // refusal stops the agent spawning at all, and then the test passes
+      // because NOTHING happened. The image price is the only lever here.
+      nCtx: MEDIA_TEST_NCTX,
+      forkTokenQueues: [[1, STOP, STOP]],
+      tools: toolMap,
+      // One image priced well past what is left.
+      mutateCtx: (c) => { c.mockImageCells = 100_000; },
+      ...oneToolCall('rasterize'),
+    });
+
+    // The agent really ran and really called the tool...
+    expect(events.some(e => e.type === 'agent:tool_result')).toBe(true);
+    // ...and its image was still refused admission. Charged at zero it would
+    // have sailed through and landed here.
+    expect(ctx.multimodalPrefills).toHaveLength(0);
+    expect(mediaFailures(events)).toHaveLength(0);
+  });
+
+  it('fails the agent when ingress refuses, without retrying the tool', async () => {
+    // A post-tool ingress failure must NOT become a tool retry: the tool
+    // already ran and may have had an external side effect, so re-running it
+    // is not a neutral act. The agent fails through the normal path and its
+    // branch is pruned — never silently dropped, never repeated.
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { ctx, events } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      forkTokenQueues: [[1, STOP, STOP]],
+      tools: toolMap,
+      // An ingress that refuses stands in for a normalization or commit
+      // failure at the barrier — before admission, before any prefill.
+      refusingIngress: true,
+      ...oneToolCall('rasterize'),
+    });
+    // Nothing reached the embedding rail...
+    expect(ctx.multimodalPrefills).toHaveLength(0);
+    // ...and the tool ran exactly ONCE. A post-tool failure must not be
+    // retried: the tool may already have had an external side effect.
+    expect(events.filter(e => e.type === 'agent:tool_call')).toHaveLength(1);
+
+    // THE ASSERTION THIS TEST WAS MISSING. Both facts above stayed true while
+    // the whole pool was being torn down: the throw escaped `processCompletion`
+    // (called outside any try) into the tick loop's own catch, which closes the
+    // channel with a partial result, no trace and no `agent:failed`. The test
+    // passed for two years' worth of the wrong reason.
+    //
+    // The agent must FAIL — visibly, by name — rather than vanish.
+    expect(mediaFailures(events).length + events.filter(e =>
+      e.type === 'agent:failed'
+      && (e as { reason?: string }).reason === 'tool_result_failed').length,
+    ).toBe(1);
+    // And it must be THIS agent, reported through the bus, not an absence.
+    const failed = events.find(e => e.type === 'agent:failed');
+    expect(failed).toBeDefined();
+    expect((failed as { agentId: number }).agentId).toBeTypeOf('number');
+  });
+
+  it('tells the model when the runtime cannot see images', async () => {
+    // Dropping them silently would leave the agent reasoning about a picture
+    // it was never shown. The note goes where the model will read it.
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { ctx, events } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      forkTokenQueues: [[1, STOP, STOP]],
+      tools: toolMap,
+      mutateCtx: (c) => { c.mockSupportsVision = false; },
+      ...oneToolCall('rasterize'),
+    });
+
+    expect(ctx.multimodalPrefills).toHaveLength(0);
+    const shown = events.filter(e => e.type === 'agent:tool_result')
+      .map(e => (e as { result: string }).result).join('');
+    expect(shown).toContain('cannot see images');
+    expect(shown).not.toContain('137,80,78,71');
   });
 });

@@ -342,3 +342,71 @@ async function streamOne(
   opts.onProgress?.(got, total, url);
   return dest;
 }
+
+
+/**
+ * What a runtime boot needs on disk before it can create a context.
+ *
+ * @category Models
+ */
+export interface RuntimeModels {
+  /** The reasoning model — verified, local, ready for `createContext`. */
+  modelPath: string;
+  /** The vision projector, when this llm has one. Absent ⇒ a text-only
+   *  runtime, which is a normal outcome and never an error. */
+  mmprojPath?: string;
+}
+
+/**
+ * Resolve the models a runtime boots with — the reasoning model and, when the
+ * catalog pairs one with it, its vision projector.
+ *
+ * Every target that boots a runtime needs both, resolved the same way, which
+ * is why this is not each target's job: the CLI boot and the served host had
+ * independent copies of the pairing logic, and only one of them was ever
+ * updated when vision landed — so the served host ran text-only however
+ * capable its model was.
+ *
+ * **Vision is implicit by design.** The catalog pairs a projector with each
+ * vision-capable llm, so choosing a model chooses vision with it;
+ * `config.mmproj` only overrides that pairing. A text-only model has no
+ * pairing, `mmprojPath` comes back undefined, and `createContext` then reports
+ * `supportsVision() === false` rather than failing.
+ *
+ * Not the reranker: the CLI provisions it through the abilities that declare
+ * it (`provisionAbilityModels`) while a served host resolves it directly, so
+ * it is genuinely each boot's own business.
+ *
+ * @param opts.config - The layered config's model block. A saved `path`
+ *                      outranks the manifest's catalog id, matching how the
+ *                      config layering resolves every other field.
+ * @param opts.llmId - The manifest's `model.llm.id` — what selects the pairing.
+ *
+ * @category Models
+ */
+export async function resolveRuntimeModels(opts: {
+  projectRoot: string;
+  config: { path?: string | undefined; mmproj?: string | undefined };
+  llmId: string | undefined;
+  onProgress?: (role: ModelRole, got: number, total: number) => void;
+}): Promise<RuntimeModels> {
+  const { projectRoot, config, llmId, onProgress } = opts;
+
+  const modelPath = await resolveModel({
+    projectRoot,
+    role: 'llm',
+    spec: config.path ? { path: config.path } : { id: llmId },
+    ...(onProgress ? { onProgress: (g: number, t: number) => onProgress('llm', g, t) } : {}),
+  });
+
+  const mmprojId = config.mmproj ?? (llmId ? catalogEntry('llm', llmId)?.mmproj : undefined);
+  if (!mmprojId) return { modelPath };
+
+  const mmprojPath = await resolveModel({
+    projectRoot,
+    role: 'mmproj',
+    spec: { id: mmprojId },
+    ...(onProgress ? { onProgress: (g: number, t: number) => onProgress('mmproj', g, t) } : {}),
+  });
+  return { modelPath, mmprojPath };
+}

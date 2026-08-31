@@ -92,6 +92,17 @@ yield* withSpine(
 
 `withSpine` creates the spine branch, passes it to the body, and guarantees cleanup via `try/finally` — the spine cannot leak out of the block. Effection enforces the lifetime.
 
+Images share the same way. Pass `bitmaps` (with a context created with `mmprojPath`) and the spine header decodes them once — one media marker per image — into the shared prefix:
+
+```typescript
+yield* withSpine(
+  { systemPrompt: PLAYBOOKS, tools, bitmaps: [screenshot] },
+  function* (spine) { /* every agent forked from spine attends the image */ },
+);
+```
+
+A KV cell doesn't know whether it came from a token or an image patch, so the frontier is modality-agnostic: N agents attend one image, encoded exactly once, with zero re-encode per agent.
+
 ## Orchestrators
 
 `agentPool` accepts an orchestrator that determines how agents are spawned and sequenced:

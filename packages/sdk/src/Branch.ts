@@ -219,10 +219,14 @@ export class Branch {
    * child attends it with zero re-encode.
    *
    * @param prompt - Templated prompt containing the media markers
-   * @param bitmaps - Encoded image bytes (jpg/png/bmp/gif), one per marker
+   * @param bitmaps - Encoded image bytes the projector decodes, one per marker
    * @param sepTokens - Optional leading token run (e.g. a turn separator)
    * @returns Counts — see `MultimodalPrefillResult` (JS can't know
    *   multimodal token counts; the native walk reports them)
+   * @throws If the prefill failed. The cohort form reports failure per entry
+   *   because a rejected promise would lose which branches landed; a cohort of
+   *   ONE has nothing to lose, and returning a zero-count result would let a
+   *   caller carry on against a branch the failure POISONED.
    */
   async prefillMultimodal(
     prompt: string,
@@ -232,6 +236,9 @@ export class Branch {
     this._ensureNotDisposed();
     const [result] = await this._ctx._storePrefillMultimodal(
       [this._handle], [sepTokens], [prompt], [bitmaps]);
+    if (result.error) {
+      throw new Error(`Branch.prefillMultimodal: ${result.error}`);
+    }
     return result;
   }
 

@@ -173,3 +173,89 @@ export class ToolRetryError extends Error {
     super(message);
   }
 }
+
+/*
+ * ── The framework channel on a tool result ──────────────────────────────
+ *
+ * Three underscore-prefixed keys, named here rather than spelled inline, so
+ * the convention has one home and a constant never drifts from a literal.
+ *
+ * The underscore marks AUTHORSHIP — the framework wrote this, not the tool —
+ * and NOT invisibility. An earlier version of this comment said these are
+ * "not something the model ever reads", which is false for two of the three
+ * and mattered: it is the sentence that would talk a reader out of wording
+ * `_imageError` carefully. They differ by DIRECTION:
+ *
+ * | key | direction | does the model read it? |
+ * |---|---|---|
+ * | `_images` | OUT of the result, before serializing | **no** — that is the point |
+ * | `_contextAvailablePercent` | INTO the result | yes |
+ * | `_imageError` | INTO the result | yes — it exists to be read |
+ *
+ * `_contextAvailablePercent` is an AMBIENT METER for the model: reaching it is
+ * the point, and it carries how much KV was free when the tool ran. Its
+ * absence from any prompt is deliberate, not an oversight — the number travels
+ * with every tool result and is meant to be read as one.
+ */
+
+/** The key a tool returns image bytes under.
+ *
+ *  Taken OUT before serializing, because these bytes must reach the cache down
+ *  the embedding rail and must never reach it as JSON. A 180 KB image
+ *  stringifies to ~700k characters of digits, which is not a degraded prefill
+ *  but a destroyed one. */
+export const TOOL_MEDIA_KEY = '_images';
+
+/** Split a tool result into the images it carried and the result WITHOUT them.
+ *
+ *  Pure: it used to delete the key in place, which made the order of this call
+ *  and the trace write decide what the trace said — the bytes must reach
+ *  neither the model's JSON nor the trace, and an in-place delete leaves that
+ *  as a property of call order rather than of the code. The caller names both
+ *  halves and hands each to exactly one consumer.
+ *
+ *  `result` is returned unchanged when there is no media, so a text-only tool
+ *  copies nothing. Entries that are not `Uint8Array` are ignored — one marker
+ *  is emitted per SURVIVING entry, so the prompt and the bitmap list stay in
+ *  step whatever a tool hands over.
+ *
+ *  @category Agents
+ */
+export function takeToolMedia(
+  result: unknown,
+): { media: Uint8Array[]; result: unknown } {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    return { media: [], result };
+  }
+  const { [TOOL_MEDIA_KEY]: raw, ...rest } = result as Record<string, unknown>;
+  if (!Array.isArray(raw)) return { media: [], result };
+  return {
+    media: raw.filter((b): b is Uint8Array => b instanceof Uint8Array),
+    result: rest,
+  };
+}
+
+/**
+ * The key the framework INJECTS onto a tool result, carrying how much KV was
+ * free when the tool ran.
+ *
+ * @category Agents
+ */
+export const TOOL_CONTEXT_KEY = '_contextAvailablePercent';
+
+/**
+ * The key the framework INJECTS when a tool returned images this model cannot
+ * see, carrying the reason.
+ *
+ * Written for the MODEL, which is what separates it from the other two: an
+ * agent handed no picture and no explanation reasons confidently about
+ * something it was never shown, and nothing downstream can tell that is what
+ * happened. Same shape as the rate-limit `exhausted` path — an honest failure
+ * in the result text rather than a silent drop.
+ *
+ * A constant for the reason the other two are: it was the one member of this
+ * namespace still spelled as a bare literal at its write site.
+ *
+ * @category Agents
+ */
+export const TOOL_IMAGE_ERROR_KEY = '_imageError';
