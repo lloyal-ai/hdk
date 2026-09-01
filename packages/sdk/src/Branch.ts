@@ -243,7 +243,11 @@ export class Branch {
     const [result] = await this._ctx._storePrefillMultimodal(
       [this._handle], [sepTokens], [prompt], [bitmaps]);
     if (result.error) {
-      throw new Error(`Branch.prefillMultimodal: ${result.error}`);
+      // Forward the rc as data — a re-wrap that dropped it would strip the
+      // classification callers gate on (decodeRcOf reads it back).
+      const err = new Error(`Branch.prefillMultimodal: ${result.error}`);
+      if (result.rc !== undefined) (err as Error & { rc?: number }).rc = result.rc;
+      throw err;
     }
     return result;
   }

@@ -289,6 +289,12 @@ export interface MultimodalPrefillResult {
   tokensDecoded: number;
   /** Branch position advance (< tokensDecoded under M-RoPE with images) */
   positionAdvance: number;
+  /** `llama_decode`'s raw return code when this entry failed with one —
+   *  the classification a caller acts on: `1` no KV slot (state restored,
+   *  the branch is INTACT — retry later); `-1` invalid batch (restored);
+   *  `2` aborted / `< -1` fatal (partial ubatches remain — POISONED).
+   *  Absent on success and for failures that never reached llama_decode. */
+  rc?: number;
   /** Why THIS entry failed, when it did — the cohort keeps going.
    *
    *  A rejected promise would lose which entries landed, and the caller needs
@@ -301,6 +307,21 @@ export interface MultimodalPrefillResult {
    *  `Branch.prefillMultimodal` throws instead of setting this — it is a
    *  cohort of one, where a throw is the friendlier shape. */
   error?: string;
+}
+
+/**
+ * Read the `llama_decode` return code off a rejected native call, when the
+ * binding attached one. The ONE place the rejection's shape is known — every
+ * consumer classifies through this, never by matching message text.
+ *
+ * @category Branching
+ */
+export function decodeRcOf(err: unknown): number | undefined {
+  if (typeof err === 'object' && err !== null && 'rc' in err) {
+    const rc = (err as { rc: unknown }).rc;
+    if (typeof rc === 'number' && Number.isInteger(rc)) return rc;
+  }
+  return undefined;
 }
 
 /**

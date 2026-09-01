@@ -6,7 +6,7 @@ import type { BranchStore } from '@lloyal-labs/sdk';
 import { Ctx, Store, Trace, TraceParent, CallingAgent, SpineFmt, GrantStoreCtx, WindDown, CancelAgent, Pause, Attachments, Ingress } from './context';
 import { prepareBatch } from './prepare-content';
 import type { FormatConfig } from './Agent';
-import { buildToolResultDelta, buildToolResultDeltaMultimodal, buildTurnDelta, buildUserDelta, deltaCells } from '@lloyal-labs/sdk';
+import { buildToolResultDelta, buildToolResultDeltaMultimodal, buildTurnDelta, buildUserDelta, decodeRcOf, deltaCells } from '@lloyal-labs/sdk';
 import type { MultimodalDelta } from '@lloyal-labs/sdk';
 import type { Attachment } from '@lloyal-labs/media';
 import { useTraceScope } from './trace-scope';
@@ -38,6 +38,16 @@ import type {
 // awaiting_tool → active (tool result settled)
 // awaiting_tool → idle   (settle reject + kill)
 // idle → disposed        (branch pruned)
+
+// ── Self-healing ladder knobs (docs/self-healing.md) ─────────────────────
+/** rc==1 (no KV slot, branch intact) deferrals per agent before the item
+ *  escalates to the terminal path. */
+const MAX_DEFER_ATTEMPTS = 3;
+/** Consecutive fatal rcs (2 or < -1) before the pool stops laddering: a
+ *  backend in a sticky error state (Metal after an OOM) fails every decode,
+ *  and deferring or healing there burns budget for nothing. Reset by any
+ *  successful dispatch. */
+const BACKEND_TRIPWIRE_N = 3;
 
 /** Minimal event sender interface — accepts any Channel close type */
 type EventSender = { send(value: AgentEvent): Operation<void> };
@@ -1073,6 +1083,14 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     // to skip re-activation. One fact needs one name; two facts keep two.
     const discardedIds = new Set<number>();
 
+    // ── Self-healing ladder state (docs/self-healing.md) ──
+    /** rc==1 deferrals per agent; cleared when a settle lands. */
+    const deferAttempts = new Map<number, number>();
+    /** Consecutive fatal rcs across dispatches; reset by any success. */
+    let consecutiveFatalRc = 0;
+    /** Set at BACKEND_TRIPWIRE_N — the ladder stops, failures go terminal. */
+    let backendSuspect = false;
+
     // Pool-level branch cleanup — ensures orphan-branch cleanup even when
     // spawns are lazy and the orchestrator's spawn scope exits early.
     //
@@ -1282,12 +1300,12 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       // The two admitted-item lists. Each entry carries what its `branch:prefill`
       // will need, because that event is written AFTER the dispatch it describes
       // — it asserts the KV moved, and on the media rail an entry can fail.
-      const tokenItems: { agent: Agent; tokens: number[]; cells: number }[] = [];
+      const tokenItems: { agent: Agent; tokens: number[]; cells: number; src: SettledTool }[] = [];
       // Media rides its own list: `llama_batch` is token-XOR-embd, so these
       // cannot join the token batch — a separate call, not a separate strategy.
       const mediaItems: {
         agent: Agent; delta: MultimodalDelta; cells: number;
-        attachments?: readonly Attachment[];
+        attachments?: readonly Attachment[]; src: SettledTool;
       }[] = [];
 
       /** One `branch:prefill` for an entry that LANDED. Never called for a
@@ -1303,6 +1321,57 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       const settledOrder: { agentId: number; callId: string; cells: number }[] = [];
       const itemProbes = new Map<number, string | undefined>();
       const deferred: SettledTool[] = [];
+      const poisoned = new Set<number>();
+
+      /** Success-only bookkeeping, run AFTER a dispatch landed — the same
+       *  discipline `writePrefilled` already follows. Nothing here runs for
+       *  a deferred or failed entry, so the trace, the tool history and the
+       *  re-activation list all describe only what actually happened. */
+      const bookSettled = (
+        a: Agent, src: SettledTool, cells: number, refs?: readonly Attachment[],
+      ): void => {
+        settledAgents.push(a);
+        settledOrder.push({ agentId: a.id, callId: src.callId, cells });
+        if (src.probe) itemProbes.set(a.id, src.probe);
+        deferAttempts.delete(a.id);
+        const postSettle = new ContextPressure(ctx, pressureOpts);
+        a.recordToolResult({
+          name: src.toolName, args: src.args,
+          resultCells: cells,
+          contextAfterPercent: postSettle.percentAvailable,
+          timestamp: performance.now(),
+        });
+        writePrefilled(a, cells, refs);
+      };
+
+      /** rc==1: no KV slot, state restored — the branch is INTACT. The item
+       *  re-enters via the deferral stream (`pendingSettled` next tick). */
+      const writeDeferred = (a: Agent, rc: number, attempt: number): void => {
+        const p = new ContextPressure(ctx, pressureOpts);
+        tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
+          type: 'pool:agentDefer', agentId: a.id, rc, attempt,
+          pressure: { remaining: finiteOrNull(p.remaining), cellsUsed: p.cellsUsed,
+            nCtx: p.nCtx, headroom: finiteOrNull(p.headroom) } });
+      };
+
+      /** The terminal path — the ladder's bottom rung. Prune-and-discard is
+       *  safe whatever the rc said: pruning an intact branch is harmless,
+       *  and a poisoned one must never be resumed. */
+      function* failSettled(
+        a: Agent,
+        reason: 'media_prefill_failed' | 'tool_result_failed',
+        detail: string,
+        rc?: number,
+      ): Operation<void> {
+        poisoned.add(a.id);      // skip re-activation THIS tick
+        discardedIds.add(a.id);  // and never resurrect it in any later one
+        tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
+          type: 'pool:settleFailed', agentId: a.id, reason,
+          detail: detail.slice(0, 200), ...(rc !== undefined ? { rc } : {}) });
+        yield* poolChannel.send({ type: 'agent:failed', agentId: a.id, reason });
+        safePrune(a, tw, poolScopeId);
+        a.transition('idle');
+      }
 
       for (const item of items) {
         const a = agentById.get(item.agentId);
@@ -1341,30 +1410,51 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         if (item.rail === 'media') {
           mediaItems.push({
             agent: a, delta: item.media.delta, cells: itemCells,
-            attachments: item.media.attachments,
+            attachments: item.media.attachments, src: item,
           });
         } else {
-          tokenItems.push({ agent: a, tokens: item.prefillTokens, cells: itemCells });
+          tokenItems.push({ agent: a, tokens: item.prefillTokens, cells: itemCells, src: item });
         }
-        settledAgents.push(a);
-        settledOrder.push({ agentId: a.id, callId: item.callId, cells: itemCells });
-        if (item.probe) itemProbes.set(a.id, item.probe);
+        // Admission only RESERVES here; the bookkeeping (settle order, tool
+        // history, re-activation list, branch:prefill) runs after the
+        // dispatch lands — success-only, like the events it feeds.
         headroom -= cost;
-        const postSettle = new ContextPressure(ctx, pressureOpts);
-        a.recordToolResult({
-          name: item.toolName, args: item.args,
-          resultCells: itemCells,
-          contextAfterPercent: postSettle.percentAvailable,
-          timestamp: performance.now(),
-        });
       }
 
       if (tokenItems.length > 0) {
-        yield* call(() => store.prefill(
-          tokenItems.map(t => [t.agent.branch, t.tokens] as [Branch, number[]])));
-        counters.warmPrefillCalls++;
-        counters.warmPrefillBranches += tokenItems.length;
-        for (const t of tokenItems) writePrefilled(t.agent, t.cells);
+        try {
+          yield* call(() => store.prefill(
+            tokenItems.map(t => [t.agent.branch, t.tokens] as [Branch, number[]])));
+          counters.warmPrefillCalls++;
+          counters.warmPrefillBranches += tokenItems.length;
+          consecutiveFatalRc = 0;
+          for (const t of tokenItems) bookSettled(t.agent, t.src, t.cells);
+        } catch (err) {
+          const rc = decodeRcOf(err);
+          if (rc === 1 && !backendSuspect) {
+            // No KV slot for the batch; state restored — every branch is
+            // INTACT. Re-queue the items whole: a sibling finishing frees
+            // cells and they settle on a later tick. This used to take the
+            // entire pool down.
+            for (const t of tokenItems) {
+              const attempt = (deferAttempts.get(t.agent.id) ?? 0) + 1;
+              deferAttempts.set(t.agent.id, attempt);
+              if (attempt > MAX_DEFER_ATTEMPTS) {
+                yield* failSettled(t.agent, 'tool_result_failed',
+                  `deferral exhausted after ${MAX_DEFER_ATTEMPTS} attempts: ${err instanceof Error ? err.message : String(err)}`, rc);
+              } else {
+                writeDeferred(t.agent, rc, attempt);
+                deferred.push(t.src);
+              }
+            }
+          } else {
+            // Fatal (2 / < -1), rc-less, or the tripwire is up: today's
+            // behavior — the tick throws and the pool scope tears down —
+            // now with the rc preserved on the error for the postmortem.
+            if (rc === 2 || (rc !== undefined && rc < -1)) consecutiveFatalRc++;
+            throw err;
+          }
+        }
       }
 
       // The third dispatch. Media cannot share the token batch, so it goes as
@@ -1372,11 +1462,12 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       // how many dispatches (and vision-tower encodes) that costs stays the
       // native worker's business, so making it cheaper later touches no JS.
       //
-      // Per-item failures, not a rejected promise: one agent's corrupt image
-      // must not cost its siblings their prefills, and a failed entry's branch
-      // is POISONED (decode_segments is not atomic, and partial-range KV ops
-      // are meaningless on recurrent layers) — so it is pruned, never resumed.
-      const poisoned = new Set<number>();
+      // Per-item outcomes, not a rejected promise: one agent's failure must
+      // not cost its siblings their prefills. Each entry classifies by the
+      // llama_decode rc the worker attached (docs/self-healing.md): 1 and -1
+      // left the branch INTACT (state restored); only 2 / < -1 poison it
+      // (decode_segments is not atomic, and partial-range KV ops are
+      // meaningless on recurrent layers) — those are pruned, never resumed.
       if (mediaItems.length > 0) {
         const results = yield* call(() =>
           store.prefillMultimodal(mediaItems.map(m => [m.agent.branch, m.delta] as [Branch, MultimodalDelta])));
@@ -1384,20 +1475,57 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         counters.warmPrefillBranches += mediaItems.length;
         for (let i = 0; i < mediaItems.length; i++) {
           const m = mediaItems[i];
-          const err = results[i]?.error;
-          if (!err) {
-            writePrefilled(m.agent, m.cells, m.attachments);
+          const r = results[i];
+          if (!r?.error) {
+            consecutiveFatalRc = 0;
+            bookSettled(m.agent, m.src, m.cells, m.attachments);
             continue;
           }
           const a = m.agent;
-          poisoned.add(a.id);      // skip re-activation THIS tick
-          discardedIds.add(a.id);  // and never resurrect it in any later one
-          tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
-            type: 'pool:settleFailed', agentId: a.id, reason: 'media_prefill_failed',
-            detail: err.slice(0, 200) });
-          yield* poolChannel.send({ type: 'agent:failed', agentId: a.id, reason: 'media_prefill_failed' });
-          safePrune(a, tw, poolScopeId);
-          a.transition('idle');
+          const rc = r.rc;
+
+          if (rc === 1 && !backendSuspect) {
+            // Intact — re-queue for a later tick, budgeted.
+            const attempt = (deferAttempts.get(a.id) ?? 0) + 1;
+            deferAttempts.set(a.id, attempt);
+            if (attempt > MAX_DEFER_ATTEMPTS) {
+              yield* failSettled(a, 'media_prefill_failed',
+                `deferral exhausted after ${MAX_DEFER_ATTEMPTS} attempts: ${r.error}`, rc);
+            } else {
+              writeDeferred(a, rc, attempt);
+              deferred.push(m.src);
+            }
+            continue;
+          }
+
+          if (rc === -1 && !backendSuspect) {
+            // Invalid input, state restored — the branch is intact and the
+            // item is deterministic: retrying loops. Drop it and tell the
+            // model what it did not see, on the same channel the
+            // no-projector path already uses.
+            const note = {
+              [TOOL_IMAGE_ERROR_KEY]:
+                `${m.src.toolName} returned media the decoder rejected as invalid input. ` +
+                `Work from the text, or use a different source.`,
+            };
+            const noteTokens = buildToolResultDelta(
+              ctx, JSON.stringify(note), m.src.callId,
+              { enableThinking: a.fmt.enableThinking });
+            yield* call(() => store.prefill([[a.branch, noteTokens]]));
+            bookSettled(a, m.src, noteTokens.length);
+            continue;
+          }
+
+          // Poisoned (2 / < -1), an rc-less failure, or the tripwire is up.
+          if (rc === 2 || (rc !== undefined && rc < -1)) {
+            consecutiveFatalRc++;
+            if (consecutiveFatalRc >= BACKEND_TRIPWIRE_N) backendSuspect = true;
+          }
+          yield* failSettled(a, 'media_prefill_failed',
+            backendSuspect
+              ? `${r.error} [backend suspect: ${consecutiveFatalRc} consecutive fatal decodes — recreate the backend]`
+              : r.error,
+            rc);
         }
       }
 
@@ -2315,6 +2443,14 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         for (const item of deferred) {
           const a = agentById.get(item.agentId);
           if (!a || a.status !== 'awaiting_tool' || a.branch.disposed) continue;
+
+          // rc-deferred items (docs/self-healing.md) ride THROUGH the
+          // stall-break: their retry is a re-DISPATCH — a transient rc 1 can
+          // clear without a sibling freeing KV — and they carry their own
+          // budget (MAX_DEFER_ATTEMPTS terminates them within bounded ticks).
+          // Headroom-deferred items have no deferAttempts entry and keep the
+          // existing policy consult below.
+          if (deferAttempts.has(item.agentId)) { resolved.push(item); continue; }
 
           const action = policy.onSettleReject?.(a, settledCells(item), stallPressure, policyConfig);
 

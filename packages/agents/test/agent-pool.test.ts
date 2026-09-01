@@ -1651,6 +1651,175 @@ describe('probe prefill — buffered emission still writes on success', () => {
   });
 });
 
+// ── Self-healing ladder: the rc classifies the settle outcome ──
+// docs/self-healing.md. llama_decode's contract: rc 1 and -1 restore state
+// (the branch is INTACT); only 2 / < -1 leave partial ubatches (poisoned).
+// The ladder answers each class with the cheapest response that preserves
+// the run: defer / drop-item / terminal.
+describe('self-healing ladder', () => {
+  const ladderPolicy = () => stubPolicy({
+    shouldExit: () => false,
+    onProduced: (_a, parsed) => {
+      if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
+      if (parsed.content) return { type: 'free_text_return', content: parsed.content };
+      return { type: 'idle', reason: 'free_text_stop' };
+    },
+  });
+  /** Turn 1 (raw contains 't1') calls the tool; later turns finish. Keyed
+   *  off raw because the pool parses partials — a call counter misfires. */
+  const callTool = (name: string) => ({
+    parseChatOutputFn: (raw: string) =>
+      raw.includes('t1')
+        ? { content: '', reasoningContent: '', toolCalls: [{ name, arguments: '{}', id: 'c1' }] }
+        : { content: 'done', reasoningContent: '', toolCalls: [] },
+    policy: ladderPolicy(),
+  });
+  const rcError = (msg: string, rc: number): Error => Object.assign(new Error(msg), { rc });
+  const ladderFailures = (events: AgentEvent[]) =>
+    events.filter(e => e.type === 'agent:failed' &&
+      ((e as { reason?: string }).reason === 'tool_result_failed' ||
+       (e as { reason?: string }).reason === 'media_prefill_failed'));
+
+  it('token rail rc 1: defers intact and lands on retry — this used to kill the pool', async () => {
+    // Armed by the tool's own execution: the first _storePrefill AFTER the
+    // tool ran is the settle dispatch (call-counting would hit the harness's
+    // root prefill and the spawn suffix instead).
+    const spy = new SpyTool();
+    const tools = new Map<string, Tool>([['web_search', spy]]);
+    const { events, trace } = await runPool({
+      forkTokenQueues: [[1, STOP, STOP]],
+      ...callTool('web_search'),
+      tools, trace: true,
+      mutateCtx: (ctx) => {
+        let thrown = 0;
+        const orig = ctx._storePrefill.bind(ctx);
+        ctx._storePrefill = async (h, t) => {
+          if (spy.capturedContexts.length > 0 && thrown === 0) {
+            thrown++;
+            throw rcError('find_slot: no KV slot for the batch', 1);
+          }
+          return orig(h, t);
+        };
+      },
+    });
+    const defers = trace.events.filter(e => e.type === 'pool:agentDefer');
+    expect(defers).toHaveLength(1);
+    expect((defers[0] as { rc: number }).rc).toBe(1);
+    expect((defers[0] as { attempt: number }).attempt).toBe(1);
+    expect(ladderFailures(events)).toHaveLength(0);
+    // The retried settle actually landed — success-only, so its event exists.
+    expect(trace.events.some(e => e.type === 'branch:prefill'
+      && (e as { role?: string }).role === 'toolResult')).toBe(true);
+  });
+
+  it('deferral exhausts into a PER-AGENT terminal, never pool death', async () => {
+    const spy = new SpyTool();
+    const tools = new Map<string, Tool>([['web_search', spy]]);
+    const { events, trace } = await runPool({
+      forkTokenQueues: [[1, STOP, STOP]],
+      ...callTool('web_search'),
+      tools, trace: true,
+      mutateCtx: (ctx) => {
+        const orig = ctx._storePrefill.bind(ctx);
+        ctx._storePrefill = async (h, t) => {
+          // Every settle dispatch after the tool ran hits capacity, forever.
+          if (spy.capturedContexts.length > 0) {
+            throw rcError('find_slot: no KV slot for the batch', 1);
+          }
+          return orig(h, t);
+        };
+      },
+    });
+    // MAX_DEFER_ATTEMPTS defers, then the escalation — and the run RETURNED,
+    // which is the property: a capacity storm costs one agent, not the pool.
+    const defers = trace.events.filter(e => e.type === 'pool:agentDefer');
+    expect(defers).toHaveLength(3);
+    const failures = ladderFailures(events);
+    expect(failures).toHaveLength(1);
+    expect((failures[0] as { reason: string }).reason).toBe('tool_result_failed');
+    const settleFailed = trace.events.find(e => e.type === 'pool:settleFailed');
+    expect((settleFailed as { rc?: number }).rc).toBe(1);
+  });
+
+  it('media rc -1: the item is dropped, the note lands, the agent continues', async () => {
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { events, trace } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      forkTokenQueues: [[1, STOP, STOP]],
+      ...callTool('rasterize'),
+      tools: toolMap, trace: true,
+      mutateCtx: (c) => {
+        c.mockMultimodalError = () => ({ message: 'invalid bitmap geometry', rc: -1 });
+      },
+    });
+    // State was restored: nothing died, nothing was pruned for this.
+    expect(ladderFailures(events)).toHaveLength(0);
+    expect(trace.events.some(e => e.type === 'pool:settleFailed')).toBe(false);
+    // The substitute note prefilled as tokens — a landed toolResult event.
+    expect(trace.events.some(e => e.type === 'branch:prefill'
+      && (e as { role?: string }).role === 'toolResult'
+      && (e as { cells: number }).cells > 0)).toBe(true);
+    expect(events.some(e => e.type === 'agent:done')).toBe(true);
+  });
+
+  it('media rc 1: the cohort entry defers and settles on a later tick', async () => {
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { events, trace } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      forkTokenQueues: [[1, STOP, STOP]],
+      ...callTool('rasterize'),
+      tools: toolMap, trace: true,
+      mutateCtx: (c) => {
+        let seen = 0;
+        c.mockMultimodalError = () => (seen++ === 0 ? { message: 'no KV slot', rc: 1 } : null);
+      },
+    });
+    const defers = trace.events.filter(e => e.type === 'pool:agentDefer');
+    expect(defers).toHaveLength(1);
+    expect(ladderFailures(events)).toHaveLength(0);
+    expect(trace.events.some(e => e.type === 'branch:prefill'
+      && (e as { role?: string }).role === 'toolResult')).toBe(true);
+  });
+
+  it('media fatal rc: today\'s poison path, with the rc on the record', async () => {
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { events, trace } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      forkTokenQueues: [[1, STOP, STOP]],
+      ...callTool('rasterize'),
+      tools: toolMap, trace: true,
+      mutateCtx: (c) => {
+        let seen = 0;
+        c.mockMultimodalError = () => (seen++ === 0 ? { message: 'compute failed', rc: -3 } : null);
+      },
+    });
+    expect(mediaFailures(events)).toHaveLength(1);
+    const settleFailed = trace.events.find(e => e.type === 'pool:settleFailed');
+    expect((settleFailed as { rc?: number }).rc).toBe(-3);
+  });
+
+  it('the tripwire: consecutive fatals mark the backend suspect', async () => {
+    // Three agents, three fatal decodes in one cohort — a workload does not
+    // do that, a dead backend does. The third failure names it.
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { events, trace } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      taskCount: 3,
+      forkTokenQueues: [[1, STOP, STOP], [1, STOP, STOP], [1, STOP, STOP]],
+      ...callTool('rasterize'),
+      tools: toolMap, trace: true,
+      mutateCtx: (c) => {
+        c.mockMultimodalError = () => ({ message: 'command buffer failed', rc: -3 });
+      },
+    });
+    expect(mediaFailures(events)).toHaveLength(3);
+    const details = trace.events
+      .filter(e => e.type === 'pool:settleFailed')
+      .map(e => (e as { detail: string }).detail);
+    expect(details.some(d => d.includes('backend suspect'))).toBe(true);
+  });
+});
+
 // ── Group 8: transient tool failure — park + retry (ToolRetryError) ──
 // A tool throwing ToolRetryError parks its agent (awaiting_tool, skipped by
 // PRODUCE — no turns/tokens/KV) and re-executes after the delay. Strategy

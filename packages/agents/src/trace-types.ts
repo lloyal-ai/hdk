@@ -251,6 +251,29 @@ export type TraceEvent =
       /** Why it failed, from the failure itself — a native decode message or a
        *  thrown error. NOT the model's output. */
       detail: string;
+      /** `llama_decode`'s return code when the failure carried one — the
+       *  self-healing ladder's classification (docs/self-healing.md). */
+      rc?: number;
+    }
+
+  /** An intact-branch capacity failure (rc 1: no KV slot, state restored)
+   *  was RE-QUEUED rather than failed — the item retries when a sibling
+   *  frees cells. Written instead of `branch:prefill` (nothing moved) and
+   *  instead of `pool:settleFailed` (nothing died). Escalates to the
+   *  terminal path after MAX_DEFER_ATTEMPTS. */
+  | TraceEventBase & {
+      type: 'pool:agentDefer';
+      agentId: number;
+      /** Always 1 today; carried so the record never needs re-deriving. */
+      rc: number;
+      attempt: number;
+      /** Diagnostic, not a gate: rc 1 with headroom ≈ 0 is honest fullness;
+       *  rc 1 with plenty of headroom is fragmentation wearing capacity's
+       *  clothes. */
+      pressure: {
+        remaining: number | null; cellsUsed: number;
+        nCtx: number; headroom: number | null;
+      };
     }
 
   // ── Agent lifecycle span ─────────────────────
