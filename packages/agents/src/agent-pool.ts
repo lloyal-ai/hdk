@@ -1573,8 +1573,19 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           const healAttempt = (healAttemptOf.get(a.id) ?? 0) + 1;
           const healSpec = specById.get(a.id);
           if (!backendSuspect && healAttempt <= MAX_HEAL_ATTEMPTS && healSpec) {
+            // Replay up to the LAST COMPLETED TRANSACTION. The record's tail
+            // is the poisoned transaction itself — an assistant turn whose
+            // tool call never settled — and replaying it would leave the
+            // replacement dangling mid-call (observed on real weights: the
+            // model emits a stray think and stops instead of re-calling).
+            // Dropping the tail lets the replacement REGENERATE that turn
+            // and drive the tool itself.
+            const records = recordFor(a.id).slice();
+            while (records.length > 0 && records[records.length - 1].kind === 'assistant') {
+              records.pop();
+            }
             pendingHeals.push({
-              spec: healSpec, records: recordFor(a.id).slice(),
+              spec: healSpec, records,
               of: a.id, ...(rc !== undefined ? { rc } : {}), attempt: healAttempt,
             });
           }
