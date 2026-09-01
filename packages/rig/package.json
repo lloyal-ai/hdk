@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/rig",
-  "version": "5.6.0-alpha.0",
+  "version": "5.6.0-alpha.1",
   "description": "Retrieval-Interleaved Generation for lloyal-agents",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -41,17 +41,17 @@
   },
   "dependencies": {
     "@lloyal-labs/channel-verify": "^0.3.1",
-    "@lloyal-labs/lloyal-agents": "6.0.0-alpha.0",
-    "@lloyal-labs/sdk": "3.2.0-alpha.0",
+    "@lloyal-labs/lloyal-agents": "6.0.0-alpha.1",
+    "@lloyal-labs/sdk": "3.2.0-alpha.1",
     "@mozilla/readability": "^0.6.0",
     "effection": "^4.0.2",
     "ignore": "^7.0.5",
     "linkedom": "^0.18.12",
     "semver": "^7.8.1",
-    "@lloyal-labs/media": "0.2.0-alpha.0"
+    "@lloyal-labs/media": "0.3.0-alpha.1"
   },
   "peerDependencies": {
-    "@lloyal-labs/lloyal.node": "3.2.0-alpha.0"
+    "@lloyal-labs/lloyal.node": "3.2.0-alpha.1"
   },
   "files": [
     "dist/",

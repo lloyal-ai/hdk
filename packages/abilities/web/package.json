@@ -29,8 +29,8 @@
     "linkedom": "^0.18.12"
   },
   "peerDependencies": {
-    "@lloyal-labs/lloyal-agents": "6.0.0-alpha.0",
-    "@lloyal-labs/rig": "5.6.0-alpha.0",
+    "@lloyal-labs/lloyal-agents": "6.0.0-alpha.1",
+    "@lloyal-labs/rig": "5.6.0-alpha.1",
     "effection": "^4.0.2"
   }
 }
