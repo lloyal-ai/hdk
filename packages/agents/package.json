@@ -34,7 +34,7 @@
     "@lloyal-labs/sdk": "3.2.0-alpha.1",
     "effection": "^4.0.2",
     "eta": "^4.5.1",
-    "@lloyal-labs/media": "0.3.0-alpha.1"
+    "@lloyal-labs/media": "0.2.0-alpha.1"
   },
   "files": [
     "dist/",

@@ -40,6 +40,11 @@ const bump = (v, level) => {
   const [maj, min] = v.split('.').map(Number);
   return level === 'major' ? `${maj + 1}.0.0` : `${maj}.${min + 1}.0`;
 };
+/** A prerelease `latest` (a manual first alpha publish stamps latest — npm
+ *  behavior) is not a base to bump FROM: the stable it prefigures hasn't
+ *  shipped, so its release triple IS the pending base. A stable latest
+ *  bumps by the arc's level. */
+const nextBase = (reg, level) => (reg.includes('-') ? reg.split('-')[0] : bump(reg, level));
 /** Registry base, or the local manifest's for a package npm has never seen.
  *  NOTE: npm cannot CREATE a package name from CI (interactive 2FA) — a
  *  brand-new package (media, on this arc) needs ONE manual `npm publish`
@@ -57,10 +62,10 @@ const alphas = {};
 for (const [dir, level] of Object.entries(CUTS)) {
   const pkg = JSON.parse(readFileSync(`${dir}/package.json`, 'utf8'));
   const base = pkg.version.split('-')[0]; // a prior cut's -alpha.N is not a base
-  alphas[pkg.name] = `${bump(latest(pkg.name, base), level)}-alpha.${CUT}`;
+  alphas[pkg.name] = `${nextBase(latest(pkg.name, base), level)}-alpha.${CUT}`;
 }
 for (const [name, level] of Object.entries(EXTERNAL)) {
-  alphas[name] = `${bump(latest(name, '0.0.0'), level)}-alpha.${CUT}`;
+  alphas[name] = `${nextBase(latest(name, '0.0.0'), level)}-alpha.${CUT}`;
 }
 
 console.log(`cut ${CUT}${DRY ? ' (dry run)' : ''}:`);

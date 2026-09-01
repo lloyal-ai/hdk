@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/media",
-  "version": "0.3.0-alpha.1",
+  "version": "0.2.0-alpha.1",
   "description": "Content addressing for a harness — an OCI layout, and the image normalizer that feeds it",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
