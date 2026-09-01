@@ -12,6 +12,13 @@ import type { SessionContext } from './types';
  */
 export const MEDIA_MARKER = '<__media__>';
 
+/** Defang a literal media marker in model-visible text. The native layer
+ *  splits the rendered prompt on EVERY literal occurrence, so text that
+ *  happens to contain the marker would desynchronize markers and bitmaps —
+ *  more markers than images fails the prefill; an off-by-one mispairs them.
+ *  Applied wherever text enters a multimodal prompt. */
+const defangMarker = (text: string): string => text.split(MEDIA_MARKER).join('<media>');
+
 /**
  * Chat content carrying one media marker per image
  *
@@ -36,7 +43,7 @@ export function mediaContent(
 ): string | Array<{ type: string; text: string }> {
   if (images.length === 0) return text;
   return [
-    { type: 'text', text },
+    { type: 'text', text: defangMarker(text) },
     ...images.map(() => ({ type: 'media_marker', text: MEDIA_MARKER })),
   ];
 }
@@ -149,10 +156,13 @@ export function buildUserDeltaMultimodal(
   const fmtOpts: Record<string, unknown> = {};
   if (opts.tools) fmtOpts.tools = opts.tools;
   if (opts.enableThinking !== undefined) fmtOpts.enableThinking = opts.enableThinking;
-  const userContent = mediaContent(content, images);
+  // Defanged even with zero images: this delta always lands via the
+  // multimodal prefill, whose native splitter sees the whole prompt —
+  // system content included.
+  const userContent = mediaContent(defangMarker(content), images);
   const { prompt } = ctx.formatChatSync(
     JSON.stringify([
-      { role: 'system', content: opts.system ?? '' },
+      { role: 'system', content: defangMarker(opts.system ?? '') },
       { role: 'user', content: userContent },
     ]),
     fmtOpts
@@ -316,7 +326,7 @@ export function buildToolResultDeltaMultimodal(
   const { prompt, generationPrompt } = ctx.formatChatSync(
     JSON.stringify([
       { role: 'system', content: '' },
-      { role: 'tool', content: mediaContent(resultStr, images), tool_call_id: callId },
+      { role: 'tool', content: mediaContent(defangMarker(resultStr), images), tool_call_id: callId },
     ]),
     fmtOpts,
   );

@@ -64,10 +64,15 @@ export function extractSpineSeed(events: TraceEvent[]): BranchCheckpoint {
       e.attachments !== undefined,
   );
 
+  // Prefer the success-only copy on `branch:prefill`; fall back to the
+  // seed's write-ahead roots. A spine whose multimodal prefill FAILED has
+  // only the fallback — and that failure is exactly when replay is the only
+  // way back, so refusing it for want of roots would defeat the write-ahead.
+  const roots = header?.attachments ?? seed.attachments;
   return {
     seedPrompt: seed.promptText,
     turns: [],
-    ...(header?.attachments ? { seedAttachments: header.attachments } : {}),
+    ...(roots && roots.length > 0 ? { seedAttachments: roots } : {}),
   };
 }
 

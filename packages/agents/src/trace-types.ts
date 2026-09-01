@@ -51,9 +51,15 @@ export type TraceEvent =
        *  prefill it seeds. Absent on the embedding rail: mtmd owns
        *  tokenization there, and this event is written write-ahead so a
        *  failed prefill still leaves something to replay from. The cost that
-       *  actually landed is `branch:prefill.tokenCount`, which is written
+       *  actually landed is `branch:prefill.cells`, which is written
        *  only after the KV moved. */
       tokenCount?: number;
+      /** Roots for the images this seed's markers stand for, in marker
+       *  order — written WRITE-AHEAD like the event itself, which is the
+       *  point: the barrier commits content before any prefill, so a
+       *  prefill that then fails still leaves a seed replay can rebuild
+       *  from. The success-only copy rides `branch:prefill.attachments`. */
+      attachments?: readonly Attachment[];
       messages: string;
       tools?: string;
       grammar?: string;
@@ -99,7 +105,7 @@ export type TraceEvent =
        *  A model that pairs images temporally charges the same cells for two
        *  as for one (measured on Qwen3.5: 1 and 2 images both cost 580 cells,
        *  3 and 4 both cost 1142), so a per-image share would be a fiction.
-       *  `tokenCount` above is the whole prefill's real cost.
+       *  `cells` above is the whole prefill's real cost.
        *
        *  `readonly`, matching `PreparedContent.attachments` — every value that
        *  reaches this field comes from there, and the two disagreeing was the

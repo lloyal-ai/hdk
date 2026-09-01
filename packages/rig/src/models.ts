@@ -399,7 +399,13 @@ export async function resolveRuntimeModels(opts: {
     ...(onProgress ? { onProgress: (g: number, t: number) => onProgress('llm', g, t) } : {}),
   });
 
-  const mmprojId = config.mmproj ?? (llmId ? catalogEntry('llm', llmId)?.mmproj : undefined);
+  // A path override points the runtime at bytes the catalog knows nothing
+  // about, so the catalog's projector pairing does not apply: inferring one
+  // from the id would load a projector for a model that is not running —
+  // wrong dimensions at best, a failed context at worst. Vision with a
+  // custom path takes an explicit `config.mmproj`.
+  const mmprojId = config.mmproj ??
+    (config.path ? undefined : llmId ? catalogEntry('llm', llmId)?.mmproj : undefined);
   if (!mmprojId) return { modelPath };
 
   const mmprojPath = await resolveModel({

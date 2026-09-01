@@ -88,6 +88,25 @@ describe('extractSpineSeed', () => {
     const events: TraceEvent[] = [seedEvent(1, 7, 'text only'), headerEvent(42, 'other')];
     expect(extractSpineSeed(events).seedAttachments).toBeUndefined();
   });
+
+  it('falls back to the seed’s write-ahead roots when the prefill never landed', () => {
+    // A spine whose multimodal prefill FAILED has a seed but no
+    // `branch:prefill` — and that failure is exactly when replay is the only
+    // way back. The barrier committed the content before the prefill, so the
+    // write-ahead roots are real.
+    const events: TraceEvent[] = [
+      { ...seedEvent(1, 7, `hi ${MARKER}`), attachments: [attachmentRef('d9')] },
+    ];
+    expect(extractSpineSeed(events).seedAttachments).toEqual([attachmentRef('d9')]);
+  });
+
+  it('prefers the success-only copy over the write-ahead one', () => {
+    const events: TraceEvent[] = [
+      { ...seedEvent(1, 7, `hi ${MARKER}`), attachments: [attachmentRef('ahead')] },
+      headerEvent(7, 'landed'),
+    ];
+    expect(extractSpineSeed(events).seedAttachments).toEqual([attachmentRef('landed')]);
+  });
 });
 
 describe('reconstructBranch', () => {

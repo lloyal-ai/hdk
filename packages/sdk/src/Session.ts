@@ -163,13 +163,33 @@ export class Session {
     const { sep, prompt, bitmaps } = buildUserDeltaMultimodal(this._ctx, content, images, opts);
     const attachments = opts.attachments;
     if (this._trunk) {
-      const { tokensDecoded } = await this._trunk.prefillMultimodal(prompt, bitmaps, sep);
-      this._onPrefill?.({ role: 'user', content, cells: tokensDecoded, branchHandle: this._trunk.handle, ...(attachments ? { attachments } : {}) });
+      const trunk = this._trunk;
+      try {
+        const { tokensDecoded } = await trunk.prefillMultimodal(prompt, bitmaps, sep);
+        this._onPrefill?.({ role: 'user', content, cells: tokensDecoded, branchHandle: trunk.handle, ...(attachments ? { attachments } : {}) });
+      } catch (e) {
+        // A failed multimodal prefill POISONS the branch — decode_segments
+        // is not atomic, and partial-range KV ops are meaningless on
+        // recurrent layers. Leaving it installed would let the next turn
+        // resume invalid KV; prune (subtree — poisoned KV invalidates
+        // anything forked from it) and clear, so the failure surfaces once,
+        // here.
+        trunk.pruneSubtreeSync();
+        this._trunk = null;
+        throw e;
+      }
     } else {
       const trunk = Branch.create(this._ctx, 0, {});
-      const { tokensDecoded } = await trunk.prefillMultimodal(prompt, bitmaps, []);
-      await this.promote(trunk);
-      this._onPrefill?.({ role: 'user', content, cells: tokensDecoded, branchHandle: trunk.handle, ...(attachments ? { attachments } : {}) });
+      try {
+        const { tokensDecoded } = await trunk.prefillMultimodal(prompt, bitmaps, []);
+        await this.promote(trunk);
+        this._onPrefill?.({ role: 'user', content, cells: tokensDecoded, branchHandle: trunk.handle, ...(attachments ? { attachments } : {}) });
+      } catch (e) {
+        // Never promoted — prune so the failed cold bootstrap does not leak
+        // the branch slot.
+        trunk.pruneSubtreeSync();
+        throw e;
+      }
     }
   }
 

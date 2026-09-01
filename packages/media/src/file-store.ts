@@ -165,8 +165,21 @@ export class FileAttachmentStore implements AttachmentStore {
     try {
       const parsed = JSON.parse(new TextDecoder().decode(bytes)) as AttachmentManifest;
       // Check the artifact type rather than guessing: the version in it exists
-      // to let a future build refuse a shape it does not understand.
-      return parsed?.artifactType === ATTACHMENT_ARTIFACT_TYPE && Array.isArray(parsed.layers)
+      // to let a future build refuse a shape it does not understand. And
+      // validate every layer as a full descriptor — a corrupt or hand-made
+      // manifest (`layers: [null]`, a missing digest) must be refused HERE,
+      // not crash `representationsOf` or hand malformed descriptors to the
+      // HTTP routes. Role semantics stay as documented: a layer without a
+      // role annotation is a representation.
+      const layerOk = (l: unknown): boolean => {
+        if (typeof l !== 'object' || l === null) return false;
+        const { digest: d, mediaType, size } = l as Record<string, unknown>;
+        return typeof d === 'string' && DIGEST_PATTERN.test(d) &&
+          typeof mediaType === 'string' &&
+          typeof size === 'number' && Number.isSafeInteger(size) && size >= 0;
+      };
+      return parsed?.artifactType === ATTACHMENT_ARTIFACT_TYPE &&
+        Array.isArray(parsed.layers) && parsed.layers.every(layerOk)
         ? parsed
         : null;
     } catch {

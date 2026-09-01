@@ -217,6 +217,30 @@ describe('content routes', () => {
     );
   });
 
+  it('the deadline spans ingress, not only the body', async () => {
+    // A completed body used to stop the clock: normalization then ran with
+    // no signal and could hold the handler far beyond the configured
+    // ceiling. One AbortController now spans both halves — an ingress that
+    // honours its signal is cut off at the same deadline.
+    const { store } = fixture();
+    await withServer(
+      {
+        store,
+        uploadTimeoutMs: 150,
+        ingest: (_bytes, signal) =>
+          new Promise((_resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(new Error('ingress aborted at deadline')));
+          }),
+      },
+      async (base) => {
+        const res = await fetch(`${base}/v1/media/ingress`, {
+          method: 'POST', headers: { 'content-type': 'image/png' }, body: PNG,
+        });
+        expect(res.status).toBe(408); // told which limit it hit, not a generic 400
+      },
+    );
+  }, 10_000);
+
   it('refuses GET on the existence route — it is HEAD-only by design', async () => {
     // `/v1/content/<digest>` answers EXISTENCE. Serving its bytes would hand
     // out any blob by digest, including a retained SOURCE layer — defeating

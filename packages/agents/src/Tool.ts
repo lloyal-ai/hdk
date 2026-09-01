@@ -227,10 +227,16 @@ export function takeToolMedia(
   if (!result || typeof result !== 'object' || Array.isArray(result)) {
     return { media: [], result };
   }
+  if (!(TOOL_MEDIA_KEY in result)) return { media: [], result };
   const { [TOOL_MEDIA_KEY]: raw, ...rest } = result as Record<string, unknown>;
-  if (!Array.isArray(raw)) return { media: [], result };
+  // The reserved key never survives into the serialized result, even when its
+  // value is malformed — returning the original would JSON-encode byte
+  // indices onto the token rail, the exact failure this helper exists to
+  // prevent. An invalid value is simply zero media entries.
   return {
-    media: raw.filter((b): b is Uint8Array => b instanceof Uint8Array),
+    media: Array.isArray(raw)
+      ? raw.filter((b): b is Uint8Array => b instanceof Uint8Array)
+      : [],
     result: rest,
   };
 }

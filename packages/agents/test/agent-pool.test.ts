@@ -1604,6 +1604,53 @@ describe('no-tool agent seams', () => {
   });
 });
 
+describe('probe prefill — buffered emission still writes on success', () => {
+  // The probe's `branch:prefill` is success-only: buffered through the
+  // batched dispatch and written after it lands. This pins the success
+  // half — the event survives the buffering with its cells and text.
+  // (The failure half is structural: the writes are lexically after the
+  // `yield* call(...)`, so a rejected dispatch cannot reach them.)
+  class ProbingTool extends SpyTool {
+    override probe(): string { return 'probe reflection'; }
+  }
+
+  const probePolicy = () => stubPolicy({
+    shouldExit: () => false,
+    onProduced: (_a, parsed) => {
+      if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
+      if (parsed.content) return { type: 'free_text_return', content: parsed.content };
+      return { type: 'idle', reason: 'free_text_stop' };
+    },
+  });
+
+  it('emits branch:prefill role=probe after the dispatch, with the probe text', async () => {
+    const tools = new Map<string, Tool>();
+    tools.set('web_search', new ProbingTool());
+
+    const { trace } = await runPool({
+      forkTokenQueues: [[1, STOP]],
+      // Keyed off the RAW text, not a call counter: the pool parses partials
+      // during produce, so counting calls hands the tool call to a partial
+      // parse and the final parse ends the turn without it. Turn 1 produced
+      // token 1 ('t1'); turn 2 produced nothing.
+      parseChatOutputFn: (raw) =>
+        raw.includes('t1')
+          ? { content: '', reasoningContent: '', toolCalls: [{ name: 'web_search', arguments: '{}', id: 'c1' }] }
+          : { content: 'done', reasoningContent: '', toolCalls: [] },
+      policy: probePolicy(),
+      tools,
+      trace: true,
+    });
+
+    const probes = trace.events.filter(
+      (e) => e.type === 'branch:prefill' && e.role === 'probe',
+    );
+    expect(probes).toHaveLength(1);
+    expect((probes[0] as { probeText?: string }).probeText).toBe('probe reflection');
+    expect((probes[0] as { cells: number }).cells).toBeGreaterThan(0);
+  });
+});
+
 // ── Group 8: transient tool failure — park + retry (ToolRetryError) ──
 // A tool throwing ToolRetryError parks its agent (awaiting_tool, skipped by
 // PRODUCE — no turns/tokens/KV) and re-executes after the delay. Strategy

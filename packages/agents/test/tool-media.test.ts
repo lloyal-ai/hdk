@@ -49,4 +49,17 @@ describe('takeToolMedia', () => {
       expect(takeToolMedia(r)).toEqual({ media: [], result: r });
     }
   });
+
+  it('strips a MALFORMED channel rather than serializing it', () => {
+    // `_images: Uint8Array` (not an array of them) used to return the
+    // original object — JSON-encoding every byte index onto the token rail,
+    // the exact failure this helper exists to prevent. The reserved key
+    // never survives; an invalid value is zero media entries.
+    for (const bad of [PNG_BYTES, 'nope', 42, { 0: 1 }]) {
+      const { media, result } = takeToolMedia({ page: 'p1', [TOOL_MEDIA_KEY]: bad });
+      expect(media).toEqual([]);
+      expect(result).toEqual({ page: 'p1' });
+      expect(Object.keys(result as object)).not.toContain(TOOL_MEDIA_KEY);
+    }
+  });
 });

@@ -117,7 +117,10 @@ export interface ContentIngress {
  * @category Media
  */
 export class NoContentIngress implements ContentIngress {
-  ingest(): Promise<Attachment> {
+  // Full contract signature, unused: a caller holding the CONCRETE type can
+  // still write `ingress.ingest(bytes)` — the same reason
+  // NullAttachmentStore keeps full signatures in store.ts.
+  ingest(_bytes?: Uint8Array, _signal?: AbortSignal): Promise<Attachment> {
     return Promise.reject(new Error(
       'No content ingress installed, so this media cannot be normalized or ' +
         'addressed — and unaddressed media makes the run unreplayable. ' +

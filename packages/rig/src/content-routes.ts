@@ -47,6 +47,12 @@ export interface ContentRoutesOpts {
   /**
    * Ceiling on how long one upload may take, end to end.
    *
+   * One deadline spans body transfer AND ingress: the signal handed to
+   * `ingest` aborts at the same ceiling, so a completed body cannot hold the
+   * handler while normalization queues behind other work. (A decode already
+   * inside sharp has no abort — the 408 still goes out at the deadline; only
+   * that decode runs on.)
+   *
    * A byte cap alone does not bound a request: a client that opens a POST and
    * then trickles — or sends nothing at all — holds the promise, the socket and
    * the handler open indefinitely, and enough of them starve the host without
@@ -301,8 +307,10 @@ export function createContentRoutes(
           fail(res, 501, 'no ingress service installed on this host');
           return true;
         }
+        const ctrl = new AbortController();
+        const deadline = setTimeout(() => ctrl.abort(), uploadTimeout);
         readBounded(req, { maxBytes: maxUpload, timeoutMs: uploadTimeout })
-          .then((bytes) => opts.ingest!(bytes))
+          .then((bytes) => opts.ingest!(bytes, ctrl.signal))
           .then((descriptor) => {
             const body = JSON.stringify(descriptor);
             res.writeHead(201, head({
@@ -313,14 +321,15 @@ export function createContentRoutes(
           })
           .catch((e: unknown) => {
             const tooLarge = e instanceof TooLarge;
-            const tooSlow = e instanceof TooSlow;
+            const tooSlow = e instanceof TooSlow || ctrl.signal.aborted;
             const code = tooLarge ? 413 : tooSlow ? 408 : 400;
             fail(res, code, e instanceof Error ? e.message : 'ingress failed');
             // Now that the status is on the wire, stop the upload. A stalled
             // client will not close on its own — that is the whole problem —
             // so the timeout path has to drop the socket just as the cap does.
             if (tooLarge || tooSlow) req.destroy();
-          });
+          })
+          .finally(() => clearTimeout(deadline));
         return true;
       }
 

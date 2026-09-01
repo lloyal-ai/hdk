@@ -184,3 +184,74 @@ describe('prefillUserMultimodal — cold bootstrap', () => {
     expect(ctx.multimodalPrefills[0].handles[0]).toBe(s.trunk!.handle);
   });
 });
+
+describe('marker defang — a literal marker in text never desynchronizes', () => {
+  // The native layer splits the rendered prompt on EVERY literal
+  // `<__media__>`, so text containing the marker would yield more markers
+  // than bitmaps and fail (or mispair) the prefill.
+  const HOSTILE = `look at ${MEDIA_MARKER} this`;
+
+  it('mediaContent defangs the text part', () => {
+    const parts = mediaContent(HOSTILE, img(2));
+    expect(Array.isArray(parts)).toBe(true);
+    const text = (parts as Array<{ type: string; text: string }>)[0].text;
+    expect(text).not.toContain(MEDIA_MARKER);
+    expect(text).toContain('look at');
+  });
+
+  it('a user delta carries exactly one marker per image, whatever the text says', () => {
+    const ctx = new MockSessionContext();
+    const d = buildUserDeltaMultimodal(ctx, HOSTILE, img(1), { system: HOSTILE });
+    expect((d.prompt.match(/<__media__>/g) ?? []).length).toBe(1);
+  });
+
+  it('zero images means ZERO markers — even from hostile text', () => {
+    // This delta still lands via the multimodal prefill, whose splitter
+    // sees the whole prompt: one stray literal would mean 1 marker ≠ 0 bitmaps.
+    const ctx = new MockSessionContext();
+    const d = buildUserDeltaMultimodal(ctx, HOSTILE, []);
+    expect((d.prompt.match(/<__media__>/g) ?? []).length).toBe(0);
+  });
+
+  it('a tool-result delta defangs the result string', () => {
+    const ctx = new MockSessionContext();
+    const d = buildToolResultDeltaMultimodal(ctx, JSON.stringify({ page: HOSTILE }), 'c1', img(1));
+    expect((d.prompt.match(/<__media__>/g) ?? []).length).toBe(1);
+  });
+});
+
+describe('prefillUserMultimodal — a failed prefill never leaves a poisoned trunk', () => {
+  const mkSession = (ctx: MockSessionContext) =>
+    new Session({ ctx: ctx as never, store: new BranchStore(ctx as never) });
+
+  it('warm: prunes and clears the trunk, then rethrows', async () => {
+    const ctx = new MockSessionContext();
+    const s = mkSession(ctx);
+    await s.prefillUserMultimodal('first', img(1)); // establishes the trunk
+    const trunkHandle = s.trunk!.handle;
+
+    const pruned: number[] = [];
+    const origPrune = ctx._branchPrune.bind(ctx);
+    ctx._branchPrune = (h: number) => { pruned.push(h); origPrune(h); };
+    ctx.mockMultimodalError = () => 'decode exploded';
+
+    await expect(s.prefillUserMultimodal('second', img(1))).rejects.toThrow('decode exploded');
+    // The branch is poisoned (decode_segments is not atomic); leaving it
+    // installed would let the next turn resume invalid KV.
+    expect(s.trunk).toBeNull();
+    expect(pruned).toContain(trunkHandle);
+  });
+
+  it('cold: prunes the never-promoted branch, leaking no slot', async () => {
+    const ctx = new MockSessionContext();
+    const s = mkSession(ctx);
+    const pruned: number[] = [];
+    const origPrune = ctx._branchPrune.bind(ctx);
+    ctx._branchPrune = (h: number) => { pruned.push(h); origPrune(h); };
+    ctx.mockMultimodalError = () => 'decode exploded';
+
+    await expect(s.prefillUserMultimodal('first', img(1))).rejects.toThrow('decode exploded');
+    expect(s.trunk).toBeNull();
+    expect(pruned).toContain(ctx.multimodalPrefills[0].handles[0]);
+  });
+});

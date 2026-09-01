@@ -247,6 +247,13 @@ export function* withSpine<T>(
         type: "prompt:format",
         promptText: formatted.prompt,
         tokenCount,
+        // Roots ride the seed WRITE-AHEAD: the barrier committed the content
+        // before any prefill, so a failed multimodal prefill still leaves a
+        // seed that replay can rebuild from. `branch:prefill` below keeps
+        // the success-only copy.
+        ...(prepared.attachments.length > 0
+          ? { attachments: prepared.attachments }
+          : {}),
         messages,
         tools: opts.tools && opts.tools.length > 0
           ? createToolkit(opts.tools).toolsJson

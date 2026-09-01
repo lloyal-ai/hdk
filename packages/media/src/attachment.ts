@@ -139,8 +139,10 @@ export type Attachment = Descriptor & { readonly [ROOT]: true };
  * a command. That descriptor arrives as JSON from a client, so it is a CLAIM
  * about content, not a fact about it.
  *
- * Checks only what a descriptor can be judged on by itself: a well-formed
- * digest, and a media type that says it points at a manifest. Whether the
+ * Checks the full shape a descriptor can be judged on by itself — the input
+ * is parsed JSON, not a `Descriptor` anyone typed: an object, a well-formed
+ * digest, a media type that says it points at a manifest, and a sane size.
+ * Whether the
  * manifest is actually THERE is not a question a type can answer —
  * `materialize` asks the store and throws if it is not, which is the check
  * that matters and the one that cannot be forged. A digest is identity, never
@@ -148,8 +150,12 @@ export type Attachment = Descriptor & { readonly [ROOT]: true };
  *
  * @category Media
  */
-export function asAttachment(d: Descriptor): Attachment | null {
-  return DIGEST_PATTERN.test(d.digest) && d.mediaType === MANIFEST_TYPE
+export function asAttachment(d: unknown): Attachment | null {
+  if (typeof d !== 'object' || d === null) return null;
+  const { digest, mediaType, size } = d as Record<string, unknown>;
+  return typeof digest === 'string' && DIGEST_PATTERN.test(digest) &&
+    mediaType === MANIFEST_TYPE &&
+    typeof size === 'number' && Number.isSafeInteger(size) && size >= 0
     ? (d as Attachment)
     : null;
 }

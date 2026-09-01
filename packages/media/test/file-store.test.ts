@@ -179,4 +179,34 @@ describe('FileAttachmentStore — an OCI Image Layout', () => {
       'application/vnd.oci.image.manifest.v1+json');
     expect(s.getManifest(d.digest)).toBeNull();
   });
+
+  it('refuses a corrupt or hand-made manifest instead of serving it', () => {
+    // `layers: [null]` used to pass the shallow check and then crash
+    // `representationsOf`; a layer without a digest would hand the HTTP
+    // routes a descriptor that cannot resolve. Refused HERE, uniformly.
+    const dir = tmp();
+    const s = new FileAttachmentStore(dir);
+    const manifest = (layers: unknown): string =>
+      JSON.stringify({ artifactType: ATTACHMENT_ARTIFACT_TYPE, layers });
+    const put = (json: string) =>
+      s.putBlob(new TextEncoder().encode(json), 'application/vnd.oci.image.manifest.v1+json');
+
+    for (const layers of [
+      [null],
+      ['a-string'],
+      [{ mediaType: 'image/jpeg', size: 3 }],                                   // no digest
+      [{ digest: 'sha256:short', mediaType: 'image/jpeg', size: 3 }],           // bad digest
+      [{ digest: 'sha256:' + 'a'.repeat(64), size: 3 }],                        // no mediaType
+      [{ digest: 'sha256:' + 'a'.repeat(64), mediaType: 'image/jpeg', size: -1 }],
+    ]) {
+      expect(s.getManifest(put(manifest(layers)).digest)).toBeNull();
+    }
+
+    // Control: a fully-formed layer passes — the validation refuses junk,
+    // not foreign-but-valid manifests.
+    const ok = put(manifest([
+      { digest: 'sha256:' + 'b'.repeat(64), mediaType: 'image/jpeg', size: 3 },
+    ]));
+    expect(s.getManifest(ok.digest)).not.toBeNull();
+  });
 });

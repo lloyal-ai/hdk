@@ -1866,6 +1866,7 @@ function SteppedSlider({ ctl, value, onSelect, send }: {
       <input
         type="range" min={0} max={ctl.values.length - 1} step={1} value={shown}
         aria-label={ctl.key}
+        aria-valuetext={String(ctl.values[shown])}
         onChange={(e) => setDragging(Number(e.target.value))}
         onPointerUp={(e) => commit(Number((e.target as HTMLInputElement).value))}
         onKeyUp={(e) => commit(Number((e.target as HTMLInputElement).value))}

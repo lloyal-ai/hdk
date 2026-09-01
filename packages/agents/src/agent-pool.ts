@@ -1414,19 +1414,26 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
 
         // Probe prefill from DISPATCH or nudge-replacement.
         const probePairs: [Branch, number[]][] = [];
+        const probeMeta: { id: number; cells: number; probeText: string }[] = [];
         for (const a of settledAgents) {
           if (poisoned.has(a.id)) continue;
           const probe = itemProbes.get(a.id);
           if (probe) {
             const probeTokens = ctx.tokenizeSync(probe, false);
             probePairs.push([a.branch, probeTokens]);
-            tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
-              type: 'branch:prefill', branchHandle: a.id,
-              cells: probeTokens.length, role: 'probe', probeText: probe });
+            probeMeta.push({ id: a.id, cells: probeTokens.length, probeText: probe });
           }
         }
         if (probePairs.length > 0) {
           yield* call(() => store.prefill(probePairs));
+          // Success-only, like every branch:prefill: written after the
+          // batched dispatch landed, so a rejected prefill leaves no event
+          // claiming cells that never moved.
+          for (const m of probeMeta) {
+            tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
+              type: 'branch:prefill', branchHandle: m.id,
+              cells: m.cells, role: 'probe', probeText: m.probeText });
+          }
         }
 
         // Re-activate. An `extracting` agent (parallel recovery, queued by

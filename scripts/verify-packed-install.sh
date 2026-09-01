@@ -23,9 +23,20 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CAT="${CAT_FIXTURE:-$HOME/dev/apps/lloyal-node/liblloyal/tests/fixtures/cat.jpg}"
+CAT="${CAT_FIXTURE:-}"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 echo "workdir: $WORK"
+
+# Self-contained: generate the fixture with sharp, as verify-oci does, rather
+# than reaching into an unrelated checkout. CAT_FIXTURE still overrides.
+if [ -z "$CAT" ]; then
+  CAT="$WORK/fixture.jpg"
+  ( cd "$REPO" && node -e "
+    require('sharp')({ create: { width: 640, height: 480, channels: 3,
+      background: { r: 200, g: 120, b: 40 } } })
+      .jpeg({ quality: 90 }).toFile('$CAT').then(() => console.log('generated fixture'));
+  " )
+fi
 
 echo "── building ──"
 ( cd "$REPO" && npx tsc -b packages/media >/dev/null )
