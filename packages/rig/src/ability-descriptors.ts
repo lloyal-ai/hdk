@@ -24,7 +24,9 @@ export interface AbilityDescriptor {
   title: string;
   /** manifest.hints?.description ?? protocol.useWhen */
   description: string;
-  /** catalog metadata.iconUrl (apps.lloyal.ai asset) — else undefined → glyph. */
+  /** `manifest.iconUrl` — an ability may name its own mark, and a catalog
+   *  entry (apps.lloyal.ai asset) is one source of it. Absent → the surface
+   *  falls back to a glyph. */
   iconUrl?: string;
   /** manifest.protocol.tools — the protocol's tool-name list. */
   tools: string[];
@@ -64,6 +66,7 @@ export function* buildAbilityDescriptors(
 type ManifestLike = {
   name: string;
   hints?: { shortName?: string; description?: string };
+  iconUrl?: string;
   protocol: { name: string; useWhen: string; tools: readonly string[] };
   configSchema?: unknown;
 };
@@ -77,7 +80,7 @@ function describe(
     name: manifest.name,
     title: manifest.hints?.shortName ?? manifest.protocol.name,
     description: manifest.hints?.description ?? manifest.protocol.useWhen,
-    iconUrl: undefined,
+    iconUrl: manifest.iconUrl,
     tools: [...manifest.protocol.tools],
     entitlements: [],
     configSchema: manifest.configSchema,
