@@ -49,7 +49,8 @@ export type { PromptState, PromptSection, PromptStep } from './prompt';
 export { reduce } from './combinators';
 export { parallel, chain, fanout, dag } from './orchestrators';
 export type { SpawnSpec, ChainStep, DAGNode, Orchestrator, PoolContext } from './orchestrators';
-export { extractSpineSeed, extractSpineCheckpoint, reconstructBranch, replayTurns } from './replay';
+export { extractSpineSeed, extractSpineCheckpoint, reconstructBranch, replayTurns, replayAgentTurns } from './replay';
+export type { AgentTurnRecord } from './replay';
 export type { BranchCheckpoint } from './replay';
 
 export type { Toolkit } from './toolkit';

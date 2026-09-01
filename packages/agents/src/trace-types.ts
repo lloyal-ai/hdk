@@ -276,6 +276,25 @@ export type TraceEvent =
       };
     }
 
+  /** A poisoned agent was HEALED: its branch was pruned, a replacement
+   *  forked from the spine, and its record (suffix + turns + tool results,
+   *  media included) replayed onto the fork — docs/self-healing.md. The
+   *  replacement is a NEW agent (new branch = new id); `of` is the lineage
+   *  for display. The original's `agent:failed` stands. */
+  | TraceEventBase & {
+      type: 'pool:agentHeal';
+      /** The poisoned original. */
+      of: number;
+      /** The replacement. */
+      agentId: number;
+      rc?: number;
+      attempt: number;
+      pressure: {
+        remaining: number | null; cellsUsed: number;
+        nCtx: number; headroom: number | null;
+      };
+    }
+
   // ── Agent lifecycle span ─────────────────────
   // Trace mirrors of the bus events: `agent:spawn` opens the agent's span
   // (`parentAgentId` = the parent BRANCH handle — the spine for pool

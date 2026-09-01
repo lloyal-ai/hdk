@@ -19,6 +19,8 @@ import { NullTraceWriter } from './trace-writer';
 import type { TraceEvent } from './trace-types';
 import type { AgentPolicy, IdleReason, ToolRetryAction } from './AgentPolicy';
 import { Agent } from './Agent';
+import { replayAgentTurns } from './replay';
+import type { AgentTurnRecord } from './replay';
 import { DefaultAgentPolicy, RECOVERY_PREFILL_OVERHEAD, BATCH_BUFFER } from './AgentPolicy';
 import type { PolicyConfig } from './AgentPolicy';
 import { Tool, ToolRetryError, takeToolMedia, TOOL_CONTEXT_KEY, TOOL_IMAGE_ERROR_KEY } from './Tool';
@@ -48,6 +50,9 @@ const MAX_DEFER_ATTEMPTS = 3;
  *  and deferring or healing there burns budget for nothing. Reset by any
  *  successful dispatch. */
 const BACKEND_TRIPWIRE_N = 3;
+/** Heals per lineage. A replacement that poisons AGAIN goes terminal — a
+ *  second failure on replayed state is evidence, not bad luck. */
+const MAX_HEAL_ATTEMPTS = 1;
 
 /** Minimal event sender interface — accepts any Channel close type */
 type EventSender = { send(value: AgentEvent): Operation<void> };
@@ -60,13 +65,16 @@ type SettledTool = {
   probe?: string;
 } & (
   /** The token rail: the result tokenized here and prefills as tokens. */
-  | { rail: 'token'; prefillTokens: number[]; media?: never }
+  | { rail: 'token'; prefillTokens: number[]; media?: never; resultStr?: string }
   /** The embedding rail. `llama_batch` is token-XOR-embd, so this cannot join
    *  a token batch — a separate call, not a separate strategy. The delta stops
    *  at the string stage because mtmd tokenizes downstream, which is why the
    *  cost had to be MEASURED. */
   | {
       rail: 'media';
+      /** The tool-result string the delta was built from — the heal record's
+       *  replay material (docs/self-healing.md). */
+      resultStr?: string;
       prefillTokens?: never;
       media: { delta: MultimodalDelta; cells: number; attachments: readonly Attachment[] };
     }
@@ -893,6 +901,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     }
     const MIRRORED_POOL_EVENTS = new Set<TraceEvent['type']>([
       'pool:agentNudge', 'tool:authReject', 'pool:agentDrop', 'branch:prune',
+      'pool:agentDefer', 'pool:agentHeal', 'pool:settleFailed',
       // The compiled per-agent prompt SUFFIX. In shared-spine mode the
       // system+tool header lives on the spine prefix (inherited via fork)
       // and is deliberately not repeated here — the mirror carries what
@@ -1090,6 +1099,25 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     let consecutiveFatalRc = 0;
     /** Set at BACKEND_TRIPWIRE_N — the ladder stops, failures go terminal. */
     let backendSuspect = false;
+    /** Per-agent KV-delta record since spawn — heal's replay material. One
+     *  shape, two sinks: every piece is ALREADY on the trace (agent:turn's
+     *  rawOutput, tool:result, branch:prefill's probeText); this holds the
+     *  same data where heal can read it back same-process. */
+    const turnRecordsById = new Map<number, AgentTurnRecord[]>();
+    const recordFor = (id: number): AgentTurnRecord[] => {
+      let r = turnRecordsById.get(id);
+      if (!r) { r = []; turnRecordsById.set(id, r); }
+      return r;
+    };
+    /** The birth certificate — what a heal reproduces (seed, tools, ability,
+     *  the spec's exact text). Recorded at the SPAWN drain. */
+    const specById = new Map<number, AgentTaskSpec>();
+    /** Heal count per lineage (a replacement inherits its original's + 1). */
+    const healAttemptOf = new Map<number, number>();
+    const pendingHeals: {
+      spec: AgentTaskSpec; records: AgentTurnRecord[];
+      of: number; rc?: number; attempt: number;
+    }[] = [];
 
     // Pool-level branch cleanup — ensures orphan-branch cleanup even when
     // spawns are lazy and the orchestrator's spawn scope exits early.
@@ -1329,7 +1357,15 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
        *  re-activation list all describe only what actually happened. */
       const bookSettled = (
         a: Agent, src: SettledTool, cells: number, refs?: readonly Attachment[],
+        resultStrOverride?: string,
       ): void => {
+        const resultStr = resultStrOverride ?? src.resultStr;
+        if (resultStr) {
+          recordFor(a.id).push({
+            kind: 'toolResult', resultStr, callId: src.callId,
+            ...(refs && refs.length > 0 ? { attachments: refs } : {}),
+          });
+        }
         settledAgents.push(a);
         settledOrder.push({ agentId: a.id, callId: src.callId, cells });
         if (src.probe) itemProbes.set(a.id, src.probe);
@@ -1508,11 +1544,13 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
                 `${m.src.toolName} returned media the decoder rejected as invalid input. ` +
                 `Work from the text, or use a different source.`,
             };
+            const noteStr = JSON.stringify(note);
             const noteTokens = buildToolResultDelta(
-              ctx, JSON.stringify(note), m.src.callId,
+              ctx, noteStr, m.src.callId,
               { enableThinking: a.fmt.enableThinking });
             yield* call(() => store.prefill([[a.branch, noteTokens]]));
-            bookSettled(a, m.src, noteTokens.length);
+            // The record carries what LANDED — the note, not the dropped item.
+            bookSettled(a, m.src, noteTokens.length, undefined, noteStr);
             continue;
           }
 
@@ -1526,6 +1564,20 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
               ? `${r.error} [backend suspect: ${consecutiveFatalRc} consecutive fatal decodes — recreate the backend]`
               : r.error,
             rc);
+
+          // HEAL (docs/self-healing.md): the poison cost this agent its
+          // branch, not its task. Within budget and with the backend healthy,
+          // queue a warm respawn — fork the spine (the prefix, seed images
+          // included, rides for free), replay the record, re-admit. Drained
+          // at the SPAWN phase, on the loop fiber, like everything else.
+          const healAttempt = (healAttemptOf.get(a.id) ?? 0) + 1;
+          const healSpec = specById.get(a.id);
+          if (!backendSuspect && healAttempt <= MAX_HEAL_ATTEMPTS && healSpec) {
+            pendingHeals.push({
+              spec: healSpec, records: recordFor(a.id).slice(),
+              of: a.id, ...(rc !== undefined ? { rc } : {}), attempt: healAttempt,
+            });
+          }
         }
       }
 
@@ -1561,6 +1613,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
               type: 'branch:prefill', branchHandle: m.id,
               cells: m.cells, role: 'probe', probeText: m.probeText });
+            recordFor(m.id).push({ kind: 'probe', text: m.probeText });
           }
         }
 
@@ -1821,7 +1874,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           type: 'tool:result', agentId: agent.id, tool: tc.name,
           result: exhausted, prefillTokenCount: prefillTokens.length,
           durationMs: performance.now() - c.toolT0 });
-        return { rail: 'token', agentId: agent.id, prefillTokens, toolName: tc.name, callId, args: tc.arguments, probe: undefined };
+        return { rail: 'token', agentId: agent.id, prefillTokens, toolName: tc.name, callId, args: tc.arguments, probe: undefined, resultStr };
       }
 
       // c.kind === 'result'
@@ -1890,7 +1943,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         type: 'tool:result', agentId: agent.id, tool: tc.name,
         result: told, prefillTokenCount: mediaItem?.cells ?? prefillTokens.length,
         durationMs: performance.now() - c.toolT0 });
-      const common = { agentId: agent.id, toolName: tc.name, callId, args: tc.arguments, probe };
+      const common = { agentId: agent.id, toolName: tc.name, callId, args: tc.arguments, probe, resultStr };
       return mediaItem
         ? { rail: 'media', ...common, media: mediaItem }
         : { rail: 'token', ...common, prefillTokens };
@@ -2088,14 +2141,27 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       // with the orchestrator's fiber. Piggybacking extend in this phase
       // preserves the continuous-tree-batching invariant (one GPU round-trip
       // per tick) and naturally atomic-orders both kinds of work.
-      if (pendingSpawns.length > 0 || pendingExtends.length > 0) {
+      if (pendingSpawns.length > 0 || pendingExtends.length > 0 || pendingHeals.length > 0) {
         const drainedSpawns = pendingSpawns.splice(0, pendingSpawns.length);
         const drainedExtends = pendingExtends
           .splice(0, pendingExtends.length)
           .filter(e => !e.discarded);
 
+        // Heals fork the spine and batch their suffix prefills with the
+        // spawns — a heal IS a spawn wearing a lineage (docs/self-healing.md).
+        // The record replay runs after the batch, per replacement.
+        const drainedHeals: {
+          h: (typeof pendingHeals)[number];
+          agent: Agent; suffixTokens: number[]; formattedPrompt: string;
+        }[] = [];
+        for (const h of pendingHeals.splice(0)) {
+          const setup = yield* setupAgent(spine, h.spec, ctx, enableThinking, runNow);
+          drainedHeals.push({ h, ...setup });
+        }
+
         const prefillPairs: [Branch, number[]][] = [
           ...drainedSpawns.map(s => [s.agent.branch, s.suffixTokens] as [Branch, number[]]),
+          ...drainedHeals.map(d => [d.agent.branch, d.suffixTokens] as [Branch, number[]]),
           ...drainedExtends.map(e => [spine, e.tokens] as [Branch, number[]]),
         ];
 
@@ -2123,6 +2189,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         }
 
         for (const s of drainedSpawns) {
+          specById.set(s.agent.id, s.task);
           tw.write({
             traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
             type: 'branch:create', branchHandle: s.agent.id, parentHandle: s.agent.parentId,
@@ -2149,6 +2216,61 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             type: 'agent:spawn', agentId: s.agent.id, parentAgentId: s.agent.parentId,
           });
           yield* poolChannel.send({ type: 'agent:spawn', agentId: s.agent.id, parentAgentId: s.agent.parentId });
+        }
+
+        // Finish the heals: replay each replacement's record onto its fork
+        // (the suffix batched above; the prefix rode the fork), then admit it
+        // as a NEW agent. The original's `agent:failed` stands — this is a
+        // lineage, not a resurrection.
+        for (const { h, agent, suffixTokens, formattedPrompt } of drainedHeals) {
+          agents.push(agent);
+          agentById.set(agent.id, agent);
+          specById.set(agent.id, h.spec);
+          healAttemptOf.set(agent.id, h.attempt);
+          tw.write({
+            traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
+            type: 'branch:create', branchHandle: agent.id, parentHandle: agent.parentId,
+            position: agent.forkHead, role: 'agentFork',
+          });
+          tw.write({
+            traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
+            type: 'prompt:format', agentId: agent.id, promptText: formattedPrompt,
+            taskContent: h.spec.content, tokenCount: suffixTokens.length,
+            messages: JSON.stringify([
+              { role: 'system', content: h.spec.systemPrompt },
+              { role: 'user', content: h.spec.content },
+            ]),
+            tools: h.spec.tools, role: 'agentSuffix',
+          });
+          try {
+            yield* replayAgentTurns(agent.branch, h.records,
+              { enableThinking: agent.fmt.enableThinking });
+          } catch (e) {
+            // The replay could not land (capacity, missing content, a second
+            // decode failure). Best-effort ends here: the original already
+            // failed honestly; discard the half-built replacement.
+            tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
+              type: 'pool:agentDrop', agentId: agent.id, reason: 'pressure_init' });
+            if (!agent.branch.disposed) safePrune(agent, tw, poolScopeId);
+            agent.transition('idle');
+            discardedIds.add(agent.id);
+            continue;
+          }
+          const hp = new ContextPressure(ctx, pressureOpts);
+          tw.write({
+            traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
+            type: 'pool:agentHeal', of: h.of, agentId: agent.id,
+            ...(h.rc !== undefined ? { rc: h.rc } : {}), attempt: h.attempt,
+            pressure: { remaining: finiteOrNull(hp.remaining), cellsUsed: hp.cellsUsed,
+              nCtx: hp.nCtx, headroom: finiteOrNull(hp.headroom) },
+          });
+          applyLazyGrammar(agent);
+          agent.transition('active');
+          tw.write({
+            traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
+            type: 'agent:spawn', agentId: agent.id, parentAgentId: agent.parentId,
+          });
+          yield* poolChannel.send({ type: 'agent:spawn', agentId: agent.id, parentAgentId: agent.parentId });
         }
       }
 
@@ -2294,6 +2416,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             parsedContent: parsed.content || null,
             parsedToolCalls: parsed.toolCalls.map(tc => ({ name: tc.name, arguments: tc.arguments })),
           });
+          recordFor(a.id).push({ kind: 'assistant', text: a.rawOutput });
 
           // Policy decides what to do with the parsed output
           const action = policy.onProduced(a, parsed, pressure, policyConfig);

@@ -37,7 +37,7 @@ import { initAgents } from '../src/init';
 import { Branch } from '../../sdk/src/Branch';
 import { CapturingTraceWriter } from './helpers/capturing-trace';
 import { rawIngress } from './helpers/raw-ingress';
-import { reconstructBranch, extractSpineSeed, replayTurns, type BranchCheckpoint } from '../src/replay';
+import { reconstructBranch, extractSpineSeed, replayTurns, replayAgentTurns, type AgentTurnRecord, type BranchCheckpoint } from '../src/replay';
 import { Ctx, Store, Attachments } from '../src/context';
 import type { TraceEvent } from '../src/trace-types';
 
@@ -155,6 +155,36 @@ describe('reconstructBranch', () => {
       expect(prefills).toBe(2);
       return null;
     });
+  });
+
+  it('replayAgentTurns replays an agent-shaped record — assistant, tool result, probe, media', async () => {
+    // The agent's KV timeline is not user/assistant pairs: assistant turns,
+    // tool-result deltas and probe prefills, with a media-bearing result
+    // resolving through the store exactly as a seed does.
+    const store = new MemoryAttachmentStore();
+    const root = attach(store, PNG);
+    await withCtx(function*(ctx) {
+      const spine = yield* reconstructBranch(cp());
+      const fork = spine.forkSync();
+      let tokenPrefills = 0;
+      const orig = ctx._storePrefill.bind(ctx);
+      ctx._storePrefill = async (h, t) => { tokenPrefills++; return orig(h, t); };
+
+      const records: AgentTurnRecord[] = [
+        { kind: 'assistant', text: 'looking at the chart <tool_call>rasterize</tool_call>' },
+        { kind: 'toolResult', resultStr: '{"page":"p1"}', callId: 'c1' },
+        { kind: 'probe', text: 'what stands out?' },
+        { kind: 'toolResult', resultStr: '{"page":"p2"}', callId: 'c2', attachments: [root] },
+      ];
+      yield* replayAgentTurns(fork, records, { enableThinking: false });
+
+      // Three token deltas (assistant, tool result, probe)…
+      expect(tokenPrefills).toBe(3);
+      // …and the media record went down the embedding rail with the stored bytes.
+      expect(ctx.multimodalPrefills).toHaveLength(1);
+      expect(ctx.multimodalPrefills[0].bitmapCounts).toEqual([1]);
+      return null;
+    }, store);
   });
 
   it('refuses a marker with no attachment references', async () => {

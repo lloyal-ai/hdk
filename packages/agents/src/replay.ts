@@ -1,6 +1,9 @@
 import { call, ensure } from 'effection';
 import type { Operation } from 'effection';
-import { Branch, buildTurnDelta, MEDIA_MARKER } from '@lloyal-labs/sdk';
+import {
+  Branch, buildAssistantDelta, buildToolResultDelta,
+  buildToolResultDeltaMultimodal, buildTurnDelta, MEDIA_MARKER,
+} from '@lloyal-labs/sdk';
 import { Ctx, Store, Attachments } from './context';
 import type { TraceEvent } from './trace-types';
 import type { Attachment } from '@lloyal-labs/media';
@@ -255,5 +258,59 @@ export function* replayTurns(
   for (const turn of turns) {
     const delta = buildTurnDelta(ctx, turn.userContent, turn.assistantContent);
     yield* call(() => store.prefill([[branch, delta]]));
+  }
+}
+
+/**
+ * One KV delta in an AGENT's life since its spawn — the heal record
+ * (docs/self-healing.md). Every piece is already on the trace in its own
+ * event (`agent:turn.rawOutput`, `tool:result`, `branch:prefill.probeText`);
+ * this is the same data as one ordered, replayable list.
+ */
+export type AgentTurnRecord =
+  | { kind: 'assistant'; text: string }
+  | {
+      kind: 'toolResult'; resultStr: string; callId: string;
+      /** Roots for a media-bearing result — resolved through the run's
+       *  attachment store at replay, exactly as the seed's are. */
+      attachments?: readonly Attachment[];
+    }
+  | { kind: 'probe'; text: string };
+
+/**
+ * Replay an agent's recorded deltas onto a branch, in order.
+ *
+ * The agent-shaped sibling of {@link replayTurns} — an agent's KV timeline
+ * is assistant turns, tool-result deltas and probe prefills, not
+ * user/assistant pairs. Same contract: provenance-blind (the branch is
+ * typically a fork of the live spine, whose prefix — seed images included —
+ * rides for free), lifetime-free, and media-bearing turns resolve through
+ * `materialize()` with the throwing single-branch prefill, so a record whose
+ * content is gone fails loudly rather than replaying a marker as text.
+ */
+export function* replayAgentTurns(
+  branch: Branch,
+  records: readonly AgentTurnRecord[],
+  opts: { enableThinking?: boolean } = {},
+): Operation<void> {
+  const ctx = yield* Ctx.expect();
+  const store = yield* Store.expect();
+  const attachments = yield* Attachments.expect();
+  for (const r of records) {
+    if (r.kind === 'assistant') {
+      const tokens = buildAssistantDelta(ctx, r.text, opts);
+      yield* call(() => store.prefill([[branch, tokens]]));
+    } else if (r.kind === 'probe') {
+      const tokens = ctx.tokenizeSync(r.text, false);
+      if (tokens.length > 0) yield* call(() => store.prefill([[branch, tokens]]));
+    } else if (r.attachments && r.attachments.length > 0) {
+      const { bitmaps } = materialize(attachments, r.attachments);
+      const delta = buildToolResultDeltaMultimodal(
+        ctx, r.resultStr, r.callId, [...bitmaps], opts);
+      yield* call(() => branch.prefillMultimodal(delta.prompt, delta.bitmaps, delta.sep));
+    } else {
+      const tokens = buildToolResultDelta(ctx, r.resultStr, r.callId, opts);
+      yield* call(() => store.prefill([[branch, tokens]]));
+    }
   }
 }

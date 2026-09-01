@@ -1818,6 +1818,61 @@ describe('self-healing ladder', () => {
       .map(e => (e as { detail: string }).detail);
     expect(details.some(d => d.includes('backend suspect'))).toBe(true);
   });
+
+  it('heal: a poisoned agent is warm-respawned from its record', async () => {
+    // Fatal rc poisons the original; the ladder queues a heal. The
+    // replacement forks the spine, replays the record (the original's
+    // turn-1 text), and runs to its own terminal — the original's
+    // agent:failed stands, the lineage rides pool:agentHeal.
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { events, trace } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      forkTokenQueues: [[1, STOP, STOP], [STOP]],
+      ...callTool('rasterize'),
+      tools: toolMap, trace: true,
+      mutateCtx: (c) => {
+        let seen = 0;
+        c.mockMultimodalError = () =>
+          (seen++ === 0 ? { message: 'compute failed', rc: -3 } : null);
+      },
+    });
+    expect(mediaFailures(events)).toHaveLength(1);
+    const heals = trace.events.filter(e => e.type === 'pool:agentHeal');
+    expect(heals).toHaveLength(1);
+    const heal = heals[0] as { of: number; agentId: number; rc?: number; attempt: number };
+    expect(heal.rc).toBe(-3);
+    expect(heal.attempt).toBe(1);
+    expect(heal.agentId).not.toBe(heal.of);
+    // The replacement is a real agent: it spawned and reached a terminal.
+    const spawns = events.filter(e => e.type === 'agent:spawn');
+    expect(spawns).toHaveLength(2);
+    expect(events.some(e => e.type === 'agent:done'
+      && (e as { agentId: number }).agentId === heal.agentId)).toBe(true);
+    // The record replayed: the replacement's fork got prefills beyond its
+    // suffix (the assistant turn), visible as its agentSuffix prompt:format
+    // carrying the SAME task as the original's.
+    const suffixes = trace.events.filter(e => e.type === 'prompt:format'
+      && (e as { role?: string }).role === 'agentSuffix');
+    expect(suffixes).toHaveLength(2);
+  });
+
+  it('heal budget: a replacement that poisons again goes terminal, no third agent', async () => {
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { events, trace } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      forkTokenQueues: [[1, STOP, STOP], [1, STOP, STOP]],
+      ...callTool('rasterize'),
+      tools: toolMap, trace: true,
+      mutateCtx: (c) => {
+        c.mockMultimodalError = () => ({ message: 'compute failed', rc: -3 });
+      },
+    });
+    // Two poisons (original + replacement), ONE heal — the second failure on
+    // replayed state is evidence, not bad luck.
+    expect(mediaFailures(events)).toHaveLength(2);
+    expect(trace.events.filter(e => e.type === 'pool:agentHeal')).toHaveLength(1);
+    expect(events.filter(e => e.type === 'agent:spawn')).toHaveLength(2);
+  });
 });
 
 // ── Group 8: transient tool failure — park + retry (ToolRetryError) ──
