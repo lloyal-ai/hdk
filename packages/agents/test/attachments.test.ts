@@ -37,7 +37,7 @@ import { initAgents } from '../src/init';
 import { Branch } from '../../sdk/src/Branch';
 import { CapturingTraceWriter } from './helpers/capturing-trace';
 import { rawIngress } from './helpers/raw-ingress';
-import { reconstructBranch, extractSpineSeed, type BranchCheckpoint } from '../src/replay';
+import { reconstructBranch, extractSpineSeed, replayTurns, type BranchCheckpoint } from '../src/replay';
 import { Ctx, Store, Attachments } from '../src/context';
 import type { TraceEvent } from '../src/trace-types';
 
@@ -135,6 +135,26 @@ describe('reconstructBranch', () => {
       return yield* reconstructBranch(cp());
     });
     expect(branch).toBeDefined();
+  });
+
+  it('replayTurns is provenance-blind — deltas land on a fork of live state', async () => {
+    // The primitive's contract: it applies turns to WHATEVER branch it is
+    // given — a fresh seed rebuild or a fork of a resident spine — without
+    // guards about the prefix. The fork case is the one reconstructBranch
+    // itself never exercises.
+    await withCtx(function*(ctx) {
+      const spine = yield* reconstructBranch(cp());
+      const fork = spine.forkSync();
+      let prefills = 0;
+      const orig = ctx._storePrefill.bind(ctx);
+      ctx._storePrefill = async (h, t) => { prefills++; return orig(h, t); };
+      yield* replayTurns(fork, [
+        { userContent: 'u1', assistantContent: 'a1' },
+        { userContent: 'u2', assistantContent: 'a2' },
+      ]);
+      expect(prefills).toBe(2);
+      return null;
+    });
   });
 
   it('refuses a marker with no attachment references', async () => {

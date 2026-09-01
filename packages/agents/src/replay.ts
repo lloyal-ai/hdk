@@ -224,10 +224,36 @@ export function* reconstructBranch(checkpoint: BranchCheckpoint): Operation<Bran
     yield* call(() => spine.prefill(seedTokens));
   }
 
-  for (const turn of checkpoint.turns) {
-    const delta = buildTurnDelta(ctx, turn.userContent, turn.assistantContent);
-    yield* call(() => store.prefill([[spine, delta]]));
-  }
+  yield* replayTurns(spine, checkpoint.turns);
 
   return spine;
+}
+
+/**
+ * Apply checkpointed turn deltas to a branch, in order.
+ *
+ * The delta-replay primitive under {@link reconstructBranch}, exported on its
+ * own because the two halves of replay have different contracts and callers:
+ * seed REBUILD verifies it can restore the recorded state or throws
+ * (`reconstructBranch`, above); delta replay is provenance-blind — the branch
+ * may be a fresh seed rebuild or a fork of live, resident state, and this
+ * function neither knows nor checks. A caller continuing from a live fork
+ * owns the prefix contract by construction: it forked the very branch whose
+ * state the checkpoint's turns extend.
+ *
+ * Owns nothing about lifetime — no `ensure`, no prune. The workbench ties
+ * the rebuilt spine to its scope; a pool ties a fork to its own bookkeeping.
+ *
+ * @category Agents
+ */
+export function* replayTurns(
+  branch: Branch,
+  turns: BranchCheckpoint['turns'],
+): Operation<void> {
+  const ctx = yield* Ctx.expect();
+  const store = yield* Store.expect();
+  for (const turn of turns) {
+    const delta = buildTurnDelta(ctx, turn.userContent, turn.assistantContent);
+    yield* call(() => store.prefill([[branch, delta]]));
+  }
 }
