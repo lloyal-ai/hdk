@@ -371,6 +371,7 @@ export class MockSessionContext implements SessionContext {
 
   isStopToken(token: number): boolean { return token === this.stopToken; }
   tokenToText(token: number): string { return `t${token}`; }
+  tokenToBytes(token: number): Uint8Array { return new TextEncoder().encode(this.tokenToText(token)); }
   getEogToken(): number { return this.stopToken; }
   getTurnSeparator(): number[] { return [0]; }
 

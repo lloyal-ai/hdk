@@ -751,6 +751,17 @@ export interface SessionContext {
   tokenToText(token: number): string;
 
   /**
+   * Raw bytes of a single token's text piece.
+   *
+   * The byte-level twin of {@link tokenToText}. A BPE piece is a byte
+   * sequence, not a string — it can end or begin mid-character — so per-token
+   * string conversion tears multi-byte UTF-8 into U+FFFD. Streaming callers
+   * (Branch.produceSync) assemble text from bytes at character boundaries
+   * instead.
+   */
+  tokenToBytes(token: number): Uint8Array;
+
+  /**
    * Check if token is a model stop token
    *
    * Returns true for built-in end-of-generation tokens:

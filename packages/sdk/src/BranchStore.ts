@@ -108,6 +108,7 @@ export class BranchStore {
       tokens.push(token);
     }
     await this._ctx._storeCommit(handles, tokens);
+    for (const [branch, token] of entries) branch._advanceText(token);
   }
 
   /**
