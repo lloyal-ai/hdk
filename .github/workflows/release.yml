@@ -30,6 +30,10 @@ jobs:
 
       - name: Verify dist outputs
         run: |
+          test -f packages/media/dist/index.js
+          test -f packages/media/dist/index.d.ts
+          test -f packages/media/dist/node.js
+          test -f packages/media/dist/node.d.ts
           test -f packages/sdk/dist/index.js
           test -f packages/sdk/dist/index.d.ts
           test -f packages/agents/dist/index.js
@@ -63,7 +67,7 @@ jobs:
           test -f packages/channel-verify/dist/esm/package.json
 
       - name: Typecheck
-        run: npx tsc -b packages/sdk packages/agents packages/rig packages/channel-verify packages/binding packages/relay packages/host
+        run: npx tsc -b packages/media packages/sdk packages/agents packages/rig packages/channel-verify packages/binding packages/relay packages/host
 
       - name: Publish packages
         if: success() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.skip_publish))
@@ -73,14 +77,26 @@ jobs:
           # rig pointing at a version that does not exist on the registry —
           # breaking fresh installs until someone repaired the partial release.
           # It has no dependencies of its own, so it is safe at the head.
-          for pkg in packages/channel-verify packages/sdk packages/agents packages/rig packages/binding packages/relay packages/host packages/dev-tools; do
+          # media sits right after channel-verify: sdk, agents and rig all
+          # depend on it, so it must exist on the registry before they do.
+          for pkg in packages/channel-verify packages/media packages/sdk packages/agents packages/rig packages/binding packages/relay packages/host packages/dev-tools; do
             name=$(node -p "require('./$pkg/package.json').name")
             version=$(node -p "require('./$pkg/package.json').version")
+            # The dist-tag follows each package's OWN version: an -alpha.N
+            # version publishes under the alpha channel and can never move
+            # `latest`. Committed on an arc branch, this is what makes
+            # `npx lloyal-ai@alpha` possible without touching production.
+            case "$version" in
+              *-alpha*) tag=alpha ;;
+              *-beta*)  tag=beta ;;
+              *-rc*)    tag=rc ;;
+              *)        tag=latest ;;
+            esac
             if npm view "$name@$version" version >/dev/null 2>&1; then
               echo "⏭ $name@$version already published, skipping"
             else
-              echo "Publishing $name@$version..."
-              npm publish --workspace "$pkg" --access public --provenance
+              echo "Publishing $name@$version (tag: $tag)..."
+              npm publish --workspace "$pkg" --access public --provenance --tag "$tag"
             fi
           done
         env:
