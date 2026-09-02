@@ -73,6 +73,7 @@ export type {
   DivergeAttempt,
   DivergeResult,
   AgentEvent,
+  AgentTraceEvent,
 } from './types';
 
 export type {

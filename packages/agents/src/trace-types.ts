@@ -17,6 +17,17 @@ interface TraceEventBase {
   traceId: TraceId;
   parentTraceId: TraceId | null;
   ts: number; // performance.now()
+  /** Attribution, in the DATA rather than any envelope: the pool's dispatch
+   *  tee stamps the dispatching agent onto every write made while a tool
+   *  executes; write sites that know their agent (an agentSuffix
+   *  `prompt:format`, the pool's intervention events) stamp it themselves.
+   *  Only-if-absent semantics let an inner (nested-pool) stamp win. Readers
+   *  — the file, the dev pane's writer-boundary mirror — take attribution
+   *  from these fields; nothing re-derives it downstream. */
+  agentId?: number;
+  /** The dispatch this write belongs to, stamped alongside {@link agentId}
+   *  for tool-scoped writes. */
+  callId?: string;
 }
 
 /**
@@ -42,9 +53,6 @@ export type TraceEvent =
   // ── Prompt events ───────────────────────────
   | TraceEventBase & {
       type: 'prompt:format';
-      /** The spawned agent this prompt seeds (role 'agentSuffix' writes) —
-       *  the tee's attribution key; absent on spine/generate writes. */
-      agentId?: number;
       promptText: string;
       taskContent?: string;
       /** What the prompt tokenizes to, when that is knowable BEFORE the
@@ -88,6 +96,15 @@ export type TraceEvent =
        *  which share the word so the numbers can be compared. */
       cells: number;
       role: 'spineHeader' | 'agentSuffix' | 'toolResult' | 'warmDelta' | 'probe' | 'recovery';
+      /** Which conversation side a `warmDelta` belongs to — carried from the
+       *  Session's own prefill call (`prefillUser` / `prefillAssistant` /
+       *  tool-result / `commitTurn`'s whole exchange), never inferred from
+       *  the text. Absent on non-warmDelta roles. */
+      speaker?: 'user' | 'assistant' | 'tool' | 'turn';
+      /** A committed exchange's halves (`speaker: 'turn'`), verbatim —
+       *  structural so no reader re-splits the joined `content`. */
+      query?: string;
+      response?: string;
       probeText?: string;
       /** Verbatim prefilled text. Populated for `warmDelta` (session-trunk
        *  conversation turns) so the spine's accreting content is visible in

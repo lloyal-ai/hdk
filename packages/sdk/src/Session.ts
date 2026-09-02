@@ -17,6 +17,10 @@ import { buildUserDelta, buildUserDeltaMultimodal, buildAssistantDelta, buildToo
 export type TrunkPrefillObserver = (info: {
   role: 'user' | 'assistant' | 'turn' | 'tool';
   content: string;
+  /** The halves of a committed exchange (`role: 'turn'`), verbatim as the
+   *  caller passed them — structural so no consumer re-splits the join. */
+  query?: string;
+  response?: string;
   /** KV CELLS the prefill added — not tokens.
    *
    *  Equal on the token rail, where this is the delta length. NOT equal on the
@@ -243,7 +247,7 @@ export class Session {
       // conversations; no thinking blocks should be embedded.
       const tokens = buildTurnDelta(this._ctx, query, response, { enableThinking: false });
       await this._trunk.prefill(tokens);
-      this._onPrefill?.({ role: 'turn', content: `${query}\n\n${response}`, cells: tokens.length, branchHandle: this._trunk.handle });
+      this._onPrefill?.({ role: 'turn', content: `${query}\n\n${response}`, query, response, cells: tokens.length, branchHandle: this._trunk.handle });
     } else {
       // Cold path: create trunk at position 0, prefill without separator
       // (fresh branch — no prior turn to separate from), then promote.
@@ -258,7 +262,7 @@ export class Session {
       const trunk = Branch.create(this._ctx, 0, {});
       await trunk.prefill(tokens);
       await this.promote(trunk);
-      this._onPrefill?.({ role: 'turn', content: `${query}\n\n${response}`, cells: tokens.length, branchHandle: trunk.handle });
+      this._onPrefill?.({ role: 'turn', content: `${query}\n\n${response}`, query, response, cells: tokens.length, branchHandle: trunk.handle });
     }
   }
 

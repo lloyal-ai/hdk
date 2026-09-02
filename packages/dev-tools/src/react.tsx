@@ -480,17 +480,26 @@ export function DevPane({ bridge, controls = [], title, runCommands = {}, framin
     );
   }
 
-  return shell(<Pane store={store} m={m} rev={rev} controls={controls} title={title} runCommands={runCommands} onClose={() => setOpen(false)} />);
+  return shell(
+    <Pane
+      store={store} m={m} rev={rev} controls={controls} title={title} runCommands={runCommands}
+      onClose={() => setOpen(false)}
+      // Thumbnails resolve through the bridge when the harness exposes a
+      // content route; the pane never learns the transport, only the URL.
+      mediaUrl={bridge.representationUrl ? (d, i) => bridge.representationUrl!(d, i) : undefined}
+    />,
+  );
 }
 
 // ═══ the docked pane ═══
-function Pane({ store, m, rev, controls, title, runCommands, onClose }: {
+function Pane({ store, m, rev, controls, title, runCommands, onClose, mediaUrl }: {
   store: DevStore; m: PaneModel; rev: number;
   controls: readonly DevControl[]; title?: string; onClose: () => void;
   runCommands: NonNullable<DevPaneProps['runCommands']>;
+  mediaUrl?: (digest: string, index?: number) => string;
 }): ReactElement {
   const [tab, setTab] = useState<PaneTab>('timeline');
-  const [selAgent, setSelAgent] = useState<number | null>(null);
+  const [selAgent, setSelAgent] = useState<number | 'trunk' | 'spine' | null>(null);
   const [feedW, setFeedW] = useState(feedWidthPref);
   const [paneH, setPaneH] = useState(paneHeightPref);
   const toolColor = useToolColors();
@@ -622,7 +631,19 @@ function Pane({ store, m, rev, controls, title, runCommands, onClose }: {
       {tab === 'timeline' && (
         <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
           <Timeline m={m} rev={rev} store={store} selAgent={selAgent} onSelect={setSelAgent} toolColor={toolColor} />
-          {selAgent !== null && m.lanes.has(selAgent) && (
+          {selAgent === 'spine' && m.spine && (
+            <>
+              <FeedResizer width={feedW} onWidth={(w) => { feedWidthPref = w; setFeedW(w); }} />
+              <SpineFeed m={m} onClose={() => setSelAgent(null)} width={feedW} mediaUrl={mediaUrl} toolColor={toolColor} />
+            </>
+          )}
+          {selAgent === 'trunk' && m.trunk.length > 0 && (
+            <>
+              <FeedResizer width={feedW} onWidth={(w) => { feedWidthPref = w; setFeedW(w); }} />
+              <TrunkFeed m={m} onClose={() => setSelAgent(null)} width={feedW} mediaUrl={mediaUrl} />
+            </>
+          )}
+          {typeof selAgent === 'number' && m.lanes.has(selAgent) && (
             <>
               <FeedResizer width={feedW} onWidth={(w) => { feedWidthPref = w; setFeedW(w); }} />
               <AgentFeed m={m} lane={m.lanes.get(selAgent)!} toolColor={toolColor} onClose={() => setSelAgent(null)} onJump={setSelAgent} nowMs={store.getState().paintedAt} width={feedW} send={(c) => store.send(c)} canCancel={!!runCommands.cancelAgent} />
@@ -677,7 +698,7 @@ const SPAN_LIVE = 75; // seconds visible while following
 
 function Timeline({ m, rev, store, selAgent, onSelect, toolColor }: {
   m: PaneModel; rev: number; store: DevStore;
-  selAgent: number | null; onSelect: (id: number | null) => void;
+  selAgent: number | 'trunk' | 'spine' | null; onSelect: (id: number | 'trunk' | 'spine' | null) => void;
   toolColor: (t: string) => string;
 }): ReactElement {
   const [follow, setFollow] = useState(true);
@@ -778,7 +799,9 @@ function Timeline({ m, rev, store, selAgent, onSelect, toolColor }: {
         <div style={{ width: GUTTER, flex: 'none', padding: '4px 0 0 14px' }}>
           <span style={label}>{lanes.length ? `${lanes.length} agents` : ''}</span>
         </div>
-        <div style={{ flex: 1, position: 'relative', fontFamily: mono }}>
+        {/* overflow hidden: a tick past the window edge must clip, not paint
+            over the sibling feed panel (absolute children ignore siblings). */}
+        <div style={{ flex: 1, position: 'relative', overflow: 'hidden', fontFamily: mono }}>
           {ticks.map((t) => (
             <span key={t} style={{ position: 'absolute', left: px(t) - GUTTER, fontSize: 9, color: C.faint }}>
               {t >= 60 ? `${Math.floor(t / 60)}m${t % 60 ? String(t % 60).padStart(2, '0') : ''}` : `${t}s`}
@@ -823,6 +846,176 @@ function Timeline({ m, rev, store, selAgent, onSelect, toolColor }: {
           )}
         </div>
 
+        {(() => {
+          // Fork topology, drawn. Pure px()/ROW_H geometry — no DOM reads —
+          // and absolutely positioned INSIDE the scroll container, so curves
+          // ride with their rows through scroll, pan, and every resize.
+          const rows: Array<'session' | 'spine' | number> = [];
+          if (m.trunk.length > 0) rows.push('session');
+          if (m.spine) rows.push('spine');
+          for (const l of lanes) rows.push(l.agentId);
+          const rowIdx = new Map<'session' | 'spine' | number, number>(rows.map((r, i) => [r, i]));
+          const yMid = (r: 'session' | 'spine' | number): number => (rowIdx.get(r) as number) * ROW_H + 19;
+          const paths: ReactElement[] = [];
+          if (m.spine && rowIdx.has('spine')) {
+            const sx = px(secOf(m.spine.spineAt ?? m.spine.at));
+            // Warm lineage: the session's conversation feeds the spine.
+            if (rowIdx.has('session') && (m.spine.inherited ?? 0) > 0 && sx >= GUTTER) {
+              const sy = (rowIdx.get('session') as number) * ROW_H + 22;
+              const ty = (rowIdx.get('spine') as number) * ROW_H + 19;
+              const e = sx - 10; const r = 4;
+              paths.push(
+                <path key="warm" d={`M ${sx} ${sy} L ${e + r} ${sy} Q ${e} ${sy} ${e} ${sy + r} L ${e} ${ty - r} Q ${e} ${ty} ${e + r} ${ty} L ${sx - 2} ${ty}`} stroke="#9aa0a6" strokeWidth="1.3" fill="none" />,
+              );
+            }
+            // Every lane hangs off the spine at its true spawn moment.
+            const spineRow = rowIdx.get('spine') as number;
+            for (const l of lanes) {
+              // Only lanes that forked AFTER the spine existed hang off it —
+              // a planner forks from the session, and the pane draws no
+              // parentage it does not know.
+              if (m.spine.spineAt === null || l.spawnedAt + 250 < m.spine.spineAt) continue;
+              const x = px(secOf(l.spawnedAt));
+              if (x < GUTTER || !on(secOf(l.spawnedAt))) continue;
+              const laneRow = rowIdx.get(l.agentId) as number;
+              // Nested elbows: drop at a small left offset (wider for deeper
+              // rows, so simultaneous forks read as nested guides), rounded
+              // corner, horizontal entry into the bar's left edge.
+              const off = 8 + (laneRow - spineRow - 1) * 5;
+              const sy = spineRow * ROW_H + 23;
+              const ty = laneRow * ROW_H + 19;
+              const e = x - off; const r = 4;
+              paths.push(
+                <path key={`f${l.agentId}`} d={`M ${x} ${sy} L ${e + r} ${sy} Q ${e} ${sy} ${e} ${sy + r} L ${e} ${ty - r} Q ${e} ${ty} ${e + r} ${ty} L ${x - 2} ${ty}`} stroke="#9aa0a6" strokeWidth="1.3" fill="none" />,
+              );
+            }
+          }
+          // DAG dependency edges — declared by the orchestrator, never inferred.
+          for (const l of lanes) {
+            for (const dep of l.after ?? []) {
+              const d = m.lanes.get(dep);
+              if (!d || d.doneAt === null || !rowIdx.has(dep)) continue;
+              const x2 = px(secOf(l.spawnedAt));
+              if (x2 < GUTTER) continue;
+              const x1 = Math.max(px(secOf(d.doneAt)), GUTTER);
+              const y1 = yMid(dep); const y2 = yMid(l.agentId);
+              const e = Math.max(x2 - 8, x1 + 4); const r = 4;
+              const vdir = y2 > y1 ? 1 : -1;
+              paths.push(
+                <path key={`d${dep}-${l.agentId}`} d={`M ${x1} ${y1} L ${e - r} ${y1} Q ${e} ${y1} ${e} ${y1 + r * vdir} L ${e} ${y2 - r * vdir} Q ${e} ${y2} ${e + r} ${y2} L ${x2} ${y2}`} stroke="#9aa0a6" strokeWidth="1.2" strokeDasharray="4 3" fill="none" />,
+              );
+            }
+          }
+          if (paths.length === 0) return null;
+          return (
+            <svg width="100%" height={rows.length * ROW_H} style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'none', zIndex: 1 }}>
+              {paths}
+            </svg>
+          );
+        })()}
+        {/* the session trunk — same lane grammar as the agents; the content
+            lives in its feed, exactly like an agent's. Session-lived. */}
+        {m.trunk.length > 0 && (
+          <div
+            role="button" tabIndex={0}
+            onClick={() => onSelect(selAgent === 'trunk' ? null : 'trunk')}
+            onKeyDown={keyActivate(() => onSelect(selAgent === 'trunk' ? null : 'trunk'))}
+            style={{
+              position: 'relative', height: ROW_H, display: 'flex', cursor: 'pointer',
+              borderBottom: `1px solid ${C.hair}`,
+              background: selAgent === 'trunk' ? C.chromeBg : undefined,
+              boxShadow: selAgent === 'trunk' ? `inset 3px 0 0 ${C.text}` : undefined,
+            }}
+          >
+            <div style={{ width: GUTTER, flex: 'none', display: 'flex', alignItems: 'baseline', gap: 6, padding: '12px 0 0 14px', fontSize: 11.5 }}>
+              <span style={{ fontWeight: 600 }}>session</span>
+              <span style={{ color: C.dim, fontSize: 10.5, fontFamily: mono }}>{m.trunk.length} turn{m.trunk.length === 1 ? '' : 's'}</span>
+            </div>
+            <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+              {m.trunk.map((t, i) => {
+                const s = secOf(t.at);
+                if (!on(s)) return null;
+                // One diamond per side, colored by who spoke; a committed
+                // exchange ('turn') lands both at once and shows the pair.
+                const sides = t.speaker === 'turn' ? [TRUNK_QUERY, TRUNK_RESPONSE]
+                  : t.speaker === 'user' ? [TRUNK_QUERY]
+                  : t.speaker === 'tool' ? [TRUNK_TOOL]
+                  : [TRUNK_RESPONSE];
+                return (
+                  <span key={i} title={(t.query ?? t.content).slice(0, 200)}>
+                    {sides.map((c, j) => (
+                      <span key={j} style={{
+                        position: 'absolute', left: px(s) - GUTTER - 5 + j * 9, top: 13, width: 10, height: 10,
+                        borderRadius: 2, transform: 'rotate(45deg)', background: c, display: 'inline-block',
+                      }} />
+                    ))}
+                    {t.attachments.length > 0 && (
+                      <span style={{ position: 'absolute', left: px(s) - GUTTER + (sides.length > 1 ? 17 : 8), top: 11, fontSize: 9.5, color: C.dim }}>
+                        📎{t.attachments.length}
+                      </span>
+                    )}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        )}
+        {/* the run's spine — the shared root every lane forks from. Run-scoped,
+            so a failed run still shows what asked for it. */}
+        {m.spine && (
+          <div
+            role="button" tabIndex={0}
+            onClick={() => onSelect(selAgent === 'spine' ? null : 'spine')}
+            onKeyDown={keyActivate(() => onSelect(selAgent === 'spine' ? null : 'spine'))}
+            style={{
+              position: 'relative', height: ROW_H, display: 'flex', cursor: 'pointer',
+              borderBottom: `1px solid ${C.hair}`,
+              background: selAgent === 'spine' ? C.chromeBg : undefined,
+              boxShadow: selAgent === 'spine' ? `inset 3px 0 0 ${C.text}` : undefined,
+            }}
+          >
+            <div style={{ width: GUTTER, flex: 'none', display: 'flex', alignItems: 'baseline', gap: 6, padding: '12px 0 0 14px', fontSize: 11.5 }}>
+              <span style={{ fontWeight: 600 }}>spine</span>
+              <span style={{ color: C.dim, fontSize: 10.5, fontFamily: mono }}>
+                {(m.spine.spineCells || m.spine.headerTokens) > 0
+                  ? `${(m.spine.spineCells || m.spine.headerTokens).toLocaleString()} tokens` : 'seeding…'}
+              </span>
+            </div>
+            <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+              {(() => {
+                // The spine as a BAR — alive for the whole run — with a tick
+                // wherever it grew (the seed, then each extension).
+                const s0 = secOf(m.spine.spineAt ?? m.spine.at);
+                const x0 = Math.max(px(s0), GUTTER);
+                const x1 = Math.max(px(Math.min(endS, w1)), x0 + 4);
+                if (px(s0) > px(w1)) return null;
+                return (
+                  <span title={(m.spine.query ?? '').slice(0, 200)}>
+                    <span style={{
+                      position: 'absolute', top: 15, height: 8, left: x0 - GUTTER, width: x1 - x0,
+                      background: '#e3e6ea', borderRadius: 4, border: `1px solid ${C.hair}`, display: 'inline-block',
+                    }} />
+                    {m.spine.growth.map((g, gi) => {
+                      const gs = secOf(g.at);
+                      if (!on(gs)) return null;
+                      return (
+                        <span
+                          key={gi} title={`+${g.tokens.toLocaleString()} tokens`}
+                          style={{ position: 'absolute', left: px(gs) - GUTTER, top: 13, width: 2, height: 12, background: C.text }}
+                        />
+                      );
+                    })}
+                    {m.spine.attachments.length > 0 && (
+                      <span style={{ position: 'absolute', left: x0 - GUTTER + 6, top: 11, fontSize: 9.5, color: C.dim }}>
+                        📎{m.spine.attachments.length}
+                      </span>
+                    )}
+                  </span>
+                );
+              })()}
+            </div>
+          </div>
+        )}
         {lanes.map((l) => (
           <Lane
             key={l.agentId} m={m} l={l} px={px} on={on} secOf={secOf} nowS={nowS} live={live}
@@ -898,7 +1091,7 @@ function Lane({ m, l, px, on, secOf, nowS, live, selected, toolColor, onClick, g
       role="button" tabIndex={0} onKeyDown={keyActivate(onClick)}
       aria-label={`open agent ${l.agentId}`}
       style={{
-        display: 'flex', height: 38, borderTop: `1px solid ${C.hair}`, position: 'relative', cursor: 'pointer',
+        display: 'flex', height: ROW_H, borderTop: `1px solid ${C.hair}`, position: 'relative', cursor: 'pointer',
         background: selected ? C.chromeBg : cancelled ? 'rgba(179,38,30,.05)' : undefined,
         boxShadow: selected ? `inset 3px 0 0 ${C.text}` : undefined,
       }}
@@ -1479,13 +1672,322 @@ function AgentFeed({ m, lane, toolColor, onClose, onJump, nowMs, width, send, ca
                 {lane.report === null ? 'not delivered' : lane.reportSource === 'recovery' ? 'extracted by recovery' : 'delivered'}
               </span>
             </div>
-            {reportOpen && lane.report !== null && (
-              <div style={{ margin: '6px 0 2px 16px', lineHeight: 1.5, color: '#3c4043', whiteSpace: 'pre-wrap' }}>
-                {lane.report}
+            {reportOpen && lane.report !== null && (() => {
+              // Raw <think> never renders — the report splits into the
+              // shared reasoning box + what the agent actually said.
+              const { reasoning, said } = splitThink(lane.report);
+              return (
+                <div style={{ margin: '6px 0 2px 16px' }}>
+                  {reasoning && <Reasoning text={reasoning} open={expanded.has('report-reasoning')} onToggle={() => toggle('report-reasoning')} />}
+                  <div style={{ lineHeight: 1.5, color: '#3c4043', whiteSpace: 'pre-wrap' }}>{said}</div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** One timeline row — session, spine, and every lane share it. The
+ *  connector overlay derives its geometry from this same constant, which is
+ *  what makes curves survive any resize without DOM measurement. */
+const ROW_H = 38;
+
+/** Trunk marker colors — one per conversation side, same family as the
+ *  lanes: the query is the deep blue everything forks from, the response the
+ *  light one. Tools are grey. */
+const TRUNK_QUERY = '#174ea6';
+const TRUNK_RESPONSE = '#5f8fd9';
+const TRUNK_TOOL = '#9aa0a6';
+
+/** Split verbatim model text into its reasoning and its said text. The pane
+ *  never renders raw `<think>` markup anywhere — reasoning is shown behind
+ *  {@link Reasoning}. An unclosed block (a cut stream) still splits clean. */
+function splitThink(text: string): { reasoning: string; said: string } {
+  const parts = text.split(/<think>([\s\S]*?)(?:<\/think>|$)/);
+  return {
+    reasoning: parts.filter((_, k) => k % 2 === 1).join('\n').trim(),
+    said: parts.filter((_, k) => k % 2 === 0).join('').trim(),
+  };
+}
+
+/** The expandable reasoning box — one look for every surface that carries
+ *  model thinking (trunk turns, agent reports). Collapsed by default. */
+function Reasoning({ text, open, onToggle }: { text: string; open: boolean; onToggle: () => void }): ReactElement {
+  return (
+    <div style={{ margin: '0 0 4px' }}>
+      <div
+        role="button" tabIndex={0} onClick={onToggle} onKeyDown={keyActivate(onToggle)}
+        style={{ display: 'flex', alignItems: 'baseline', gap: 7, cursor: 'pointer', padding: '2px 0' }}
+      >
+        <span style={{ color: C.faint, fontSize: 9, width: 9, flex: 'none' }}>{open ? '▾' : '▸'}</span>
+        <span style={{ color: C.dim }}>reasoning</span>
+      </div>
+      {open && (
+        <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.5, color: C.dim, fontFamily: mono, fontSize: 10.5, maxHeight: 240, overflowY: 'auto', margin: '2px 0 0 16px' }}>{text}</div>
+      )}
+    </div>
+  );
+}
+
+/** The spine's feed — the run's root: the user's instruction verbatim
+ *  (only when the harness declared where it lives — see
+ *  {@link RunFraming.instruction}), then the compiled header that seeded
+ *  position 0. This is where a prompt survives when a run fails. */
+function SpineFeed({ m, onClose, width, mediaUrl, toolColor }: {
+  m: PaneModel; onClose: () => void; width: number;
+  mediaUrl?: (digest: string, index?: number) => string;
+  toolColor: (t: string) => string;
+}): ReactElement | null {
+  // Substance visible by default — only the raw bytes stay behind a click.
+  const [headerOpen, setHeaderOpen] = useState(true);
+  const [compiledOpen, setCompiledOpen] = useState(false);
+  const k = m.spine;
+  if (!k) return null;
+  return (
+    <div style={{
+      width, flex: 'none', borderLeft: '1px solid #d9dce1', display: 'flex',
+      flexDirection: 'column', minHeight: 0, background: C.panelBg,
+    }}>
+      <div style={{
+        height: 30, flex: 'none', display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px',
+        borderBottom: `1px solid ${C.border}`, background: '#f8f9fa',
+      }}>
+        <span style={{ fontFamily: mono, fontWeight: 600, fontSize: 11 }}>spine</span>
+        <span style={chip}>shared agent memory</span>
+        {k.inherited !== undefined && (
+          <span style={chip}>{k.inherited > 0 ? `warm · ${k.inherited.toLocaleString()} tok from trunk` : 'cold start'}</span>
+        )}
+        {k.headerTokens > 0 && (() => {
+          const nCtx = m.pressure.length > 0 ? m.pressure[m.pressure.length - 1].nCtx : 0;
+          const pct = nCtx > 0 ? Math.round((k.headerTokens / nCtx) * 1000) / 10 : null;
+          return <span style={chip}>{k.headerTokens.toLocaleString()} tok{pct !== null ? ` · ${pct}% ctx` : ''}</span>;
+        })()}
+        <span style={{ flex: 1 }} />
+        <span style={{ cursor: 'pointer', color: C.dim }} onClick={onClose} title="close — the timeline returns to full width">✕</span>
+      </div>
+      <div style={{ overflowY: 'auto', flex: 1, fontSize: 11, paddingBottom: 8 }}>
+        {k.query !== null && (
+        <div style={feedItem}>
+          <div style={{ background: 'rgba(26,115,232,.05)', borderRadius: 4, padding: '6px 9px' }}>
+            <div style={{ display: 'flex', gap: 7, alignItems: 'baseline', marginBottom: 3 }}>
+              <b style={{ fontSize: 11, color: TRUNK_QUERY }}>query</b>
+              <span style={{ fontSize: 10.5, color: C.faint }}>the user's instruction, as submitted</span>
+            </div>
+            {k.attachments.length > 0 && (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', margin: '2px 0 6px' }}>
+                {k.attachments.map((a, j) => mediaUrl ? (
+                  <img
+                    key={j} src={mediaUrl(a.digest)} alt={a.digest.slice(0, 12)}
+                    title={`${a.digest.slice(0, 19)}\u2026`}
+                    style={{ height: 72, maxWidth: 160, objectFit: 'cover', borderRadius: 4, border: `1px solid ${C.border}` }}
+                  />
+                ) : (
+                  <span key={j} style={chip} title={a.digest}>{a.digest.slice(0, 19)}\u2026</span>
+                ))}
+              </div>
+            )}
+            <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.5, color: '#3c4043', fontSize: 11.5, maxHeight: 200, overflowY: 'auto' }}>{k.query}</div>
+          </div>
+        </div>
+        )}
+        {(k.tools && k.tools.length > 0) || k.systemText || k.headerText ? (
+          <div style={{ borderBottom: `1px solid ${C.border}`, padding: '4px 12px 6px' }}>
+            <div
+              role="button" tabIndex={0}
+              onClick={() => setHeaderOpen((v) => !v)} onKeyDown={keyActivate(() => setHeaderOpen((v) => !v))}
+              style={{ display: 'flex', alignItems: 'baseline', gap: 7, cursor: 'pointer', padding: '2px 0' }}
+              title="the shared header prefilled at position 0 — every agent inherits it via fork"
+            >
+              <span style={{ color: C.faint, fontSize: 9, width: 9, flex: 'none' }}>{headerOpen ? '▾' : '▸'}</span>
+              <span style={{ color: C.dim }}>system + tools</span>
+            </div>
+            {headerOpen && (
+              <div style={{ margin: '4px 0 2px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {k.tools && k.tools.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {k.tools.map((t2) => (
+                      <div key={t2.name} style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                        <span style={{ flex: 'none', transform: 'translateY(2px)' }}>
+                          <Badge color={toolColor(t2.name)} letter={letterOf(t2.name)} size={14} />
+                        </span>
+                        <b style={{ fontFamily: mono, fontSize: 10.5, flex: 'none' }}>{t2.name}</b>
+                        <span
+                          style={{ color: C.dim, fontSize: 11, lineHeight: 1.4, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}
+                          title={t2.description}
+                        >
+                          {t2.description}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {k.systemText && (
+                  <div>
+                    <div style={{ color: C.faint, fontSize: 10, marginBottom: 2 }}>system</div>
+                    <div style={{ lineHeight: 1.5, color: '#3c4043', whiteSpace: 'pre-wrap', fontSize: 11.5, maxHeight: 220, overflowY: 'auto' }}>{k.systemText}</div>
+                  </div>
+                )}
+                {k.headerText && (
+                  <div>
+                    <div
+                      role="button" tabIndex={0}
+                      onClick={() => setCompiledOpen((v) => !v)} onKeyDown={keyActivate(() => setCompiledOpen((v) => !v))}
+                      style={{ display: 'flex', alignItems: 'baseline', gap: 7, cursor: 'pointer', padding: '2px 0' }}
+                      title="the exact rendered template — what position 0 actually holds"
+                    >
+                      <span style={{ color: C.faint, fontSize: 9, width: 9, flex: 'none' }}>{compiledOpen ? '▾' : '▸'}</span>
+                      <span style={{ color: C.dim }}>compiled</span>
+                    </div>
+                    {compiledOpen && <JsonBlock text={k.headerText} raw />}
+                  </div>
+                )}
+              </div>
+            )}
+            {(() => {
+              // Full accrual: what every fork inherited for free, minus the
+              // one shared copy actually prefilled this run. Correct for
+              // chain extensions, warm trunk inheritance, and recursive
+              // forks — parallel degenerates to header × (n − 1).
+              // Only lanes that actually forked the spine count as sharers —
+              // the same attribution the connectors draw. A pre-spine lane
+              // (the planner) never inherited it and never shows here.
+              // Saved follows the cache-read convention: every token an agent
+              // forked instead of prefilling counts. The spine's own build is
+              // the cache write — never netted out of the headline.
+              const sharers = [...m.lanes.values()].filter((l2) => l2.inherited !== undefined);
+              const saved = sharers.reduce((n2, l2) => n2 + (l2.inherited ?? 0), 0);
+              if (saved <= 0 && sharers.length < 2) return null;
+              return (
+                <div style={{ padding: '5px 0 1px 16px', fontSize: 11, color: C.dim }}>
+                  {sharers.length >= 2 && (
+                    <>shared by <span style={{ fontFamily: mono }}>{sharers.length}</span> agents{saved > 0 ? ' · ' : ''}</>
+                  )}
+                  {saved > 0 && (
+                    <>tokens saved <span style={{ fontFamily: mono }}>{saved.toLocaleString()}</span></>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/** The trunk's feed — the same panel grammar as {@link AgentFeed}, for the
+ *  session's own conversation: each `warmDelta` turn verbatim, its KV cost,
+ *  and the media that entered with it (thumbnails when the bridge exposes a
+ *  content resolver, digest chips otherwise). */
+function TrunkFeed({ m, onClose, width, mediaUrl }: {
+  m: PaneModel; onClose: () => void; width: number;
+  mediaUrl?: (digest: string, index?: number) => string;
+}): ReactElement {
+  const [thinkOpen, setThinkOpen] = useState<Set<number>>(() => new Set());
+  // Responses default COLLAPSED — stats stay visible, the body (reasoning +
+  // text) expands on click. A committed exchange's response half can be a
+  // whole brief; the feed must not pay its render until asked.
+  const [respOpen, setRespOpen] = useState<Set<number>>(() => new Set());
+  const toggleResp = (i: number): void => {
+    setRespOpen((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i); else next.add(i);
+      return next;
+    });
+  };
+  const toggleThink = (i: number): void => {
+    setThinkOpen((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i); else next.add(i);
+      return next;
+    });
+  };
+  return (
+    <div style={{
+      width, flex: 'none', borderLeft: '1px solid #d9dce1', display: 'flex',
+      flexDirection: 'column', minHeight: 0, background: C.panelBg,
+    }}>
+      <div style={{
+        height: 30, flex: 'none', display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px',
+        borderBottom: `1px solid ${C.border}`, background: '#f8f9fa',
+      }}>
+        <span style={{ fontFamily: mono, fontWeight: 600, fontSize: 11 }}>session</span>
+        <span style={chip}>the conversation</span>
+        <span style={{ flex: 1 }} />
+        <span style={{ cursor: 'pointer', color: C.dim }} onClick={onClose} title="close — the timeline returns to full width">✕</span>
+      </div>
+      <div style={{ overflowY: 'auto', flex: 1, fontSize: 11, paddingBottom: 8 }}>
+        {m.trunk.map((t, i) => {
+          // Query and response render as their OWN blocks — a committed
+          // exchange (`speaker: 'turn'`) carries both halves structurally,
+          // and single-sided deltas carry one. Raw <think> never renders:
+          // the response side splits into the shared reasoning box.
+          const isTurn = t.speaker === 'turn';
+          const q = isTurn ? (t.query ?? '') : t.speaker === 'user' ? t.content : '';
+          const rRaw = isTurn ? (t.response ?? '') : (t.speaker === 'assistant' || t.speaker === 'tool' || t.speaker === undefined) ? t.content : '';
+          const { reasoning, said } = splitThink(rRaw);
+          const meta = (
+            <span style={{ fontFamily: mono, fontSize: 10, color: C.faint }}>{t.cells.toLocaleString()} tokens</span>
+          );
+          return (
+          <div key={i} style={feedItem}>
+            {(q || t.attachments.length > 0) && (
+              <div style={{ background: 'rgba(26,115,232,.05)', borderRadius: 4, padding: '6px 9px', margin: '0 0 6px' }}>
+                <div style={{ display: 'flex', gap: 7, alignItems: 'baseline', marginBottom: 3 }}>
+                  <b style={{ fontSize: 11, color: C.agentDark }}>query</b>
+                  {meta}
+                </div>
+                {t.attachments.length > 0 && (
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', margin: '2px 0 6px' }}>
+                    {t.attachments.map((a, j) => mediaUrl ? (
+                      <img
+                        key={j} src={mediaUrl(a.digest)} alt={a.mediaType ?? a.digest.slice(0, 12)}
+                        title={`${a.mediaType ?? 'media'} · ${a.digest.slice(0, 19)}…`}
+                        style={{ height: 72, maxWidth: 160, objectFit: 'cover', borderRadius: 4, border: `1px solid ${C.border}` }}
+                      />
+                    ) : (
+                      <span key={j} style={chip} title={a.digest}>{a.mediaType ?? 'media'} · {a.digest.slice(0, 19)}…</span>
+                    ))}
+                  </div>
+                )}
+                {q && (
+                  <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.5, color: '#3c4043', fontFamily: mono, fontSize: 10.5, maxHeight: 200, overflowY: 'auto' }}>{q}</div>
+                )}
+              </div>
+            )}
+            {rRaw && (
+              <div>
+                <div
+                  role="button" tabIndex={0}
+                  onClick={() => toggleResp(i)} onKeyDown={keyActivate(() => toggleResp(i))}
+                  style={{ display: 'flex', gap: 7, alignItems: 'baseline', marginBottom: 3, cursor: 'pointer' }}
+                >
+                  <span style={{ color: C.faint, fontSize: 9, width: 9, flex: 'none' }}>{respOpen.has(i) ? '\u25be' : '\u25b8'}</span>
+                  <b style={{ fontSize: 11, color: TRUNK_RESPONSE }}>{t.speaker === 'tool' ? 'tool' : 'response'}</b>
+                  {!q && meta}
+                  {(t.agentTokens ?? 0) > 0 && (
+                    <span style={{ fontFamily: mono, fontSize: 10, color: C.faint }}>{(t.agentTokens as number).toLocaleString()} tokens</span>
+                  )}
+                  {t.wallMs !== undefined && (
+                    <span style={{ fontFamily: mono, fontSize: 10, color: C.faint }}>{fmtS(t.wallMs / 1000)}</span>
+                  )}
+                </div>
+                {respOpen.has(i) && (
+                  <div style={{ margin: '0 0 0 16px' }}>
+                    {reasoning && <Reasoning text={reasoning} open={thinkOpen.has(i)} onToggle={() => toggleThink(i)} />}
+                    {said && (
+                      <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.5, color: '#3c4043', fontFamily: mono, fontSize: 10.5, maxHeight: 300, overflowY: 'auto' }}>{said}</div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
-        )}
+          );
+        })}
       </div>
     </div>
   );

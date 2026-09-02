@@ -6,7 +6,7 @@
  * directory and one flag is what hid that difference.
  */
 import { NullTraceWriter, JsonlTraceWriter } from '@lloyal-labs/lloyal-agents';
-import type { TraceWriter } from '@lloyal-labs/lloyal-agents';
+import type { TraceWriter, TraceEvent, AgentTraceEvent } from '@lloyal-labs/lloyal-agents';
 import { resource } from 'effection';
 import type { Operation } from 'effection';
 import { mkdirSync, openSync, closeSync } from 'node:fs';
@@ -27,16 +27,31 @@ import { randomUUID } from 'node:crypto';
  * below, whose absence is a hard failure for media — see
  * {@link createProjectMediaStore}.
  *
+ * **`send` is the dev pane's live mirror.** Pass the boot's event bus and
+ * every write is ALSO carried onto it as an `agent:trace` envelope — the one
+ * mirror in the system, at the boundary every write already crosses, so a
+ * live consumer sees exactly what the file sees (the session trunk's
+ * `warmDelta` turns included). Attribution is read off the event's own
+ * stamped fields. Dev-gated with the writer; it mirrors even when the file
+ * failed to open, because pane observability is not a disk dependency. The
+ * scaffold hands it the same `events.send` it already gives
+ * `startHostResources` — no wiring concept crosses the third surface.
+ *
  * The random id keeps concurrent writers apart and `"wx"` refuses to truncate
  * an existing file.
  *
  * @param outputDir - Where the trace lands (`sources.outputDir`). Created if
  *                    missing.
  * @param dev - False ⇒ the Null writer, at zero cost.
+ * @param send - Dev-pane mirror: receives every write as `agent:trace`.
  *
  * @category Runtime
  */
-export function useTraceWriter(outputDir: string, dev: boolean): Operation<TraceWriter> {
+export function useTraceWriter(
+  outputDir: string,
+  dev: boolean,
+  send?: (ev: AgentTraceEvent) => void,
+): Operation<TraceWriter> {
   return resource(function* (provide) {
     let fd: number | undefined;
     let writer: TraceWriter = new NullTraceWriter();
@@ -50,6 +65,25 @@ export function useTraceWriter(outputDir: string, dev: boolean): Operation<Trace
         // Tracing is observability, never a dependency: a harness that cannot
         // open a trace must still run.
         fd = undefined;
+      }
+      if (send) {
+        const base = writer;
+        writer = {
+          nextId: () => base.nextId(),
+          flush: () => base.flush(),
+          write: (event: TraceEvent) => {
+            base.write(event);
+            const e = event as TraceEvent & { branchHandle?: number };
+            try {
+              send({
+                type: 'agent:trace',
+                agentId: e.agentId ?? e.branchHandle ?? -1,
+                ...(e.callId !== undefined ? { callId: e.callId } : {}),
+                event,
+              });
+            } catch { /* the mirror is best-effort — never disrupt the write */ }
+          },
+        };
       }
     }
     try {

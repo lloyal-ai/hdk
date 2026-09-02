@@ -141,6 +141,12 @@ export interface AgentTaskSpec {
   /** Parent branch to fork from (required by {@link useAgentPool}) */
   parent?: Branch;
   /**
+   * Agent ids whose completion gated this spawn — the DAG's dependency
+   * edges, resolved by the orchestrator. Non-enforcing (the `ability`-label
+   * class): carried onto `agent:spawn` for the trace and the dev pane only.
+   */
+  after?: number[];
+  /**
    * Non-enforcing label naming the Ability this spawn nominally belongs to
    * Carried for trace attribution (`tool:authReject`) and
    * harness UI only — tool access is gated by {@link Tool.protected} +
@@ -487,7 +493,10 @@ export interface DivergeResult {
  * @category Agents
  */
 export type AgentEvent =
-  | { type: 'agent:spawn'; agentId: number; parentAgentId: number }
+  /** `after`: agent ids whose completion gated this spawn (DAG dependency
+   *  edges, resolved by the orchestrator — never inferred). Absent outside
+   *  DAG pools. */
+  | { type: 'agent:spawn'; agentId: number; parentAgentId: number; after?: number[] }
   | { type: 'agent:produce'; agentId: number; text: string; tokenCount: number; entropy?: number; surprisal?: number }
   | { type: 'agent:tool_call'; agentId: number; tool: string; args: string }
   | { type: 'agent:tool_result'; agentId: number; tool: string; result: string; contextAvailablePercent?: number }
@@ -508,9 +517,14 @@ export type AgentEvent =
    *  abandoned rather than waited out — the drain reports with what agents
    *  HAVE. A UI's cue to show the run as finishing. */
   | { type: 'run:windingDown' }
-  /** Dev-gated trace tee: a trace event mirrored onto the bus, stamped with
-   *  the agent it belongs to. Tool-scoped writes carry the `callId` of the
-   *  dispatch that produced them; pool-side interventions (nudges, drops,
-   *  auth rejections, prunes) mirror without one. Emitted only when a real
-   *  (non-Null) TraceWriter is active — production streams never carry it. */
+  /** Dev-gated trace mirror: a trace event carried onto the bus, attributed.
+   *  Emitted at the WRITER boundary — rig's `useTraceWriter`, when a dev
+   *  boot hands it the bus — so a live consumer sees exactly what the file
+   *  sees: every write, session-level `warmDelta` included. `agentId` and
+   *  `callId` are read off the event's own attribution fields (stamped by
+   *  the pool's dispatch tee); `-1` marks a write no agent owns. Production
+   *  streams never carry it: the mirror exists only on dev boots. */
   | { type: 'agent:trace'; agentId: number; callId?: string; event: TraceEvent };
+
+/** The `agent:trace` bus envelope — what the writer-boundary mirror sends. */
+export type AgentTraceEvent = Extract<AgentEvent, { type: 'agent:trace' }>;

@@ -69,6 +69,16 @@ export interface AgentLane {
    *  {@link RunFraming} declaration; null when its wire marks nothing.
    *  Never guessed. */
   role: string | null;
+  /** Agent ids whose completion gated this spawn — the DAG's dependency
+   *  edges, from the orchestrator via `agent:spawn.after`. Never inferred. */
+  after?: number[];
+  /** Tokens already resident on this lane's prefix at its fork — snapshotted
+   *  the moment the spawn folds, never reconstructed. Top-level: the trunk
+   *  inheritance + spine growth so far. Recursive: the parent lane's own
+   *  inheritance + what it had produced by then (its suffix is not counted —
+   *  an honest undercount). Absent when the pane cannot attribute the fork
+   *  (a pre-spine spawn such as a planner). */
+  inherited?: number;
   spawnedAt: number;
   doneAt: number | null;
   /** Terminal outcome, when known. `failed` carries the reason. */
@@ -232,6 +242,12 @@ export interface RunFraming {
    *  the halt-and-resubmit path emits no close event. */
   open: readonly string[];
   close: readonly string[];
+  /** Where the user's instruction lives on THIS harness's wire — the event
+   *  type and the field carrying its text (and optionally the field carrying
+   *  its media descriptors). Declared, never guessed: undeclared harnesses
+   *  get a spine row folded from runtime events alone, with no instruction
+   *  shown. */
+  instruction?: { event: string; field: string; attachments?: string };
 }
 
 export const DEFAULT_FRAMING: RunFraming = {
@@ -241,9 +257,41 @@ export const DEFAULT_FRAMING: RunFraming = {
     'research:start': 'research',
     'synthesize:start': 'synth',
   },
-  open: ['preflight:start', 'plan:start', 'query'],
+  // Declared in WIRE order: preflight (when it runs) precedes the query
+  // event, which the pipeline sends before the planner phase marker. An
+  // out-of-order declaration makes the supersede heuristic fire a second
+  // resetRun on every run (query idx > plan idx), wiping run-scoped state.
+  open: ['preflight:start', 'query', 'plan:start'],
   close: ['complete', 'ui:error', 'ui:composer'],
+  instruction: { event: 'query', field: 'query', attachments: 'attachments' },
 };
+
+/** One session-trunk turn (`branch:prefill role='warmDelta'` mirror) — the
+ *  verbatim conversation delta the spine accreted, with what it cost. */
+export interface TrunkTurn {
+  at: number;
+  /** Which conversation side — from the Session's own prefill call, never
+   *  inferred from the text. `turn` is a committed whole exchange. */
+  speaker?: 'user' | 'assistant' | 'tool' | 'turn';
+  /** Verbatim prefilled text (the trunk conversation turn). */
+  content: string;
+  /** A committed exchange's halves (`speaker: 'turn'`) — never re-split
+   *  from `content`. */
+  query?: string;
+  response?: string;
+  /** KV cells the prefill added. */
+  cells: number;
+  /** The images that entered with it — roots, resolvable to bytes through
+   *  the bridge's `representationUrl` when the harness exposes one. */
+  attachments: { digest: string; mediaType?: string }[];
+  /** Wall time of the run this delta settled out of — folded from the run
+   *  anchor at arrival. Absent when no run was open. */
+  wallMs?: number;
+  /** What the run's agents spent (sum of its lanes' cumulative counters) to
+   *  produce this delta — the numerator of the distillation ratio whose
+   *  denominator is `cells`. Absent with `wallMs`. */
+  agentTokens?: number;
+}
 
 export interface PaneModel {
   /** The current run's phase cursor — set by the framing's marker events;
@@ -293,6 +341,43 @@ export interface PaneModel {
    *  "applied for this session"). Undefined until a save happens. */
   lastSavedTo: string | null | undefined;
   lanes: Map<number, AgentLane>;
+  /** The session trunk's own turns — the conversation the spine accretes.
+   *  Session-lived: deliberately NOT cleared by `resetRun`, because the
+   *  next run rides the same trunk this one grew. */
+  trunk: TrunkTurn[];
+  /** The run's SPINE, run-scoped: the shared root every agent forks from.
+   *  Folded from runtime events alone (`branch:prefill role='spineHeader'`,
+   *  `prompt:format role='spine'`) — universal to any pool harness — plus,
+   *  when the harness DECLARES it ({@link RunFraming.instruction}), the
+   *  user's instruction verbatim. This is the prompt's home in the pane
+   *  even when a run later fails. Cleared by `resetRun`. */
+  spine: {
+    /** The user's instruction, as submitted — null until (unless) the
+     *  harness's declared instruction event arrives. Never guessed. */
+    query: string | null;
+    attachments: { digest: string }[];
+    /** First-seen moment (instruction arrival or first header prefill). */
+    at: number;
+    /** KV cells the spine header prefills added (outer + inner pools). */
+    spineCells: number;
+    /** The compiled spine header (system + tools), verbatim. */
+    headerText: string | null;
+    headerTokens: number;
+    spineAt: number | null;
+    /** Every moment the spine grew, with what it grew by — the seed first,
+     *  then each extension (a chain step, a fanout widening). The bar's
+     *  tick marks. */
+    growth: { at: number; tokens: number }[];
+    /** Positions inherited at fork — 0 on a cold start, the trunk's length
+     *  on a warm one. From `branch:create role='spine'` position; first
+     *  spine only (the inner pool's spine forks from the outer). */
+    inherited?: number;
+    /** Parsed from the STRUCTURED `tools` field the runtime emits on
+     *  `prompt:format role='spine'` — reading data, not scraping markup. */
+    tools?: { name: string; description: string }[];
+    /** The system message text, from the structured `messages` field. */
+    systemText?: string | null;
+  } | null;
   retrievals: Retrieval[];
   pressure: PressurePoint[];
   /** Host samples (`host:resources`, dev-gated boots only): the harness
@@ -333,6 +418,8 @@ export function createPaneModel(): PaneModel {
     origin: null,
     lastSavedTo: undefined,
     lanes: new Map(),
+    trunk: [],
+    spine: null,
     retrievals: [],
     pressure: [],
     host: [],
@@ -351,6 +438,7 @@ export function createPaneModel(): PaneModel {
 const MAX_PRESSURE_POINTS = 20_000;
 const MAX_RETRIEVALS = 500;
 const MAX_INTERVENTIONS = 200;
+const MAX_TRUNK = 200;
 const MAX_EPISTEMICS = 4096;
 const MAX_HOST = 600;
 
@@ -385,10 +473,21 @@ function resetRun(m: PaneModel, now: number): void {
   m.host = [];
   m.interventions = [];
   m.plan = null;
+  m.spine = null;
   m.runStartAt = now;
   m.runEndedAt = null;
   m.pausedAt = null;
   m.windingDownAt = null;
+}
+
+/** The spine record, created by whichever signal arrives first — the
+ *  harness's declared instruction event or the runtime's own header
+ *  prefill. Runtime-only harnesses still get a spine row. */
+function ensureSpine(m: PaneModel, now: number): NonNullable<PaneModel['spine']> {
+  if (!m.spine) {
+    m.spine = { query: null, attachments: [], at: now, spineCells: 0, headerText: null, headerTokens: 0, spineAt: null, growth: [] };
+  }
+  return m.spine;
 }
 
 /** The retrieval a mirrored trace event belongs to: by callId WITHIN the
@@ -434,6 +533,25 @@ export function foldEvent(
   }
   const phaseLabel = framing.phases[ev.type];
   if (phaseLabel !== undefined) m.runPhase = phaseLabel;
+
+  // The user's instruction — read only where the harness DECLARED it lives
+  // (framing.instruction), never guessed from event shapes. First one per
+  // run wins: a re-plan re-emits the same event and must not reseed.
+  const instr = framing.instruction;
+  if (instr && ev.type === instr.event && (m.spine === null || m.spine.query === null)) {
+    const s = ensureSpine(m, now);
+    const q = (ev as Record<string, unknown>)[instr.field];
+    if (typeof q === 'string') s.query = q;
+    if (instr.attachments) {
+      const a = (ev as Record<string, unknown>)[instr.attachments];
+      if (Array.isArray(a)) {
+        s.attachments = (a as unknown[]).flatMap((x) => {
+          const r = x as { digest?: unknown };
+          return typeof r.digest === 'string' ? [{ digest: r.digest }] : [];
+        });
+      }
+    }
+  }
 
   switch (ev.type) {
     case 'plan': {
@@ -506,6 +624,20 @@ export function foldEvent(
       return;
     }
     case 'agent:spawn': {
+      const afterIds = Array.isArray(ev.after)
+        ? (ev.after as unknown[]).filter((x): x is number => typeof x === 'number')
+        : [];
+      // Inherited-at-fork, snapshotted NOW: a recursive fork carries its
+      // parent's attention state; a top-level fork carries trunk + the spine
+      // as grown so far. Pre-spine forks get nothing — no guessed parentage.
+      const parentLane = typeof ev.parentAgentId === 'number' ? m.lanes.get(ev.parentAgentId) : undefined;
+      let inheritedAtFork: number | undefined;
+      if (parentLane) {
+        inheritedAtFork = (parentLane.inherited ?? 0) + parentLane.tokenCount;
+      } else if (m.spine && m.spine.spineAt !== null && now + 250 >= m.spine.spineAt) {
+        inheritedAtFork = (m.spine.inherited ?? 0)
+          + m.spine.growth.reduce((n2, g) => (g.at <= now + 250 ? n2 + g.tokens : n2), 0);
+      }
       if (typeof ev.agentId !== 'number') return; // type-only frame — never corrupt the lane map
       const id = ev.agentId as number;
       m.lanes.set(id, {
@@ -516,6 +648,8 @@ export function foldEvent(
         doneAt: null,
         outcome: 'running',
         tokenCount: 0,
+        ...(afterIds.length > 0 ? { after: afterIds } : {}),
+        ...(inheritedAtFork !== undefined ? { inherited: inheritedAtFork } : {}),
         inflightTool: null,
         report: null,
         reportSource: null,
@@ -647,6 +781,72 @@ export function foldEvent(
       const te = ev.event as ({ type: string } & Record<string, unknown>) | undefined;
       if (!te) return;
       switch (te.type) {
+        case 'branch:create': {
+          // Cold vs warm, from the run's own record: the FIRST spine's fork
+          // position. The inner pool's spine forks from the outer — skip it.
+          if (te.role !== 'spine') return;
+          {
+            const s = ensureSpine(m, now);
+            if (s.inherited === undefined && typeof te.position === 'number') s.inherited = te.position;
+          }
+          return;
+        }
+
+        case 'spine:extend': {
+          // A settled contribution committed onto the spine mid-run (chain
+          // steps). Later forks inherit it — the growth entry is what makes
+          // their inherited-at-fork snapshot and the paid-once sum honest.
+          const s = ensureSpine(m, now);
+          const grew = typeof te.deltaTokens === 'number' ? te.deltaTokens : 0;
+          s.spineCells += grew;
+          if (grew > 0) s.growth.push({ at: now, tokens: grew });
+          return;
+        }
+
+        case 'branch:prefill': {
+          // The spine's seed — runtime truth, no harness assumption.
+          if (te.role === 'spineHeader') {
+            const s = ensureSpine(m, now);
+            const grew = typeof te.cells === 'number' ? te.cells : 0;
+            s.spineCells += grew;
+            if (grew > 0) s.growth.push({ at: now, tokens: grew });
+            if (s.spineAt === null) s.spineAt = now;
+            return;
+          }
+          // The session trunk's own turns (role warmDelta) — visible beside
+          // the runs they feed. Session-lived: resetRun leaves m.trunk alone.
+          if (te.role !== 'warmDelta') return;
+          const speaker = te.speaker;
+          // Run-derived stats ride the response side: how long the run took
+          // and what its agents spent to produce what the trunk kept.
+          const responseSide = speaker === 'assistant' || speaker === 'turn' || speaker === undefined;
+          const stats = responseSide && m.runStartAt !== null
+            ? {
+                wallMs: Math.max(0, now - m.runStartAt),
+                agentTokens: [...m.lanes.values()].reduce((n, l) => n + l.tokenCount, 0),
+              }
+            : {};
+          m.trunk.push({
+            at: now,
+            ...stats,
+            ...(speaker === 'user' || speaker === 'assistant' || speaker === 'tool' || speaker === 'turn'
+              ? { speaker } : {}),
+            ...(typeof te.query === 'string' ? { query: te.query } : {}),
+            ...(typeof te.response === 'string' ? { response: te.response } : {}),
+            content: typeof te.content === 'string' ? te.content : '',
+            cells: typeof te.cells === 'number' ? te.cells : 0,
+            attachments: Array.isArray(te.attachments)
+              ? (te.attachments as unknown[]).flatMap((a) => {
+                  const r = a as { digest?: unknown; mediaType?: unknown };
+                  return typeof r.digest === 'string'
+                    ? [{ digest: r.digest, ...(typeof r.mediaType === 'string' ? { mediaType: r.mediaType } : {}) }]
+                    : [];
+                })
+              : [],
+          });
+          if (m.trunk.length > MAX_TRUNK) m.trunk.shift();
+          return;
+        }
         case 'pool:agentNudge': {
           m.interventions.push({
             kind: typeof te.guard === 'string' ? 'guard' : 'nudge',
@@ -674,6 +874,36 @@ export function foldEvent(
           return;
         }
         case 'prompt:format': {
+          // The compiled spine header — what position 0 actually holds.
+          if (te.role === 'spine') {
+            const s = ensureSpine(m, now);
+            if (typeof te.promptText === 'string') s.headerText = te.promptText;
+            if (typeof te.tokenCount === 'number') s.headerTokens = te.tokenCount;
+            if (typeof te.tools === 'string') {
+              try {
+                const arr = JSON.parse(te.tools) as unknown[];
+                if (Array.isArray(arr)) {
+                  s.tools = arr.flatMap((x) => {
+                    const f = (x as { function?: unknown }).function ?? x;
+                    const g = f as { name?: unknown; description?: unknown };
+                    return g && typeof g.name === 'string'
+                      ? [{ name: g.name, description: typeof g.description === 'string' ? g.description : '' }]
+                      : [];
+                  });
+                }
+              } catch { /* not JSON — leave unparsed */ }
+            }
+            if (typeof te.messages === 'string') {
+              try {
+                const ms = JSON.parse(te.messages) as { role?: unknown; content?: unknown }[];
+                if (Array.isArray(ms)) {
+                  const sys = ms.find((mm) => mm && mm.role === 'system' && typeof mm.content === 'string');
+                  s.systemText = sys ? (sys.content as string) : null;
+                }
+              } catch { /* not JSON */ }
+            }
+            return;
+          }
           const lane = m.lanes.get(agentId);
           if (lane && typeof te.promptText === 'string') {
             lane.prompt = {

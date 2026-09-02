@@ -85,7 +85,7 @@ export function* initAgents<E = AgentEvent>(
   const session = new Session({
     ctx,
     store,
-    onPrefill: ({ branchHandle, cells, content, attachments: roots }) => {
+    onPrefill: ({ branchHandle, cells, content, attachments: roots, role: speaker, query, response }) => {
       tw.write({
         traceId: tw.nextId(),
         parentTraceId: null,
@@ -94,7 +94,10 @@ export function* initAgents<E = AgentEvent>(
         branchHandle,
         cells,
         role: 'warmDelta',
+        speaker,
         content,
+        ...(query !== undefined ? { query } : {}),
+        ...(response !== undefined ? { response } : {}),
         // The SDK carries these STRUCTURALLY (`{digest, mediaType, size}`)
         // because it has no attachment concept and must not grow one — the
         // same layering rule that keeps agent concepts out of liblloyal. They

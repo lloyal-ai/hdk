@@ -1,16 +1,16 @@
 /**
- * The dev-gated trace tee — trace writes mirrored onto the bus as
- * `agent:trace`, attributed. Three contracts:
+ * Dispatch attribution — the pool stamps WHO a trace write belongs to into
+ * the event DATA, not an envelope. Three contracts:
  *
  *   1. A TOOL-scoped write (the ability's own `Trace.expect().write(...)`)
- *      reaches the bus stamped with agentId + callId, and its
- *      `parentTraceId: null` is replaced by the dispatch trace id — in the
- *      FILE write too, not just the mirror.
- *   2. POOL-side intervention writes (`pool:agentNudge` here) mirror with
- *      the agentId read off the event, and the nudge now names the call it
- *      replaced (tool/args/guard).
- *   3. With a NullTraceWriter the tee is INERT: no `agent:trace` ever
- *      reaches the bus — production streams never carry mirrors.
+ *      lands in the FILE stamped with the dispatching agent's `agentId`, the
+ *      dispatch `callId`, and its hardcoded `parentTraceId: null` replaced
+ *      by the dispatch trace id — real lineage in the record itself.
+ *   2. Only-if-absent: a write that already carries attribution (a nested
+ *      pool's inner stamp) keeps it; only the null parent is repaired.
+ *   3. The pool bus carries NO `agent:trace` envelopes — the live mirror
+ *      lives at the writer boundary (rig's `useTraceWriter`, tested there),
+ *      which reads these same stamped fields.
  */
 import { describe, it, expect } from 'vitest';
 import { run, createChannel, scoped } from 'effection';
@@ -20,7 +20,6 @@ import { useAgentPool } from '../src/agent-pool';
 import { parallel } from '../src/orchestrators';
 import { Ctx, Store, Events, Trace } from '../src/context';
 import { Tool } from '../src/Tool';
-import { NullTraceWriter } from '../src/trace-writer';
 import type { AgentPolicy, ProduceAction, SettleAction } from '../src/AgentPolicy';
 import type { AgentEvent, JsonSchema } from '../src/types';
 import { CapturingTraceWriter } from './helpers/capturing-trace';
@@ -42,6 +41,23 @@ class TracingTool extends Tool<{ q: string }> {
   }
 }
 
+/** A tool whose write ALREADY carries attribution — the nested-pool shape.
+ *  The dispatch tee must keep the inner stamp and repair only the parent. */
+class PreStampedTool extends Tool<{ q: string }> {
+  readonly name = 'tracing_tool';
+  readonly protected = false;
+  readonly description = 'writes a pre-attributed trace event';
+  readonly parameters: JsonSchema = { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] };
+  *execute(): Operation<unknown> {
+    const tw = yield* Trace.expect();
+    tw.write({
+      traceId: tw.nextId(), parentTraceId: null, ts: 1, agentId: 777, callId: 'inner',
+      type: 'rerank:start', query: 'q', chunkCount: 3, tool: 'tracing_tool',
+    });
+    return { ok: true };
+  }
+}
+
 /** One tool-call turn, then stop. */
 function toolOncePolicy(action?: (turn: number) => ProduceAction): AgentPolicy {
   let turn = 0;
@@ -56,7 +72,7 @@ function toolOncePolicy(action?: (turn: number) => ProduceAction): AgentPolicy {
   };
 }
 
-async function runPool(writer: CapturingTraceWriter | NullTraceWriter, policy: AgentPolicy, tools: Map<string, Tool>, trace = true) {
+async function runPool(writer: CapturingTraceWriter, policy: AgentPolicy, tools: Map<string, Tool>) {
   const { ctx, store, root } = createMockSdk({ nCtx: 16384, cellsUsed: 1000 });
   // Every turn parses as one tracing_tool call — the PRODUCE nudge path reads
   // the parsed call to name the rejected tool on the trace event.
@@ -80,7 +96,6 @@ async function runPool(writer: CapturingTraceWriter | NullTraceWriter, policy: A
         tools,
         policy,
         maxTurns: 10,
-        trace,
       });
       let next = yield* sub.next();
       while (!next.done) { events.push(next.value); next = yield* sub.next(); }
@@ -90,71 +105,48 @@ async function runPool(writer: CapturingTraceWriter | NullTraceWriter, policy: A
   return events;
 }
 
-describe('trace tee', () => {
-  it('mirrors a tool-scoped write onto the bus, attributed and re-parented', async () => {
+describe('dispatch attribution', () => {
+  it('stamps a tool-scoped write with agent, call, and dispatch lineage — in the file', async () => {
     const writer = new CapturingTraceWriter();
-    const events = await runPool(writer, toolOncePolicy(), new Map<string, Tool>([['tracing_tool', new TracingTool()]]));
+    await runPool(writer, toolOncePolicy(), new Map<string, Tool>([['tracing_tool', new TracingTool()]]));
 
-    const mirrors = events.filter(e => e.type === 'agent:trace');
-    const rerank = mirrors.find(m => m.type === 'agent:trace' && m.event.type === 'rerank:start');
-    expect(rerank).toBeDefined();
-    expect(rerank!.type === 'agent:trace' && rerank!.agentId).toBeGreaterThan(0);
-    expect(rerank!.type === 'agent:trace' && rerank!.callId).toBe('call_a');
-    // The stamp reaches the FILE write too — no null parents left behind.
     const fileEvent = writer.ofType('rerank:start')[0];
-    expect(fileEvent.parentTraceId).not.toBeNull();
-    // ...and it names the dispatch that caused it.
+    expect(fileEvent).toBeDefined();
+    expect(fileEvent.agentId).toBeGreaterThan(0);
+    expect(fileEvent.callId).toBe('call_a');
+    // No null parents left behind — the stamp names the dispatch that caused it.
     const dispatch = writer.ofType('tool:dispatch')[0];
     expect(fileEvent.parentTraceId).toBe(dispatch.traceId);
   });
 
-  it('mirrors pool-side nudges, naming the rejected call and guard', async () => {
+  it('keeps inner attribution (nested-pool shape); repairs only the parent', async () => {
     const writer = new CapturingTraceWriter();
-    const events = await runPool(writer, toolOncePolicy((turn) => {
+    await runPool(writer, toolOncePolicy(), new Map<string, Tool>([['tracing_tool', new PreStampedTool()]]));
+
+    const fileEvent = writer.ofType('rerank:start')[0];
+    expect(fileEvent.agentId).toBe(777);
+    expect(fileEvent.callId).toBe('inner');
+    expect(fileEvent.parentTraceId).toBe(writer.ofType('tool:dispatch')[0].traceId);
+  });
+
+  it('stamps pool-side nudges with their agent, naming the rejected call and guard', async () => {
+    const writer = new CapturingTraceWriter();
+    await runPool(writer, toolOncePolicy((turn) => {
       if (turn === 1) return { type: 'nudge', message: 'This URL was already fetched. Try a different source.', guard: 'url_dedup' };
       return { type: 'idle', reason: 'free_text_stop' };
     }), new Map<string, Tool>([['tracing_tool', new TracingTool()]]));
 
-    const mirror = events.find(e => e.type === 'agent:trace' && e.event.type === 'pool:agentNudge');
-    expect(mirror).toBeDefined();
     const nudge = writer.ofType('pool:agentNudge')[0];
+    expect(nudge).toBeDefined();
     expect(nudge.guard).toBe('url_dedup');
     expect(nudge.tool).toBe('tracing_tool');
     expect(nudge.args).toBe('{"q":"x"}');
   });
 
-  it('is inert under NullTraceWriter — no agent:trace on the bus', async () => {
-    const events = await runPool(new NullTraceWriter(), toolOncePolicy(), new Map<string, Tool>([['tracing_tool', new TracingTool()]]));
+  it('the pool bus carries no agent:trace — the mirror lives at the writer boundary', async () => {
+    const events = await runPool(new CapturingTraceWriter(), toolOncePolicy(), new Map<string, Tool>([['tracing_tool', new TracingTool()]]));
     expect(events.some(e => e.type === 'agent:trace')).toBe(false);
     // The stream itself still flowed normally.
     expect(events.some(e => e.type === 'agent:tool_result')).toBe(true);
-  });
-
-  it('a real writer WITHOUT the dev trace flag stays inert on the bus', async () => {
-    const writer = new CapturingTraceWriter();
-    const events = await runPool(
-      writer,
-      toolOncePolicy(),
-      new Map<string, Tool>([['tracing_tool', new TracingTool()]]),
-      false,
-    );
-    // the file still gets its writes — only the MIRROR is dev-gated
-    expect(writer.events.length).toBeGreaterThan(0);
-    expect(events.some(e => e.type === 'agent:trace')).toBe(false);
-  });
-
-  it('an already-teed ambient writer is not wrapped again (nested pools)', async () => {
-    const writer = Object.assign(new CapturingTraceWriter(), {
-      [Symbol.for('lloyal.traceTee')]: true,
-    });
-    const events = await runPool(
-      writer,
-      toolOncePolicy(),
-      new Map<string, Tool>([['tracing_tool', new TracingTool()]]),
-      true,
-    );
-    // the file writes still land; no SECOND mirror is minted here
-    expect(writer.events.length).toBeGreaterThan(0);
-    expect(events.some(e => e.type === 'agent:trace')).toBe(false);
   });
 });

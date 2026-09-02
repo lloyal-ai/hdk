@@ -16,6 +16,12 @@ export interface SpawnSpec {
   systemPrompt: string;
   /** PRNG seed for sampler diversity. */
   seed?: number;
+  /**
+   * Agent ids whose completion gated this spawn — the DAG's dependency
+   * edges, resolved at spawn time. The `ability`-label class: non-enforcing,
+   * carried on `agent:spawn` for the trace and the dev pane only.
+   */
+  after?: number[];
   /** Parent branch to fork from. Falls back to ctx.spine. */
   parent?: Branch;
   /**
@@ -230,6 +236,10 @@ export const dag = (nodes: DAGNode[]): Orchestrator => {
     //     if node A throws, every task awaiting A's Task receives the
     //     same error, and structured concurrency halts the rest.
     const tasks = new Map<string, Task<void>>();
+    // Node id → spawned agent id, filled as each node forks. A dependent's
+    // deps have all completed (and therefore registered) before it spawns,
+    // so the lookup below never races.
+    const agentIds = new Map<string, number>();
 
     function* runNode(n: DAGNode): Operation<void> {
       // Gate: wait for every declared dep's task to complete. The map is
@@ -239,9 +249,16 @@ export const dag = (nodes: DAGNode[]): Orchestrator => {
       for (const depId of n.dependsOn ?? []) {
         yield* tasks.get(depId)!;
       }
-      const agent = yield* ctx.waitFor(
-        yield* ctx.spawn({ ...n.task, parent: n.task.parent ?? ctx.spine }),
-      );
+      const after = (n.dependsOn ?? [])
+        .map((d) => agentIds.get(d))
+        .filter((x): x is number => typeof x === 'number');
+      const spawned = yield* ctx.spawn({
+        ...n.task,
+        parent: n.task.parent ?? ctx.spine,
+        ...(after.length > 0 ? { after } : {}),
+      });
+      agentIds.set(n.id, spawned.id);
+      const agent = yield* ctx.waitFor(spawned);
       if (agent.result && n.userContent) {
         yield* ctx.extendSpine(n.userContent, agent.result);
       }

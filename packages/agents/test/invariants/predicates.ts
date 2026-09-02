@@ -227,40 +227,34 @@ export function I30_exitReasonMatchesTrace(run: PoolRun): PredicateResult {
   return ok();
 }
 
-/**
- * I31 Trace-tee mirror-completeness: with a real TraceWriter active, every
- * POOL-side write of a mirrored type reaches the bus exactly once as an
- * `agent:trace` envelope wrapping the SAME event (matched by traceId), with
- * the envelope's agentId agreeing with the event's own attribution. The
- * live consumer (the dev pane) must be able to trust that what it sees is
- * what the file recorded — no dropped mirrors, no duplicates, no
- * mis-attribution.
- */
-const MIRRORED_TYPES = new Set<string>([
-  'pool:agentNudge', 'tool:authReject', 'pool:agentDrop', 'branch:prune', 'tool:dispatch',
+/** Trace types that are ABOUT one agent's work — each must carry its owner
+ *  in the record itself (`agentId`, or `branchHandle` for branch events).
+ *  The writer-boundary mirror (rig's `useTraceWriter`) attributes envelopes
+ *  from exactly these fields; an unowned write here would reach the pane
+ *  as agentId -1. */
+const ATTRIBUTED_TYPES = new Set<TraceEvent['type']>([
+  'pool:agentNudge', 'tool:authReject', 'pool:agentDrop', 'branch:prune',
+  'tool:dispatch',
 ]);
 
-export function I31_traceTeeMirrors(run: PoolRun): PredicateResult {
-  const mirrors = new Map<number, { agentId?: number; event: TraceEvent }>();
+/**
+ * I31 — trace attribution completeness. Attribution lives in the DATA:
+ * every agent-owned trace write carries its owner on the record itself, so
+ * the writer-boundary mirror (rig's `useTraceWriter`, tested in rig) can
+ * attribute what it carries — and the POOL bus carries no `agent:trace`
+ * envelopes at all: the pool stamps, it does not mirror.
+ */
+export function I31_traceAttribution(run: PoolRun): PredicateResult {
   for (const ev of run.channelEvents) {
-    if (ev.type !== 'agent:trace' || !ev.event) continue;
-    if (mirrors.has(ev.event.traceId)) {
-      return fail('I31', `trace event ${ev.event.traceId} (${ev.event.type}) mirrored more than once`);
+    if (ev.type === 'agent:trace') {
+      return fail('I31', 'the pool bus carried an agent:trace envelope — the mirror lives at the writer boundary, not in the pool');
     }
-    mirrors.set(ev.event.traceId, { agentId: ev.agentId, event: ev.event });
   }
   for (const te of run.traceEvents) {
-    if (!MIRRORED_TYPES.has(te.type)) continue;
-    const m = mirrors.get(te.traceId);
-    if (!m) {
-      return fail('I31', `pool wrote ${te.type} (traceId ${te.traceId}) but no agent:trace mirror reached the bus`);
-    }
+    if (!ATTRIBUTED_TYPES.has(te.type)) continue;
     const owner = (te as any).agentId ?? (te as any).branchHandle;
-    if (typeof owner === 'number' && m.agentId !== owner) {
-      return fail(
-        'I31',
-        `${te.type} (traceId ${te.traceId}) belongs to agent ${owner} but its mirror is stamped agentId=${m.agentId}`,
-      );
+    if (typeof owner !== 'number') {
+      return fail('I31', `${te.type} (traceId ${te.traceId}) carries no attribution — a live mirror could not attribute it`);
     }
   }
   return ok();

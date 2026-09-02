@@ -11,11 +11,7 @@ import type { MultimodalDelta } from '@lloyal-labs/sdk';
 import type { Attachment } from '@lloyal-labs/media';
 import { useTraceScope } from './trace-scope';
 
-/** Brands a tee-wrapping TraceWriter so a nested pool never wraps it again
- *  (see the teeOn comment at the tee construction). */
-const TEE_MARK = Symbol.for('lloyal.traceTee');
 import type { TraceWriter } from './trace-writer';
-import { NullTraceWriter } from './trace-writer';
 import type { TraceEvent } from './trace-types';
 import type { AgentPolicy, IdleReason, ToolRetryAction } from './AgentPolicy';
 import { Agent } from './Agent';
@@ -861,78 +857,34 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         yield* each.next();
       }
     });
-    const baseTw = yield* Trace.expect();
+    const tw = yield* Trace.expect();
     // The run's image sink — a tool result's pictures are recorded here for
     // the same reason the other two ingresses record theirs: the trace keeps
     // the marker, this keeps what it stood for.
     const attachments = yield* Attachments.expect();
     const ingress = yield* Ingress.expect();
-    // ── Dev-gated trace tee ─────────────────────────────────────
-    // Mirrors trace writes onto the bus (`agent:trace`) so a live consumer
-    // (the dev pane) sees what the trace file sees, attributed. Two layers:
-    //   • pool writes — the allowlisted intervention events below mirror with
-    //     the agentId read off the event itself;
-    //   • tool writes — dispatch() sets a per-dispatch `toolTee` as the Trace
-    //     context for the tool's execution, stamping agentId + callId and
-    //     replacing the abilities' hardcoded `parentTraceId: null` with the
-    //     dispatch id (real lineage in the FILE too, not just the bus).
-    // The bridge is a Signal: `write` is sync per the TraceWriter contract and
-    // cannot yield, so the mirror cannot ride poolChannel directly — a spawned
-    // forwarder drains it, the same pattern progressBridge uses for
-    // onProgress. The tee needs BOTH dev intent and a real writer: `trace`
-    // is the pool's dev flag (the templates pass `runner.dev`), so a
-    // production run that happens to trace to disk never mirrors onto the
-    // bus; NullTraceWriter keeps it equally inert when tracing is off.
-    // A nested pool (DelegateTool) sees the OUTER dispatch's toolTee as its
-    // ambient Trace — wrapping that again would mirror every nested write
-    // twice (once per attribution). The mark makes a tee recognizable, so a
-    // nested pool rides the outer tee: its writes mirror ONCE, attributed to
-    // the delegating agent's call.
-    const teeOn = (opts.trace ?? false) && !(baseTw instanceof NullTraceWriter)
-      && !(TEE_MARK in (baseTw as object));
-    const traceBridge = createSignal<AgentEvent, void>();
-    if (teeOn) {
-      yield* spawn(function*() {
-        for (const ev of yield* each(traceBridge)) {
-          yield* poolChannel.send(ev);
-          yield* each.next();
-        }
-      });
-    }
-    const MIRRORED_POOL_EVENTS = new Set<TraceEvent['type']>([
-      'pool:agentNudge', 'tool:authReject', 'pool:agentDrop', 'branch:prune',
-      'pool:agentDefer', 'pool:agentHeal', 'pool:settleFailed',
-      // The compiled per-agent prompt SUFFIX. In shared-spine mode the
-      // system+tool header lives on the spine prefix (inherited via fork)
-      // and is deliberately not repeated here — the mirror carries what
-      // this spawn formatted, honestly labeled by the pane. agentId is
-      // the attribution.
-      'prompt:format',
-      // The dispatch record carries explore/exploit + callId — the live
-      // consumer keys retrieval metadata off it.
-      'tool:dispatch',
-    ]);
-    const tw: TraceWriter = !teeOn ? baseTw : Object.assign({
-      nextId: () => baseTw.nextId(),
-      flush: () => baseTw.flush(),
-      write: (event: TraceEvent) => {
-        baseTw.write(event);
-        if (!MIRRORED_POOL_EVENTS.has(event.type)) return;
-        const e = event as { agentId?: number; branchHandle?: number };
-        try {
-          traceBridge.send({ type: 'agent:trace', agentId: e.agentId ?? e.branchHandle ?? -1, event });
-        } catch { /* mirror is best-effort — never disrupt the write */ }
-      },
-    }, { [TEE_MARK]: true });
-    const toolTee = (agentId: number, callId: string, dispatchTraceId: number): TraceWriter => Object.assign({
-      nextId: () => baseTw.nextId(),
-      flush: () => baseTw.flush(),
-      write: (event: TraceEvent) => {
-        const stamped = event.parentTraceId == null ? { ...event, parentTraceId: dispatchTraceId } : event;
-        baseTw.write(stamped);
-        try { traceBridge.send({ type: 'agent:trace', agentId, callId, event: stamped }); } catch { /* best-effort */ }
-      },
-    }, { [TEE_MARK]: true });
+    // ── Dispatch attribution ────────────────────────────────────
+    // dispatch() sets a per-dispatch tee as the Trace context for the tool's
+    // execution, stamping the dispatching agent + call INTO the event data:
+    // `agentId`, `callId`, and a real `parentTraceId` replacing the
+    // abilities' hardcoded null. Attribution lives in the record itself, so
+    // every sink reads the same fields — the file, and the dev pane via the
+    // writer-boundary mirror (rig's `useTraceWriter`). That mirror is where
+    // the bus tee moved: ONE mirror at the boundary every write crosses,
+    // instead of per-layer mirrors with per-layer allowlists (session-level
+    // writes like the trunk's `warmDelta` never reached the old pool tee).
+    // Only-if-absent semantics keep a nested pool's (DelegateTool) inner
+    // attribution intact: its tee stamps first, this one defers.
+    const toolTee = (agentId: number, callId: string, dispatchTraceId: number): TraceWriter => ({
+      nextId: () => tw.nextId(),
+      flush: () => tw.flush(),
+      write: (event: TraceEvent) => tw.write({
+        ...event,
+        agentId: event.agentId ?? agentId,
+        callId: event.callId ?? callId,
+        parentTraceId: event.parentTraceId ?? dispatchTraceId,
+      }),
+    });
     const { spine, orchestrate, toolsJson, tools, maxTurns = 100, terminalToolName, trace = false, pruneOnReturn = false, enableThinking = true, eagerGrammar } = opts;
 
     // Tool index map for trace — position in toolkit array
@@ -1200,6 +1152,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           content: spec.content,
           tools: toolsJson,
           seed: spec.seed,
+          ...(spec.after && spec.after.length > 0 ? { after: spec.after } : {}),
           parent,
           assignedAbility: spec.assignedAbility,
         };
@@ -2032,7 +1985,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
               // shared loop-fiber set the inline path uses).
               yield* TraceParent.set(dispatchTraceId);
               yield* CallingAgent.set(agent);
-              if (teeOn) yield* Trace.set(toolTee(agent.id, callId, dispatchTraceId));
+              yield* Trace.set(toolTee(agent.id, callId, dispatchTraceId));
               const result: unknown = yield* scoped(function*() {
                 return yield* call(() => fanoutTool.execute(toolArgs, toolContext));
               });
@@ -2061,7 +2014,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         try {
           yield* TraceParent.set(dispatchTraceId);
           yield* CallingAgent.set(agent);
-          if (teeOn) yield* Trace.set(toolTee(agent.id, callId, dispatchTraceId));
+          yield* Trace.set(toolTee(agent.id, callId, dispatchTraceId));
 
           // Unknown-tool messaging branches on toolkit emptiness: a no-tool
           // agent emitting tool calls is imitating markup from its context
@@ -2226,7 +2179,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
             type: 'agent:spawn', agentId: s.agent.id, parentAgentId: s.agent.parentId,
           });
-          yield* poolChannel.send({ type: 'agent:spawn', agentId: s.agent.id, parentAgentId: s.agent.parentId });
+          yield* poolChannel.send({ type: 'agent:spawn', agentId: s.agent.id, parentAgentId: s.agent.parentId, ...(s.task.after && s.task.after.length > 0 ? { after: s.task.after } : {}) });
         }
 
         // Finish the heals: replay each replacement's record onto its fork
@@ -2281,7 +2234,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
             type: 'agent:spawn', agentId: agent.id, parentAgentId: agent.parentId,
           });
-          yield* poolChannel.send({ type: 'agent:spawn', agentId: agent.id, parentAgentId: agent.parentId });
+          yield* poolChannel.send({ type: 'agent:spawn', agentId: agent.id, parentAgentId: agent.parentId, ...(h.spec.after && h.spec.after.length > 0 ? { after: h.spec.after } : {}) });
         }
       }
 

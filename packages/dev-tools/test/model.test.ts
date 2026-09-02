@@ -148,13 +148,13 @@ describe('run phases + the planner truth', () => {
     const m = createPaneModel();
     foldEvent(m, { type: 'agent:spawn', agentId: 2, parentAgentId: 1 }, 5);
     foldEvent(m, { type: 'agent:tick', cellsUsed: 1, nCtx: 10 }, 6);
-    foldEvent(m, { type: 'plan:start', query: 'next', mode: 'flat' }, 100);
+    foldEvent(m, { type: 'query', query: 'next', warm: false }, 100);
     expect(m.lanes.size).toBe(0);
     expect(m.pressure.length).toBe(0);
     expect(m.runStartAt).toBe(100);
-    // plan:start then query back-to-back must not double-reset a fresh run.
+    // WIRE order: query then plan:start, back-to-back — must not double-reset.
     foldEvent(m, { type: 'agent:spawn', agentId: 4, parentAgentId: 1 }, 101);
-    foldEvent(m, { type: 'query', query: 'next', warm: false }, 101);
+    foldEvent(m, { type: 'plan:start', query: 'next', mode: 'flat' }, 101);
     expect(m.lanes.size).toBe(1);
   });
 });
@@ -288,10 +288,10 @@ describe('plan structure + clarify continuation', () => {
     const lane = m.lanes.get(2)!;
     expect(lane.clarify).toEqual({ questions: ['Which sense?'], askedAt: 3000, answeredAt: null });
     expect(lane.outcome).toBe('running');
-    // The user answers minutes later — the continuation's paired
-    // plan:start → query must BOTH leave the run intact.
-    foldEvent(m, { type: 'plan:start' }, 120_000);
-    foldEvent(m, { type: 'query', text: 'the answer' }, 120_040);
+    // The user answers minutes later — the continuation's paired markers
+    // (WIRE order: query then plan:start) must BOTH leave the run intact.
+    foldEvent(m, { type: 'query', text: 'the answer' }, 120_000);
+    foldEvent(m, { type: 'plan:start' }, 120_040);
     expect(m.lanes.size).toBe(1);
     expect(lane.clarify!.answeredAt).toBe(120_000);
     expect(m.runStartAt).toBe(1000);
@@ -439,5 +439,193 @@ describe('retrieval metadata attribution', () => {
     } }, 2002);
     expect(m.retrievals.find((r) => r.agentId === 2)!.admission).toBeNull();
     expect(m.retrievals.find((r) => r.agentId === 3)!.admission).not.toBeNull();
+  });
+});
+
+describe('trunk (warmDelta mirrors)', () => {
+  it('folds a warmDelta prefill into the trunk; a run reset keeps it; other roles ignored', () => {
+    const m = createPaneModel();
+    foldEvent(m, { type: 'agent:trace', agentId: 3, event: {
+      traceId: 1, parentTraceId: null, ts: 0, type: 'branch:prefill',
+      branchHandle: 3, cells: 42, role: 'warmDelta', speaker: 'user', content: 'what is this?',
+      attachments: [{ digest: 'd', mediaType: 'image/png', size: 1 }],
+    } }, 100);
+    expect(m.trunk).toHaveLength(1);
+    expect(m.trunk[0]).toMatchObject({ speaker: 'user', content: 'what is this?', cells: 42, attachments: [{ digest: 'd', mediaType: 'image/png' }] });
+    // A new run resets lanes — never the trunk: the next run rides it.
+    foldEvent(m, { type: 'query' }, 200);
+    expect(m.trunk).toHaveLength(1);
+    // Non-warm roles are not trunk turns.
+    foldEvent(m, { type: 'agent:trace', agentId: 4, event: {
+      traceId: 2, parentTraceId: null, ts: 0, type: 'branch:prefill',
+      branchHandle: 4, cells: 5, role: 'toolResult',
+    } }, 300);
+    expect(m.trunk).toHaveLength(1);
+  });
+
+  it('a committed exchange carries its halves structurally', () => {
+    const m = createPaneModel();
+    foldEvent(m, { type: 'agent:trace', agentId: 1, event: {
+      traceId: 5, parentTraceId: null, ts: 0, type: 'branch:prefill',
+      branchHandle: 1, cells: 90, role: 'warmDelta', speaker: 'turn',
+      content: 'Q?\n\nA.', query: 'Q?', response: 'A.',
+    } }, 50);
+    expect(m.trunk[0]).toMatchObject({ speaker: 'turn', query: 'Q?', response: 'A.', cells: 90 });
+  });
+
+  it("a response folds the run wall time and the agents' spend", () => {
+    const m = createPaneModel();
+    foldEvent(m, { type: 'query' }, 1000);
+    foldEvent(m, { type: 'agent:spawn', agentId: 9 }, 1100);
+    foldEvent(m, { type: 'agent:produce', agentId: 9, tokenCount: 500 }, 1200);
+    foldEvent(m, { type: 'agent:trace', agentId: 3, event: {
+      traceId: 9, parentTraceId: null, ts: 0, type: 'branch:prefill',
+      branchHandle: 3, cells: 120, role: 'warmDelta', speaker: 'assistant', content: 'done',
+    } }, 29_000);
+    expect(m.trunk[0]).toMatchObject({ wallMs: 28_000, agentTokens: 500 });
+    // The query side carries no run stats.
+    foldEvent(m, { type: 'agent:trace', agentId: 3, event: {
+      traceId: 10, parentTraceId: null, ts: 0, type: 'branch:prefill',
+      branchHandle: 3, cells: 30, role: 'warmDelta', speaker: 'user', content: 'next?',
+    } }, 30_000);
+    expect(m.trunk[1].wallMs).toBeUndefined();
+  });
+});
+
+describe('the spine row', () => {
+  it('folds the declared instruction verbatim + runtime header; resets per run', () => {
+    const m = createPaneModel();
+    foldEvent(m, { type: 'query', query: 'why?', attachments: [{ digest: 'sha256:aa', mediaType: 'x', size: 1 }] }, 100);
+    expect(m.spine).toMatchObject({ query: 'why?', attachments: [{ digest: 'sha256:aa' }], spineCells: 0 });
+    foldEvent(m, { type: 'agent:trace', agentId: -1, event: {
+      traceId: 1, parentTraceId: null, ts: 0, type: 'prompt:format', role: 'spine',
+      promptText: 'SYS+TOOLS', tokenCount: 782,
+      messages: JSON.stringify([{ role: 'system', content: 'Be brief.' }]),
+      tools: JSON.stringify([{ type: 'function', function: { name: 'web_search', description: 'Search the web.' } }]),
+    } }, 150);
+    foldEvent(m, { type: 'agent:trace', agentId: -1, event: {
+      traceId: 2, parentTraceId: null, ts: 0, type: 'branch:prefill',
+      branchHandle: 65537, cells: 782, role: 'spineHeader',
+    } }, 200);
+    foldEvent(m, { type: 'agent:trace', agentId: -1, event: {
+      traceId: 3, parentTraceId: null, ts: 0, type: 'branch:prefill',
+      branchHandle: 65538, cells: 2, role: 'spineHeader',
+    } }, 250);
+    expect(m.spine).toMatchObject({
+      headerText: 'SYS+TOOLS', headerTokens: 782, spineCells: 784, spineAt: 200,
+      growth: [{ at: 200, tokens: 782 }, { at: 250, tokens: 2 }],
+      tools: [{ name: 'web_search', description: 'Search the web.' }],
+      systemText: 'Be brief.',
+    });
+    // Cold vs warm from the run's own record — first spine's fork position.
+    foldEvent(m, { type: 'agent:trace', agentId: -1, event: {
+      traceId: 4, parentTraceId: null, ts: 0, type: 'branch:create',
+      branchHandle: 65537, parentHandle: 7, position: 1094, role: 'spine',
+    } }, 260);
+    expect(m.spine).toMatchObject({ inherited: 1094 });
+    // A new run replaces the spine wholesale.
+    foldEvent(m, { type: 'query', query: 'again?' }, 900);
+    expect(m.spine).toMatchObject({ query: 'again?', spineCells: 0, headerText: null });
+  });
+
+  it('a re-emitted instruction never reseeds the run', () => {
+    const m = createPaneModel();
+    foldEvent(m, { type: 'query', query: 'first' }, 100);
+    foldEvent(m, { type: 'agent:trace', agentId: -1, event: {
+      traceId: 2, parentTraceId: null, ts: 0, type: 'branch:prefill',
+      branchHandle: 1, cells: 700, role: 'spineHeader',
+    } }, 200);
+    // a re-plan re-emits `query` WITHOUT opening a new run… but `query` is an
+    // open marker, so simulate the mid-run re-emit via the guard directly:
+    // query already set → the event must not touch the spine.
+    m.runOpen = true; m.lastOpenIdx = 0;
+    foldEvent(m, { type: 'plan', intent: 'research', tasks: [] }, 250);
+    expect(m.spine).toMatchObject({ query: 'first', spineCells: 700 });
+  });
+
+  it('a fork snapshots what it inherited — spine growth, trunk warmth, parent state', () => {
+    const m = createPaneModel();
+    foldEvent(m, { type: 'query', query: 'q' }, 10);
+    // planner-style pre-spine spawn: no attribution, no inherited
+    foldEvent(m, { type: 'agent:spawn', agentId: 2, parentAgentId: 1 }, 20);
+    expect(m.lanes.get(2)!.inherited).toBeUndefined();
+    // warm spine seeds: trunk 900 + header 782, then extends by 118
+    foldEvent(m, { type: 'agent:trace', agentId: -1, event: {
+      traceId: 1, parentTraceId: null, ts: 0, type: 'branch:create',
+      branchHandle: 9, parentHandle: 7, position: 900, role: 'spine',
+    } }, 30);
+    foldEvent(m, { type: 'agent:trace', agentId: -1, event: {
+      traceId: 2, parentTraceId: null, ts: 0, type: 'branch:prefill',
+      branchHandle: 9, cells: 782, role: 'spineHeader',
+    } }, 40);
+    foldEvent(m, { type: 'agent:spawn', agentId: 3, parentAgentId: 1 }, 50);
+    expect(m.lanes.get(3)!.inherited).toBe(900 + 782);
+    foldEvent(m, { type: 'agent:trace', agentId: -1, event: {
+      traceId: 3, parentTraceId: null, ts: 0, type: 'branch:prefill',
+      branchHandle: 9, cells: 118, role: 'spineHeader',
+    } }, 60);
+    foldEvent(m, { type: 'agent:spawn', agentId: 4, parentAgentId: 1 }, 70);
+    expect(m.lanes.get(4)!.inherited).toBe(900 + 782 + 118);
+    // recursive fork: parent's inheritance + what it had produced by then
+    foldEvent(m, { type: 'agent:produce', agentId: 3, tokenCount: 250 }, 80);
+    foldEvent(m, { type: 'agent:spawn', agentId: 5, parentAgentId: 3 }, 90);
+    expect(m.lanes.get(5)!.inherited).toBe(900 + 782 + 250);
+  });
+
+  it('a chain: spine:extend grows the spine and later forks inherit it', () => {
+    // Numbers from a real Investigate trace: seed 784, step-1 commit 1761.
+    const m = createPaneModel();
+    foldEvent(m, { type: 'query', query: 'q' }, 10);
+    foldEvent(m, { type: 'agent:trace', agentId: -1, event: {
+      traceId: 1, parentTraceId: null, ts: 0, type: 'branch:create',
+      branchHandle: 65537, parentHandle: null, position: 0, role: 'spine',
+    } }, 20);
+    foldEvent(m, { type: 'agent:trace', agentId: -1, event: {
+      traceId: 2, parentTraceId: null, ts: 0, type: 'branch:prefill',
+      branchHandle: 65537, cells: 784, role: 'spineHeader',
+    } }, 30);
+    foldEvent(m, { type: 'agent:spawn', agentId: 3, parentAgentId: 65537 }, 40);
+    expect(m.lanes.get(3)!.inherited).toBe(784);
+    // step 1 settles — its contribution is committed onto the spine
+    foldEvent(m, { type: 'agent:trace', agentId: -1, event: {
+      traceId: 3, parentTraceId: null, ts: 0, type: 'spine:extend',
+      deltaTokens: 1761, positionAfter: 2545,
+    } }, 50);
+    expect(m.spine!.growth.map((g) => g.tokens)).toEqual([784, 1761]);
+    expect(m.spine!.spineCells).toBe(784 + 1761);
+    foldEvent(m, { type: 'agent:spawn', agentId: 65539, parentAgentId: 65537 }, 60);
+    expect(m.lanes.get(65539)!.inherited).toBe(784 + 1761);
+    // step 3 after another extension: the first extension now nets a save
+    foldEvent(m, { type: 'agent:trace', agentId: -1, event: {
+      traceId: 4, parentTraceId: null, ts: 0, type: 'spine:extend',
+      deltaTokens: 500, positionAfter: 3045,
+    } }, 70);
+    foldEvent(m, { type: 'agent:spawn', agentId: 65540, parentAgentId: 65537 }, 80);
+    expect(m.lanes.get(65540)!.inherited).toBe(784 + 1761 + 500);
+    // tokens saved = cache-read convention: every fork-inherited token
+    // counts; the spine's own build is the cache write, never netted out.
+    const saved = [...m.lanes.values()].reduce((n, l) => n + (l.inherited ?? 0), 0);
+    expect(saved).toBe(784 + (784 + 1761) + (784 + 1761 + 500));
+  });
+
+  it('a DAG spawn carries its dependency edges onto the lane', () => {
+    const m = createPaneModel();
+    foldEvent(m, { type: 'query', query: 'q' }, 10);
+    foldEvent(m, { type: 'agent:spawn', agentId: 2, parentAgentId: 1 }, 20);
+    foldEvent(m, { type: 'agent:spawn', agentId: 3, parentAgentId: 1, after: [2] }, 30);
+    expect(m.lanes.get(2)!.after).toBeUndefined();
+    expect(m.lanes.get(3)!.after).toEqual([2]);
+  });
+
+    it('an undeclared harness still gets a runtime-only spine', () => {
+    const m = createPaneModel();
+    const bare = { phases: {}, open: ['sheet:task'], close: ['done'] };
+    foldEvent(m, { type: 'sheet:task', instruction: 'sum col B' }, 50, bare);
+    expect(m.spine).toBeNull();
+    foldEvent(m, { type: 'agent:trace', agentId: -1, event: {
+      traceId: 9, parentTraceId: null, ts: 0, type: 'branch:prefill',
+      branchHandle: 7, cells: 300, role: 'spineHeader',
+    } }, 80, bare);
+    expect(m.spine).toMatchObject({ query: null, spineCells: 300 });
   });
 });
