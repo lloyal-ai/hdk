@@ -108,6 +108,21 @@ export function* initAgents<E = AgentEvent>(
           ? { attachments: roots as readonly Attachment[] } : {}),
       });
     },
+    // The release half of the pair: Session-level prunes (dispose, and
+    // promote moving the crown off a live trunk) happen below the pool's
+    // instrumentation, so nothing else emits for them — without this the
+    // trace shows trunk generations appearing but never leaving the KV.
+    // Same `branch:prune` vocabulary the pool writes for its own branches.
+    onRelease: ({ branchHandle, position }) => {
+      tw.write({
+        traceId: tw.nextId(),
+        parentTraceId: null,
+        ts: performance.now(),
+        type: 'branch:prune',
+        branchHandle,
+        position,
+      });
+    },
   });
   const events: Channel<E, void> = createChannel<E, void>();
 

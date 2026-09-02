@@ -46,10 +46,10 @@ import type {
   ParseChatOutputResult,
   ParseChatOutputOptions,
   MultimodalPrefillResult,
-} from '../src/types';
-import { Branch } from '../src/Branch';
-import { BranchStore } from '../src/BranchStore';
-import { Session } from '../src/Session';
+} from '../src/types.js';
+import { Branch } from '../src/Branch.js';
+import { BranchStore } from '../src/BranchStore.js';
+import { Session } from '../src/Session.js';
 
 /** Internal branch state tracked by the mock */
 interface BranchState {

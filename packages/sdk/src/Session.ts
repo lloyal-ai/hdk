@@ -42,6 +42,23 @@ export type TrunkPrefillObserver = (info: {
 }) => void;
 
 /**
+ * Observer invoked after the Session releases a trunk branch — the other
+ * half of the pair with {@link TrunkPrefillObserver}: prefills report what
+ * entered the trunk's KV, releases report a trunk leaving it. Fired by
+ * {@link Session.dispose} (trunk pruned), by {@link Session.promote} when
+ * the crown moves off a live trunk (retainOnly frees it), and by the
+ * multimodal poison path (a failed prefill prunes the trunk it poisoned).
+ * Pure observability: it runs after the prune and never affects it.
+ *
+ * @category Branching
+ */
+export type TrunkReleaseObserver = (info: {
+  branchHandle: number;
+  /** The branch's position (cells decoded) at release. */
+  position: number;
+}) => void;
+
+/**
  * Session - Trunk lifecycle + conversation delta helpers
  *
  * Owns the current "trunk" branch and provides promote() to crown a winner,
@@ -77,12 +94,14 @@ export class Session {
   private _store: BranchStore;
   private _trunk: Branch | null;
   private _onPrefill?: TrunkPrefillObserver;
+  private _onRelease?: TrunkReleaseObserver;
 
-  constructor({ ctx, store, onPrefill }: { ctx: SessionContext; store: BranchStore; onPrefill?: TrunkPrefillObserver }) {
+  constructor({ ctx, store, onPrefill, onRelease }: { ctx: SessionContext; store: BranchStore; onPrefill?: TrunkPrefillObserver; onRelease?: TrunkReleaseObserver }) {
     this._ctx = ctx;
     this._store = store;
     this._trunk = null;
     this._onPrefill = onPrefill;
+    this._onRelease = onRelease;
   }
 
   /** Current trunk branch */
@@ -101,8 +120,15 @@ export class Session {
    * Safe even if winner is the only branch (resets topology, no-op on KV).
    */
   async promote(winner: Branch): Promise<void> {
+    // Capture the outgoing trunk's identity BEFORE retainOnly frees it —
+    // the getters are not for disposed branches.
+    const old = this._trunk;
+    const released = old !== null && old !== winner && !old.disposed
+      ? { branchHandle: old.handle, position: old.position }
+      : null;
     await this._store.retainOnly(winner);
     this._trunk = winner;
+    if (released) this._onRelease?.(released);
   }
 
   /**
@@ -110,7 +136,9 @@ export class Session {
    */
   async dispose(): Promise<void> {
     if (this._trunk && !this._trunk.disposed) {
+      const released = { branchHandle: this._trunk.handle, position: this._trunk.position };
       await this._trunk.prune();
+      this._onRelease?.(released);
     }
     this._trunk = null;
   }
@@ -178,8 +206,10 @@ export class Session {
         // resume invalid KV; prune (subtree — poisoned KV invalidates
         // anything forked from it) and clear, so the failure surfaces once,
         // here.
+        const released = { branchHandle: trunk.handle, position: trunk.position };
         trunk.pruneSubtreeSync();
         this._trunk = null;
+        this._onRelease?.(released);
         throw e;
       }
     } else {
