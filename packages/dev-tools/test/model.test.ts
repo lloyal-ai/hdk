@@ -473,6 +473,36 @@ describe('trunk (warmDelta mirrors)', () => {
     expect(m.trunk[0]).toMatchObject({ speaker: 'turn', query: 'Q?', response: 'A.', cells: 90 });
   });
 
+  it('a released trunk leaves the feed; an unrelated prune does not touch it', () => {
+    const m = createPaneModel();
+    for (const [id, q] of [[1, 'Q1'], [2, 'Q2']] as const) {
+      foldEvent(m, { type: 'agent:trace', agentId: 7, event: {
+        traceId: id, parentTraceId: null, ts: 0, type: 'branch:prefill',
+        branchHandle: 7, cells: 10, role: 'warmDelta', speaker: 'turn',
+        content: `${q}\n\nA`, query: q, response: 'A',
+      } }, id * 100);
+    }
+    expect(m.trunk).toHaveLength(2);
+    // An agent branch's prune is not the trunk's business.
+    foldEvent(m, { type: 'agent:trace', agentId: 3, event: {
+      traceId: 3, parentTraceId: null, ts: 0, type: 'branch:prune', branchHandle: 3, position: 500,
+    } }, 300);
+    expect(m.trunk).toHaveLength(2);
+    // The trunk's own release: its turns left the KV, so they leave the feed.
+    foldEvent(m, { type: 'agent:trace', agentId: 7, event: {
+      traceId: 4, parentTraceId: null, ts: 0, type: 'branch:prune', branchHandle: 7, position: 22,
+    } }, 400);
+    expect(m.trunk).toHaveLength(0);
+    // The next generation starts clean.
+    foldEvent(m, { type: 'agent:trace', agentId: 9, event: {
+      traceId: 5, parentTraceId: null, ts: 0, type: 'branch:prefill',
+      branchHandle: 9, cells: 8, role: 'warmDelta', speaker: 'turn',
+      content: 'Q3\n\nA3', query: 'Q3', response: 'A3',
+    } }, 500);
+    expect(m.trunk).toHaveLength(1);
+    expect(m.trunk[0].query).toBe('Q3');
+  });
+
   it("a response folds the run wall time and the agents' spend", () => {
     const m = createPaneModel();
     foldEvent(m, { type: 'query' }, 1000);

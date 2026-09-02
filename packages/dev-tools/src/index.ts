@@ -281,6 +281,9 @@ export interface TrunkTurn {
   response?: string;
   /** KV cells the prefill added. */
   cells: number;
+  /** The trunk branch this turn accreted onto — the key the release fold
+   *  deletes by when that branch leaves the KV. */
+  branchHandle?: number;
   /** The images that entered with it — roots, resolvable to bytes through
    *  the bridge's `representationUrl` when the harness exposes one. */
   attachments: { digest: string; mediaType?: string }[];
@@ -341,9 +344,11 @@ export interface PaneModel {
    *  "applied for this session"). Undefined until a save happens. */
   lastSavedTo: string | null | undefined;
   lanes: Map<number, AgentLane>;
-  /** The session trunk's own turns — the conversation the spine accretes.
-   *  Session-lived: deliberately NOT cleared by `resetRun`, because the
-   *  next run rides the same trunk this one grew. */
+  /** The RESIDENT conversation — the turns of the trunk the model can
+   *  currently attend. Not cleared by `resetRun` (the next run rides the
+   *  live trunk), but a released trunk's turns are REMOVED when its
+   *  `branch:prune` folds: dead cells feed nothing, so the feed never
+   *  shows them. History across trunks is the harness's concern. */
   trunk: TrunkTurn[];
   /** The run's SPINE, run-scoped: the shared root every agent forks from.
    *  Folded from runtime events alone (`branch:prefill role='spineHeader'`,
@@ -835,6 +840,7 @@ export function foldEvent(
             ...(typeof te.response === 'string' ? { response: te.response } : {}),
             content: typeof te.content === 'string' ? te.content : '',
             cells: typeof te.cells === 'number' ? te.cells : 0,
+            ...(typeof te.branchHandle === 'number' ? { branchHandle: te.branchHandle } : {}),
             attachments: Array.isArray(te.attachments)
               ? (te.attachments as unknown[]).flatMap((a) => {
                   const r = a as { digest?: unknown; mediaType?: unknown };
@@ -918,6 +924,13 @@ export function foldEvent(
           const handle = typeof te.branchHandle === 'number' ? te.branchHandle : agentId;
           const lane = m.lanes.get(handle);
           if (lane) lane.prunedAt = now;
+          // The same prune, seen by the trunk feed: this handle's turns
+          // left the KV with it, so they leave the feed — the feed shows
+          // the resident conversation, nothing else. Handle-matched (never
+          // a blanket clear): an agent branch's prune must not touch the
+          // trunk, and the match is order-independent with the next
+          // generation's first commit.
+          m.trunk = m.trunk.filter((t) => t.branchHandle !== handle);
           return;
         }
         case 'tool:dispatch': {
