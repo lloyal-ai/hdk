@@ -9,7 +9,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import sharp from 'sharp';
-import { normalizeImage, DEFAULT_MAX_PIXELS, MAX_CONCURRENT_NORMALIZATIONS } from '../src/image';
+import { normalizeImage, DEFAULT_MAX_PIXELS, MAX_CONCURRENT_NORMALIZATIONS, MAX_INPUT_PIXELS } from '../src/image';
 import type { NormalizedImage } from '../src/image';
 // Its own list of nine, sourced from stb_image — NOT derived from the sniff
 // table, which knows four. Deriving it was a defect: the pass-through gate read
@@ -80,6 +80,19 @@ describe('normalizeImage', () => {
     // computing it from the STORED dimensions overshoots by the aspect ratio.
     expect(out.width * out.height).toBeLessThanOrEqual(10_000);
     expect((await meta(out.bytes)).orientation ?? 1).toBe(1);
+  });
+
+  it('refuses a BMP above the ABSOLUTE ceiling even when maxPixels is raised past it', async () => {
+    // sharp guards its own path with limitInputPixels = MAX_INPUT_PIXELS; the
+    // BMP hand-off has only the header to go on, and a caller-raised maxPixels
+    // must not open a decompression-bomb door the sharp path keeps shut.
+    const bmp = Buffer.alloc(54 + 48, 0xff);
+    bmp.write('BM', 0);
+    bmp.writeUInt32LE(54, 10); bmp.writeUInt32LE(40, 14);
+    bmp.writeInt32LE(20_000, 18); bmp.writeInt32LE(20_000, 22);  // 4e8 pixels
+    bmp.writeUInt16LE(1, 26); bmp.writeUInt16LE(24, 28);
+    await expect(normalizeImage(new Uint8Array(bmp), { maxPixels: MAX_INPUT_PIXELS * 10 }))
+      .rejects.toThrow(/ceiling|exceeds/);
   });
 
   it('hands BMP to the model rather than refusing it', async () => {

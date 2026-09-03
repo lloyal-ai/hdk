@@ -45,6 +45,18 @@ function seqLen(b: number): number {
 
 const isContinuation = (b: number): boolean => (b & 0xc0) === 0x80;
 
+/** Whether `b` may follow `lead` as the SECOND byte. Four leads narrow the
+ *  range (RFC 3629 §4): E0 forbids overlong forms, ED forbids surrogates, F0
+ *  forbids overlong forms, F4 forbids code points above U+10FFFF. Everything
+ *  else takes any continuation byte. */
+function secondByteOk(lead: number, b: number): boolean {
+  if (lead === 0xe0) return b >= 0xa0 && b <= 0xbf;
+  if (lead === 0xed) return b >= 0x80 && b <= 0x9f;
+  if (lead === 0xf0) return b >= 0x90 && b <= 0xbf;
+  if (lead === 0xf4) return b >= 0x80 && b <= 0x8f;
+  return isContinuation(b);
+}
+
 /**
  * Split `bytes` at the last complete UTF-8 character boundary.
  *
@@ -64,11 +76,13 @@ export function splitCompleteUtf8(bytes: Uint8Array): Utf8Split {
     const need = seqLen(bytes[i]);
     if (need > n - i) {
       // The lead promises more bytes than remain. Hold it only if what
-      // follows is all continuations — otherwise the sequence is already
-      // broken and waiting would never mend it.
+      // follows is a valid prefix — the second byte within its lead's range,
+      // the rest continuations. Otherwise the sequence is already broken and
+      // waiting would never mend it.
       let validPrefix = true;
       for (let j = i + 1; j < n; j++) {
-        if (!isContinuation(bytes[j])) { validPrefix = false; break; }
+        const ok = j === i + 1 ? secondByteOk(bytes[i], bytes[j]) : isContinuation(bytes[j]);
+        if (!ok) { validPrefix = false; break; }
       }
       if (validPrefix) holdFrom = i;
     }

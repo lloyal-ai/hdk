@@ -167,7 +167,9 @@ export function buildUserDeltaMultimodal(
     ]),
     fmtOpts
   );
-  return { sep, prompt, bitmaps: images };
+  // A snapshot: the prompt fixed its marker count here, and the bitmaps must
+  // still be that set at prefill, whatever the caller does to its array.
+  return { sep, prompt, bitmaps: [...images] };
 }
 
 /**
@@ -334,7 +336,7 @@ export function buildToolResultDeltaMultimodal(
     generationPrompt && !prompt.endsWith(generationPrompt)
       ? prompt + generationPrompt
       : prompt;
-  return { sep, prompt: withGen, bitmaps: images };
+  return { sep, prompt: withGen, bitmaps: [...images] };
 }
 
 /**

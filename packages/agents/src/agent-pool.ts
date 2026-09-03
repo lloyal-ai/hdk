@@ -1426,7 +1426,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             // moved their branches' books, and the error does not say which.
             // Re-queuing the cohort whole would decode the landed ones twice
             // onto advanced positions, so the cohort takes the per-agent
-            // terminal instead — the kernel's rule: intact ⇔ rc == 1 && !partial.
+            // terminal instead — the kernel's rule: intact ⇔ the failing call
+            // restored state (rc 1 or -1) and nothing before it landed.
             for (const t of tokenItems) {
               yield* failSettled(t.agent, 'tool_result_failed',
                 `partial prefill: ${err instanceof Error ? err.message : String(err)}`, rc);
@@ -1849,7 +1850,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         const prefillTokens = buildToolResultDelta(ctx, resultStr, callId, { enableThinking: agent.fmt.enableThinking });
         tw.write({ traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
           type: 'tool:result', agentId: agent.id, tool: tc.name,
-          result: exhausted, prefillTokenCount: prefillTokens.length,
+          result: exhausted, cells: prefillTokens.length,
           durationMs: performance.now() - c.toolT0 });
         return { rail: 'token', agentId: agent.id, prefillTokens, toolName: tc.name, callId, args: tc.arguments, probe: undefined, resultStr };
       }
@@ -1918,7 +1919,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       const probe = tool?.probe(told) ?? undefined;
       tw.write({ traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
         type: 'tool:result', agentId: agent.id, tool: tc.name,
-        result: told, prefillTokenCount: mediaItem?.cells ?? prefillTokens.length,
+        result: told, cells: mediaItem?.cells ?? prefillTokens.length,
         durationMs: performance.now() - c.toolT0 });
       const common = { agentId: agent.id, toolName: tc.name, callId, args: tc.arguments, probe, resultStr };
       return mediaItem
@@ -2191,6 +2192,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           tw.write({
             traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
             type: 'agent:spawn', agentId: s.agent.id, parentAgentId: s.agent.parentId,
+            ...(s.task.after && s.task.after.length > 0 ? { after: s.task.after } : {}),
           });
           yield* poolChannel.send({ type: 'agent:spawn', agentId: s.agent.id, parentAgentId: s.agent.parentId, ...(s.task.after && s.task.after.length > 0 ? { after: s.task.after } : {}) });
         }
@@ -2246,6 +2248,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           tw.write({
             traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
             type: 'agent:spawn', agentId: agent.id, parentAgentId: agent.parentId,
+            ...(h.spec.after && h.spec.after.length > 0 ? { after: h.spec.after } : {}),
           });
           yield* poolChannel.send({ type: 'agent:spawn', agentId: agent.id, parentAgentId: agent.parentId, ...(h.spec.after && h.spec.after.length > 0 ? { after: h.spec.after } : {}) });
         }
@@ -2644,7 +2647,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           const prefillTokens = buildToolResultDelta(ctx, resultStr, r.callId, { enableThinking: r.agent.fmt.enableThinking });
           tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
             type: 'tool:result', agentId: r.agent.id, tool: r.tc.name,
-            result, prefillTokenCount: prefillTokens.length, durationMs: 0 });
+            result, cells: prefillTokens.length, durationMs: 0 });
           abandoned.push({ rail: 'token', agentId: r.agent.id, prefillTokens, toolName: r.tc.name, callId: r.callId, args: r.tc.arguments, probe: undefined });
         }
       }

@@ -419,6 +419,15 @@ export const normalizeImage: NormalizeImage = async (bytes, opts = {}) => {
           'so it cannot be admitted under a pixel ceiling.',
       );
     }
+    // The ABSOLUTE ceiling first — the same one sharp enforces on every other
+    // format through limitInputPixels. A caller may raise maxPixels; it may
+    // not open a decompression-bomb door the sharp path keeps shut.
+    if (dims.width * dims.height > MAX_INPUT_PIXELS) {
+      throw new Error(
+        `normalizeImage: ${dims.width}x${dims.height} exceeds the absolute ` +
+          `${MAX_INPUT_PIXELS}-pixel ceiling.`,
+      );
+    }
     if (dims.width * dims.height > maxPixels) {
       throw new Error(
         `normalizeImage: ${dims.width}x${dims.height} exceeds the ${maxPixels}-pixel ` +

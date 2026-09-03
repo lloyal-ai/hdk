@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { representationsOf, DIGEST_PATTERN } from '@lloyal-labs/media';
+import { representationsOf, DIGEST_PATTERN, type Attachment } from '@lloyal-labs/media';
 import type { AttachmentStore, Descriptor } from '@lloyal-labs/media';
 
 /** Thrown when a body exceeds the cap, so the caller can answer 413 rather
@@ -18,6 +18,12 @@ const DEFAULT_UPLOAD_TIMEOUT_MS = 30_000;
 
 /** Thrown when an upload outruns {@link ContentRoutesOpts.uploadTimeoutMs}. */
 class TooSlow extends Error {}
+
+/** `decodeURIComponent` throws on a malformed escape; that is the client's
+ *  input, not a server fault, so the caller answers 400 on `null`. */
+const decodeSegment = (s: string): string | null => {
+  try { return decodeURIComponent(s); } catch { return null; }
+};
 
 /**
  * @category Runtime
@@ -41,7 +47,7 @@ export interface ContentRoutesOpts {
    * as authority over content the client did not produce. The bytes answer
    * that question, and the ingress is where they are decoded.
    */
-  ingest?: (bytes: Uint8Array, signal?: AbortSignal) => Promise<Descriptor>;
+  ingest?: (bytes: Uint8Array, signal?: AbortSignal) => Promise<Attachment>;
   /** Ceiling on a single upload body. @default 8 MiB */
   maxUploadBytes?: number;
   /**
@@ -266,8 +272,8 @@ export function createContentRoutes(
       // manifest at all. Bytes have exactly one door, and it is that one.
       const exists = /^\/v1\/content\/([^/]+)$/.exec(path);
       if (exists && method === 'HEAD') {
-        const digest = decodeURIComponent(exists[1]);
-        if (!DIGEST_PATTERN.test(digest)) { fail(res, 400, 'malformed digest'); return true; }
+        const digest = decodeSegment(exists[1]);
+        if (digest === null || !DIGEST_PATTERN.test(digest)) { fail(res, 400, 'malformed digest'); return true; }
         // Reads the WHOLE blob to answer a yes/no question, because
         // `AttachmentStore` offers no `size`/`has`. On the one route whose
         // purpose is to AVOID moving bytes, a dedupe pre-flight against an
@@ -287,8 +293,8 @@ export function createContentRoutes(
       // representations, so a source layer can never be served by mistake.
       const rep = /^\/v1\/media\/([^/]+)\/representations\/(\d+)$/.exec(path);
       if (rep && (method === 'GET' || method === 'HEAD')) {
-        const digest = decodeURIComponent(rep[1]);
-        if (!DIGEST_PATTERN.test(digest)) { fail(res, 400, 'malformed digest'); return true; }
+        const digest = decodeSegment(rep[1]);
+        if (digest === null || !DIGEST_PATTERN.test(digest)) { fail(res, 400, 'malformed digest'); return true; }
         const manifest = opts.store.getManifest(digest);
         if (!manifest) { fail(res, 404, 'no such attachment manifest'); return true; }
         const reps = representationsOf(manifest);
@@ -307,10 +313,23 @@ export function createContentRoutes(
           fail(res, 501, 'no ingress service installed on this host');
           return true;
         }
+        // ONE deadline for transfer AND ingress, and it wins the race: it
+        // aborts the signal and REJECTS, so a decode that ignores the signal
+        // (sharp, once inside) cannot hold the response past the ceiling. The
+        // late result of such a decode is discarded, never written.
         const ctrl = new AbortController();
-        const deadline = setTimeout(() => ctrl.abort(), uploadTimeout);
-        readBounded(req, { maxBytes: maxUpload, timeoutMs: uploadTimeout })
-          .then((bytes) => opts.ingest!(bytes, ctrl.signal))
+        let timer: NodeJS.Timeout | undefined;
+        const deadline = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            ctrl.abort();
+            reject(new TooSlow(`upload exceeded ${uploadTimeout}ms end to end`));
+          }, uploadTimeout);
+        });
+        Promise.race([
+          readBounded(req, { maxBytes: maxUpload, timeoutMs: uploadTimeout })
+            .then((bytes) => opts.ingest!(bytes, ctrl.signal)),
+          deadline,
+        ])
           .then((descriptor) => {
             const body = JSON.stringify(descriptor);
             res.writeHead(201, head({
@@ -329,7 +348,7 @@ export function createContentRoutes(
             // so the timeout path has to drop the socket just as the cap does.
             if (tooLarge || tooSlow) req.destroy();
           })
-          .finally(() => clearTimeout(deadline));
+          .finally(() => clearTimeout(timer));
         return true;
       }
 

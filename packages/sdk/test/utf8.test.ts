@@ -88,6 +88,18 @@ describe('splitCompleteUtf8 — junk is decided now, never held', () => {
     expect(tail.length).toBe(0);
   });
 
+  it('a prefix that can never become valid UTF-8 is decided now, not held', () => {
+    // UTF-8 constrains the SECOND byte per lead: E0 needs A0–BF (else overlong),
+    // ED needs 80–9F (else a surrogate), F0 needs 90–BF (else overlong), F4
+    // needs 80–8F (else above U+10FFFF). Holding these would delay the U+FFFD
+    // and lose it if the stream ends here — contrary to the contract above.
+    for (const prefix of [[0xe0, 0x80], [0xed, 0xa0], [0xf0, 0x80], [0xf4, 0x90]]) {
+      const { complete, tail } = splitCompleteUtf8(new Uint8Array(prefix));
+      expect(tail.length, `prefix ${prefix.map((b) => b.toString(16)).join(' ')}`).toBe(0);
+      expect(complete).toBe('\uFFFD\uFFFD');
+    }
+  });
+
   it('a genuinely incomplete character IS held, and completes', () => {
     // '€' is e2 82 ac.
     const first = splitCompleteUtf8(new Uint8Array([0x61, 0xe2, 0x82]));

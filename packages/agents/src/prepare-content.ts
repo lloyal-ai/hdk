@@ -6,7 +6,7 @@
  * contract, this is the pipeline that drives them. It stays here because a
  * batch is cancelled by the SCOPE that owns it, and scopes are orchestration.
  */
-import { call, useAbortSignal } from 'effection';
+import { all, call, useAbortSignal } from 'effection';
 import type { Operation } from 'effection';
 import type {
   Attachment, AttachmentStore, ContentIngress, PreparedContent,
@@ -59,10 +59,10 @@ export function* prepareBatch(
   // reaches the ingress. A halted run stops occupying the normalizer's queue
   // instead of holding a slot for work whose result nobody will read.
   const signal = yield* useAbortSignal();
-  const roots: Attachment[] = [];
-  for (const bytes of items) {
-    roots.push(yield* call(() => ingress.ingest(bytes, signal)));
-  }
+  // Concurrent, in input order: normalization is the expensive step and the
+  // normalizer already bounds itself process-wide, so a batch of N must not
+  // cost the sum of N decodes while permits sit idle. `all` keeps the order.
+  const roots: Attachment[] = yield* all(items.map((bytes) => call(() => ingress.ingest(bytes, signal))));
   // Resolve from the store rather than trusting what ingest returned, through
   // the SAME call replay uses — so a batch that materializes here is one that
   // can be rebuilt later, by construction rather than by assertion.

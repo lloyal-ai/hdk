@@ -1791,6 +1791,21 @@ describe('self-healing ladder', () => {
     expect((settleFailed as { rc?: number }).rc).toBe(1);
   });
 
+  it('the tool:result trace records media cost as CELLS, never under a token name', async () => {
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { trace } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      forkTokenQueues: [[1, STOP, STOP]],
+      ...callTool('rasterize'),
+      tools: toolMap, trace: true,
+    });
+    const ev = trace.events.find(e => e.type === 'tool:result') as Record<string, unknown> | undefined;
+    expect(ev).toBeDefined();
+    // Image cells are not tokens (M-RoPE makes the units differ); one unit, one name.
+    expect(typeof ev!.cells).toBe('number');
+    expect('prefillTokenCount' in ev!).toBe(false);
+  });
+
   it('media rc -1: the item is dropped, the note lands, the agent continues', async () => {
     const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
     const { events, trace } = await runPool({

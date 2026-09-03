@@ -167,145 +167,147 @@ export function* withSpine<T>(
     role: "spine",
   });
 
-  if (prefillTokens.length > 0) {
-    yield* call(() => spine.prefill(prefillTokens));
-    tw.write({
-      traceId: tw.nextId(),
-      parentTraceId: scopeId,
-      ts: performance.now(),
-      type: "branch:prefill",
-      branchHandle: spine.handle,
-      cells: prefillTokens.length,
-      role: "spineHeader",
-    });
-  }
-
-  // Shared role+tools mode: format the chat header once and prefill onto
-  // the spine. Agents forking from this spine inherit system+tools tokens
-  // via metadata-only prefix-share (no per-spawn re-prefill). The resulting
-  // FormatConfig is stashed on SpineFmt so setupAgent can detect shared
-  // mode and copy parser/grammar/format/triggers without re-emitting the
-  // tool schemas in each agent's suffix.
-  let spineFmt: FormatConfig | null = null;
-  if (opts.systemPrompt !== undefined) {
-    const enableThinking = opts.enableThinking ?? true;
-
-    // THE BARRIER. Every image is normalized and committed BEFORE a single
-    // marker is emitted or any KV is touched, so a failure on image N leaves
-    // no markers, no prefill and no published descriptors — only unreachable
-    // content-addressed blobs, which are harmless. `bitmaps` below is what the
-    // projector will actually decode: the admitted representations, not the
-    // raw input, because those are the bytes whose cells replay must rebuild.
-    const raw = opts.bitmaps ?? [];
-    const prepared = raw.length > 0
-      ? yield* prepareBatch(ingress, attachments, raw)
-      : { attachments: [], bitmaps: [] };
-    const bitmaps = prepared.bitmaps as Uint8Array[];
-    // Marker injection goes through the SDK's `mediaContent` — the one place
-    // media_marker parts are emitted — so the spine header, a user turn and a
-    // tool result cannot drift apart in how they mark media. It returns the
-    // bare string when there are no bitmaps, which is the text-path shape.
-    //
-    // The spine does not use a delta builder: it needs the whole
-    // FormattedChatResult for `spineFmt` (grammar/format/parser/triggers) and
-    // the messages JSON for the trace seed, neither of which a
-    // `MultimodalDelta` carries. Sharing the marker grammar is the part that
-    // matters; the rest of this assembly is legitimately spine-specific.
-    const messages = JSON.stringify([
-      { role: "system", content: mediaContent(opts.systemPrompt, bitmaps) },
-    ]);
-    const fmtOpts: Record<string, unknown> = {
-      enableThinking,
-      // Header ends at <|im_end|>; agents append <|im_start|>user…assistant
-      // markers as their suffix. Without this, the template would emit a
-      // trailing assistant generation prompt and corrupt the boundary.
-      addGenerationPrompt: false,
-    };
-    if (opts.tools && opts.tools.length > 0) {
-      fmtOpts.tools = createToolkit(opts.tools).toolsJson;
-    }
-    const formatted = ctx.formatChatSync(messages, fmtOpts);
-    // Spine-seed emission for trace replay (`extractSpineSeed`). Captures
-    // the rendered chat prompt verbatim so a later `reconstructBranch`
-    // can rebuild this exact KV state in a fresh context.
-    //
-    // WRITE-AHEAD, on BOTH rails: the seed says what this spine INTENDS to
-    // prefill, so a prefill that then fails still leaves a run that can be
-    // rebuilt — and a failed multimodal prefill poisons the branch, which is
-    // exactly when replay is the only way back. `branch:prefill` below is the
-    // other half of the pair and asserts the opposite: it is written only
-    // after the KV actually moved.
-    //
-    // `tokenCount` is omitted on the embedding rail — mtmd owns tokenization
-    // there and no honest count exists before the native call returns. The
-    // count that landed rides `branch:prefill`.
-    const writeSpineSeed = (tokenCount?: number): void => {
-      tw.write({
-        traceId: tw.nextId(),
-        parentTraceId: scopeId,
-        ts: performance.now(),
-        type: "prompt:format",
-        promptText: formatted.prompt,
-        tokenCount,
-        // Roots ride the seed WRITE-AHEAD: the barrier committed the content
-        // before any prefill, so a failed multimodal prefill still leaves a
-        // seed that replay can rebuild from. `branch:prefill` below keeps
-        // the success-only copy.
-        ...(prepared.attachments.length > 0
-          ? { attachments: prepared.attachments }
-          : {}),
-        messages,
-        tools: opts.tools && opts.tools.length > 0
-          ? createToolkit(opts.tools).toolsJson
-          : undefined,
-        role: "spine",
-      });
-    };
-
-    let headerCells = 0;
-    let attached: readonly Attachment[] | undefined;
-    if (bitmaps.length > 0) {
-      writeSpineSeed();
-      const counts = yield* call(() =>
-        spine.prefillMultimodal(formatted.prompt, bitmaps));
-      headerCells = counts.tokensDecoded;
-      // Already committed by the barrier above — this only carries the roots
-      // onto the trace. Recording used to happen HERE, after the prefill, so
-      // a failed write left media in the cache that could never be replayed.
-      attached = prepared.attachments;
-    } else {
-      const headerTokens = ctx.tokenizeSync(formatted.prompt, false);
-      writeSpineSeed(headerTokens.length);
-      headerCells = headerTokens.length;
-      if (headerTokens.length > 0) {
-        yield* call(() => spine.prefill(headerTokens));
-      }
-    }
-    if (headerCells > 0) {
+  // From here the branch exists: every step — header prefill, the media
+  // barrier, the multimodal prefill — runs INSIDE the scope that prunes it,
+  // so a failure on any of them cannot leak a slot or a poisoned branch.
+  try {
+    if (prefillTokens.length > 0) {
+      yield* call(() => spine.prefill(prefillTokens));
       tw.write({
         traceId: tw.nextId(),
         parentTraceId: scopeId,
         ts: performance.now(),
         type: "branch:prefill",
         branchHandle: spine.handle,
-        cells: headerCells,
+        cells: prefillTokens.length,
         role: "spineHeader",
-        ...(attached ? { attachments: attached } : {}),
       });
     }
-    spineFmt = {
-      format: formatted.format,
-      reasoningFormat: formatted.reasoningFormat,
-      generationPrompt: formatted.generationPrompt,
-      parser: formatted.parser,
-      grammar: formatted.grammar,
-      grammarLazy: formatted.grammarLazy,
-      grammarTriggers: formatted.grammarTriggers,
-      enableThinking,
-    };
-  }
 
-  try {
+    // Shared role+tools mode: format the chat header once and prefill onto
+    // the spine. Agents forking from this spine inherit system+tools tokens
+    // via metadata-only prefix-share (no per-spawn re-prefill). The resulting
+    // FormatConfig is stashed on SpineFmt so setupAgent can detect shared
+    // mode and copy parser/grammar/format/triggers without re-emitting the
+    // tool schemas in each agent's suffix.
+    let spineFmt: FormatConfig | null = null;
+    if (opts.systemPrompt !== undefined) {
+      const enableThinking = opts.enableThinking ?? true;
+
+      // THE BARRIER. Every image is normalized and committed BEFORE a single
+      // marker is emitted or any KV is touched, so a failure on image N leaves
+      // no markers, no prefill and no published descriptors — only unreachable
+      // content-addressed blobs, which are harmless. `bitmaps` below is what the
+      // projector will actually decode: the admitted representations, not the
+      // raw input, because those are the bytes whose cells replay must rebuild.
+      const raw = opts.bitmaps ?? [];
+      const prepared = raw.length > 0
+        ? yield* prepareBatch(ingress, attachments, raw)
+        : { attachments: [], bitmaps: [] };
+      const bitmaps = prepared.bitmaps as Uint8Array[];
+      // Marker injection goes through the SDK's `mediaContent` — the one place
+      // media_marker parts are emitted — so the spine header, a user turn and a
+      // tool result cannot drift apart in how they mark media. It returns the
+      // bare string when there are no bitmaps, which is the text-path shape.
+      //
+      // The spine does not use a delta builder: it needs the whole
+      // FormattedChatResult for `spineFmt` (grammar/format/parser/triggers) and
+      // the messages JSON for the trace seed, neither of which a
+      // `MultimodalDelta` carries. Sharing the marker grammar is the part that
+      // matters; the rest of this assembly is legitimately spine-specific.
+      const messages = JSON.stringify([
+        { role: "system", content: mediaContent(opts.systemPrompt, bitmaps) },
+      ]);
+      const fmtOpts: Record<string, unknown> = {
+        enableThinking,
+        // Header ends at <|im_end|>; agents append <|im_start|>user…assistant
+        // markers as their suffix. Without this, the template would emit a
+        // trailing assistant generation prompt and corrupt the boundary.
+        addGenerationPrompt: false,
+      };
+      if (opts.tools && opts.tools.length > 0) {
+        fmtOpts.tools = createToolkit(opts.tools).toolsJson;
+      }
+      const formatted = ctx.formatChatSync(messages, fmtOpts);
+      // Spine-seed emission for trace replay (`extractSpineSeed`). Captures
+      // the rendered chat prompt verbatim so a later `reconstructBranch`
+      // can rebuild this exact KV state in a fresh context.
+      //
+      // WRITE-AHEAD, on BOTH rails: the seed says what this spine INTENDS to
+      // prefill, so a prefill that then fails still leaves a run that can be
+      // rebuilt — and a failed multimodal prefill poisons the branch, which is
+      // exactly when replay is the only way back. `branch:prefill` below is the
+      // other half of the pair and asserts the opposite: it is written only
+      // after the KV actually moved.
+      //
+      // `tokenCount` is omitted on the embedding rail — mtmd owns tokenization
+      // there and no honest count exists before the native call returns. The
+      // count that landed rides `branch:prefill`.
+      const writeSpineSeed = (tokenCount?: number): void => {
+        tw.write({
+          traceId: tw.nextId(),
+          parentTraceId: scopeId,
+          ts: performance.now(),
+          type: "prompt:format",
+          promptText: formatted.prompt,
+          tokenCount,
+          // Roots ride the seed WRITE-AHEAD: the barrier committed the content
+          // before any prefill, so a failed multimodal prefill still leaves a
+          // seed that replay can rebuild from. `branch:prefill` below keeps
+          // the success-only copy.
+          ...(prepared.attachments.length > 0
+            ? { attachments: prepared.attachments }
+            : {}),
+          messages,
+          tools: opts.tools && opts.tools.length > 0
+            ? createToolkit(opts.tools).toolsJson
+            : undefined,
+          role: "spine",
+        });
+      };
+
+      let headerCells = 0;
+      let attached: readonly Attachment[] | undefined;
+      if (bitmaps.length > 0) {
+        writeSpineSeed();
+        const counts = yield* call(() =>
+          spine.prefillMultimodal(formatted.prompt, bitmaps));
+        headerCells = counts.tokensDecoded;
+        // Already committed by the barrier above — this only carries the roots
+        // onto the trace. Recording used to happen HERE, after the prefill, so
+        // a failed write left media in the cache that could never be replayed.
+        attached = prepared.attachments;
+      } else {
+        const headerTokens = ctx.tokenizeSync(formatted.prompt, false);
+        writeSpineSeed(headerTokens.length);
+        headerCells = headerTokens.length;
+        if (headerTokens.length > 0) {
+          yield* call(() => spine.prefill(headerTokens));
+        }
+      }
+      if (headerCells > 0) {
+        tw.write({
+          traceId: tw.nextId(),
+          parentTraceId: scopeId,
+          ts: performance.now(),
+          type: "branch:prefill",
+          branchHandle: spine.handle,
+          cells: headerCells,
+          role: "spineHeader",
+          ...(attached ? { attachments: attached } : {}),
+        });
+      }
+      spineFmt = {
+        format: formatted.format,
+        reasoningFormat: formatted.reasoningFormat,
+        generationPrompt: formatted.generationPrompt,
+        parser: formatted.parser,
+        grammar: formatted.grammar,
+        grammarLazy: formatted.grammarLazy,
+        grammarTriggers: formatted.grammarTriggers,
+        enableThinking,
+      };
+    }
     if (spineFmt) yield* SpineFmt.set(spineFmt);
     return yield* body(spine, prefillTokens.length);
   } finally {

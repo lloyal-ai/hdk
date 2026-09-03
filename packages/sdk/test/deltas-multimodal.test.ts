@@ -59,7 +59,19 @@ describe('buildUserDeltaMultimodal', () => {
     expect(d.sep).toEqual(ctx.getTurnSeparator());
     expect(markerCount(d.prompt)).toBe(2);
     expect(d.prompt).toContain('what is in these?');
-    expect(d.bitmaps).toBe(images);
+    expect(d.bitmaps).toEqual(images);
+  });
+
+  it('snapshots the images — a later mutation cannot desync markers from bitmaps', () => {
+    // The prompt fixed its marker count when the delta was built; the bitmaps
+    // must be the same set at prefill time, whatever the caller does to its
+    // array in between.
+    const ctx = new MockSessionContext();
+    const images = img(2);
+    const d = buildUserDeltaMultimodal(ctx, 'q', images);
+    images.push(new Uint8Array([9, 9, 9]));
+    expect(d.bitmaps).toHaveLength(2);
+    expect(markerCount(d.prompt)).toBe(d.bitmaps.length);
   });
 
   it('stops at the string stage — the prompt is not tokenized here', () => {

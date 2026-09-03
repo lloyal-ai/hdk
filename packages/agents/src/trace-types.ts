@@ -318,7 +318,9 @@ export type TraceEvent =
   // spawns), `agent:done` ends it at the drop or return. Recovery events
   // (`pool:recovery*`) may follow `agent:done` for the same agent — a span
   // consumer that wants the recovery tail extends to the last such event.
-  | TraceEventBase & { type: 'agent:spawn'; agentId: number; parentAgentId: number }
+  | TraceEventBase & { type: 'agent:spawn'; agentId: number; parentAgentId: number;
+      /** DAG dependency edges the spec declared (`AgentTaskSpec.after`); absent when none. */
+      after?: number[] }
   | TraceEventBase & { type: 'agent:done'; agentId: number }
 
   // ── Agent per-turn output ────────────────────
@@ -360,7 +362,10 @@ export type TraceEvent =
       agentId: number;
       tool: string;
       result: unknown;
-      prefillTokenCount: number;
+      /** KV cells the settled result cost — tokens on the token rail, cells on
+       *  the media rail (an image's cells are not tokens: M-RoPE makes the
+       *  units differ), so the one unit every prefill event already speaks. */
+      cells: number;
       durationMs: number;
     }
   // Fan-out determinism: the ORDERED tool results scatter-prefilled in one

@@ -304,9 +304,10 @@ export interface MultimodalPrefillResult {
    *  that: six agents settling images must not lose five because one page was
    *  corrupt, and pruning the right branch requires knowing which one it was.
    *  Set ⇒ classify by `rc` and `partial` ({@link DecodeError}): intact only
-   *  when `rc === 1 && !partial`; anything else is POISONED — prune and replay
-   *  from content, never resume (`decode_segments` is not atomic and
-   *  partial-range KV ops are meaningless on recurrent layers).
+   *  when the failing call restored state (`rc` 1 or -1) and `!partial`;
+   *  anything else is POISONED — prune and replay from content, never resume
+   *  (`decode_segments` is not atomic and partial-range KV ops are
+   *  meaningless on recurrent layers).
    *
    *  `Branch.prefillMultimodal` throws instead of setting this — it is a
    *  cohort of one, where a throw is the friendlier shape. */
@@ -316,11 +317,13 @@ export interface MultimodalPrefillResult {
 /**
  * What a failed `llama_decode` left behind, as the kernel reports it (the
  * same two fields as liblloyal's `DecodeError`): `rc` classifies the failing
- * call — `1` no KV slot, `-1` invalid batch (both restored that call), `2`
- * aborted, `< -1` fatal — and `partial` says whether earlier chunks of the
- * same operation landed. One rule, true on every path: the branch is intact
- * iff `rc === 1 && !partial` — retry once the KV has room. Anything else ⇒
- * prune the branch and replay.
+ * call — `1` no KV slot and `-1` invalid batch both restored that call, `2`
+ * aborted and `< -1` fatal did not — and `partial` says whether earlier
+ * chunks of the same operation landed. One rule, true on every path: the
+ * branch is INTACT iff the failing call restored state (`rc` 1 or -1) and
+ * `!partial`. Intact with 1 is a capacity wait — retry once the KV has room;
+ * intact with -1 is the input — do not resend the same delta. Anything else
+ * ⇒ prune the branch and replay.
  *
  * @category Branching
  */

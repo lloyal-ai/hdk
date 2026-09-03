@@ -152,7 +152,8 @@ export class BranchStore {
    * branches were mutated, and every caller here needs that — see
    * {@link MultimodalPrefillResult.error}. A failed entry's `rc` and `partial`
    * say whether its branch is still intact ({@link DecodeError}); anything but
-   * `rc === 1 && !partial` is POISONED: prune it and replay from content.
+   * a restored call (`rc` 1 or -1) with `!partial` is POISONED: prune it and
+   * replay from content.
    *
    * @param entries - One `[branch, delta]` pair per prefill, in dispatch order
    * @returns One result per entry, positionally

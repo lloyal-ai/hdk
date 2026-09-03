@@ -13,6 +13,12 @@ import { join } from 'node:path';
 import { AddressInfo } from 'node:net';
 import { FileAttachmentStore } from '@lloyal-labs/media/node';
 import { createContentRoutes } from '../src/content-routes';
+import type { Attachment } from '@lloyal-labs/media';
+
+/** A fabricated ROOT for ingress fakes — branded here, once, so a fake cannot
+ *  hand the route a bare descriptor by accident (the contract the route keeps). */
+const fakeRoot = (digest: string, size: number): Attachment =>
+  ({ mediaType: 'image/png', digest, size }) as Attachment;
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
 const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 9, 9, 9]);
@@ -47,6 +53,39 @@ async function withServer<T>(
 }
 
 describe('content routes', () => {
+  it('answers a malformed percent escape with 400, never 500', async () => {
+    const { store } = fixture();
+    await withServer({ store }, async (base) => {
+      // decodeURIComponent throws on these; that is client input, not a server fault.
+      const head = await fetch(`${base}/v1/content/%`, { method: 'HEAD' });
+      expect(head.status).toBe(400);
+      const rep = await fetch(`${base}/v1/media/%/representations/0`);
+      expect(rep.status).toBe(400);
+    });
+  });
+
+  it('sends 408 at the deadline even when the ingress ignores its signal', async () => {
+    const { store } = fixture();
+    await withServer(
+      // An ingress that never settles and never looks at the signal — a decode
+      // already inside sharp behaves exactly like this.
+      { store, uploadTimeoutMs: 150, ingest: () => new Promise(() => {}) },
+      async (base) => {
+        const res = await fetch(`${base}/v1/media/ingress`, {
+          method: 'POST', body: PNG, signal: AbortSignal.timeout(3_000),
+        });
+        expect(res.status).toBe(408);
+      },
+    );
+  });
+
+  it('the ingress contract returns an attachment ROOT, not any descriptor (type-level)', () => {
+    const plain = { mediaType: 'image/png', digest: 'sha256:' + '0'.repeat(64), size: 1 };
+    // @ts-expect-error a bare Descriptor must not satisfy `ingest` — only a manifest root may come back
+    const routes = createContentRoutes({ store: fixture().store, ingest: async () => plain });
+    expect(typeof routes).toBe('function');
+  });
+
   it('serves the admitted representation, never the source', async () => {
     const { store, root, source } = fixture();
     await withServer({ store }, async (base) => {
@@ -174,7 +213,7 @@ describe('content routes', () => {
     // promise and the socket for the life of the process — enough of them
     // starve the host without any single limit being exceeded.
     await withServer(
-      { store, ingest: async () => ({ mediaType: 'image/png', digest: 'sha256:' + '0'.repeat(64), size: 1 }), uploadTimeoutMs: 150 },
+      { store, ingest: async () => fakeRoot('sha256:' + '0'.repeat(64), 1), uploadTimeoutMs: 150 },
       async (base) => {
         const stalled = new ReadableStream<Uint8Array>({
           start(controller) {
@@ -204,7 +243,7 @@ describe('content routes', () => {
         uploadTimeoutMs: 5_000,
         ingest: async (bytes) => {
           ingested = bytes;
-          return { mediaType: 'image/png', digest: 'sha256:' + '1'.repeat(64), size: bytes.byteLength };
+          return fakeRoot('sha256:' + '1'.repeat(64), bytes.byteLength);
         },
       },
       async (base) => {

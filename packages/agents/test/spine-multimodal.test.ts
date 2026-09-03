@@ -60,6 +60,19 @@ function spineBody(
   };
 }
 
+describe('withSpine failure', () => {
+  it('a failed multimodal prefill prunes the spine before the error escapes', async () => {
+    const ctx = new MockSessionContext({ nCtx: 16384, cellsUsed: 0 });
+    ctx.mockMultimodalError = () => ({ message: 'no KV slot', rc: 1 });
+    const trace = new CapturingTraceWriter();
+    await expect(run(spineBody(ctx, trace, img(1)))).rejects.toThrow(/no KV slot/);
+    // The branch the spine allocated is gone: its prune is on the trace and no
+    // cells remain — the setup after branch creation is inside the pruning scope.
+    expect(trace.events.some(e => e.type === 'branch:prune')).toBe(true);
+    expect(ctx.cellsUsed).toBe(0);
+  });
+});
+
 async function runSpine(bitmaps: Uint8Array[] | undefined) {
   const ctx = new MockSessionContext({ nCtx: 16384, cellsUsed: 0 });
   const trace = new CapturingTraceWriter();
