@@ -555,6 +555,11 @@ export function createImageIngress(
       // else through untouched — it is not a validation gate. It is not a
       // resource boundary either: the transport bounds body size before this.
       const norm = await normalizeImage(bytes, { ...opts, ...(signal ? { signal } : {}) });
+      // A decode already inside sharp cannot be interrupted, so the signal may
+      // have fired while it ran. The caller gave up; the route has answered
+      // 408. Nothing may be committed on its behalf now — the decode was
+      // discarded work, and it stays that way.
+      if (signal?.aborted) throw aborted();
 
       // A derivation record describes a derivation that HAPPENED. Writing it
       // on a pass-through would annotate bytes nobody re-encoded with a

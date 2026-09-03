@@ -31,6 +31,8 @@
     "downlevelIteration": true,
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "noEmit": true,
+    // The cutter's core is plain ESM JavaScript; its test imports it.
+    "allowJs": true,
     "composite": false,
     "declaration": false,
     "declarationMap": false,
@@ -57,6 +59,7 @@
   },
   "include": [
     "packages/*/test/**/*.ts",
-    "packages/abilities/*/test/**/*.ts"
+    "packages/abilities/*/test/**/*.ts",
+    "scripts/*.test.ts"
   ]
 }

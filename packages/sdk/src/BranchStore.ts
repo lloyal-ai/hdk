@@ -134,6 +134,7 @@ export class BranchStore {
       tokenArrays.push(tokens);
     }
     await this._ctx._storePrefill(handles, tokenArrays);
+    for (const [branch] of entries) branch._endTail();
   }
 
   /**
@@ -173,7 +174,11 @@ export class BranchStore {
       prompts.push(delta.prompt);
       bitmaps.push(delta.bitmaps);
     }
-    return this._ctx._storePrefillMultimodal(handles, sepTokens, prompts, bitmaps);
+    const results = await this._ctx._storePrefillMultimodal(handles, sepTokens, prompts, bitmaps);
+    // A landed entry ended its branch's text stream; a failed one is pruned
+    // by the caller, tail and all.
+    results.forEach((r, i) => { if (!r.error) entries[i][0]._endTail(); });
+    return results;
   }
 
   /**

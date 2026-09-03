@@ -13,8 +13,8 @@ describe('parseCut', () => {
   it('accepts a non-negative integer and nothing else', () => {
     expect(parseCut('2')).toBe(2);
     expect(parseCut('0')).toBe(0);
-    for (const bad of [undefined, '', 'x', '-1', '1.5', 'NaN']) {
-      expect(() => parseCut(bad as string), String(bad)).toThrow(/--cut/);
+    for (const bad of [undefined, '', 'x', '-1', '1.5', 'NaN', '9'.repeat(400)]) {
+      expect(() => parseCut(bad as string), String(bad).slice(0, 12)).toThrow(/--cut/);
     }
   });
 });
@@ -56,6 +56,17 @@ describe('planAlphas', () => {
     });
   });
 
+  it('a prerelease FALLBACK is the pending base too — a package not yet on the registry keeps its set', () => {
+    // The manifest already says 0.2.0-alpha.1 after cut 1; a 404 at cut 2 must
+    // continue 0.2.0-alpha.2, not treat 0.2.0 as a shipped stable and bump it.
+    const alphas = planAlphas({
+      cut: 2,
+      packages: [{ name: '@lloyal-labs/media', level: 'minor', fallback: '0.2.0-alpha.1' }],
+      view: () => { throw e404; },
+    });
+    expect(alphas['@lloyal-labs/media']).toBe('0.2.0-alpha.2');
+  });
+
   it('a prerelease latest is the pending base, never bumped again', () => {
     const alphas = planAlphas({
       cut: 3,
@@ -83,13 +94,18 @@ describe('rewriteManifest', () => {
     expect(pkg.peerDependencies['@lloyal-labs/lloyal-agents']).toBe('6.0.0-alpha.1');
   });
 
-  it('leaves a package outside the cut untouched — its published version cannot carry new contents', () => {
+  it('a workspace member outside the cut keeps its version but its pins follow the set', () => {
+    // The workspace must resolve as one set: an ability whose peer still named
+    // -alpha.1 after cut 2 would fail the install. Its VERSION is not the
+    // cutter's to move — abilities ship through the signed catalog, and their
+    // release bumps it there.
     const pkg = {
       name: '@lloyal-labs/web-ability', version: '2.0.1',
-      peerDependencies: { '@lloyal-labs/lloyal-agents': '^5' },
+      peerDependencies: { '@lloyal-labs/lloyal-agents': '6.0.0-alpha.0', effection: '^4' },  // the previous set
     };
-    const before = JSON.stringify(pkg);
-    expect(rewriteManifest(pkg, { version: undefined, alphas })).toBe(false);
-    expect(JSON.stringify(pkg)).toBe(before);
+    expect(rewriteManifest(pkg, { version: undefined, alphas })).toBe(true);
+    expect(pkg.version).toBe('2.0.1');
+    expect(pkg.peerDependencies['@lloyal-labs/lloyal-agents']).toBe(alphas['@lloyal-labs/lloyal-agents']);
+    expect(pkg.peerDependencies.effection).toBe('^4');
   });
 });

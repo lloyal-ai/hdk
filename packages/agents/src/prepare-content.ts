@@ -31,11 +31,14 @@ import { materialize } from '@lloyal-labs/media';
  * must NOT leave is a half-admitted query: zero prefills, zero markers, zero
  * published descriptors, unchanged KV.
  *
- * Sequential rather than concurrent: order is part of the contract, and
- * nothing here is slow enough to trade that for. An Operation rather than an
- * async function, so a halted scope cancels the batch BETWEEN items instead of
- * leaving it running detached — the promise boundary into the ingress is
- * crossed with `call()`, which is where cancellation is observed.
+ * Concurrent, in input order: the ingests overlap (`all`), because
+ * normalization is the expensive step and the normalizer already bounds
+ * itself process-wide — a batch of N must not cost the sum of N decodes while
+ * permits sit idle — and `all` returns results in the order given, so order
+ * stays part of the contract. An Operation rather than an async function, so
+ * a halted scope cancels the whole batch instead of leaving it running
+ * detached — the promise boundary into the ingress is crossed with `call()`,
+ * and the scope's signal reaches the ingress itself.
  *
  * **Scope this claim carefully.** This makes media *preparation* atomic with
  * respect to the prefill. It does NOT make the prefill itself transactional —

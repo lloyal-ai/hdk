@@ -210,6 +210,18 @@ export class Branch {
   async prefill(tokens: number[]): Promise<void> {
     this._ensureNotDisposed();
     await this._ctx._storePrefill([this._handle], [tokens]);
+    this._endTail();
+  }
+
+  /**
+   * An external prefill ends the current text stream: a fragment held from
+   * the previous turn can never be completed by the next one, so it must not
+   * be glued onto that turn's first bytes. Forks and generated-token commits
+   * keep the tail; only new content entering the KV clears it.
+   * @internal
+   */
+  _endTail(): void {
+    this._held = new Uint8Array(0);
   }
 
   /**
@@ -249,6 +261,7 @@ export class Branch {
       if (result.rc !== undefined) Object.assign(err, { rc: result.rc, partial: result.partial === true });
       throw err;
     }
+    this._endTail();
     return result;
   }
 

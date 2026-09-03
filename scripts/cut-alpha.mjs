@@ -52,8 +52,9 @@ const view = (name) =>
 const manifestOf = (dir) => JSON.parse(readFileSync(`${dir}/package.json`, 'utf8'));
 const cutPackages = Object.entries(CUTS).map(([dir, level]) => {
   const pkg = manifestOf(dir);
-  // A prior cut's -alpha.N is not a base; the manifest's release triple is.
-  return { dir, name: pkg.name, level, fallback: pkg.version.split('-')[0] };
+  // For a package the registry has never seen, the manifest IS the base — a
+  // prior cut's -alpha.N is the pending release, continued, never bumped again.
+  return { dir, name: pkg.name, level, fallback: pkg.version };
 });
 const alphas = planAlphas({
   cut: CUT,
@@ -67,16 +68,19 @@ const alphas = planAlphas({
 console.log(`cut ${CUT}${DRY ? ' (dry run)' : ''}:`);
 for (const [n, v] of Object.entries(alphas)) console.log(`  ${n} -> ${v}`);
 
-// Only the cut packages are rewritten. Abilities keep their published
-// versions and their peer ranges; the peer-range change they need ships as
-// their own release.
+// Every workspace manifest follows the set's exact pins; only a cut package's
+// version moves. The abilities are members too (their peers name the set) but
+// ship through the signed catalog, not this repo's npm loop — their release
+// bumps their versions there.
 const nameOf = Object.fromEntries(cutPackages.map((p) => [p.dir, p.name]));
-for (const dir of readdirSync('packages').map((d) => `packages/${d}`).filter((d) => d in CUTS && existsSync(`${d}/package.json`))) {
+const dirs = ['packages', 'packages/abilities'].flatMap((root) =>
+  readdirSync(root).map((d) => `${root}/${d}`).filter((d) => existsSync(`${d}/package.json`)));
+for (const dir of dirs) {
   const path = `${dir}/package.json`;
   const pkg = manifestOf(dir);
-  const before = JSON.stringify(pkg);
-  if (rewriteManifest(pkg, { version: alphas[nameOf[dir]], alphas })) {
-    console.log(`  ${path}: ${JSON.parse(before).version} -> ${pkg.version}, pins exact`);
+  const before = JSON.parse(JSON.stringify(pkg));
+  if (rewriteManifest(pkg, { version: dir in CUTS ? alphas[nameOf[dir]] : undefined, alphas })) {
+    console.log(`  ${path}: ${before.version} -> ${pkg.version}, pins exact`);
     if (!DRY) writeFileSync(path, JSON.stringify(pkg, null, 2) + '\n');
   }
 }

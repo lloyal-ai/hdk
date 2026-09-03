@@ -163,6 +163,31 @@ describe('Branch produce/commit — text is boundary-aligned, tail advances on c
     expect(b.produceSync().text).toBe('📋');
   });
 
+  it('an external prefill ends the held tail — a torn fragment cannot cross turns', async () => {
+    // A generation that stops mid-character leaves [f0 9f] held. A tool
+    // result is then prefilled and the NEXT turn begins; its first bytes must
+    // not be glued to the previous turn's fragment.
+    const { ctx, next } = tornCtx();
+    const b = Branch.create(ctx, 0);
+    await b.commit(b.produceSync().token);           // holds [f0 9f]
+    await b.prefill([7]);                             // an external delta lands
+    next(3);
+    expect(b.produceSync().text).toBe('t3');          // not "\uFFFDt3"
+  });
+
+  it('the batched prefill ends every branch tail (the agent-pool settle path)', async () => {
+    const { BranchStore } = await import('../src/BranchStore');
+    const { ctx, next } = tornCtx();
+    const store = new BranchStore(ctx);
+    const a = Branch.create(ctx, 0);
+    const b = Branch.create(ctx, 0);
+    await store.commit([[a, a.produceSync().token], [b, b.produceSync().token]]);
+    await store.prefill([[a, [7]], [b, [8]]]);
+    next(3);
+    expect(a.produceSync().text).toBe('t3');
+    expect(b.produceSync().text).toBe('t3');
+  });
+
   it('a fork continues the parent stream mid-character', async () => {
     const { ctx, next } = tornCtx();
     const b = Branch.create(ctx, 0);
