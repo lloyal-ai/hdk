@@ -11,7 +11,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { run } from 'effection';
-import { MockSessionContext } from '../../sdk/test/MockSessionContext';
+import { MockSessionContext } from '../../sdk/src/testing.js';
 import { BranchStore } from '../../sdk/src/BranchStore';
 import { withSpine } from '../src/spine';
 import { extractSpineSeed } from '../src/replay';

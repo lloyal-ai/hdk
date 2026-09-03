@@ -15,7 +15,7 @@ import type { ContentIngress } from '@lloyal-labs/media';
 import { mkdtempSync, existsSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MockSessionContext } from '../../sdk/test/MockSessionContext';
+import { MockSessionContext } from '../../sdk/src/testing.js';
 import { BranchStore } from '../../sdk/src/BranchStore';
 import { NullAttachmentStore } from '@lloyal-labs/media';
 import type { AttachmentStore } from '@lloyal-labs/media';

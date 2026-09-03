@@ -14,7 +14,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { createScope, suspend } from 'effection';
-import { MockSessionContext } from '../../sdk/test/MockSessionContext';
+import { MockSessionContext } from '../../sdk/src/testing.js';
 import { BranchStore } from '../../sdk/src/BranchStore';
 import { Ctx, Store, Trace, Events } from '../src/context';
 import { useAgent } from '../src/use-agent';

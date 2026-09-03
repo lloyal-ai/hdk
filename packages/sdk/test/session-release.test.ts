@@ -14,7 +14,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { Branch, BranchStore, Session } from '../src/index';
-import { MockSessionContext } from './MockSessionContext';
+import { MockSessionContext } from '../src/testing.js';
 import type { SessionContext } from '../src/types';
 
 type Release = { branchHandle: number; position: number };

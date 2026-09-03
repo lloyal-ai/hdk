@@ -15,7 +15,7 @@
 import { describe, it, expect } from 'vitest';
 import { run, createChannel, scoped } from 'effection';
 import type { Operation, Channel } from 'effection';
-import { createMockSdk } from '../../sdk/test/MockSessionContext';
+import { createMockSdk } from '../../sdk/src/testing.js';
 import { useAgentPool } from '../src/agent-pool';
 import { parallel } from '../src/orchestrators';
 import { Ctx, Store, Events, Trace } from '../src/context';

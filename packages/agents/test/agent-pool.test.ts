@@ -12,7 +12,7 @@ import { describe, it, expect } from 'vitest';
 import { MediaTool, PNG_BYTES, MEDIA_TEST_NCTX, mediaFailures } from './helpers/media';
 import { run, createChannel, createSignal, spawn, each, scoped, call } from 'effection';
 import type { Operation, Channel } from 'effection';
-import { MockSessionContext, createMockSdk } from '../../sdk/test/MockSessionContext';
+import { MockSessionContext, createMockSdk } from '../../sdk/src/testing.js';
 import type { ChatFormat, ParseChatOutputOptions, ParseChatOutputResult } from '@lloyal-labs/sdk';
 import { useAgentPool } from '../src/agent-pool';
 import { parallel } from '../src/orchestrators';

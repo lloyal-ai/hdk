@@ -1,5 +1,8 @@
 /**
- * Type-safe in-memory SessionContext mock for testing.
+ * The sdk's PUBLISHED testing surface — a type-safe in-memory
+ * SessionContext mock. Import it as `@lloyal-labs/sdk/dist/testing.js`:
+ * scaffolded harnesses drive their behavioural suites over it, and the
+ * in-repo suites (sdk, agents invariants) use the same entry.
  *
  * Implements the full {@link SessionContext} interface with a branch-tracking
  * state machine. All SDK classes ({@link Branch}, {@link BranchStore},
@@ -46,10 +49,10 @@ import type {
   ParseChatOutputResult,
   ParseChatOutputOptions,
   MultimodalPrefillResult,
-} from '../src/types.js';
-import { Branch } from '../src/Branch.js';
-import { BranchStore } from '../src/BranchStore.js';
-import { Session } from '../src/Session.js';
+} from './types.js';
+import { Branch } from './Branch.js';
+import { BranchStore } from './BranchStore.js';
+import { Session } from './Session.js';
 
 /** Internal branch state tracked by the mock */
 interface BranchState {

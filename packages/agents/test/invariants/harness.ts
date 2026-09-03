@@ -1,6 +1,6 @@
 import { run, createChannel, scoped, createSignal, sleep, call, spawn } from 'effection';
 import type { Channel } from 'effection';
-import { MockSessionContext } from '../../../sdk/test/MockSessionContext';
+import { MockSessionContext } from '../../../sdk/src/testing.js';
 import { Branch } from '../../../sdk/src/Branch';
 import { BranchStore } from '../../../sdk/src/BranchStore';
 import type { ChatFormat, ParseChatOutputOptions, ParseChatOutputResult, MultimodalPrefillResult } from '@lloyal-labs/sdk';

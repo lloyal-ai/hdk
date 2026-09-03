@@ -15,7 +15,7 @@
  * use-after-free, and nothing else in the suite states the dependency.
  */
 import { describe, it, expect } from 'vitest';
-import { MockSessionContext } from './MockSessionContext';
+import { MockSessionContext } from '../src/testing.js';
 import { Branch } from '../src/Branch';
 
 const ctx = () => new MockSessionContext({ nCtx: 4096, cellsUsed: 0 });

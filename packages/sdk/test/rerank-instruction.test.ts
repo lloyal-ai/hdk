@@ -17,7 +17,7 @@
 import { describe, it, expect } from 'vitest';
 import { Rerank, RerankCalibrationError, RETRIEVAL_INSTRUCTION } from '@lloyal-labs/sdk';
 import type { SessionContext, RerankInstruction } from '@lloyal-labs/sdk';
-import { MockSessionContext } from './MockSessionContext';
+import { MockSessionContext } from '../src/testing.js';
 
 // `satisfies`, not an annotation: `RerankInstruction.smokeTest` is optional, so
 // annotating widens this fixture to `T | undefined` and every `{ ...CUSTOM

@@ -9,7 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import { splitCompleteUtf8, concatBytes } from '../src/utf8';
 import { Branch } from '../src/Branch';
-import { MockSessionContext } from './MockSessionContext';
+import { MockSessionContext } from '../src/testing.js';
 
 const ENC = new TextEncoder();
 

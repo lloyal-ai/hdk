@@ -7,7 +7,7 @@
  * because mtmd owns tokenization downstream.
  */
 import { describe, it, expect } from 'vitest';
-import { MockSessionContext } from './MockSessionContext';
+import { MockSessionContext } from '../src/testing.js';
 import {
   mediaContent,
   buildUserDeltaMultimodal,
