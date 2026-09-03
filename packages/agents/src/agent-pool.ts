@@ -6,7 +6,7 @@ import type { BranchStore } from '@lloyal-labs/sdk';
 import { Ctx, Store, Trace, TraceParent, CallingAgent, SpineFmt, GrantStoreCtx, WindDown, CancelAgent, Pause, Attachments, Ingress } from './context';
 import { prepareBatch } from './prepare-content';
 import type { FormatConfig } from './Agent';
-import { buildToolResultDelta, buildToolResultDeltaMultimodal, buildTurnDelta, buildUserDelta, decodeRcOf, deltaCells } from '@lloyal-labs/sdk';
+import { buildToolResultDelta, buildToolResultDeltaMultimodal, buildTurnDelta, buildUserDelta, decodeErrorOf, deltaCells } from '@lloyal-labs/sdk';
 import type { MultimodalDelta } from '@lloyal-labs/sdk';
 import type { Attachment } from '@lloyal-labs/media';
 import { useTraceScope } from './trace-scope';
@@ -1419,8 +1419,19 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           consecutiveFatalRc = 0;
           for (const t of tokenItems) bookSettled(t.agent, t.src, t.cells);
         } catch (err) {
-          const rc = decodeRcOf(err);
-          if (rc === 1 && !backendSuspect) {
+          const de = decodeErrorOf(err);
+          const rc = de?.rc;
+          if (rc === 1 && de?.partial && !backendSuspect) {
+            // No KV slot for a LATER chunk: the chunks before it landed and
+            // moved their branches' books, and the error does not say which.
+            // Re-queuing the cohort whole would decode the landed ones twice
+            // onto advanced positions, so the cohort takes the per-agent
+            // terminal instead — the kernel's rule: intact ⇔ rc == 1 && !partial.
+            for (const t of tokenItems) {
+              yield* failSettled(t.agent, 'tool_result_failed',
+                `partial prefill: ${err instanceof Error ? err.message : String(err)}`, rc);
+            }
+          } else if (rc === 1 && !backendSuspect) {
             // No KV slot for the batch; state restored — every branch is
             // INTACT. Re-queue the items whole: a sibling finishing frees
             // cells and they settle on a later tick. This used to take the
@@ -1453,10 +1464,11 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       //
       // Per-item outcomes, not a rejected promise: one agent's failure must
       // not cost its siblings their prefills. Each entry classifies by the
-      // llama_decode rc the worker attached (docs/self-healing.md): 1 and -1
-      // left the branch INTACT (state restored); only 2 / < -1 poison it
-      // (decode_segments is not atomic, and partial-range KV ops are
-      // meaningless on recurrent layers) — those are pruned, never resumed.
+      // rc and partial flag the worker attached (docs/self-healing.md): 1 and
+      // -1 restored the failing call, so the branch is INTACT unless `partial`
+      // says an earlier chunk landed; 2 / < -1 poison it (decode_segments is
+      // not atomic, and partial-range KV ops are meaningless on recurrent
+      // layers). Anything not intact is pruned, never resumed.
       if (mediaItems.length > 0) {
         const results = yield* call(() =>
           store.prefillMultimodal(mediaItems.map(m => [m.agent.branch, m.delta] as [Branch, MultimodalDelta])));
@@ -1473,7 +1485,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           const a = m.agent;
           const rc = r.rc;
 
-          if (rc === 1 && !backendSuspect) {
+          if (rc === 1 && !r.partial && !backendSuspect) {
             // Intact — re-queue for a later tick, budgeted.
             const attempt = (deferAttempts.get(a.id) ?? 0) + 1;
             deferAttempts.set(a.id, attempt);
@@ -1487,7 +1499,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             continue;
           }
 
-          if (rc === -1 && !backendSuspect) {
+          if (rc === -1 && !r.partial && !backendSuspect) {
             // Invalid input, state restored — the branch is intact and the
             // item is deterministic: retrying loops. Drop it and tell the
             // model what it did not see, on the same channel the
@@ -1507,7 +1519,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             continue;
           }
 
-          // Poisoned (2 / < -1), an rc-less failure, or the tripwire is up.
+          // Poisoned (2 / < -1), partial (an earlier chunk landed), an rc-less
+          // failure, or the tripwire is up.
           if (rc === 2 || (rc !== undefined && rc < -1)) {
             consecutiveFatalRc++;
             if (consecutiveFatalRc >= BACKEND_TRIPWIRE_N) backendSuspect = true;

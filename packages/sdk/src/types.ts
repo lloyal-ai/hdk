@@ -289,20 +289,24 @@ export interface MultimodalPrefillResult {
   tokensDecoded: number;
   /** Branch position advance (< tokensDecoded under M-RoPE with images) */
   positionAdvance: number;
-  /** `llama_decode`'s raw return code when this entry failed with one —
-   *  the classification a caller acts on: `1` no KV slot (state restored,
-   *  the branch is INTACT — retry later); `-1` invalid batch (restored);
-   *  `2` aborted / `< -1` fatal (partial ubatches remain — POISONED).
-   *  Absent on success and for failures that never reached llama_decode. */
+  /** `llama_decode`'s raw return code when this entry failed with one. With
+   *  {@link partial} it classifies the failure — the rule is on
+   *  {@link DecodeError}. Absent on success and for failures that never
+   *  reached llama_decode. */
   rc?: number;
+  /** True when an earlier chunk of this entry landed before the failing call:
+   *  the branch moved, so it is not intact even though `rc` says the failing
+   *  call restored state. Present exactly when `rc` is. */
+  partial?: boolean;
   /** Why THIS entry failed, when it did — the cohort keeps going.
    *
    *  A rejected promise would lose which entries landed, and the caller needs
    *  that: six agents settling images must not lose five because one page was
    *  corrupt, and pruning the right branch requires knowing which one it was.
-   *  Set ⇒ this branch is POISONED, not merely unchanged: `decode_segments` is
-   *  not atomic and partial-range KV ops are meaningless on recurrent layers,
-   *  so the contract is prune and replay from content, never resume.
+   *  Set ⇒ classify by `rc` and `partial` ({@link DecodeError}): intact only
+   *  when `rc === 1 && !partial`; anything else is POISONED — prune and replay
+   *  from content, never resume (`decode_segments` is not atomic and
+   *  partial-range KV ops are meaningless on recurrent layers).
    *
    *  `Branch.prefillMultimodal` throws instead of setting this — it is a
    *  cohort of one, where a throw is the friendlier shape. */
@@ -310,16 +314,32 @@ export interface MultimodalPrefillResult {
 }
 
 /**
- * Read the `llama_decode` return code off a rejected native call, when the
- * binding attached one. The ONE place the rejection's shape is known — every
- * consumer classifies through this, never by matching message text.
+ * What a failed `llama_decode` left behind, as the kernel reports it (the
+ * same two fields as liblloyal's `DecodeError`): `rc` classifies the failing
+ * call — `1` no KV slot, `-1` invalid batch (both restored that call), `2`
+ * aborted, `< -1` fatal — and `partial` says whether earlier chunks of the
+ * same operation landed. One rule, true on every path: the branch is intact
+ * iff `rc === 1 && !partial` — retry once the KV has room. Anything else ⇒
+ * prune the branch and replay.
  *
  * @category Branching
  */
-export function decodeRcOf(err: unknown): number | undefined {
+export interface DecodeError {
+  rc: number;
+  partial: boolean;
+}
+
+/**
+ * Read the {@link DecodeError} off a rejected native call, when the binding
+ * attached one. The ONE place the rejection's shape is known — every consumer
+ * classifies through this, never by matching message text.
+ *
+ * @category Branching
+ */
+export function decodeErrorOf(err: unknown): DecodeError | undefined {
   if (typeof err === 'object' && err !== null && 'rc' in err) {
-    const rc = (err as { rc: unknown }).rc;
-    if (typeof rc === 'number' && Number.isInteger(rc)) return rc;
+    const { rc, partial } = err as { rc: unknown; partial?: unknown };
+    if (typeof rc === 'number' && Number.isInteger(rc)) return { rc, partial: partial === true };
   }
   return undefined;
 }

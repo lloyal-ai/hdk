@@ -243,7 +243,7 @@ export class MockSessionContext implements SessionContext {
         const f = typeof failure === 'string' ? { message: failure } : failure;
         out.push({
           tokensDecoded: 0, positionAdvance: 0, error: f.message,
-          ...(f.rc !== undefined ? { rc: f.rc } : {}),
+          ...(f.rc !== undefined ? { rc: f.rc, partial: f.partial === true } : {}),
         });
         continue;
       }
@@ -261,13 +261,13 @@ export class MockSessionContext implements SessionContext {
   }
 
   /** Fail selected cohort entries. Returns a message (optionally with the
-   *  llama_decode rc, as the native worker attaches it) to fail that entry,
+   *  llama_decode rc and partial flag, as the native worker attaches them) to fail that entry,
    *  null to let it through — lets a test drive the one-bad-image-among-
    *  siblings case and the rc-classified self-healing ladder. */
   mockMultimodalError?: (
     prompt: string,
     bitmaps: Uint8Array[],
-  ) => string | { message: string; rc?: number } | null;
+  ) => string | { message: string; rc?: number; partial?: boolean } | null;
 
   /** Cells one multimodal prefill consumes. Text stands in at one cell per 4
    *  chars, matching tokenizeSync, minus the markers the native walk replaces

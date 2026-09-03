@@ -150,8 +150,9 @@ export class BranchStore {
    * entry does not reject the call: it comes back with `error` set on its own
    * result, and the rest still land. A rejected promise would lose which
    * branches were mutated, and every caller here needs that — see
-   * {@link MultimodalPrefillResult.error}. A failed entry's branch is
-   * POISONED: prune it and replay from content.
+   * {@link MultimodalPrefillResult.error}. A failed entry's `rc` and `partial`
+   * say whether its branch is still intact ({@link DecodeError}); anything but
+   * `rc === 1 && !partial` is POISONED: prune it and replay from content.
    *
    * @param entries - One `[branch, delta]` pair per prefill, in dispatch order
    * @returns One result per entry, positionally

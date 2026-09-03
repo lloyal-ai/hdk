@@ -10,7 +10,7 @@ export { buildUserDelta, buildUserDeltaMultimodal, buildAssistantDelta, buildToo
 export type { DeltaOpts, MultimodalDelta } from './deltas';
 
 // ── Enums + constants ────────────────────────────────────────
-export { PoolingType, CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, ReasoningFormat, GrammarTriggerType, decodeRcOf } from './types';
+export { PoolingType, CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, ReasoningFormat, GrammarTriggerType, decodeErrorOf } from './types';
 
 // ── Types ────────────────────────────────────────────────────
 export type { ChatFormat } from './types';
@@ -32,7 +32,7 @@ export type {
   AdvancedSamplingParams,
   SamplingParams,
   SessionContext,
-  MultimodalPrefillResult,
+  MultimodalPrefillResult, DecodeError,
   Produced,
   RerankOptions,
   RerankResult,

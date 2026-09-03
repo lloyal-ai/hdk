@@ -1741,6 +1741,56 @@ describe('self-healing ladder', () => {
     expect((settleFailed as { rc?: number }).rc).toBe(1);
   });
 
+  it('token rail rc 1 + partial: an earlier chunk landed, so nothing is re-queued', async () => {
+    // The kernel's rule (liblloyal DecodeError): intact ⇔ rc == 1 && !partial.
+    // With `partial` set, some branches in the cohort advanced and the error
+    // does not say which; re-queuing the cohort whole would decode the landed
+    // ones twice onto advanced positions. The cohort fails and heals instead.
+    const spy = new SpyTool();
+    const tools = new Map<string, Tool>([['web_search', spy]]);
+    const { events, trace } = await runPool({
+      forkTokenQueues: [[1, STOP, STOP]],
+      ...callTool('web_search'),
+      tools, trace: true,
+      mutateCtx: (ctx) => {
+        let thrown = 0;
+        const orig = ctx._storePrefill.bind(ctx);
+        ctx._storePrefill = async (h, t) => {
+          if (spy.capturedContexts.length > 0 && thrown === 0) {
+            thrown++;
+            throw Object.assign(rcError('find_slot: no KV slot for the batch', 1), { partial: true });
+          }
+          return orig(h, t);
+        };
+      },
+    });
+    expect(trace.events.filter(e => e.type === 'pool:agentDefer')).toHaveLength(0);
+    const failures = ladderFailures(events);
+    expect(failures).toHaveLength(1);
+    expect((failures[0] as { reason: string }).reason).toBe('tool_result_failed');
+    const settleFailed = trace.events.find(e => e.type === 'pool:settleFailed');
+    expect((settleFailed as { rc?: number }).rc).toBe(1);
+  });
+
+  it('media rc 1 + partial: an earlier chunk landed — not intact, so no deferral', async () => {
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { events, trace } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      forkTokenQueues: [[1, STOP, STOP]],
+      ...callTool('rasterize'),
+      tools: toolMap, trace: true,
+      mutateCtx: (c) => {
+        let seen = 0;
+        c.mockMultimodalError = () =>
+          (seen++ === 0 ? { message: 'no KV slot', rc: 1, partial: true } : null);
+      },
+    });
+    expect(trace.events.filter(e => e.type === 'pool:agentDefer')).toHaveLength(0);
+    expect(mediaFailures(events)).toHaveLength(1);
+    const settleFailed = trace.events.find(e => e.type === 'pool:settleFailed');
+    expect((settleFailed as { rc?: number }).rc).toBe(1);
+  });
+
   it('media rc -1: the item is dropped, the note lands, the agent continues', async () => {
     const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
     const { events, trace } = await runPool({
