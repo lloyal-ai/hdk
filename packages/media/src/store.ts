@@ -75,8 +75,13 @@ export interface AttachmentStore {
    *  consults `index.json`: the index is an export and discovery catalogue,
    *  not the runtime authority. A lost concurrent index update can therefore
    *  hide an attachment from OCI tooling, but it can never invalidate a
-   *  recorded run. */
-  get(digest: string): Uint8Array | null;
+   *  recorded run.
+   *
+   *  `verify` rehashes the bytes and answers `null` when they no longer match
+   *  the digest — bit rot or a torn write. Replay asks for it, because
+   *  rebuilding cells from drifted bytes under the original digest is a
+   *  silent divergence; the HTTP serve path trusts the name. */
+  get(digest: string, opts?: { verify?: boolean }): Uint8Array | null;
   /** Resolve and validate a manifest. `null` when absent, unparsable, or not
    *  an artifact type this build understands. */
   getManifest(digest: string): AttachmentManifest | null;

@@ -341,7 +341,10 @@ export function createContentRoutes(
           .catch((e: unknown) => {
             const tooLarge = e instanceof TooLarge;
             const tooSlow = e instanceof TooSlow || ctrl.signal.aborted;
-            const code = tooLarge ? 413 : tooSlow ? 408 : 400;
+            // A full normalization queue is overload: retryable, not a client
+            // fault and not ours. `EBUSY` is the errno the ingress sets for it.
+            const busy = typeof e === 'object' && e !== null && (e as { code?: unknown }).code === 'EBUSY';
+            const code = tooLarge ? 413 : tooSlow ? 408 : busy ? 503 : 400;
             fail(res, code, e instanceof Error ? e.message : 'ingress failed');
             // Now that the status is on the wire, stop the upload. A stalled
             // client will not close on its own — that is the whole problem —

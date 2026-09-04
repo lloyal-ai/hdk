@@ -1,5 +1,6 @@
-import { call, ensure } from 'effection';
+import { ensure } from 'effection';
 import type { Operation } from 'effection';
+import { waitUntilSettled } from './combinators';
 import {
   Branch, buildAssistantDelta, buildToolResultDelta,
   buildToolResultDeltaMultimodal, buildTurnDelta, MEDIA_MARKER,
@@ -221,10 +222,10 @@ export function* reconstructBranch(checkpoint: BranchCheckpoint): Operation<Bran
   // multimodal path re-runs mtmd's tokenizer over the same prompt and bytes,
   // which is what makes the rebuilt cells match the originals.
   if (bitmaps.length > 0) {
-    yield* call(() => spine.prefillMultimodal(checkpoint.seedPrompt, bitmaps));
+    yield* waitUntilSettled( spine.prefillMultimodal(checkpoint.seedPrompt, bitmaps));
   } else {
     const seedTokens = ctx.tokenizeSync(checkpoint.seedPrompt, false);
-    yield* call(() => spine.prefill(seedTokens));
+    yield* waitUntilSettled( spine.prefill(seedTokens));
   }
 
   yield* replayTurns(spine, checkpoint.turns);
@@ -257,7 +258,7 @@ export function* replayTurns(
   const store = yield* Store.expect();
   for (const turn of turns) {
     const delta = buildTurnDelta(ctx, turn.userContent, turn.assistantContent);
-    yield* call(() => store.prefill([[branch, delta]]));
+    yield* waitUntilSettled( store.prefill([[branch, delta]]));
   }
 }
 
@@ -299,18 +300,18 @@ export function* replayAgentTurns(
   for (const r of records) {
     if (r.kind === 'assistant') {
       const tokens = buildAssistantDelta(ctx, r.text, opts);
-      yield* call(() => store.prefill([[branch, tokens]]));
+      yield* waitUntilSettled( store.prefill([[branch, tokens]]));
     } else if (r.kind === 'probe') {
       const tokens = ctx.tokenizeSync(r.text, false);
-      if (tokens.length > 0) yield* call(() => store.prefill([[branch, tokens]]));
+      if (tokens.length > 0) yield* waitUntilSettled( store.prefill([[branch, tokens]]));
     } else if (r.attachments && r.attachments.length > 0) {
       const { bitmaps } = materialize(attachments, r.attachments);
       const delta = buildToolResultDeltaMultimodal(
         ctx, r.resultStr, r.callId, [...bitmaps], opts);
-      yield* call(() => branch.prefillMultimodal(delta.prompt, delta.bitmaps, delta.sep));
+      yield* waitUntilSettled( branch.prefillMultimodal(delta.prompt, delta.bitmaps, delta.sep));
     } else {
       const tokens = buildToolResultDelta(ctx, r.resultStr, r.callId, opts);
-      yield* call(() => store.prefill([[branch, tokens]]));
+      yield* waitUntilSettled( store.prefill([[branch, tokens]]));
     }
   }
 }

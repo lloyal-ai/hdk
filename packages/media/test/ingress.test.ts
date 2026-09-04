@@ -23,12 +23,20 @@ describe('createImageIngress', () => {
     const putAttachment = vi.spyOn(store, 'putAttachment');
     const ingress = createImageIngress(store);
 
-    // Not yet aborted when ingest starts (the queue admits it); aborted on the
-    // next macrotask, which lands while sharp is inside the decode.
+    // Fixture FIRST: nothing may abort while it is being built, or the
+    // signal is already dead when ingest() is entered and the throw comes
+    // from the gate's preflight — a different guard than the one under test.
+    const bytes = await png();
     const ctrl = new AbortController();
-    setTimeout(() => ctrl.abort(), 0);
+    // ingest() runs synchronously through normalizeImage up to the gate's
+    // `await acquire()`; with permits free, acquire's preflight and its
+    // post-grant check have both already run by the time this returns.
+    const pending = ingress.ingest(bytes, ctrl.signal);
+    // So the only abort check left is the one AFTER normalization, before the
+    // first store write. Aborting here proves THAT guard, not the preflight.
+    ctrl.abort();
 
-    await expect(ingress.ingest(await png(), ctrl.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     expect(putBlob).not.toHaveBeenCalled();
     expect(putAttachment).not.toHaveBeenCalled();
   });

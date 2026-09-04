@@ -54,8 +54,12 @@ export function* reduce<T, A>(
  * carries the result; the `finally` — which Effection guarantees to run on
  * halt and lets us yield within — waits for `p` to settle, swallowing its
  * outcome (a body rejection is already the caller's). The wait is bounded to
- * the one call in flight: on the serial loop fiber that is a single step or a
- * single prefill.
+ * the one call the issuing operation has in flight — a single step or a single
+ * prefill — so halting stays speedy in the only sense available.
+ *
+ * Every Effection site that awaits a store decode goes through this; the
+ * invariant test in `test/native-await-invariant.test.ts` refuses a bare
+ * `call(() => …prefill())` so the rule is checked, not remembered.
  *
  * @param p - The promise returned by a native-backed SDK call.
  * @returns The resolved value on the normal path; the body rejection propagates.

@@ -1,5 +1,6 @@
-import { call } from "effection";
+
 import type { Operation } from "effection";
+import { waitUntilSettled } from "./combinators";
 import { Branch, mediaContent } from "@lloyal-labs/sdk";
 import type { SessionContext } from "@lloyal-labs/sdk";
 import { Ctx, Trace, TraceParent, SpineFmt, Attachments, Ingress } from "./context";
@@ -172,7 +173,7 @@ export function* withSpine<T>(
   // so a failure on any of them cannot leak a slot or a poisoned branch.
   try {
     if (prefillTokens.length > 0) {
-      yield* call(() => spine.prefill(prefillTokens));
+      yield* waitUntilSettled( spine.prefill(prefillTokens));
       tw.write({
         traceId: tw.nextId(),
         parentTraceId: scopeId,
@@ -270,7 +271,7 @@ export function* withSpine<T>(
       let attached: readonly Attachment[] | undefined;
       if (bitmaps.length > 0) {
         writeSpineSeed();
-        const counts = yield* call(() =>
+        const counts = yield* waitUntilSettled(
           spine.prefillMultimodal(formatted.prompt, bitmaps));
         headerCells = counts.tokensDecoded;
         // Already committed by the barrier above — this only carries the roots
@@ -282,7 +283,7 @@ export function* withSpine<T>(
         writeSpineSeed(headerTokens.length);
         headerCells = headerTokens.length;
         if (headerTokens.length > 0) {
-          yield* call(() => spine.prefill(headerTokens));
+          yield* waitUntilSettled( spine.prefill(headerTokens));
         }
       }
       if (headerCells > 0) {

@@ -9,7 +9,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import sharp from 'sharp';
-import { normalizeImage, DEFAULT_MAX_PIXELS, MAX_CONCURRENT_NORMALIZATIONS, MAX_INPUT_PIXELS } from '../src/image';
+import { normalizeImage, DEFAULT_MAX_PIXELS, MAX_CONCURRENT_NORMALIZATIONS, MAX_QUEUED_NORMALIZATIONS, MAX_INPUT_PIXELS } from '../src/image';
 import type { NormalizedImage } from '../src/image';
 // Its own list of nine, sourced from stb_image — NOT derived from the sniff
 // table, which knows four. Deriving it was a defect: the pass-through gate read
@@ -349,6 +349,29 @@ describe('KNOWN DEFECT — pinned, not endorsed', () => {
       // And the gate is intact afterwards.
       expect((await normalizeImage(src, { maxPixels: 5_000 })).derived).toBe(true);
     }, 20_000);
+
+    it('refuses IMMEDIATELY once the queue is full, rather than holding bytes for the wait timeout', async () => {
+      // Permits bound the decoded bitmaps; without a bound on the QUEUE, a burst
+      // parks every extra arrival — closure, timer, abort listener and its bytes —
+      // for up to PERMIT_WAIT_TIMEOUT_MS. Past the depth the answer is an immediate
+      // busy, so memory is bounded by (permits + depth) images and nothing more.
+      const src = await solid(400, 300);
+      const order: string[] = [];
+      const busy = Array.from({ length: MAX_CONCURRENT_NORMALIZATIONS },
+        () => normalizeImage(src, { maxPixels: 5_000 })
+          .then((v) => { order.push('a-slot-freed'); return v; }));
+      const queued = Array.from({ length: MAX_QUEUED_NORMALIZATIONS },
+        () => normalizeImage(src, { maxPixels: 5_000 }));
+      const overflow = normalizeImage(src, { maxPixels: 5_000 })
+        .then(() => { order.push('overflow-resolved'); },
+              (e: Error) => { order.push('overflow-refused'); expect(e.message).toMatch(/busy/i); });
+
+      await Promise.all([overflow, ...queued, ...busy]);
+      expect(order[0], `expected the overflow to be refused first, got ${order.join(' → ')}`)
+        .toBe('overflow-refused');
+      // And the gate is intact afterwards.
+      expect((await normalizeImage(src, { maxPixels: 5_000 })).derived).toBe(true);
+    }, 30_000);
 
     it('releases a permit when normalization FAILS', async () => {
       // The failure mode that actually bites: a permit leaked on a rejecting

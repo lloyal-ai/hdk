@@ -87,6 +87,14 @@ export const MAX_CONCURRENT_NORMALIZATIONS = 4;
 export const PERMIT_WAIT_TIMEOUT_MS = 60_000;
 
 /**
+ * How many callers may WAIT for a permit. Permits bound the decoded bitmaps;
+ * this bounds the encoded ones parked behind them. Past it the answer is an
+ * immediate busy, so a burst costs at most (permits + queue) images of memory
+ * instead of one image per arrival for {@link PERMIT_WAIT_TIMEOUT_MS}.
+ */
+export const MAX_QUEUED_NORMALIZATIONS = MAX_CONCURRENT_NORMALIZATIONS * 4;
+
+/**
  * @category Media
  */
 export interface NormalizeOpts {
@@ -192,6 +200,17 @@ const aborted = (): Error => {
   return e;
 };
 
+/** Thrown when the queue is full. `code` is Node's own errno name for the
+ *  condition, so an HTTP layer can answer 503 without importing this module. */
+function busy(): Error {
+  const e = new Error(
+    `normalizeImage: ${MAX_CONCURRENT_NORMALIZATIONS} normalizations in flight and ` +
+      `${MAX_QUEUED_NORMALIZATIONS} queued — busy, retry later.`,
+  );
+  (e as Error & { code: string }).code = 'EBUSY';
+  return e;
+}
+
 /**
  * Take one of {@link MAX_CONCURRENT_NORMALIZATIONS} permits.
  *
@@ -212,6 +231,7 @@ async function acquire(signal?: AbortSignal): Promise<() => void> {
   if (gate.permits > 0) {
     gate.permits--;
   } else {
+    if (gate.waiting.length >= MAX_QUEUED_NORMALIZATIONS) throw busy();
     await new Promise<void>((resolve, reject) => {
       const leave = () => {
         const at = gate.waiting.indexOf(entry);

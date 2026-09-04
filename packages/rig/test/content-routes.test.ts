@@ -184,6 +184,21 @@ describe('content routes', () => {
     );
   });
 
+  it('answers 503 when the ingress is busy, and keeps the connection', async () => {
+    // A full normalization queue is overload, not a bad request and not a
+    // server fault: 503 tells the client to retry, and the socket stays up.
+    const { store } = fixture();
+    await withServer(
+      { store, ingest: async () => { throw Object.assign(new Error('normalizeImage: busy'), { code: 'EBUSY' }); } },
+      async (base) => {
+        const res = await fetch(`${base}/v1/media/ingress`, {
+          method: 'POST', body: new Uint8Array(64), headers: { 'Content-Type': 'image/png' },
+        });
+        expect(res.status).toBe(503);
+      },
+    );
+  });
+
   it('sends no CORS header unless an origin is configured', async () => {
     const { store, root } = fixture();
     const path = (r: { digest: string }) => `/v1/media/${r.digest}/representations/0`;

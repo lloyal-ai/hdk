@@ -149,11 +149,16 @@ export class FileAttachmentStore implements AttachmentStore {
     }
   }
 
-  get(digest: string): Uint8Array | null {
+  get(digest: string, opts?: { verify?: boolean }): Uint8Array | null {
     try {
       const file = this._pathFor(digest);
       if (!file) return null;
-      return new Uint8Array(readFileSync(file));
+      const bytes = new Uint8Array(readFileSync(file));
+      if (opts?.verify) {
+        const actual = 'sha256:' + createHash('sha256').update(bytes).digest('hex');
+        if (actual !== digest) return null;
+      }
+      return bytes;
     } catch {
       return null;
     }

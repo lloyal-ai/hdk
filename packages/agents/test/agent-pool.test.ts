@@ -22,7 +22,7 @@ import { rawIngress } from './helpers/raw-ingress';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Tool } from '../src/Tool';
+import { Tool, TOOL_IMAGE_ERROR_KEY } from '../src/Tool';
 import type { AgentPolicy } from '../src/AgentPolicy';
 import type { AgentPoolResult, AgentEvent, ToolContext } from '../src/types';
 import type { Agent } from '../src/Agent';
@@ -1789,6 +1789,31 @@ describe('self-healing ladder', () => {
     expect(mediaFailures(events)).toHaveLength(1);
     const settleFailed = trace.events.find(e => e.type === 'pool:settleFailed');
     expect((settleFailed as { rc?: number }).rc).toBe(1);
+  });
+
+  it('invalid media keeps the tool text beside the error key — "work from the text" has text', async () => {
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const toolTurns: string[] = [];
+    await runPool({
+      nCtx: MEDIA_TEST_NCTX, forkTokenQueues: [[1, STOP, STOP]],
+      ...callTool('rasterize'), tools: toolMap,
+      mutateCtx: (c) => {
+        c.mockMultimodalError = () => ({ message: 'invalid input', rc: -1, partial: false });
+        const target = c as unknown as { formatChatSync: (m: string, o?: unknown) => unknown };
+        const orig = target.formatChatSync.bind(c);
+        target.formatChatSync = (messages: string, o?: unknown) => {
+          for (const m of JSON.parse(messages) as Array<{ role: string; content: string }>) {
+            if (m.role === 'tool') toolTurns.push(m.content);
+          }
+          return orig(messages, o);
+        };
+      },
+    });
+    const note = toolTurns.find(t => t.includes(TOOL_IMAGE_ERROR_KEY));
+    expect(note).toBeDefined();
+    const parsed = JSON.parse(note!) as Record<string, unknown>;
+    expect(parsed.page).toBe('p1');                        // the tool's text survived
+    expect(typeof parsed[TOOL_IMAGE_ERROR_KEY]).toBe('string');
   });
 
   it('the tool:result trace records media cost as CELLS, never under a token name', async () => {

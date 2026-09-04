@@ -1506,7 +1506,15 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             // item is deterministic: retrying loops. Drop it and tell the
             // model what it did not see, on the same channel the
             // no-projector path already uses.
+            // "Work from the text" needs the text: `resultStr` is the tool's
+            // media-stripped result, the same object the no-projector path
+            // decorates before it stringifies. On this rail it is always a
+            // plain object — `takeToolMedia` yields media only from one, and
+            // `processCompletion` always sets it — so parse and add the key.
+            // A note that is only the key drops the answer.
+            const told = JSON.parse(m.src.resultStr!) as Record<string, unknown>;
             const note = {
+              ...told,
               [TOOL_IMAGE_ERROR_KEY]:
                 `${m.src.toolName} returned media the decoder rejected as invalid input. ` +
                 `Work from the text, or use a different source.`,

@@ -35,8 +35,10 @@ export class MemoryAttachmentStore implements AttachmentStore {
     return commitManifest((bytes, mediaType) => this.putBlob(bytes, mediaType), parts);
   }
 
-  get(digest: string): Uint8Array | null {
-    return this.blobs.get(digest) ?? null;
+  get(digest: string, opts?: { verify?: boolean }): Uint8Array | null {
+    const bytes = this.blobs.get(digest) ?? null;
+    if (!bytes || !opts?.verify) return bytes;
+    return 'sha256:' + createHash('sha256').update(bytes).digest('hex') === digest ? bytes : null;
   }
 
   getManifest(digest: string): AttachmentManifest | null {

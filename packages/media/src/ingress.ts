@@ -58,11 +58,14 @@ export function materialize(
       );
     }
     for (const rep of representationsOf(manifest)) {
-      const bytes = store.get(rep.digest);
+      // Verified: replay rebuilds KV from these bytes under this digest, so
+      // bytes that drifted on disk must refuse here, not decode as something else.
+      const bytes = store.get(rep.digest, { verify: true });
       if (!bytes) {
         throw new Error(
           `materialize: blob ${rep.digest.slice(0, 19)}… (${rep.mediaType}) is ` +
-            'referenced by a manifest but missing from the content store.',
+            'referenced by a manifest but missing from the content store, or its ' +
+            'bytes no longer hash to its digest.',
         );
       }
       bitmaps.push(bytes);
