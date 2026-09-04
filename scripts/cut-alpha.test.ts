@@ -117,6 +117,21 @@ describe('rewriteManifest', () => {
     expect(pkg.peerDependencies['@lloyal-labs/lloyal.node']).toBe('3.2.0-alpha.1');
   });
 
+  it('a devDependency on a set member follows the set too — the workspace must test against ITS binding', () => {
+    // sdk and host develop against the binding through a devDependency. A
+    // range there (`^3.1.1`) resolves to the published stable, so a fresh
+    // workspace install tested the arc against the OLD binding — hidden all
+    // arc by the symlink to the lloyal-node checkout.
+    const pkg = {
+      name: '@lloyal-labs/sdk', version: '4.0.0-alpha.1',
+      devDependencies: { '@lloyal-labs/lloyal.node': '^3.1.1', vitest: '^4' },
+    };
+    const set = { ...alphas, '@lloyal-labs/lloyal.node': '3.2.0-alpha.1' };
+    expect(rewriteManifest(pkg, { version: '4.0.0-alpha.1', alphas: set })).toBe(true);
+    expect(pkg.devDependencies['@lloyal-labs/lloyal.node']).toBe('3.2.0-alpha.1');
+    expect(pkg.devDependencies.vitest).toBe('^4');
+  });
+
   it('a RANGE peer is authored compatibility and is left alone', () => {
     // An ability ships through the signed catalog to stable AND alpha users
     // alike, so its peer is a range that admits both — not the set's exact

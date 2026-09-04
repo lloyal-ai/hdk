@@ -107,11 +107,13 @@ export function planAlphas({ cut, packages, view }) {
 const EXACT = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
 
 /** Rewrite one manifest object in place: its `version` when this package is
- *  in the cut (`version` given); every DEPENDENCY that names a cut package
- *  to the exact alpha, in EVERY workspace manifest, because the workspace
- *  must resolve as one set and a range excludes prereleases; and a PEER only
- *  when it is already an exact pin from a previous set (rig's peer on the
- *  binding). A peer that is a range is authored compatibility and stays: an
+ *  in the cut (`version` given); every DEPENDENCY and DEVDEPENDENCY that names
+ *  a cut package to the exact alpha, in EVERY workspace manifest, because the
+ *  workspace must resolve as one set and a range excludes prereleases (sdk
+ *  and host develop against the binding through a devDependency — `^3.1.1`
+ *  there resolved the published stable while the checkout symlink hid it);
+ *  and a PEER only when it is already an exact pin from a previous set
+ *  (rig's peer on the binding). A peer that is a range is authored compatibility and stays: an
  *  ability ships through the signed catalog to stable and alpha users alike,
  *  so its peer admits both (`^5.0.0 || >=6.0.0-0 <7.0.0`) and no cut may
  *  write the set's pin over it. A member outside the cut keeps its version:
@@ -120,7 +122,7 @@ const EXACT = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
 export function rewriteManifest(pkg, { version, alphas }) {
   let changed = false;
   if (version !== undefined && pkg.version !== version) { pkg.version = version; changed = true; }
-  for (const field of ['dependencies', 'peerDependencies']) {
+  for (const field of ['dependencies', 'devDependencies', 'peerDependencies']) {
     for (const dep of Object.keys(pkg[field] ?? {})) {
       const current = pkg[field][dep];
       if (!alphas[dep] || current === alphas[dep]) continue;
