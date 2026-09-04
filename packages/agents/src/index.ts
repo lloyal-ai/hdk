@@ -46,7 +46,7 @@ export { admitChunks } from './admission';
 export type { AdmitOpts, AdmitResult, AdmitSelect, AdmittedPassage } from './admission';
 export { composePrompt, renderPrompt, renderTemplate } from './prompt';
 export type { PromptState, PromptSection, PromptStep } from './prompt';
-export { reduce } from './combinators';
+export { reduce, waitUntilSettled } from './combinators';
 export { parallel, chain, fanout, dag } from './orchestrators';
 export type { SpawnSpec, ChainStep, DAGNode, Orchestrator, PoolContext } from './orchestrators';
 export { extractSpineSeed, extractSpineCheckpoint, reconstructBranch, replayTurns, replayAgentTurns } from './replay';

@@ -1,5 +1,6 @@
 import { resource, call, ensure, createSignal, createChannel, spawn, scoped, each, sleep, action, race } from 'effection';
 import type { Operation, Subscription, Task, Signal } from 'effection';
+import { waitUntilSettled } from './combinators';
 import type { Branch } from '@lloyal-labs/sdk';
 import { CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, GrammarTriggerType, type ParsedToolCall, type SessionContext } from '@lloyal-labs/sdk';
 import type { BranchStore } from '@lloyal-labs/sdk';
@@ -470,7 +471,7 @@ function* recoverInline(
   let producedTokens = 0;
   try {
     yield* scoped(function*() {
-      yield* call(() => store.prefill([[agent.branch, tokens]]));
+      yield* waitUntilSettled(store.prefill([[agent.branch, tokens]]));
       if (terminalGrammar) agent.branch.setGrammar(terminalGrammar);
 
       tw.write({
@@ -485,7 +486,7 @@ function* recoverInline(
         if (isStop) break;
         output += text;
         producedTokens++;
-        yield* call(() => store.commit([[agent.branch, token]]));
+        yield* waitUntilSettled(store.commit([[agent.branch, token]]));
         yield* events.send({ type: 'agent:produce', agentId: agent.id, text, tokenCount: producedTokens });
       }
 
@@ -1412,7 +1413,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
 
       if (tokenItems.length > 0) {
         try {
-          yield* call(() => store.prefill(
+          yield* waitUntilSettled(store.prefill(
             tokenItems.map(t => [t.agent.branch, t.tokens] as [Branch, number[]])));
           counters.warmPrefillCalls++;
           counters.warmPrefillBranches += tokenItems.length;
@@ -1471,7 +1472,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       // not atomic, and partial-range KV ops are meaningless on recurrent
       // layers). Anything not intact is pruned, never resumed.
       if (mediaItems.length > 0) {
-        const results = yield* call(() =>
+        const results = yield* waitUntilSettled(
           store.prefillMultimodal(mediaItems.map(m => [m.agent.branch, m.delta] as [Branch, MultimodalDelta])));
         counters.warmPrefillCalls++;
         counters.warmPrefillBranches += mediaItems.length;
@@ -1514,7 +1515,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             const noteTokens = buildToolResultDelta(
               ctx, noteStr, m.src.callId,
               { enableThinking: a.fmt.enableThinking });
-            yield* call(() => store.prefill([[a.branch, noteTokens]]));
+            yield* waitUntilSettled(store.prefill([[a.branch, noteTokens]]));
             // The record carries what LANDED — the note, not the dropped item.
             bookSettled(a, m.src, noteTokens.length, undefined, noteStr);
             continue;
@@ -1583,7 +1584,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           }
         }
         if (probePairs.length > 0) {
-          yield* call(() => store.prefill(probePairs));
+          yield* waitUntilSettled(store.prefill(probePairs));
           // Success-only, like every branch:prefill: written after the
           // batched dispatch landed, so a rejected prefill leaves no event
           // claiming cells that never moved.
@@ -1907,7 +1908,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           { enableThinking: agent.fmt.enableThinking });
         mediaItem = {
           delta,
-          cells: yield* call(() => deltaCells(ctx, delta)),
+          cells: yield* waitUntilSettled(deltaCells(ctx, delta)),
           attachments: prepared.attachments,
         };
       } else {
@@ -2145,7 +2146,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
 
         try {
           if (prefillPairs.length > 0) {
-            yield* call(() => store.prefill(prefillPairs));
+            yield* waitUntilSettled(store.prefill(prefillPairs));
           }
         } catch (err) {
           for (const e of drainedExtends) e.reject(err as Error);
@@ -2473,7 +2474,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       // -- Phase 2: COMMIT -- batch-decode produced tokens
       if (entries.length > 0) {
         try {
-          yield* call(() => store.commit(entries));
+          yield* waitUntilSettled(store.commit(entries));
         } catch (e) {
           // Decode OOM (concurrent in-loop reports exhausted KV) tears down the pool.
           // This batch is where admitted extractors decode their reports; unlike the
