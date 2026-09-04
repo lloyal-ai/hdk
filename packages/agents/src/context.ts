@@ -4,6 +4,8 @@ import type { BranchStore, Branch } from '@lloyal-labs/sdk';
 import type { Channel, Signal } from 'effection';
 import type { AgentEvent } from './types';
 import type { TraceWriter } from './trace-writer';
+import type { AttachmentStore, ContentIngress } from '@lloyal-labs/media';
+import { NullAttachmentStore, NoContentIngress } from '@lloyal-labs/media';
 import type { TraceId } from './trace-types';
 import type { Agent, FormatConfig } from './Agent';
 import type { Reranker } from './chunk';
@@ -51,6 +53,39 @@ export const Events = createContext<Channel<AgentEvent, void>>('lloyal.events');
  * @category Agents
  */
 export const Trace = createContext<TraceWriter>('lloyal.trace');
+
+/**
+ * Effection context holding the store for images that entered the KV cache
+ *
+ * Set by {@link initAgents}. Defaults to {@link NullAttachmentStore}, so a run
+ * nobody is recording hashes nothing and touches no disk.
+ *
+ * A trace records the media marker, not the pixels. This is where the pixels
+ * go, so a media-bearing run stays replayable and inspectable: the trace
+ * carries a digest per image on `branch:prefill`, and this resolves it back to
+ * bytes. One store per run, whichever ingress an image arrived through.
+ *
+ * @category Agents
+ */
+export const Attachments = createContext<AttachmentStore>(
+  'lloyal.attachments',
+  new NullAttachmentStore(),
+);
+
+/**
+ * Effection context holding the service that admits raw media.
+ *
+ * Defaults to {@link NoContentIngress}: inert for a text-only run, and a loud
+ * failure the first time media arrives without one installed. Normalizing
+ * needs a native dependency this package must not import, so the harness
+ * supplies it — the same shape as {@link Attachments}.
+ *
+ * @category Agents
+ */
+export const Ingress = createContext<ContentIngress>(
+  'lloyal.ingress',
+  new NoContentIngress(),
+);
 
 /**
  * Effection context carrying the current trace scope ID

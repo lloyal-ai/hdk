@@ -1,5 +1,6 @@
-import { call, ensure } from 'effection';
+import { ensure } from 'effection';
 import type { Operation } from 'effection';
+import { waitUntilSettled } from './combinators';
 import { Branch } from '@lloyal-labs/sdk';
 import { Ctx, Store } from './context';
 import { ContextPressure } from './agent-pool';
@@ -35,7 +36,7 @@ import type { DivergeOptions, DivergeResult, DivergeAttempt } from './types';
  *   params: { temperature: 0.7 },
  * });
  * // verified.best is the lowest-perplexity branch, still alive
- * yield* call(() => session.promote(verified.best));
+ * yield* waitUntilSettled( session.promote(verified.best));
  * ```
  *
  * @category Agents
@@ -56,7 +57,7 @@ export function* diverge(opts: DivergeOptions): Operation<DivergeResult> {
     if (!opts.prompt) throw new Error('diverge() requires either opts.parent or opts.prompt');
     const tokens = ctx.tokenizeSync(opts.prompt);
     root = Branch.create(ctx, 0, opts.params ?? {});
-    yield* call(() => root.prefill(tokens));
+    yield* waitUntilSettled( root.prefill(tokens));
     prefixLength = tokens.length;
     ownRoot = true;
     // If we created the root, ensure it's cleaned up
@@ -105,7 +106,7 @@ export function* diverge(opts: DivergeOptions): Operation<DivergeResult> {
       a.tokenCount++;
     }
     if (entries.length === 0) break;
-    yield* call(() => store.commit(entries));
+    yield* waitUntilSettled( store.commit(entries));
     steps++;
   }
 

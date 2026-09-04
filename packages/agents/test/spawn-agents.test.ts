@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { FMT } from './helpers/format-config';
 import { createToolkit } from '../src/toolkit';
 import { Agent } from '../src/Agent';
 import { MockTool } from './helpers/mock-tool';
@@ -350,7 +351,7 @@ describe('Agent.task', () => {
     const branch = createMockBranch();
     const a = new Agent({
       id: 1, parentId: 0, branch: branch as any,
-      fmt: { format: 0, reasoningFormat: 0, generationPrompt: '', parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
+      fmt: FMT,
       task: 'investigate speculative decoding on M3',
     });
     expect(a.task).toBe('investigate speculative decoding on M3');
@@ -360,7 +361,7 @@ describe('Agent.task', () => {
     const branch = createMockBranch();
     const a = new Agent({
       id: 1, parentId: 0, branch: branch as any,
-      fmt: { format: 0, reasoningFormat: 0, generationPrompt: '', parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
+      fmt: FMT,
     });
     expect(a.task).toBe('');
   });
@@ -376,7 +377,7 @@ describe('Explore/exploit decoupled from lifecycle', () => {
     const branch = createMockBranch();
     const a = new Agent({
       id: 1, parentId: 0, branch: branch as any,
-      fmt: { format: 0, reasoningFormat: 0, generationPrompt: '', parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
+      fmt: FMT,
     });
     a.transition('active');
     a.incrementToolCalls();
@@ -408,7 +409,7 @@ describe('Explore/exploit decoupled from lifecycle', () => {
     const branch = createMockBranch();
     const a = new Agent({
       id: 1, parentId: 0, branch: branch as any,
-      fmt: { format: 0, reasoningFormat: 0, generationPrompt: '', parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
+      fmt: FMT,
     });
     a.transition('active');
     a.incrementToolCalls();
@@ -438,7 +439,7 @@ describe('Explore/exploit decoupled from lifecycle', () => {
     const policy = new DefaultAgentPolicy({ shouldExplore: { context: 0.4 } });
     const a = new Agent({
       id: 1, parentId: 0, branch: createMockBranch() as any,
-      fmt: { format: 0, reasoningFormat: 0, generationPrompt: '', parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
+      fmt: FMT,
     });
 
     const highPressure = {

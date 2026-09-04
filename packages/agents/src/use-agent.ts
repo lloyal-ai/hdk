@@ -1,12 +1,13 @@
 import { resource, ensure, call, scoped } from 'effection';
 import type { Operation } from 'effection';
+import { waitUntilSettled } from './combinators';
 import { Branch } from '@lloyal-labs/sdk';
 import type { Session, SessionContext } from '@lloyal-labs/sdk';
 import { Agent } from './Agent';
 import { Ctx, Events, Trace } from './context';
 import { useAgentPool } from './agent-pool';
 import { createToolkit } from './toolkit';
-import { traceScope } from './trace-scope';
+import { useTraceScope } from './trace-scope';
 import { parallel } from './orchestrators';
 import type { Tool } from './Tool';
 import type { AgentPolicy } from './AgentPolicy';
@@ -99,7 +100,7 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
     const toolkit = createToolkit(opts.tools ?? [], opts.terminal);
     const warmParent = opts.parent ?? opts.session?.trunk ?? undefined;
 
-    const scope = traceScope(tw, null, 'useAgent', {
+    const scopeId = yield* useTraceScope(tw, null, 'useAgent', {
       hasTools: toolkit.tools.length > 0,
       hasParent: !!warmParent,
     });
@@ -115,7 +116,7 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
 
     const prefillTokens = warmParent ? ctx.getTurnSeparator() : [];
     if (prefillTokens.length > 0) {
-      yield* call(() => root.prefill(prefillTokens));
+      yield* waitUntilSettled( root.prefill(prefillTokens));
     }
 
     // Eager grammar from schema. Compile here, but apply it on the GENERATING
@@ -151,8 +152,6 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
       next = yield* sub.next();
     }
     const pool = next.value;
-
-    scope.close();
 
     yield* provide(pool.agents[0].agent);
     // Resource stays alive — branch alive for caller to fork from

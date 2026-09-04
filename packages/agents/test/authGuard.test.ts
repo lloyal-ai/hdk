@@ -33,19 +33,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import type { ParsedToolCall } from '@lloyal-labs/sdk';
 import { DefaultAgentPolicy, type PolicyConfig, type ToolGuard } from '../src/AgentPolicy';
 import { Agent } from '../src/Agent';
 import { createMockBranch } from './helpers/mock-branch';
 
-const FMT = {
-  format: 0,
-  reasoningFormat: 0,
-  generationPrompt: '',
-  parser: '',
-  grammar: '',
-  grammarLazy: false,
-  grammarTriggers: [],
-};
+import { FMT } from './helpers/format-config';
 
 const BASE: Omit<PolicyConfig, 'protectedTools' | 'grants'> = {
   maxTurns: 20,
@@ -81,7 +74,7 @@ function makeAgent(opts: {
     agent.recordToolResult({
       name: h.name,
       args: h.args,
-      resultTokenCount: 100,
+      resultCells: 100,
       contextAfterPercent: 80,
       timestamp: 0,
     });
@@ -103,8 +96,12 @@ function pressure(remaining = 5000, nCtx = 16384) {
   };
 }
 
-function tc(name: string, args: Record<string, unknown> = {}) {
-  return { name, arguments: JSON.stringify(args) };
+/** A parsed tool call. Typed as the real `ParsedToolCall` so a field added to
+ *  the contract fails here rather than silently producing a shape the pool
+ *  would never see — `id` went missing exactly that way. Empty `id` is what
+ *  models that emit no call id actually produce, which the contract allows. */
+function tc(name: string, args: Record<string, unknown> = {}): ParsedToolCall {
+  return { name, arguments: JSON.stringify(args), id: '' };
 }
 
 // §10.4 codification: the `P-no-ungranted-protected-dispatch` predicate

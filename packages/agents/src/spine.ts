@@ -1,9 +1,12 @@
-import { call } from "effection";
+
 import type { Operation } from "effection";
-import { Branch } from "@lloyal-labs/sdk";
+import { waitUntilSettled } from "./combinators";
+import { Branch, mediaContent } from "@lloyal-labs/sdk";
 import type { SessionContext } from "@lloyal-labs/sdk";
-import { Ctx, Trace, TraceParent, SpineFmt } from "./context";
-import { traceScope } from "./trace-scope";
+import { Ctx, Trace, TraceParent, SpineFmt, Attachments, Ingress } from "./context";
+import type { Attachment } from "@lloyal-labs/media";
+import { prepareBatch } from "./prepare-content";
+import { useTraceScope } from "./trace-scope";
 import { createToolkit } from "./toolkit";
 import type { Tool } from "./Tool";
 import type { SamplingParams } from "./types";
@@ -75,6 +78,19 @@ export interface SpineOptions {
    * @default true
    */
   enableThinking?: boolean;
+  /**
+   * Images prefilled into the spine's chat-format header at setup — the
+   * shared reference the whole pool attends. One media marker is emitted
+   * into the system content per image; the header decodes ONCE (text on
+   * the token rail, image rows on the embedding rail) and every agent
+   * forking from the spine inherits the images via fork prefix-share —
+   * encoded exactly once, zero re-encode per agent.
+   *
+   * Requires a context created with `mmprojPath`. Like `tools`, only
+   * applied when `systemPrompt` is also set (shared mode); ignored
+   * otherwise.
+   */
+  bitmaps?: Uint8Array[];
 }
 
 /**
@@ -110,6 +126,8 @@ export function* withSpine<T>(
 ): Operation<T> {
   const ctx: SessionContext = yield* Ctx.expect();
   const tw = yield* Trace.expect();
+  const attachments = yield* Attachments.expect();
+  const ingress = yield* Ingress.expect();
 
   // Read parent trace ID — connects nested pools to the outer DISPATCH that spawned them
   let parentTraceId: number | null = null;
@@ -120,7 +138,7 @@ export function* withSpine<T>(
     /* no parent — top level */
   }
 
-  const scope = traceScope(tw, parentTraceId, "withSpine", {
+  const scopeId = yield* useTraceScope(tw, parentTraceId, "withSpine", {
     hasParent: !!opts.parent,
   });
 
@@ -141,7 +159,7 @@ export function* withSpine<T>(
 
   tw.write({
     traceId: tw.nextId(),
-    parentTraceId: scope.traceId,
+    parentTraceId: scopeId,
     ts: performance.now(),
     type: "branch:create",
     branchHandle: spine.handle,
@@ -150,91 +168,154 @@ export function* withSpine<T>(
     role: "spine",
   });
 
-  if (prefillTokens.length > 0) {
-    yield* call(() => spine.prefill(prefillTokens));
-    tw.write({
-      traceId: tw.nextId(),
-      parentTraceId: scope.traceId,
-      ts: performance.now(),
-      type: "branch:prefill",
-      branchHandle: spine.handle,
-      tokenCount: prefillTokens.length,
-      role: "spineHeader",
-    });
-  }
-
-  // Shared role+tools mode: format the chat header once and prefill onto
-  // the spine. Agents forking from this spine inherit system+tools tokens
-  // via metadata-only prefix-share (no per-spawn re-prefill). The resulting
-  // FormatConfig is stashed on SpineFmt so setupAgent can detect shared
-  // mode and copy parser/grammar/format/triggers without re-emitting the
-  // tool schemas in each agent's suffix.
-  let spineFmt: FormatConfig | null = null;
-  if (opts.systemPrompt !== undefined) {
-    const enableThinking = opts.enableThinking ?? true;
-    const messages = JSON.stringify([{ role: "system", content: opts.systemPrompt }]);
-    const fmtOpts: Record<string, unknown> = {
-      enableThinking,
-      // Header ends at <|im_end|>; agents append <|im_start|>user…assistant
-      // markers as their suffix. Without this, the template would emit a
-      // trailing assistant generation prompt and corrupt the boundary.
-      addGenerationPrompt: false,
-    };
-    if (opts.tools && opts.tools.length > 0) {
-      fmtOpts.tools = createToolkit(opts.tools).toolsJson;
-    }
-    const formatted = ctx.formatChatSync(messages, fmtOpts);
-    const headerTokens = ctx.tokenizeSync(formatted.prompt, false);
-    // Spine-seed emission for trace replay (`extractSpineSeed`). Captures
-    // the rendered chat prompt verbatim so a later `reconstructBranch`
-    // can rebuild this exact KV state in a fresh context. The token-count
-    // `branch:prefill` below is informational; the spine seed is the
-    // prompt text on this event.
-    tw.write({
-      traceId: tw.nextId(),
-      parentTraceId: scope.traceId,
-      ts: performance.now(),
-      type: "prompt:format",
-      promptText: formatted.prompt,
-      tokenCount: headerTokens.length,
-      messages,
-      tools: opts.tools && opts.tools.length > 0
-        ? createToolkit(opts.tools).toolsJson
-        : undefined,
-      role: "spine",
-    });
-    if (headerTokens.length > 0) {
-      yield* call(() => spine.prefill(headerTokens));
+  // From here the branch exists: every step — header prefill, the media
+  // barrier, the multimodal prefill — runs INSIDE the scope that prunes it,
+  // so a failure on any of them cannot leak a slot or a poisoned branch.
+  try {
+    if (prefillTokens.length > 0) {
+      yield* waitUntilSettled( spine.prefill(prefillTokens));
       tw.write({
         traceId: tw.nextId(),
-        parentTraceId: scope.traceId,
+        parentTraceId: scopeId,
         ts: performance.now(),
         type: "branch:prefill",
         branchHandle: spine.handle,
-        tokenCount: headerTokens.length,
+        cells: prefillTokens.length,
         role: "spineHeader",
       });
     }
-    spineFmt = {
-      format: formatted.format,
-      reasoningFormat: formatted.reasoningFormat,
-      generationPrompt: formatted.generationPrompt,
-      parser: formatted.parser,
-      grammar: formatted.grammar,
-      grammarLazy: formatted.grammarLazy,
-      grammarTriggers: formatted.grammarTriggers,
-      enableThinking,
-    };
-  }
 
-  try {
+    // Shared role+tools mode: format the chat header once and prefill onto
+    // the spine. Agents forking from this spine inherit system+tools tokens
+    // via metadata-only prefix-share (no per-spawn re-prefill). The resulting
+    // FormatConfig is stashed on SpineFmt so setupAgent can detect shared
+    // mode and copy parser/grammar/format/triggers without re-emitting the
+    // tool schemas in each agent's suffix.
+    let spineFmt: FormatConfig | null = null;
+    if (opts.systemPrompt !== undefined) {
+      const enableThinking = opts.enableThinking ?? true;
+
+      // THE BARRIER. Every image is normalized and committed BEFORE a single
+      // marker is emitted or any KV is touched, so a failure on image N leaves
+      // no markers, no prefill and no published descriptors — only unreachable
+      // content-addressed blobs, which are harmless. `bitmaps` below is what the
+      // projector will actually decode: the admitted representations, not the
+      // raw input, because those are the bytes whose cells replay must rebuild.
+      const raw = opts.bitmaps ?? [];
+      const prepared = raw.length > 0
+        ? yield* prepareBatch(ingress, attachments, raw)
+        : { attachments: [], bitmaps: [] };
+      const bitmaps = prepared.bitmaps as Uint8Array[];
+      // Marker injection goes through the SDK's `mediaContent` — the one place
+      // media_marker parts are emitted — so the spine header, a user turn and a
+      // tool result cannot drift apart in how they mark media. It returns the
+      // bare string when there are no bitmaps, which is the text-path shape.
+      //
+      // The spine does not use a delta builder: it needs the whole
+      // FormattedChatResult for `spineFmt` (grammar/format/parser/triggers) and
+      // the messages JSON for the trace seed, neither of which a
+      // `MultimodalDelta` carries. Sharing the marker grammar is the part that
+      // matters; the rest of this assembly is legitimately spine-specific.
+      const messages = JSON.stringify([
+        { role: "system", content: mediaContent(opts.systemPrompt, bitmaps) },
+      ]);
+      const fmtOpts: Record<string, unknown> = {
+        enableThinking,
+        // Header ends at <|im_end|>; agents append <|im_start|>user…assistant
+        // markers as their suffix. Without this, the template would emit a
+        // trailing assistant generation prompt and corrupt the boundary.
+        addGenerationPrompt: false,
+      };
+      if (opts.tools && opts.tools.length > 0) {
+        fmtOpts.tools = createToolkit(opts.tools).toolsJson;
+      }
+      const formatted = ctx.formatChatSync(messages, fmtOpts);
+      // Spine-seed emission for trace replay (`extractSpineSeed`). Captures
+      // the rendered chat prompt verbatim so a later `reconstructBranch`
+      // can rebuild this exact KV state in a fresh context.
+      //
+      // WRITE-AHEAD, on BOTH rails: the seed says what this spine INTENDS to
+      // prefill, so a prefill that then fails still leaves a run that can be
+      // rebuilt — and a failed multimodal prefill poisons the branch, which is
+      // exactly when replay is the only way back. `branch:prefill` below is the
+      // other half of the pair and asserts the opposite: it is written only
+      // after the KV actually moved.
+      //
+      // `tokenCount` is omitted on the embedding rail — mtmd owns tokenization
+      // there and no honest count exists before the native call returns. The
+      // count that landed rides `branch:prefill`.
+      const writeSpineSeed = (tokenCount?: number): void => {
+        tw.write({
+          traceId: tw.nextId(),
+          parentTraceId: scopeId,
+          ts: performance.now(),
+          type: "prompt:format",
+          promptText: formatted.prompt,
+          tokenCount,
+          // Roots ride the seed WRITE-AHEAD: the barrier committed the content
+          // before any prefill, so a failed multimodal prefill still leaves a
+          // seed that replay can rebuild from. `branch:prefill` below keeps
+          // the success-only copy.
+          ...(prepared.attachments.length > 0
+            ? { attachments: prepared.attachments }
+            : {}),
+          messages,
+          tools: opts.tools && opts.tools.length > 0
+            ? createToolkit(opts.tools).toolsJson
+            : undefined,
+          role: "spine",
+        });
+      };
+
+      let headerCells = 0;
+      let attached: readonly Attachment[] | undefined;
+      if (bitmaps.length > 0) {
+        writeSpineSeed();
+        const counts = yield* waitUntilSettled(
+          spine.prefillMultimodal(formatted.prompt, bitmaps));
+        headerCells = counts.tokensDecoded;
+        // Already committed by the barrier above — this only carries the roots
+        // onto the trace. Recording used to happen HERE, after the prefill, so
+        // a failed write left media in the cache that could never be replayed.
+        attached = prepared.attachments;
+      } else {
+        const headerTokens = ctx.tokenizeSync(formatted.prompt, false);
+        writeSpineSeed(headerTokens.length);
+        headerCells = headerTokens.length;
+        if (headerTokens.length > 0) {
+          yield* waitUntilSettled( spine.prefill(headerTokens));
+        }
+      }
+      if (headerCells > 0) {
+        tw.write({
+          traceId: tw.nextId(),
+          parentTraceId: scopeId,
+          ts: performance.now(),
+          type: "branch:prefill",
+          branchHandle: spine.handle,
+          cells: headerCells,
+          role: "spineHeader",
+          ...(attached ? { attachments: attached } : {}),
+        });
+      }
+      spineFmt = {
+        format: formatted.format,
+        reasoningFormat: formatted.reasoningFormat,
+        generationPrompt: formatted.generationPrompt,
+        parser: formatted.parser,
+        grammar: formatted.grammar,
+        grammarLazy: formatted.grammarLazy,
+        grammarTriggers: formatted.grammarTriggers,
+        enableThinking,
+      };
+    }
     if (spineFmt) yield* SpineFmt.set(spineFmt);
     return yield* body(spine, prefillTokens.length);
   } finally {
     if (!spine.disposed) {
       tw.write({
         traceId: tw.nextId(),
-        parentTraceId: scope.traceId,
+        parentTraceId: scopeId,
         ts: performance.now(),
         type: "branch:prune",
         branchHandle: spine.handle,
@@ -242,6 +323,5 @@ export function* withSpine<T>(
       });
       spine.pruneSubtreeSync();
     }
-    scope.close();
   }
 }

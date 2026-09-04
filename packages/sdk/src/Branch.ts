@@ -1,5 +1,6 @@
-import type { SessionContext, SamplingParams, Produced, GrammarTrigger } from './types';
+import type { SessionContext, SamplingParams, Produced, GrammarTrigger, MultimodalPrefillResult } from './types';
 import { GrammarTriggerType } from './types';
+import { splitCompleteUtf8, concatBytes } from './utf8';
 
 /**
  * Options for {@link Branch.fork} / {@link Branch.forkSync}.
@@ -72,11 +73,14 @@ export class Branch {
   private _ctx: SessionContext;
   private _handle: number;
   private _disposed: boolean;
+  /** Incomplete UTF-8 tail from the last committed token (0–3 bytes). */
+  private _held: Uint8Array;
 
   constructor(ctx: SessionContext, handle: number) {
     this._ctx = ctx;
     this._handle = handle;
     this._disposed = false;
+    this._held = new Uint8Array(0);
   }
 
   /**
@@ -144,7 +148,9 @@ export class Branch {
     this._ensureNotDisposed();
     const cloneLogits = opts?.cloneLogits ?? true;
     const newHandle = this._ctx._branchFork(this._handle, cloneLogits);
-    return new Branch(this._ctx, newHandle);
+    const child = new Branch(this._ctx, newHandle);
+    child._held = this._held; // a fork continues the parent's text stream mid-character
+    return child;
   }
 
   /**
@@ -204,6 +210,59 @@ export class Branch {
   async prefill(tokens: number[]): Promise<void> {
     this._ensureNotDisposed();
     await this._ctx._storePrefill([this._handle], [tokens]);
+    this._endTail();
+  }
+
+  /**
+   * An external prefill ends the current text stream: a fragment held from
+   * the previous turn can never be completed by the next one, so it must not
+   * be glued onto that turn's first bytes. Forks and generated-token commits
+   * keep the tail; only new content entering the KV clears it.
+   * @internal
+   */
+  _endTail(): void {
+    this._held = new Uint8Array(0);
+  }
+
+  /**
+   * Prefill a templated prompt with images into this branch's KV
+   *
+   * The multimodal counterpart of {@link prefill}. The prompt carries one
+   * `<__media__>` marker per image (build it with
+   * `buildUserDeltaMultimodal`); the native layer tokenizes it, decodes
+   * text on the token rail and image rows on the embedding rail, in order.
+   * Requires a context created with `mmprojPath`.
+   *
+   * The image lands as an ordinary shared prefix: fork afterwards and every
+   * child attends it with zero re-encode.
+   *
+   * @param prompt - Templated prompt containing the media markers
+   * @param bitmaps - Encoded image bytes the projector decodes, one per marker
+   * @param sepTokens - Optional leading token run (e.g. a turn separator)
+   * @returns Counts — see `MultimodalPrefillResult` (JS can't know
+   *   multimodal token counts; the native walk reports them)
+   * @throws If the prefill failed. The cohort form reports failure per entry
+   *   because a rejected promise would lose which branches landed; a cohort of
+   *   ONE has nothing to lose, and returning a zero-count result would let a
+   *   caller carry on against a branch the failure POISONED.
+   */
+  async prefillMultimodal(
+    prompt: string,
+    bitmaps: Uint8Array[],
+    sepTokens: number[] = [],
+  ): Promise<MultimodalPrefillResult> {
+    this._ensureNotDisposed();
+    const [result] = await this._ctx._storePrefillMultimodal(
+      [this._handle], [sepTokens], [prompt], [bitmaps]);
+    if (result.error) {
+      // Forward rc and partial as data — a re-wrap that dropped them would
+      // strip the classification callers gate on (decodeErrorOf reads them back).
+      const err = new Error(`Branch.prefillMultimodal: ${result.error}`);
+      if (result.rc !== undefined) Object.assign(err, { rc: result.rc, partial: result.partial === true });
+      throw err;
+    }
+    this._endTail();
+    return result;
   }
 
   /**
@@ -498,6 +557,11 @@ export class Branch {
    * Async contract: local branches resolve immediately; cloud branches
    * may perform an HTTP round-trip. Use {@link produceSync} when you know
    * the branch is local and want zero-overhead sampling.
+   *
+   * `text` is UTF-8 boundary-aligned: a multi-byte character split across
+   * token pieces is held back and emitted whole by the produce() that
+   * completes it. The held tail advances on {@link commit} — produce() is a
+   * pure observation and may be called repeatedly.
    */
   async produce(): Promise<Produced> {
     return this.produceSync();
@@ -514,7 +578,7 @@ export class Branch {
     const token = this.sample();
     return {
       token,
-      text: this._ctx.tokenToText(token),
+      text: splitCompleteUtf8(concatBytes(this._held, this._ctx.tokenToBytes(token))).complete,
       isStop: this._ctx.isStopToken(token),
     };
   }
@@ -533,6 +597,20 @@ export class Branch {
   async commit(token: number): Promise<void> {
     this._ensureNotDisposed();
     await this._ctx._storeCommit([this._handle], [token]);
+    this._advanceText(token);
+  }
+
+  /**
+   * Advance the UTF-8 held tail for a committed token.
+   *
+   * Internal: called by {@link commit} and by `BranchStore.commit` for the
+   * batched form. produce() derives text from the CURRENT tail without
+   * installing; this installs the successor. Rides commit — not produce —
+   * because a token may be produced more than once but is committed exactly
+   * once, and the tail is stream state.
+   */
+  _advanceText(token: number): void {
+    this._held = splitCompleteUtf8(concatBytes(this._held, this._ctx.tokenToBytes(token))).tail;
   }
 
   // ===== METRICS =====

@@ -92,6 +92,24 @@ yield* withSpine(
 
 `withSpine` creates the spine branch, passes it to the body, and guarantees cleanup via `try/finally` — the spine cannot leak out of the block. Effection enforces the lifetime.
 
+Images share the same way. Media takes two installs beside `mmprojPath`: a content store (an image that reaches KV must be addressable, or the run cannot replay) and an ingress to normalize and commit it — the defaults refuse media so an unaddressable run fails before any KV moves. With those in place, the spine header decodes the images once — one media marker per image — into the shared prefix:
+
+```typescript
+import { initAgents, withSpine, Ingress } from '@lloyal-labs/lloyal-agents';
+import { FileAttachmentStore, createImageIngress } from '@lloyal-labs/media/node';
+
+const store = new FileAttachmentStore('media');
+const handle = yield* initAgents(ctx, { attachmentStore: store });
+yield* Ingress.set(createImageIngress(store));
+
+yield* withSpine(
+  { systemPrompt: PLAYBOOKS, tools, bitmaps: [screenshot] },
+  function* (spine) { /* every agent forked from spine attends the image */ },
+);
+```
+
+A KV cell doesn't know whether it came from a token or an image patch, so the frontier is modality-agnostic: N agents attend one image, encoded exactly once, with zero re-encode per agent.
+
 ## Orchestrators
 
 `agentPool` accepts an orchestrator that determines how agents are spawned and sequenced:

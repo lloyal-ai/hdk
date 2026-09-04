@@ -51,7 +51,6 @@ function fakeApp(opts: {
 }): Ability {
   const manifest: AbilityManifest = {
     name: opts.name,
-    version: '1.0.0',
     abilityProtocolVersion: opts.abilityProtocolVersion ?? '3.0',
     protocol: {
       name: opts.protocolName ?? `${opts.name}_research`,
@@ -62,11 +61,10 @@ function fakeApp(opts: {
   };
   return {
     name: opts.name,
-    version: '1.0.0',
     manifest,
     source: { name: opts.name } as Ability['source'],
     tools: [],
-    agent: 'test agent template',
+    skill: 'test agent template',
     configSchema: opts.configSchema,
   };
 }

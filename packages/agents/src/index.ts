@@ -10,6 +10,7 @@ export {
   GrantStoreCtx,
   WindDown,
   CancelAgent, Pause,
+  Attachments, Ingress,
 } from './context';
 export { Tool, ToolRetryError } from './Tool';
 export { Agent } from './Agent';
@@ -31,15 +32,25 @@ export { createToolkit } from './toolkit';
 export { initAgents } from './init';
 export { withSpine } from './spine';
 export { NullTraceWriter, JsonlTraceWriter } from './trace-writer';
-export { traceScope } from './trace-scope';
+// The content vocabulary is NOT re-exported. It lives in `@lloyal-labs/media`
+// and eighteen symbols of it used to surface here, in the package whose job is
+// orchestration — `agents` NAMES attachments, it does not define them. What it
+// does own is the barrier that drives the two ports across a batch.
+export { prepareBatch } from './prepare-content';
+// The one member of the framework-channel namespace a TOOL writes. The other
+// two are framework→model and no tool author ever sets them, so they stay
+// internal rather than growing the surface to describe a convention.
+export { TOOL_MEDIA_KEY } from './Tool';
+export { useTraceScope } from './trace-scope';
 export { admitChunks } from './admission';
 export type { AdmitOpts, AdmitResult, AdmitSelect, AdmittedPassage } from './admission';
 export { composePrompt, renderPrompt, renderTemplate } from './prompt';
 export type { PromptState, PromptSection, PromptStep } from './prompt';
-export { reduce } from './combinators';
+export { reduce, waitUntilSettled } from './combinators';
 export { parallel, chain, fanout, dag } from './orchestrators';
 export type { SpawnSpec, ChainStep, DAGNode, Orchestrator, PoolContext } from './orchestrators';
-export { extractSpineSeed, extractSpineCheckpoint, reconstructBranch } from './replay';
+export { extractSpineSeed, extractSpineCheckpoint, reconstructBranch, replayTurns, replayAgentTurns } from './replay';
+export type { AgentTurnRecord } from './replay';
 export type { BranchCheckpoint } from './replay';
 
 export type { Toolkit } from './toolkit';
@@ -62,6 +73,7 @@ export type {
   DivergeAttempt,
   DivergeResult,
   AgentEvent,
+  AgentTraceEvent,
 } from './types';
 
 export type {

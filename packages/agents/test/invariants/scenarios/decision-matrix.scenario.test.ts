@@ -12,6 +12,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import { DefaultAgentPolicy } from '../../../src/AgentPolicy';
+import type { Agent } from '../../../src/Agent';
+import type { ParsedToolCall } from '@lloyal-labs/sdk';
 import type { AgentPolicy } from '../../../src/AgentPolicy';
 import { Tool } from '../../../src/Tool';
 import type { Operation } from 'effection';
@@ -59,7 +61,7 @@ describe('decision matrix: scattered kill/nudge paths', () => {
     // Using `as any` because the interface requires the method; we're
     // simulating a buggy/legacy policy that doesn't implement it.
     const policy: AgentPolicy = {
-      onProduced: (_a, parsed) => {
+      onProduced: (_a: Agent, parsed: { content: string | null; toolCalls: ParsedToolCall[] }) => {
         if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
         return { type: 'idle', reason: 'free_text_stop' };
       },

@@ -1,22 +1,24 @@
 /**
- * Scenario: the trace tee's mirror-completeness invariant (I31).
+ * Scenario: trace attribution completeness (I31).
  *
- * With a real TraceWriter active, every pool-side write of a mirrored type
- * (`pool:agentNudge`, `tool:authReject`, `pool:agentDrop`, `branch:prune`,
- * `tool:dispatch`) reaches the bus exactly once as an `agent:trace`
- * envelope wrapping the same event, attributed to the right agent. The dev
- * pane trusts the mirror to BE the file — this locks that equivalence.
+ * Attribution lives in the event DATA, not an envelope: every agent-owned
+ * pool write (`pool:agentNudge`, `tool:authReject`, `pool:agentDrop`,
+ * `branch:prune`, `tool:dispatch`) carries its owner on the record itself,
+ * and the pool bus carries NO `agent:trace` envelopes — the live mirror
+ * moved to the writer boundary (rig's `useTraceWriter`, tested in rig),
+ * where it attributes envelopes from exactly these stamped fields. The dev
+ * pane trusts the record to name its owner — this locks that.
  *
- * Two run shapes exercise the allowlist:
- *   - a normal tool run (tool:dispatch mirrors, prunes on return),
- *   - an oversized-result run (settle_reject nudge + drop mirrors).
+ * Two run shapes exercise the stamped types:
+ *   - a normal tool run (tool:dispatch, prunes on return),
+ *   - an oversized-result run (settle_reject nudge + drop writes).
  */
 import { describe, it, expect } from 'vitest';
 import { Tool } from '../../../src/Tool';
 import type { Operation } from 'effection';
 import type { JsonSchema } from '../../../src/types';
 import { DefaultAgentPolicy } from '../../../src/AgentPolicy';
-import { I31_traceTeeMirrors, formatResult } from '../predicates';
+import { I31_traceAttribution, formatResult } from '../predicates';
 import { runPool, STOP } from '../harness';
 
 class SmallTool extends Tool<{ query: string }> {
@@ -33,8 +35,8 @@ class BigResultTool extends Tool<{ query: string }> {
   *execute(): Operation<unknown> { return { results: ['x'.repeat(8000)] }; }
 }
 
-describe('scenario: trace-tee mirror completeness (I31)', () => {
-  it('a tool run mirrors every allowlisted pool write, attributed', async () => {
+describe('scenario: trace attribution completeness (I31)', () => {
+  it('a tool run stamps every agent-owned write; no envelopes on the pool bus', async () => {
     const run = await runPool({
       nCtx: 16384,
       cellsUsed: 1000,
@@ -46,16 +48,16 @@ describe('scenario: trace-tee mirror completeness (I31)', () => {
       tools: new Map<string, Tool>([['web_search', new SmallTool()]]),
       terminalToolName: 'report',
       maxTurns: 5,
-      trace: true,
     });
 
-    // The dispatch itself is on the allowlist — at least one mirror exists.
-    expect(run.channelEvents.some(e => e.type === 'agent:trace')).toBe(true);
-    const r = I31_traceTeeMirrors(run);
+    // The dispatch write itself is stamped — attribution present in the file.
+    const dispatch = run.traceEvents.find(e => e.type === 'tool:dispatch');
+    expect(dispatch && (dispatch as { agentId?: number }).agentId).toBeGreaterThan(0);
+    const r = I31_traceAttribution(run);
     expect(r.ok, formatResult('I31', r)).toBe(true);
   });
 
-  it('an oversized-result run mirrors the nudge and drop writes too', async () => {
+  it('an oversized-result run stamps the nudge and drop writes too', async () => {
     const run = await runPool({
       nCtx: 4096,
       cellsUsed: 3000,
@@ -70,10 +72,9 @@ describe('scenario: trace-tee mirror completeness (I31)', () => {
       tools: new Map<string, Tool>([['web_search', new BigResultTool()]]),
       terminalToolName: 'report',
       maxTurns: 5,
-      trace: true,
     });
 
-    const r = I31_traceTeeMirrors(run);
+    const r = I31_traceAttribution(run);
     expect(r.ok, formatResult('I31', r)).toBe(true);
   });
 });

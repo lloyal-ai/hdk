@@ -25,6 +25,11 @@ export interface DevBridge {
    *  interface-typed wire unions for no safety gain. */
   onEvent(cb: (envelope: { ev: { type: string } }) => void): () => void;
   send(command: unknown): void;
+  /** Optional content resolver — a URL whose GET serves a representation of
+   *  the digest's media. The web bridge already exposes it on
+   *  `window.harness`; when absent the pane shows digest chips instead of
+   *  thumbnails. */
+  representationUrl?(digest: string, index?: number): string;
 }
 
 /** Live-edge quantum, ms — capsules grow and repaints happen on this grid. */

@@ -6,7 +6,7 @@ import {
   CallingAgent,
   agentPool,
   parallel,
-  traceScope,
+  useTraceScope,
 } from '@lloyal-labs/lloyal-agents';
 import type {
   JsonSchema,
@@ -203,7 +203,7 @@ export class DelegateTool extends Tool<Record<string, unknown>> {
     }
 
     const opts = this._poolOpts;
-    const scope = traceScope(tw, null, `delegate:${this.name}`, { taskCount: tasks.length, filtered: filtered?.length ?? 0 });
+    yield* useTraceScope(tw, null, `delegate:${this.name}`, { taskCount: tasks.length, filtered: filtered?.length ?? 0 });
 
     const pool = yield* agentPool({
       ...opts,
@@ -222,7 +222,6 @@ export class DelegateTool extends Tool<Record<string, unknown>> {
       totalToolCalls: pool.totalToolCalls,
       ...(filtered ? { filtered } : {}),
     };
-    scope.close();
     return result;
   }
 }

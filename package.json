@@ -9,11 +9,14 @@
     "packages/relay",
     "packages/host",
     "packages/dev-tools",
+    "packages/media",
     "packages/abilities/*"
   ],
   "scripts": {
     "build": "npm run build --workspaces",
-    "clean": "rm -rf packages/*/dist",
+    "typecheck": "tsc -b packages/media packages/sdk packages/agents packages/rig packages/channel-verify && tsc -p tsconfig.test.json",
+    "verify:packed": "bash scripts/verify-packed-install.sh",
+    "clean": "rm -rf packages/*/dist packages/abilities/*/dist packages/*/tsconfig.tsbuildinfo packages/abilities/*/tsconfig.tsbuildinfo",
     "docs": "npx typedoc",
     "test": "npm run build && npx tsx test/sdk.ts && npx tsx test/agents.ts",
     "test:unit": "vitest run",
@@ -22,7 +25,8 @@
     "smoke:visual": "npx tsx examples/shared/tui-ink/__visual-smoke.tsx",
     "examples:compare": "npx tsx examples/compare/main.ts",
     "examples:react": "npx tsx examples/react-agent/main.ts",
-    "examples:reflect": "npx tsx examples/reflection/main.ts"
+    "examples:reflect": "npx tsx examples/reflection/main.ts",
+    "verify:oci": "bash scripts/verify-oci-conformance.sh"
   },
   "devDependencies": {
     "@types/node": "^25.3.0",

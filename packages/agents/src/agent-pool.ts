@@ -1,24 +1,26 @@
 import { resource, call, ensure, createSignal, createChannel, spawn, scoped, each, sleep, action, race } from 'effection';
 import type { Operation, Subscription, Task, Signal } from 'effection';
+import { waitUntilSettled } from './combinators';
 import type { Branch } from '@lloyal-labs/sdk';
 import { CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, GrammarTriggerType, type ParsedToolCall, type SessionContext } from '@lloyal-labs/sdk';
 import type { BranchStore } from '@lloyal-labs/sdk';
-import { Ctx, Store, Trace, TraceParent, CallingAgent, SpineFmt, GrantStoreCtx, WindDown, CancelAgent, Pause } from './context';
+import { Ctx, Store, Trace, TraceParent, CallingAgent, SpineFmt, GrantStoreCtx, WindDown, CancelAgent, Pause, Attachments, Ingress } from './context';
+import { prepareBatch } from './prepare-content';
 import type { FormatConfig } from './Agent';
-import { buildToolResultDelta, buildTurnDelta, buildUserDelta } from '@lloyal-labs/sdk';
-import { traceScope } from './trace-scope';
+import { buildToolResultDelta, buildToolResultDeltaMultimodal, buildTurnDelta, buildUserDelta, decodeErrorOf, deltaCells } from '@lloyal-labs/sdk';
+import type { MultimodalDelta } from '@lloyal-labs/sdk';
+import type { Attachment } from '@lloyal-labs/media';
+import { useTraceScope } from './trace-scope';
 
-/** Brands a tee-wrapping TraceWriter so a nested pool never wraps it again
- *  (see the teeOn comment at the tee construction). */
-const TEE_MARK = Symbol.for('lloyal.traceTee');
 import type { TraceWriter } from './trace-writer';
-import { NullTraceWriter } from './trace-writer';
 import type { TraceEvent } from './trace-types';
 import type { AgentPolicy, IdleReason, ToolRetryAction } from './AgentPolicy';
 import { Agent } from './Agent';
+import { replayAgentTurns } from './replay';
+import type { AgentTurnRecord } from './replay';
 import { DefaultAgentPolicy, RECOVERY_PREFILL_OVERHEAD, BATCH_BUFFER } from './AgentPolicy';
 import type { PolicyConfig } from './AgentPolicy';
-import { Tool, ToolRetryError } from './Tool';
+import { Tool, ToolRetryError, takeToolMedia, TOOL_CONTEXT_KEY, TOOL_IMAGE_ERROR_KEY } from './Tool';
 import type {
   PressureThresholds,
   AgentTaskSpec,
@@ -36,17 +38,58 @@ import type {
 // awaiting_tool → idle   (settle reject + kill)
 // idle → disposed        (branch pruned)
 
+// ── Self-healing ladder knobs (docs/self-healing.md) ─────────────────────
+/** rc==1 (no KV slot, branch intact) deferrals per agent before the item
+ *  escalates to the terminal path. */
+const MAX_DEFER_ATTEMPTS = 3;
+/** Consecutive fatal rcs (2 or < -1) before the pool stops laddering: a
+ *  backend in a sticky error state (Metal after an OOM) fails every decode,
+ *  and deferring or healing there burns budget for nothing. Reset by any
+ *  successful dispatch. */
+const BACKEND_TRIPWIRE_N = 3;
+/** Heals per lineage. A replacement that poisons AGAIN goes terminal — a
+ *  second failure on replayed state is evidence, not bad luck. */
+const MAX_HEAL_ATTEMPTS = 1;
+
 /** Minimal event sender interface — accepts any Channel close type */
 type EventSender = { send(value: AgentEvent): Operation<void> };
 
-interface SettledTool {
+type SettledTool = {
   agentId: number;
-  prefillTokens: number[];
   toolName: string;
   callId: string;
   args: string;
   probe?: string;
+} & (
+  /** The token rail: the result tokenized here and prefills as tokens. */
+  | { rail: 'token'; prefillTokens: number[]; media?: never; resultStr?: string }
+  /** The embedding rail. `llama_batch` is token-XOR-embd, so this cannot join
+   *  a token batch — a separate call, not a separate strategy. The delta stops
+   *  at the string stage because mtmd tokenizes downstream, which is why the
+   *  cost had to be MEASURED. */
+  | {
+      rail: 'media';
+      /** The tool-result string the delta was built from — the heal record's
+       *  replay material (docs/self-healing.md). */
+      resultStr?: string;
+      prefillTokens?: never;
+      media: { delta: MultimodalDelta; cells: number; attachments: readonly Attachment[] };
+    }
+);
+
+/**
+ * What admission spends on this item — the ONE place that answers it.
+ *
+ * It used to be re-derived wherever it was needed, and one site forgot: the
+ * stall-break passed `prefillTokens.length` to `policy.onSettleReject`, which
+ * for a media item is `[]` and therefore **0**. Not "unknown" — a confident
+ * zero, from which the policy decided whether an agent was worth keeping. A
+ * union plus one accessor is what makes that site impossible to write.
+ */
+function settledCells(item: SettledTool): number {
+  return item.rail === 'media' ? item.media.cells : item.prefillTokens.length;
 }
+
 
 /**
  * A fan-out tool's completion, pushed by its off-fiber child onto
@@ -156,7 +199,13 @@ export class ContextPressure {
    */
   static readonly ASSUMED_N_BATCH = 512;
 
-  /** Total KV cache capacity (max positions). 0 when no context limit. */
+  /** Total KV cache capacity, in CELLS. 0 when no context limit.
+   *
+   *  Not positions — the two diverge on the embedding rail. Under M-RoPE an
+   *  image occupies far more cells than it advances position (measured on
+   *  Qwen3.5: 564 cells for 32 positions, ~18x), so budgeting from a branch's
+   *  position would under-count an image by that factor. Every number on this
+   *  class is cells, and `cellsUsed` is what the cache actually reports. */
   readonly nCtx: number;
   /** KV cells currently in use (monotonic within a pool run). */
   readonly cellsUsed: number;
@@ -422,13 +471,13 @@ function* recoverInline(
   let producedTokens = 0;
   try {
     yield* scoped(function*() {
-      yield* call(() => store.prefill([[agent.branch, tokens]]));
+      yield* waitUntilSettled(store.prefill([[agent.branch, tokens]]));
       if (terminalGrammar) agent.branch.setGrammar(terminalGrammar);
 
       tw.write({
         traceId: tw.nextId(), parentTraceId, ts: performance.now(),
         type: 'branch:prefill', branchHandle: agent.id,
-        tokenCount: tokens.length, role: 'recovery',
+        cells: tokens.length, role: 'recovery',
       });
 
       // Single-agent produce/commit loop
@@ -437,7 +486,7 @@ function* recoverInline(
         if (isStop) break;
         output += text;
         producedTokens++;
-        yield* call(() => store.commit([[agent.branch, token]]));
+        yield* waitUntilSettled(store.commit([[agent.branch, token]]));
         yield* events.send({ type: 'agent:produce', agentId: agent.id, text, tokenCount: producedTokens });
       }
 
@@ -536,7 +585,7 @@ function* handleNudge(
   const prefillTokens = buildToolResultDelta(ctx, JSON.stringify(nudgeResult), callId, { enableThinking: a.fmt.enableThinking });
   const probe = tools?.get(tc?.name || '')?.probe(nudgeResult) ?? undefined;
   a.resetTurn();
-  return { agentId: a.id, prefillTokens, toolName: tc?.name || '', callId, args: tc?.arguments || '', probe };
+  return { rail: 'token', agentId: a.id, prefillTokens, toolName: tc?.name || '', callId, args: tc?.arguments || '', probe };
 }
 
 function* handleReturn(
@@ -634,7 +683,7 @@ function* handleRecover(
   // call, but blank toolName/callId would emit a blank `tool:settle_order` entry and a
   // blank ToolHistoryEntry; label them so the trace + history are self-describing
   // (callId is unique per agent → keeps any callId-keyed replay oracle deterministic).
-  return { agentId: a.id, prefillTokens, toolName: 'recovery', callId: `recovery:${a.id}`, args: '' };
+  return { rail: 'token', agentId: a.id, prefillTokens, toolName: 'recovery', callId: `recovery:${a.id}`, args: '' };
 }
 
 /**
@@ -809,72 +858,34 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         yield* each.next();
       }
     });
-    const baseTw = yield* Trace.expect();
-    // ── Dev-gated trace tee ─────────────────────────────────────
-    // Mirrors trace writes onto the bus (`agent:trace`) so a live consumer
-    // (the dev pane) sees what the trace file sees, attributed. Two layers:
-    //   • pool writes — the allowlisted intervention events below mirror with
-    //     the agentId read off the event itself;
-    //   • tool writes — dispatch() sets a per-dispatch `toolTee` as the Trace
-    //     context for the tool's execution, stamping agentId + callId and
-    //     replacing the abilities' hardcoded `parentTraceId: null` with the
-    //     dispatch id (real lineage in the FILE too, not just the bus).
-    // The bridge is a Signal: `write` is sync per the TraceWriter contract and
-    // cannot yield, so the mirror cannot ride poolChannel directly — a spawned
-    // forwarder drains it, the same pattern progressBridge uses for
-    // onProgress. The tee needs BOTH dev intent and a real writer: `trace`
-    // is the pool's dev flag (the templates pass `runner.dev`), so a
-    // production run that happens to trace to disk never mirrors onto the
-    // bus; NullTraceWriter keeps it equally inert when tracing is off.
-    // A nested pool (DelegateTool) sees the OUTER dispatch's toolTee as its
-    // ambient Trace — wrapping that again would mirror every nested write
-    // twice (once per attribution). The mark makes a tee recognizable, so a
-    // nested pool rides the outer tee: its writes mirror ONCE, attributed to
-    // the delegating agent's call.
-    const teeOn = (opts.trace ?? false) && !(baseTw instanceof NullTraceWriter)
-      && !(TEE_MARK in (baseTw as object));
-    const traceBridge = createSignal<AgentEvent, void>();
-    if (teeOn) {
-      yield* spawn(function*() {
-        for (const ev of yield* each(traceBridge)) {
-          yield* poolChannel.send(ev);
-          yield* each.next();
-        }
-      });
-    }
-    const MIRRORED_POOL_EVENTS = new Set<TraceEvent['type']>([
-      'pool:agentNudge', 'tool:authReject', 'pool:agentDrop', 'branch:prune',
-      // The compiled per-agent prompt SUFFIX. In shared-spine mode the
-      // system+tool header lives on the spine prefix (inherited via fork)
-      // and is deliberately not repeated here — the mirror carries what
-      // this spawn formatted, honestly labeled by the pane. agentId is
-      // the attribution.
-      'prompt:format',
-      // The dispatch record carries explore/exploit + callId — the live
-      // consumer keys retrieval metadata off it.
-      'tool:dispatch',
-    ]);
-    const tw: TraceWriter = !teeOn ? baseTw : Object.assign({
-      nextId: () => baseTw.nextId(),
-      flush: () => baseTw.flush(),
-      write: (event: TraceEvent) => {
-        baseTw.write(event);
-        if (!MIRRORED_POOL_EVENTS.has(event.type)) return;
-        const e = event as { agentId?: number; branchHandle?: number };
-        try {
-          traceBridge.send({ type: 'agent:trace', agentId: e.agentId ?? e.branchHandle ?? -1, event });
-        } catch { /* mirror is best-effort — never disrupt the write */ }
-      },
-    }, { [TEE_MARK]: true });
-    const toolTee = (agentId: number, callId: string, dispatchTraceId: number): TraceWriter => Object.assign({
-      nextId: () => baseTw.nextId(),
-      flush: () => baseTw.flush(),
-      write: (event: TraceEvent) => {
-        const stamped = event.parentTraceId == null ? { ...event, parentTraceId: dispatchTraceId } : event;
-        baseTw.write(stamped);
-        try { traceBridge.send({ type: 'agent:trace', agentId, callId, event: stamped }); } catch { /* best-effort */ }
-      },
-    }, { [TEE_MARK]: true });
+    const tw = yield* Trace.expect();
+    // The run's image sink — a tool result's pictures are recorded here for
+    // the same reason the other two ingresses record theirs: the trace keeps
+    // the marker, this keeps what it stood for.
+    const attachments = yield* Attachments.expect();
+    const ingress = yield* Ingress.expect();
+    // ── Dispatch attribution ────────────────────────────────────
+    // dispatch() sets a per-dispatch tee as the Trace context for the tool's
+    // execution, stamping the dispatching agent + call INTO the event data:
+    // `agentId`, `callId`, and a real `parentTraceId` replacing the
+    // abilities' hardcoded null. Attribution lives in the record itself, so
+    // every sink reads the same fields — the file, and the dev pane via the
+    // writer-boundary mirror (rig's `useTraceWriter`). That mirror is where
+    // the bus tee moved: ONE mirror at the boundary every write crosses,
+    // instead of per-layer mirrors with per-layer allowlists (session-level
+    // writes like the trunk's `warmDelta` never reached the old pool tee).
+    // Only-if-absent semantics keep a nested pool's (DelegateTool) inner
+    // attribution intact: its tee stamps first, this one defers.
+    const toolTee = (agentId: number, callId: string, dispatchTraceId: number): TraceWriter => ({
+      nextId: () => tw.nextId(),
+      flush: () => tw.flush(),
+      write: (event: TraceEvent) => tw.write({
+        ...event,
+        agentId: event.agentId ?? agentId,
+        callId: event.callId ?? callId,
+        parentTraceId: event.parentTraceId ?? dispatchTraceId,
+      }),
+    });
     const { spine, orchestrate, toolsJson, tools, maxTurns = 100, terminalToolName, trace = false, pruneOnReturn = false, enableThinking = true, eagerGrammar } = opts;
 
     // Tool index map for trace — position in toolkit array
@@ -899,7 +910,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     // boundary. See the Pause context. Absent ⇒ no pause capability.
     let pauseSignal: Signal<boolean, void> | null = null;
     try { pauseSignal = (yield* Pause.get()) ?? null; } catch { /* no pause provided */ }
-    const poolScope = traceScope(tw, poolParentTraceId, 'pool', { maxTurns, terminalToolName });
+    const poolScopeId = yield* useTraceScope(tw, poolParentTraceId, 'pool', { maxTurns, terminalToolName });
 
     // Whether the pool's tool registry contains tools besides the terminal tool.
     // When false, agents are allowed to call the terminal tool as their first
@@ -1014,18 +1025,79 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     // watcher fiber, so it can't race the tick's native store work.
     const pendingCancels: number[] = [];
 
-    // Agents that received a terminal agent:failed(user_cancel). Downstream phases must
-    // treat them as fully DISCARDED: the termination sweep must not force-recover a
-    // cancelled agent whose branch couldn't be pruned (non-leaf/recursed → safePrune
-    // no-op), and DRAIN must not emit tool events for a completion that lands after the
-    // cancel. Both consumption points check this set.
-    const cancelledIds = new Set<number>();
+    // Agents that have received a TERMINAL `agent:failed` and are fully
+    // DISCARDED. Downstream phases must never resurrect one: the termination
+    // sweep must not force-recover it (its branch may still be alive —
+    // `safePrune` is a documented no-op on a branch with live children), and
+    // DRAIN must not emit tool events for a completion that lands afterwards.
+    //
+    // TWO paths write it, and only one used to. A user cancel
+    // (`drainCancels`) and a poisoned media prefill (SETTLE) do the identical
+    // three things at the point of discard — terminal `agent:failed`,
+    // `safePrune`, `transition('idle')` — but only the cancel was remembered
+    // past the tick, so a poisoned agent still satisfied every condition the
+    // sweep tests and was recovered on a branch the runtime had just called
+    // unresumable. The observable symptom was TWO terminal events for one
+    // agent: `media_prefill_failed`, then `recovery_skipped`.
+    //
+    // NOT the same set as SETTLE's local `poisoned`, which answers a different
+    // question — "did this agent's prefill land in THIS tick?" — and is used
+    // to skip re-activation. One fact needs one name; two facts keep two.
+    const discardedIds = new Set<number>();
+
+    // ── Self-healing ladder state (docs/self-healing.md) ──
+    /** rc==1 deferrals per agent; cleared when a settle lands. */
+    const deferAttempts = new Map<number, number>();
+    /** Consecutive fatal rcs across dispatches; reset by any success. */
+    let consecutiveFatalRc = 0;
+    /** Set at BACKEND_TRIPWIRE_N — the ladder stops, failures go terminal. */
+    let backendSuspect = false;
+    /** Per-agent KV-delta record since spawn — heal's replay material. One
+     *  shape, two sinks: every piece is ALREADY on the trace (agent:turn's
+     *  rawOutput, tool:result, branch:prefill's probeText); this holds the
+     *  same data where heal can read it back same-process. */
+    const turnRecordsById = new Map<number, AgentTurnRecord[]>();
+    const recordFor = (id: number): AgentTurnRecord[] => {
+      let r = turnRecordsById.get(id);
+      if (!r) { r = []; turnRecordsById.set(id, r); }
+      return r;
+    };
+    /** The birth certificate — what a heal reproduces (seed, tools, ability,
+     *  the spec's exact text). Recorded at the SPAWN drain. */
+    const specById = new Map<number, AgentTaskSpec>();
+    /** Heal count per lineage (a replacement inherits its original's + 1). */
+    const healAttemptOf = new Map<number, number>();
+    const pendingHeals: {
+      spec: AgentTaskSpec; records: AgentTurnRecord[];
+      of: number; rc?: number; attempt: number;
+    }[] = [];
 
     // Pool-level branch cleanup — ensures orphan-branch cleanup even when
     // spawns are lazy and the orchestrator's spawn scope exits early.
+    //
+    // `safePrune`, not `pruneSync` and not `pruneSubtreeSync`.
+    //
+    // `pruneSync()` (the original) throws on a branch with live children —
+    // inside an `ensure()`, where a throw unwinds teardown and can mask
+    // whatever the run was already failing on. That is the real defect here.
+    //
+    // `pruneSubtreeSync()` (what briefly replaced it) is not a memory bug —
+    // the kernel is generation-checked, so freeing a stale handle is inert —
+    // but it is still the wrong tool: it frees OTHER AGENTS' branches as a
+    // side effect while leaving their `Branch` objects reading
+    // `disposed === false`, so every later reader of those objects is working
+    // from a flag that lies. It is right in `spine.ts` / `use-agent.ts`, where
+    // the branch owns its subtree and no sibling object aliases a descendant.
+    //
+    // `safePrune` does neither: it asks the CONTEXT whether children are live
+    // (disposed-filtered, so a freed child stops counting) and lets each
+    // branch set its own flag. REVERSED, so children are reached before their
+    // parents — agents are spawned parent-first, so a parent can become
+    // prunable in the same pass. Whatever this cannot free is freed when the
+    // context itself goes.
     yield* ensure(() => {
-      for (const a of agents) {
-        if (!a.branch.disposed) a.branch.pruneSync();
+      for (let i = agents.length - 1; i >= 0; i--) {
+        safePrune(agents[i], tw, poolScopeId);
       }
     });
 
@@ -1062,7 +1134,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     };
 
     tw.write({
-      traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+      traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
       type: 'pool:open', agentCount: 0, taskSuffixTokens: [],
       pressure: (() => {
         const p = new ContextPressure(ctx, pressureOpts);
@@ -1081,6 +1153,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           content: spec.content,
           tools: toolsJson,
           seed: spec.seed,
+          ...(spec.after && spec.after.length > 0 ? { after: spec.after } : {}),
           parent,
           assignedAbility: spec.assignedAbility,
         };
@@ -1102,7 +1175,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           agent.branch.pruneSync();
           agent.dispose();
           tw.write({
-            traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+            traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
             type: 'pool:agentDrop', agentId: agent.id, reason: 'pressure_init',
           });
           throw new Error(`useAgentPool: cannot fit agent suffix (${suffixTokens.length} tokens) under current pressure`);
@@ -1206,11 +1279,89 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       // plain tool-result (new research) items stay gated at `headroom` (preserve softLimit).
       const reserveBand = settlePressure.softLimit - settlePressure.hardLimit;
 
-      const prefillPairs: [Branch, number[]][] = [];
+      // The two admitted-item lists. Each entry carries what its `branch:prefill`
+      // will need, because that event is written AFTER the dispatch it describes
+      // — it asserts the KV moved, and on the media rail an entry can fail.
+      const tokenItems: { agent: Agent; tokens: number[]; cells: number; src: SettledTool }[] = [];
+      // Media rides its own list: `llama_batch` is token-XOR-embd, so these
+      // cannot join the token batch — a separate call, not a separate strategy.
+      const mediaItems: {
+        agent: Agent; delta: MultimodalDelta; cells: number;
+        attachments?: readonly Attachment[]; src: SettledTool;
+      }[] = [];
+
+      /** One `branch:prefill` for an entry that LANDED. Never called for a
+       *  deferred or poisoned one: nothing moved for those. */
+      const writePrefilled = (
+        a: Agent, cells: number, refs?: readonly Attachment[],
+      ): void => {
+        tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
+          type: 'branch:prefill', branchHandle: a.id,
+          cells, role: 'toolResult', ...(refs ? { attachments: refs } : {}) });
+      };
       const settledAgents: Agent[] = [];
-      const settledOrder: { agentId: number; callId: string; tokenCount: number }[] = [];
+      const settledOrder: { agentId: number; callId: string; cells: number }[] = [];
       const itemProbes = new Map<number, string | undefined>();
       const deferred: SettledTool[] = [];
+      const poisoned = new Set<number>();
+
+      /** Success-only bookkeeping, run AFTER a dispatch landed — the same
+       *  discipline `writePrefilled` already follows. Nothing here runs for
+       *  a deferred or failed entry, so the trace, the tool history and the
+       *  re-activation list all describe only what actually happened. */
+      const bookSettled = (
+        a: Agent, src: SettledTool, cells: number, refs?: readonly Attachment[],
+        resultStrOverride?: string,
+      ): void => {
+        const resultStr = resultStrOverride ?? src.resultStr;
+        if (resultStr) {
+          recordFor(a.id).push({
+            kind: 'toolResult', resultStr, callId: src.callId,
+            ...(refs && refs.length > 0 ? { attachments: refs } : {}),
+          });
+        }
+        settledAgents.push(a);
+        settledOrder.push({ agentId: a.id, callId: src.callId, cells });
+        if (src.probe) itemProbes.set(a.id, src.probe);
+        deferAttempts.delete(a.id);
+        const postSettle = new ContextPressure(ctx, pressureOpts);
+        a.recordToolResult({
+          name: src.toolName, args: src.args,
+          resultCells: cells,
+          contextAfterPercent: postSettle.percentAvailable,
+          timestamp: performance.now(),
+        });
+        writePrefilled(a, cells, refs);
+      };
+
+      /** rc==1: no KV slot, state restored — the branch is INTACT. The item
+       *  re-enters via the deferral stream (`pendingSettled` next tick). */
+      const writeDeferred = (a: Agent, rc: number, attempt: number): void => {
+        const p = new ContextPressure(ctx, pressureOpts);
+        tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
+          type: 'pool:agentDefer', agentId: a.id, rc, attempt,
+          pressure: { remaining: finiteOrNull(p.remaining), cellsUsed: p.cellsUsed,
+            nCtx: p.nCtx, headroom: finiteOrNull(p.headroom) } });
+      };
+
+      /** The terminal path — the ladder's bottom rung. Prune-and-discard is
+       *  safe whatever the rc said: pruning an intact branch is harmless,
+       *  and a poisoned one must never be resumed. */
+      function* failSettled(
+        a: Agent,
+        reason: 'media_prefill_failed' | 'tool_result_failed',
+        detail: string,
+        rc?: number,
+      ): Operation<void> {
+        poisoned.add(a.id);      // skip re-activation THIS tick
+        discardedIds.add(a.id);  // and never resurrect it in any later one
+        tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
+          type: 'pool:settleFailed', agentId: a.id, reason,
+          detail: detail.slice(0, 200), ...(rc !== undefined ? { rc } : {}) });
+        yield* poolChannel.send({ type: 'agent:failed', agentId: a.id, reason });
+        safePrune(a, tw, poolScopeId);
+        a.transition('idle');
+      }
 
       for (const item of items) {
         const a = agentById.get(item.agentId);
@@ -1228,7 +1379,10 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         // defers → stall-break → serial `recoverInline` (uncapped, prune-between,
         // lossless), never a report-decode overflow. Plain tool-result items reserve
         // only their prompt and stay gated at `headroom` (preserve the softLimit reserve).
-        const cost = a.extracting ? item.prefillTokens.length + a.recoveryBudget : item.prefillTokens.length;
+        // A media item's cost is the MEASURED cell count, not a token length:
+        // its `prefillTokens` is empty because mtmd tokenizes downstream.
+        const itemCells = settledCells(item);
+        const cost = a.extracting ? itemCells + a.recoveryBudget : itemCells;
         const budget = a.extracting ? headroom + reserveBand : headroom;
         if (cost > budget) {
           // Defer — siblings may finish and free KV, letting this result
@@ -1240,48 +1394,214 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           continue;
         }
 
-        prefillPairs.push([a.branch, item.prefillTokens]);
-        settledAgents.push(a);
-        settledOrder.push({ agentId: a.id, callId: item.callId, tokenCount: item.prefillTokens.length });
-        if (item.probe) itemProbes.set(a.id, item.probe);
+        // Committed by the barrier at the delta-build seam; nothing is stored
+        // here. A tick's worth of orphan is fine — SETTLE may DEFER this item
+        // for headroom, so a manifest can exist before its prefill lands.
+        if (item.rail === 'media') {
+          mediaItems.push({
+            agent: a, delta: item.media.delta, cells: itemCells,
+            attachments: item.media.attachments, src: item,
+          });
+        } else {
+          tokenItems.push({ agent: a, tokens: item.prefillTokens, cells: itemCells, src: item });
+        }
+        // Admission only RESERVES here; the bookkeeping (settle order, tool
+        // history, re-activation list, branch:prefill) runs after the
+        // dispatch lands — success-only, like the events it feeds.
         headroom -= cost;
-        const postSettle = new ContextPressure(ctx, pressureOpts);
-        a.recordToolResult({
-          name: item.toolName, args: item.args,
-          resultTokenCount: item.prefillTokens.length,
-          contextAfterPercent: postSettle.percentAvailable,
-          timestamp: performance.now(),
-        });
-        tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-          type: 'branch:prefill', branchHandle: a.id,
-          tokenCount: item.prefillTokens.length, role: 'toolResult' });
       }
 
-      if (prefillPairs.length > 0) {
-        yield* call(() => store.prefill(prefillPairs));
-        counters.warmPrefillCalls++;
-        counters.warmPrefillBranches += prefillPairs.length;
+      if (tokenItems.length > 0) {
+        try {
+          yield* waitUntilSettled(store.prefill(
+            tokenItems.map(t => [t.agent.branch, t.tokens] as [Branch, number[]])));
+          counters.warmPrefillCalls++;
+          counters.warmPrefillBranches += tokenItems.length;
+          consecutiveFatalRc = 0;
+          for (const t of tokenItems) bookSettled(t.agent, t.src, t.cells);
+        } catch (err) {
+          const de = decodeErrorOf(err);
+          const rc = de?.rc;
+          if (rc === 1 && de?.partial && !backendSuspect) {
+            // No KV slot for a LATER chunk: the chunks before it landed and
+            // moved their branches' books, and the error does not say which.
+            // Re-queuing the cohort whole would decode the landed ones twice
+            // onto advanced positions, so the cohort takes the per-agent
+            // terminal instead — the kernel's rule: intact ⇔ the failing call
+            // restored state (rc 1 or -1) and nothing before it landed.
+            for (const t of tokenItems) {
+              yield* failSettled(t.agent, 'tool_result_failed',
+                `partial prefill: ${err instanceof Error ? err.message : String(err)}`, rc);
+            }
+          } else if (rc === 1 && !backendSuspect) {
+            // No KV slot for the batch; state restored — every branch is
+            // INTACT. Re-queue the items whole: a sibling finishing frees
+            // cells and they settle on a later tick. This used to take the
+            // entire pool down.
+            for (const t of tokenItems) {
+              const attempt = (deferAttempts.get(t.agent.id) ?? 0) + 1;
+              deferAttempts.set(t.agent.id, attempt);
+              if (attempt > MAX_DEFER_ATTEMPTS) {
+                yield* failSettled(t.agent, 'tool_result_failed',
+                  `deferral exhausted after ${MAX_DEFER_ATTEMPTS} attempts: ${err instanceof Error ? err.message : String(err)}`, rc);
+              } else {
+                writeDeferred(t.agent, rc, attempt);
+                deferred.push(t.src);
+              }
+            }
+          } else {
+            // Fatal (2 / < -1), rc-less, or the tripwire is up: today's
+            // behavior — the tick throws and the pool scope tears down —
+            // now with the rc preserved on the error for the postmortem.
+            if (rc === 2 || (rc !== undefined && rc < -1)) consecutiveFatalRc++;
+            throw err;
+          }
+        }
+      }
 
+      // The third dispatch. Media cannot share the token batch, so it goes as
+      // one cohort call in the same position and style as the two around it —
+      // how many dispatches (and vision-tower encodes) that costs stays the
+      // native worker's business, so making it cheaper later touches no JS.
+      //
+      // Per-item outcomes, not a rejected promise: one agent's failure must
+      // not cost its siblings their prefills. Each entry classifies by the
+      // rc and partial flag the worker attached (docs/self-healing.md): 1 and
+      // -1 restored the failing call, so the branch is INTACT unless `partial`
+      // says an earlier chunk landed; 2 / < -1 poison it (decode_segments is
+      // not atomic, and partial-range KV ops are meaningless on recurrent
+      // layers). Anything not intact is pruned, never resumed.
+      if (mediaItems.length > 0) {
+        const results = yield* waitUntilSettled(
+          store.prefillMultimodal(mediaItems.map(m => [m.agent.branch, m.delta] as [Branch, MultimodalDelta])));
+        counters.warmPrefillCalls++;
+        counters.warmPrefillBranches += mediaItems.length;
+        for (let i = 0; i < mediaItems.length; i++) {
+          const m = mediaItems[i];
+          const r = results[i];
+          if (!r?.error) {
+            consecutiveFatalRc = 0;
+            bookSettled(m.agent, m.src, m.cells, m.attachments);
+            continue;
+          }
+          const a = m.agent;
+          const rc = r.rc;
+
+          if (rc === 1 && !r.partial && !backendSuspect) {
+            // Intact — re-queue for a later tick, budgeted.
+            const attempt = (deferAttempts.get(a.id) ?? 0) + 1;
+            deferAttempts.set(a.id, attempt);
+            if (attempt > MAX_DEFER_ATTEMPTS) {
+              yield* failSettled(a, 'media_prefill_failed',
+                `deferral exhausted after ${MAX_DEFER_ATTEMPTS} attempts: ${r.error}`, rc);
+            } else {
+              writeDeferred(a, rc, attempt);
+              deferred.push(m.src);
+            }
+            continue;
+          }
+
+          if (rc === -1 && !r.partial && !backendSuspect) {
+            // Invalid input, state restored — the branch is intact and the
+            // item is deterministic: retrying loops. Drop it and tell the
+            // model what it did not see, on the same channel the
+            // no-projector path already uses.
+            // "Work from the text" needs the text: `resultStr` is the tool's
+            // media-stripped result, the same object the no-projector path
+            // decorates before it stringifies. On this rail it is always a
+            // plain object — `takeToolMedia` yields media only from one, and
+            // `processCompletion` always sets it — so parse and add the key.
+            // A note that is only the key drops the answer.
+            const told = JSON.parse(m.src.resultStr!) as Record<string, unknown>;
+            const note = {
+              ...told,
+              [TOOL_IMAGE_ERROR_KEY]:
+                `${m.src.toolName} returned media the decoder rejected as invalid input. ` +
+                `Work from the text, or use a different source.`,
+            };
+            const noteStr = JSON.stringify(note);
+            const noteTokens = buildToolResultDelta(
+              ctx, noteStr, m.src.callId,
+              { enableThinking: a.fmt.enableThinking });
+            yield* waitUntilSettled(store.prefill([[a.branch, noteTokens]]));
+            // The record carries what LANDED — the note, not the dropped item.
+            bookSettled(a, m.src, noteTokens.length, undefined, noteStr);
+            continue;
+          }
+
+          // Poisoned (2 / < -1), partial (an earlier chunk landed), an rc-less
+          // failure, or the tripwire is up.
+          if (rc === 2 || (rc !== undefined && rc < -1)) {
+            consecutiveFatalRc++;
+            if (consecutiveFatalRc >= BACKEND_TRIPWIRE_N) backendSuspect = true;
+          }
+          yield* failSettled(a, 'media_prefill_failed',
+            backendSuspect
+              ? `${r.error} [backend suspect: ${consecutiveFatalRc} consecutive fatal decodes — recreate the backend]`
+              : r.error,
+            rc);
+
+          // HEAL (docs/self-healing.md): the poison cost this agent its
+          // branch, not its task. Within budget and with the backend healthy,
+          // queue a warm respawn — fork the spine (the prefix, seed images
+          // included, rides for free), replay the record, re-admit. Drained
+          // at the SPAWN phase, on the loop fiber, like everything else.
+          const healAttempt = (healAttemptOf.get(a.id) ?? 0) + 1;
+          const healSpec = specById.get(a.id);
+          if (!backendSuspect && healAttempt <= MAX_HEAL_ATTEMPTS && healSpec) {
+            // Replay up to the LAST COMPLETED TRANSACTION. The record's tail
+            // is the poisoned transaction itself — an assistant turn whose
+            // tool call never settled — and replaying it would leave the
+            // replacement dangling mid-call (observed on real weights: the
+            // model emits a stray think and stops instead of re-calling).
+            // Dropping the tail lets the replacement REGENERATE that turn
+            // and drive the tool itself.
+            const records = recordFor(a.id).slice();
+            while (records.length > 0 && records[records.length - 1].kind === 'assistant') {
+              records.pop();
+            }
+            pendingHeals.push({
+              spec: healSpec, records,
+              of: a.id, ...(rc !== undefined ? { rc } : {}), attempt: healAttempt,
+            });
+          }
+        }
+      }
+
+      // Re-activation runs over everything admitted this tick, on either rail.
+      // Guarding it on `tokenItems` would strand a tick whose items were ALL
+      // media: those agents would sit in awaiting_tool with their results
+      // already in KV, and nothing would ever wake them.
+      if (settledAgents.length > 0) {
         // Fan-out determinism: record the canonical scatter order so the replay
         // settle-order oracle can reproduce this exact interleaving. On the
         // serial path this equals dispatch order; the event is emitted uniformly.
-        tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+        tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
           type: 'tool:settle_order', batch: settledOrder });
 
         // Probe prefill from DISPATCH or nudge-replacement.
         const probePairs: [Branch, number[]][] = [];
+        const probeMeta: { id: number; cells: number; probeText: string }[] = [];
         for (const a of settledAgents) {
+          if (poisoned.has(a.id)) continue;
           const probe = itemProbes.get(a.id);
           if (probe) {
             const probeTokens = ctx.tokenizeSync(probe, false);
             probePairs.push([a.branch, probeTokens]);
-            tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
-              type: 'branch:prefill', branchHandle: a.id,
-              tokenCount: probeTokens.length, role: 'probe', probeText: probe });
+            probeMeta.push({ id: a.id, cells: probeTokens.length, probeText: probe });
           }
         }
         if (probePairs.length > 0) {
-          yield* call(() => store.prefill(probePairs));
+          yield* waitUntilSettled(store.prefill(probePairs));
+          // Success-only, like every branch:prefill: written after the
+          // batched dispatch landed, so a rejected prefill leaves no event
+          // claiming cells that never moved.
+          for (const m of probeMeta) {
+            tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
+              type: 'branch:prefill', branchHandle: m.id,
+              cells: m.cells, role: 'probe', probeText: m.probeText });
+            recordFor(m.id).push({ kind: 'probe', text: m.probeText });
+          }
         }
 
         // Re-activate. An `extracting` agent (parallel recovery, queued by
@@ -1290,6 +1610,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         // terminal call that `parseChatOutput` decodes; the report then decodes
         // bin-packed in the tick loop alongside live siblings.
         for (const a of settledAgents) {
+          if (poisoned.has(a.id)) continue;
           a.transition('active');
           a.resetTurn();
           if (a.extracting && terminalGrammar) {
@@ -1366,7 +1687,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         // run as finishing. Emitted here, not at the first reap: with every
         // agent parked in a retry there IS no immediate reap, and the click
         // would read as ignored.
-        tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+        tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
           type: 'pool:windDown' });
         yield* poolChannel.send({ type: 'run:windingDown' });
       });
@@ -1408,12 +1729,12 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         if (!a || (a.status !== 'active' && a.status !== 'awaiting_tool')) continue;
         const tool = inflightTasks.get(id);
         if (tool) yield* tool.halt();
-        tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+        tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
           type: 'pool:agentDrop', agentId: id, reason: 'user_cancel' });
         yield* poolChannel.send({ type: 'agent:failed', agentId: id, reason: 'user_cancel' });
-        cancelledIds.add(id);
+        discardedIds.add(id);
         a.transition('idle');
-        safePrune(a, tw, poolScope.traceId);
+        safePrune(a, tw, poolScopeId);
       }
     }
 
@@ -1444,13 +1765,49 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
      *  and DRAIN (called when a fan-out child's completion arrives). The body is
      *  the relocated post-tool logic; relocating it onto the loop fiber is what
      *  keeps the main-context tokenize/reads off the child fibers. */
+    /**
+     * Fail ONE agent whose tool completion could not be processed.
+     *
+     * `processCompletion` can throw, and the media barrier is the live case:
+     * `prepareBatch` / `deltaCells` reject, and `Ingress` DEFAULTS to
+     * `NoContentIngress`, so any harness with an image-returning tool and no
+     * media wiring hits this on the first call.
+     *
+     * Both call sites sit outside any `try`, so that throw unwound past the
+     * tick loop into the pool's own catch — which closes the channel with a
+     * PARTIAL result, no trace, and no `agent:failed`. Measured: two agents
+     * spawn, one dispatches, and BOTH vanish with no terminal event and no
+     * `pool:close`. The sibling had not even reached the failing path.
+     *
+     * This is the shape SETTLE already uses for a per-entry cohort failure
+     * (see the `poisoned` loop): trace it, tell the bus, prune the branch,
+     * park the agent — and record the DISCARD, so the termination sweep never
+     * force-recovers it. That last step is the one this comment used to defer
+     * to "a later phase"; the phase happened, `discardedIds` now means
+     * "terminally failed, do not resurrect" rather than "user cancelled", and
+     * all three discard paths write it.
+     */
+    function* failCompletion(c: ToolCompletion, err: unknown): Operation<void> {
+      const a = c.agent;
+      const detail = err instanceof Error ? err.message : String(err);
+      tw.write({
+        traceId: tw.nextId(), parentTraceId: c.dispatchTraceId, ts: performance.now(),
+        type: 'pool:settleFailed', agentId: a.id, reason: 'tool_result_failed',
+        detail: detail.slice(0, 200),
+      });
+      yield* poolChannel.send({ type: 'agent:failed', agentId: a.id, reason: 'tool_result_failed' });
+      discardedIds.add(a.id);
+      safePrune(a, tw, poolScopeId);
+      a.transition('idle');
+    }
+
     function* processCompletion(c: ToolCompletion): Operation<SettledTool | null> {
       const { agent, tc, callId, dispatchTraceId } = c;
 
       // Discarded by a user cancel while this tool was in flight: drop the completion
       // silently — no tool:result / agent:tool_result, no result set. The agent already
       // got its terminal agent:failed(user_cancel); a late tool event would contradict it.
-      if (cancelledIds.has(agent.id)) return null;
+      if (discardedIds.has(agent.id)) return null;
 
       if (c.kind === 'error') {
         agent.transition('idle');
@@ -1502,9 +1859,9 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         const prefillTokens = buildToolResultDelta(ctx, resultStr, callId, { enableThinking: agent.fmt.enableThinking });
         tw.write({ traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
           type: 'tool:result', agentId: agent.id, tool: tc.name,
-          result: exhausted, prefillTokenCount: prefillTokens.length,
+          result: exhausted, cells: prefillTokens.length,
           durationMs: performance.now() - c.toolT0 });
-        return { agentId: agent.id, prefillTokens, toolName: tc.name, callId, args: tc.arguments, probe: undefined };
+        return { rail: 'token', agentId: agent.id, prefillTokens, toolName: tc.name, callId, args: tc.arguments, probe: undefined, resultStr };
       }
 
       // c.kind === 'result'
@@ -1513,7 +1870,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       const postToolPressure = new ContextPressure(ctx, pressureOpts);
       const contextAvailablePercent = postToolPressure.percentAvailable;
       if (result && typeof result === 'object' && !Array.isArray(result)) {
-        (result as Record<string, unknown>)._contextAvailablePercent = contextAvailablePercent;
+        (result as Record<string, unknown>)[TOOL_CONTEXT_KEY] = contextAvailablePercent;
         const resultObj = result as Record<string, unknown>;
         if (Array.isArray(resultObj.results)) {
           agent.addNestedResults((resultObj.results as unknown[]).filter((f): f is string => typeof f === 'string'));
@@ -1522,15 +1879,61 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           agent.addNestedResults((resultObj.nestedResults as unknown[]).filter((f): f is string => typeof f === 'string'));
         }
       }
-      const resultStr = JSON.stringify(result);
+      // Images come OUT before serializing — see TOOL_MEDIA_KEY. A model with
+      // no projector cannot be handed them, and dropping them silently would
+      // leave the agent reasoning about a picture it was never shown, so say
+      // so in the result text instead: an honest failure the model can read,
+      // the same shape the rate-limit path uses above.
+      const { media, result: told } = takeToolMedia(result);
+      if (media.length > 0 && !ctx.supportsVision()) {
+        (told as Record<string, unknown>)[TOOL_IMAGE_ERROR_KEY] =
+          `${tc.name} returned ${media.length} image(s), but this model cannot see images. ` +
+          `Work from the text, or use a different source.`;
+      }
+      const resultStr = JSON.stringify(told);
       yield* poolChannel.send({ type: 'agent:tool_result', agentId: agent.id, tool: tc.name, result: resultStr, contextAvailablePercent });
-      const prefillTokens = buildToolResultDelta(ctx, resultStr, callId, { enableThinking: agent.fmt.enableThinking });
-      const probe = tool?.probe(result) ?? undefined;
+
+      // Two rails, one seam. The token rail tokenizes here; the embedding rail
+      // stops at the string stage because mtmd tokenizes downstream, and its
+      // cost has to be MEASURED (image cost is non-linear — a per-image
+      // estimate over-commits) before SETTLE can spend it against headroom.
+      // Measured on the loop fiber, never inside a fan-out `execute()`.
+      let prefillTokens: number[] = [];
+      let mediaItem: { delta: MultimodalDelta; cells: number; attachments: readonly Attachment[] } | undefined;
+      if (media.length > 0 && ctx.supportsVision()) {
+        // THE BARRIER for this ingress: the whole batch is normalized and
+        // committed before a marker exists, before admission, before any KV
+        // moves. `delta` then carries the ADMITTED representations, so the
+        // cells measured here are the cells replay will rebuild.
+        //
+        // A failure is NOT a tool retry: the tool already ran and may have had
+        // an external side effect, so re-running it is not a neutral act. The
+        // agent fails through the existing recovery path instead, and its
+        // branch is pruned — never silently dropped, and never repeated.
+        const prepared = yield* prepareBatch(ingress, attachments, media);
+        const delta = buildToolResultDeltaMultimodal(
+          ctx, resultStr, callId, prepared.bitmaps as Uint8Array[],
+          { enableThinking: agent.fmt.enableThinking });
+        mediaItem = {
+          delta,
+          cells: yield* waitUntilSettled(deltaCells(ctx, delta)),
+          attachments: prepared.attachments,
+        };
+      } else {
+        prefillTokens = buildToolResultDelta(ctx, resultStr, callId, { enableThinking: agent.fmt.enableThinking });
+      }
+      // `told` throughout, never `result`: the probe reads what the model was
+      // told, and the trace records it. Image bytes reach the cache down the
+      // embedding rail and belong in neither.
+      const probe = tool?.probe(told) ?? undefined;
       tw.write({ traceId: tw.nextId(), parentTraceId: dispatchTraceId, ts: performance.now(),
         type: 'tool:result', agentId: agent.id, tool: tc.name,
-        result, prefillTokenCount: prefillTokens.length,
+        result: told, cells: mediaItem?.cells ?? prefillTokens.length,
         durationMs: performance.now() - c.toolT0 });
-      return { agentId: agent.id, prefillTokens, toolName: tc.name, callId, args: tc.arguments, probe };
+      const common = { agentId: agent.id, toolName: tc.name, callId, args: tc.arguments, probe, resultStr };
+      return mediaItem
+        ? { rail: 'media', ...common, media: mediaItem }
+        : { rail: 'token', ...common, prefillTokens };
     }
 
     /** DISPATCH: run inline tools on the loop fiber, spawn fan-out tools off it.
@@ -1561,7 +1964,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         const dispatchTraceId = tw.nextId();
         const toolT0 = performance.now();
         tw.write({
-          traceId: dispatchTraceId, parentTraceId: poolScope.traceId, ts: toolT0,
+          traceId: dispatchTraceId, parentTraceId: poolScopeId, ts: toolT0,
           type: 'tool:dispatch', agentId: agent.id, tool: tc.name,
           toolIndex: toolIndexMap.get(tc.name) ?? -1, toolkitSize,
           args: toolArgs, callId,
@@ -1605,7 +2008,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
               // shared loop-fiber set the inline path uses).
               yield* TraceParent.set(dispatchTraceId);
               yield* CallingAgent.set(agent);
-              if (teeOn) yield* Trace.set(toolTee(agent.id, callId, dispatchTraceId));
+              yield* Trace.set(toolTee(agent.id, callId, dispatchTraceId));
               const result: unknown = yield* scoped(function*() {
                 return yield* call(() => fanoutTool.execute(toolArgs, toolContext));
               });
@@ -1634,7 +2037,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         try {
           yield* TraceParent.set(dispatchTraceId);
           yield* CallingAgent.set(agent);
-          if (teeOn) yield* Trace.set(toolTee(agent.id, callId, dispatchTraceId));
+          yield* Trace.set(toolTee(agent.id, callId, dispatchTraceId));
 
           // Unknown-tool messaging branches on toolkit emptiness: a no-tool
           // agent emitting tool calls is imitating markup from its context
@@ -1658,7 +2061,14 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             ? { kind: 'retry', agent, tc, callId, dispatchTraceId, toolT0, retryAttempt: (retryAttempt ?? 0) + 1, err }
             : { kind: 'error', agent, tc, callId, dispatchTraceId, err: toError(err) };
         }
-        const settled = yield* processCompletion(completion);
+        let settled: SettledTool | null = null;
+        try {
+          settled = yield* processCompletion(completion);
+        } catch (err) {
+          // One agent's post-tool failure must not take the tick — or its
+          // siblings — with it. See failCompletion.
+          yield* failCompletion(completion, err);
+        }
         if (settled) results.push(settled);
       }
 
@@ -1677,7 +2087,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       // on the wall clock — rate limits elapse in the real world.
       if (paused) {
         const heldAt = performance.now();
-        tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: heldAt, type: 'pool:pause' });
+        tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: heldAt, type: 'pool:pause' });
         yield* poolChannel.send({ type: 'run:paused' });
         // Subscribe BEFORE re-checking `paused`: emissions buffer on a live
         // subscription, so a play (or wake) landing during subscription setup
@@ -1693,7 +2103,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         }
         const pausedMs = performance.now() - heldAt;
         pausedTotal += pausedMs;
-        tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(), type: 'pool:resume', pausedMs });
+        tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(), type: 'pool:resume', pausedMs });
         yield* poolChannel.send({ type: 'run:resumed', pausedMs });
       }
 
@@ -1718,20 +2128,33 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       // with the orchestrator's fiber. Piggybacking extend in this phase
       // preserves the continuous-tree-batching invariant (one GPU round-trip
       // per tick) and naturally atomic-orders both kinds of work.
-      if (pendingSpawns.length > 0 || pendingExtends.length > 0) {
+      if (pendingSpawns.length > 0 || pendingExtends.length > 0 || pendingHeals.length > 0) {
         const drainedSpawns = pendingSpawns.splice(0, pendingSpawns.length);
         const drainedExtends = pendingExtends
           .splice(0, pendingExtends.length)
           .filter(e => !e.discarded);
 
+        // Heals fork the spine and batch their suffix prefills with the
+        // spawns — a heal IS a spawn wearing a lineage (docs/self-healing.md).
+        // The record replay runs after the batch, per replacement.
+        const drainedHeals: {
+          h: (typeof pendingHeals)[number];
+          agent: Agent; suffixTokens: number[]; formattedPrompt: string;
+        }[] = [];
+        for (const h of pendingHeals.splice(0)) {
+          const setup = yield* setupAgent(spine, h.spec, ctx, enableThinking, runNow);
+          drainedHeals.push({ h, ...setup });
+        }
+
         const prefillPairs: [Branch, number[]][] = [
           ...drainedSpawns.map(s => [s.agent.branch, s.suffixTokens] as [Branch, number[]]),
+          ...drainedHeals.map(d => [d.agent.branch, d.suffixTokens] as [Branch, number[]]),
           ...drainedExtends.map(e => [spine, e.tokens] as [Branch, number[]]),
         ];
 
         try {
           if (prefillPairs.length > 0) {
-            yield* call(() => store.prefill(prefillPairs));
+            yield* waitUntilSettled(store.prefill(prefillPairs));
           }
         } catch (err) {
           for (const e of drainedExtends) e.reject(err as Error);
@@ -1742,7 +2165,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         // has advanced by the sum of extend token counts at this point.
         for (const e of drainedExtends) {
           tw.write({
-            traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+            traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
             type: 'spine:extend',
             userContent: e.userContent,
             assistantContent: e.assistantContent,
@@ -1753,13 +2176,14 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         }
 
         for (const s of drainedSpawns) {
+          specById.set(s.agent.id, s.task);
           tw.write({
-            traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+            traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
             type: 'branch:create', branchHandle: s.agent.id, parentHandle: s.agent.parentId,
             position: s.agent.forkHead, role: 'agentFork',
           });
           tw.write({
-            traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+            traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
             type: 'prompt:format', agentId: s.agent.id, promptText: s.formattedPrompt,
             taskContent: s.task.content, tokenCount: s.suffixTokens.length,
             messages: JSON.stringify([
@@ -1775,10 +2199,67 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           // traceAgentDone: the span's start must not absorb subscriber
           // backpressure or vanish on a cancellation mid-send.
           tw.write({
-            traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+            traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
             type: 'agent:spawn', agentId: s.agent.id, parentAgentId: s.agent.parentId,
+            ...(s.task.after && s.task.after.length > 0 ? { after: s.task.after } : {}),
           });
-          yield* poolChannel.send({ type: 'agent:spawn', agentId: s.agent.id, parentAgentId: s.agent.parentId });
+          yield* poolChannel.send({ type: 'agent:spawn', agentId: s.agent.id, parentAgentId: s.agent.parentId, ...(s.task.after && s.task.after.length > 0 ? { after: s.task.after } : {}) });
+        }
+
+        // Finish the heals: replay each replacement's record onto its fork
+        // (the suffix batched above; the prefix rode the fork), then admit it
+        // as a NEW agent. The original's `agent:failed` stands — this is a
+        // lineage, not a resurrection.
+        for (const { h, agent, suffixTokens, formattedPrompt } of drainedHeals) {
+          agents.push(agent);
+          agentById.set(agent.id, agent);
+          specById.set(agent.id, h.spec);
+          healAttemptOf.set(agent.id, h.attempt);
+          tw.write({
+            traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
+            type: 'branch:create', branchHandle: agent.id, parentHandle: agent.parentId,
+            position: agent.forkHead, role: 'agentFork',
+          });
+          tw.write({
+            traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
+            type: 'prompt:format', agentId: agent.id, promptText: formattedPrompt,
+            taskContent: h.spec.content, tokenCount: suffixTokens.length,
+            messages: JSON.stringify([
+              { role: 'system', content: h.spec.systemPrompt },
+              { role: 'user', content: h.spec.content },
+            ]),
+            tools: h.spec.tools, role: 'agentSuffix',
+          });
+          try {
+            yield* replayAgentTurns(agent.branch, h.records,
+              { enableThinking: agent.fmt.enableThinking });
+          } catch (e) {
+            // The replay could not land (capacity, missing content, a second
+            // decode failure). Best-effort ends here: the original already
+            // failed honestly; discard the half-built replacement.
+            tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
+              type: 'pool:agentDrop', agentId: agent.id, reason: 'pressure_init' });
+            if (!agent.branch.disposed) safePrune(agent, tw, poolScopeId);
+            agent.transition('idle');
+            discardedIds.add(agent.id);
+            continue;
+          }
+          const hp = new ContextPressure(ctx, pressureOpts);
+          tw.write({
+            traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
+            type: 'pool:agentHeal', of: h.of, agentId: agent.id,
+            ...(h.rc !== undefined ? { rc: h.rc } : {}), attempt: h.attempt,
+            pressure: { remaining: finiteOrNull(hp.remaining), cellsUsed: hp.cellsUsed,
+              nCtx: hp.nCtx, headroom: finiteOrNull(hp.headroom) },
+          });
+          applyLazyGrammar(agent);
+          agent.transition('active');
+          tw.write({
+            traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
+            type: 'agent:spawn', agentId: agent.id, parentAgentId: agent.parentId,
+            ...(h.spec.after && h.spec.after.length > 0 ? { after: h.spec.after } : {}),
+          });
+          yield* poolChannel.send({ type: 'agent:spawn', agentId: agent.id, parentAgentId: agent.parentId, ...(h.spec.after && h.spec.after.length > 0 ? { after: h.spec.after } : {}) });
         }
       }
 
@@ -1819,11 +2300,11 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         // SEGV-safe: the orchestrator was halted before windingDown flipped, so no
         // concurrent spawn/prefill races handleRecover's prefill.
         if (windingDown && !a.extracting && !isEmittingTerminal(a, terminalToolName)) {
-          tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+          tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
             type: 'pool:agentDrop', agentId: a.id, reason: 'wind_down' });
-          traceAgentDone(tw, poolScope.traceId, a.id);
+          traceAgentDone(tw, poolScopeId, a.id);
           yield* poolChannel.send({ type: 'agent:done', agentId: a.id });
-          const settled = yield* handleRecover(a, policy, ctx, pressureOpts, aliveCount, poolChannel, tw, poolScope.traceId);
+          const settled = yield* handleRecover(a, policy, ctx, pressureOpts, aliveCount, poolChannel, tw, poolScopeId);
           if (settled) nudges.push(settled);
           continue;
         }
@@ -1846,9 +2327,9 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           const exitReason = pressure.critical ? 'pressure_critical' as const
             : 'policy_exit' as const;
           a.exitReason = exitReason;
-          tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+          tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
             type: 'pool:agentDrop', agentId: a.id, reason: exitReason });
-          traceAgentDone(tw, poolScope.traceId, a.id);
+          traceAgentDone(tw, poolScopeId, a.id);
           yield* poolChannel.send({ type: 'agent:done', agentId: a.id });
           if (isEmittingTerminal(a, terminalToolName)) {
             // The agent was already producing its OWN report when the critical kill
@@ -1860,20 +2341,20 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             // producedTokens = the report turn's tokens, not cumulative: `resetTurn`
             // clears `rawOutput` (not `tokenCount`), so `rawOutput` is just the in-flight
             // report — report-scoped + consistent with the in-loop path's `recoveryTokens`.
-            yield* finishRecovery(a, a.rawOutput, ctx.tokenizeSync(a.rawOutput, false).length, poolChannel, tw, poolScope.traceId, ctx, terminalToolName);
+            yield* finishRecovery(a, a.rawOutput, ctx.tokenizeSync(a.rawOutput, false).length, poolChannel, tw, poolScopeId, ctx, terminalToolName);
             a.transition('idle');
-            safePrune(a, tw, poolScope.traceId);
+            safePrune(a, tw, poolScopeId);
           } else if (policy.recoveryShape === 'parallel') {
             // In-loop: inject the recovery turn; SETTLE re-activates it (capped
             // report grammar) and the report decodes bin-packed with live agents.
-            const settled = yield* handleRecover(a, policy, ctx, pressureOpts, aliveCount, poolChannel, tw, poolScope.traceId);
+            const settled = yield* handleRecover(a, policy, ctx, pressureOpts, aliveCount, poolChannel, tw, poolScopeId);
             if (settled) nudges.push(settled);
           } else {
             // Staggered: blocking recoverInline, BEFORE the idle transition —
             // otherwise the statusSignal fires 'idle' mid-recovery, waitFor
             // returns early, the orchestrator resumes + prefills the next task
             // while this branch is still decoding → concurrent native call → SEGV.
-            yield* recoverInline(a, policy, ctx, store, tw, poolScope.traceId, poolChannel, pressureOpts, terminalGrammar, terminalToolName);
+            yield* recoverInline(a, policy, ctx, store, tw, poolScopeId, poolChannel, pressureOpts, terminalGrammar, terminalToolName);
             a.transition('idle');
           }
           continue;
@@ -1885,7 +2366,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         // report so a non-compliant model can't blow past the prompt's word advisory
         // and exhaust KV. The prompt budget is the primary cap; this is the guillotine.
         if (a.extracting && a.recoveryTokens >= a.recoveryBudget) {
-          yield* completeExtraction(a, poolChannel, tw, poolScope.traceId, ctx, pressureOpts, terminalToolName);
+          yield* completeExtraction(a, poolChannel, tw, poolScopeId, ctx, pressureOpts, terminalToolName);
           continue;
         }
 
@@ -1896,13 +2377,13 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         // a degenerating report decodes until KV death.
         if (!a.extracting && isEmittingTerminal(a, terminalToolName) && a.turnTokens >= voluntaryReportCap) {
           a.exitReason = 'report_cap';
-          tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+          tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
             type: 'pool:agentDrop', agentId: a.id, reason: 'report_cap' });
-          traceAgentDone(tw, poolScope.traceId, a.id);
+          traceAgentDone(tw, poolScopeId, a.id);
           yield* poolChannel.send({ type: 'agent:done', agentId: a.id });
-          yield* finishRecovery(a, a.rawOutput, a.turnTokens, poolChannel, tw, poolScope.traceId, ctx, terminalToolName);
+          yield* finishRecovery(a, a.rawOutput, a.turnTokens, poolChannel, tw, poolScopeId, ctx, terminalToolName);
           a.transition('idle');
-          safePrune(a, tw, poolScope.traceId);
+          safePrune(a, tw, poolScopeId);
           continue;
         }
 
@@ -1912,41 +2393,42 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             // The forced recovery report finished — extract + idle + child-safe
             // prune (the KV is dead weight). `agent:done` already fired at recovery
             // entry; completeExtraction emits `agent:recovered`.
-            yield* completeExtraction(a, poolChannel, tw, poolScope.traceId, ctx, pressureOpts, terminalToolName);
+            yield* completeExtraction(a, poolChannel, tw, poolScopeId, ctx, pressureOpts, terminalToolName);
             continue;
           }
           const parsed = a.finalize(ctx);
 
           tw.write({
-            traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+            traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
             type: 'agent:turn', agentId: a.id, turn: a.turns,
             rawOutput: a.rawOutput,
             parsedContent: parsed.content || null,
             parsedToolCalls: parsed.toolCalls.map(tc => ({ name: tc.name, arguments: tc.arguments })),
           });
+          recordFor(a.id).push({ kind: 'assistant', text: a.rawOutput });
 
           // Policy decides what to do with the parsed output
           const action = policy.onProduced(a, parsed, pressure, policyConfig);
 
           switch (action.type) {
             case 'free_text_return':
-              yield* handleFreeTextReturn(a, action.content, poolChannel, tw, poolScope.traceId);
+              yield* handleFreeTextReturn(a, action.content, poolChannel, tw, poolScopeId);
               continue;
             case 'idle':
               // Parallel: recover in-loop at the stop (no termination sweep for
               // parallel). Staggered: idle now, recovered at the sweep.
               if (policy.recoveryShape === 'parallel') {
                 if (action.reason !== 'free_text_stop') {
-                  tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+                  tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
                     type: 'pool:agentDrop', agentId: a.id,
                     reason: action.reason === 'max_turns' ? 'maxTurns' : 'pressure_softcut' });
                 }
-                traceAgentDone(tw, poolScope.traceId, a.id);
+                traceAgentDone(tw, poolScopeId, a.id);
                 yield* poolChannel.send({ type: 'agent:done', agentId: a.id });
-                const settled = yield* handleRecover(a, policy, ctx, pressureOpts, aliveCount, poolChannel, tw, poolScope.traceId);
+                const settled = yield* handleRecover(a, policy, ctx, pressureOpts, aliveCount, poolChannel, tw, poolScopeId);
                 if (settled) nudges.push(settled);
               } else {
-                yield* handleIdleDrop(a, action.reason, poolChannel, tw, poolScope.traceId);
+                yield* handleIdleDrop(a, action.reason, poolChannel, tw, poolScopeId);
               }
               continue;
             case 'nudge':
@@ -1955,7 +2437,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
               // single trace pass captures attribution + rejection context.
               if (action.guard === 'auth_reject') {
                 tw.write({
-                  traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+                  traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
                   type: 'tool:authReject',
                   agentId: a.id,
                   assignedAbility: a.assignedAbility,
@@ -1964,12 +2446,12 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
                 });
               }
               nudges.push(yield* handleNudge(a, action.message, parsed.toolCalls[0], ctx, tools));
-              tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+              tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
                 type: 'pool:agentNudge', agentId: a.id, reason: 'nudge', message: action.message,
                 tool: parsed.toolCalls[0]?.name, args: parsed.toolCalls[0]?.arguments, guard: action.guard });
               continue;
             case 'return':
-              yield* handleReturn(a, action.result, parsed.toolCalls[0], terminalToolName!, pruneOnReturn, poolChannel, tw, poolScope.traceId);
+              yield* handleReturn(a, action.result, parsed.toolCalls[0], terminalToolName!, pruneOnReturn, poolChannel, tw, poolScopeId);
               totalToolCalls++;
               continue;
             case 'tool_call':
@@ -2000,7 +2482,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       // -- Phase 2: COMMIT -- batch-decode produced tokens
       if (entries.length > 0) {
         try {
-          yield* call(() => store.commit(entries));
+          yield* waitUntilSettled(store.commit(entries));
         } catch (e) {
           // Decode OOM (concurrent in-loop reports exhausted KV) tears down the pool.
           // This batch is where admitted extractors decode their reports; unlike the
@@ -2011,7 +2493,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           const reason = `scope_error: ${(e as Error).message ?? 'unknown'}`;
           for (const a of agents) {
             if (!a.extracting || a.status !== 'active') continue;
-            tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+            tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
               type: 'pool:recoveryFailed', agentId: a.id, reason, outputExcerpt: a.rawOutput.slice(0, 200) });
             yield* poolChannel.send({ type: 'agent:failed', agentId: a.id, reason });
           }
@@ -2022,7 +2504,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         // One `pool:tick` per batched decode — the trace-side pressure series
         // (the bus `agent:tick` below is its live twin).
         tw.write({
-          traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+          traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
           type: 'pool:tick', phase: 'COMMIT',
           activeAgents: agents.filter(x => x.status === 'active' || x.status === 'awaiting_tool').length,
           pressure: {
@@ -2042,7 +2524,12 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           // The inflightTasks entry was already removed by the child's `ensure`
           // (runs synchronously on completion before the loop resumes — and on
           // halt too, which is the case DRAIN can't see). DRAIN just post-processes.
-          const settled = yield* processCompletion(c);
+          let settled: SettledTool | null = null;
+          try {
+            settled = yield* processCompletion(c);
+          } catch (err) {
+            yield* failCompletion(c, err);
+          }
           if (settled) newlySettled.push(settled);
         }
       }
@@ -2069,14 +2556,22 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           const a = agentById.get(item.agentId);
           if (!a || a.status !== 'awaiting_tool' || a.branch.disposed) continue;
 
-          const action = policy.onSettleReject?.(a, item.prefillTokens.length, stallPressure, policyConfig);
+          // rc-deferred items (docs/self-healing.md) ride THROUGH the
+          // stall-break: their retry is a re-DISPATCH — a transient rc 1 can
+          // clear without a sibling freeing KV — and they carry their own
+          // budget (MAX_DEFER_ATTEMPTS terminates them within bounded ticks).
+          // Headroom-deferred items have no deferAttempts entry and keep the
+          // existing policy consult below.
+          if (deferAttempts.has(item.agentId)) { resolved.push(item); continue; }
+
+          const action = policy.onSettleReject?.(a, settledCells(item), stallPressure, policyConfig);
 
           if (action?.type === 'nudge') {
             // Record the policy's decision regardless of whether the
             // nudge itself fits — the event captures "policy consulted,
             // returned nudge" which is separate from "nudge was actionable".
             tw.write({
-              traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+              traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
               type: 'pool:agentNudge', agentId: a.id, reason: 'settle_reject', message: action.message,
               tool: item.toolName, args: item.args,
             });
@@ -2086,6 +2581,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
               const probe = tools.get(item.toolName)?.probe(nudgeResult) ?? undefined;
               a.incrementTurns();
               resolved.push({
+                rail: 'token',
                 agentId: a.id,
                 prefillTokens: nudgeTokens,
                 toolName: item.toolName,
@@ -2105,7 +2601,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           const reason: 'pressure_settle_reject' | 'settle_stall_break' =
             action ? 'pressure_settle_reject' : 'settle_stall_break';
           tw.write({
-            traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+            traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
             type: 'pool:agentDrop', agentId: a.id, reason,
           });
           // `agent:done` is one-shot. An already-`extracting` agent got here via the
@@ -2113,14 +2609,14 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           // recovery turn deferred and re-surfaced at the stall-break. Re-announcing it
           // done would double-emit (violating the invariant `agent-pool.test.ts` asserts).
           if (!a.extracting) {
-            traceAgentDone(tw, poolScope.traceId, a.id);
+            traceAgentDone(tw, poolScopeId, a.id);
             yield* poolChannel.send({ type: 'agent:done', agentId: a.id });
           }
           if (policy.recoveryShape === 'parallel' && !a.extracting) {
             // In-loop (first attempt): queue the recovery turn for next tick's
             // SETTLE (alongside the surviving nudges). Agent is awaiting_tool → no
             // transition.
-            const settled = yield* handleRecover(a, policy, ctx, pressureOpts, aliveCount, poolChannel, tw, poolScope.traceId);
+            const settled = yield* handleRecover(a, policy, ctx, pressureOpts, aliveCount, poolChannel, tw, poolScopeId);
             if (settled) resolved.push(settled);
           } else {
             // Staggered — OR a parallel agent ALREADY extracting whose recovery
@@ -2129,7 +2625,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             // extracts within the hardLimit reserve. BEFORE transition →
             // single-fiber store discipline. This is what prevents the
             // defer→stall→re-queue non-terminating loop when the turn never fits.
-            yield* recoverInline(a, policy, ctx, store, tw, poolScope.traceId, poolChannel, pressureOpts, terminalGrammar, terminalToolName);
+            yield* recoverInline(a, policy, ctx, store, tw, poolScopeId, poolChannel, pressureOpts, terminalGrammar, terminalToolName);
             a.transition('idle');
           }
         }
@@ -2158,10 +2654,10 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           const resultStr = JSON.stringify(result);
           yield* poolChannel.send({ type: 'agent:tool_result', agentId: r.agent.id, tool: r.tc.name, result: resultStr });
           const prefillTokens = buildToolResultDelta(ctx, resultStr, r.callId, { enableThinking: r.agent.fmt.enableThinking });
-          tw.write({ traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+          tw.write({ traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
             type: 'tool:result', agentId: r.agent.id, tool: r.tc.name,
-            result, prefillTokenCount: prefillTokens.length, durationMs: 0 });
-          abandoned.push({ agentId: r.agent.id, prefillTokens, toolName: r.tc.name, callId: r.callId, args: r.tc.arguments, probe: undefined });
+            result, cells: prefillTokens.length, durationMs: 0 });
+          abandoned.push({ rail: 'token', agentId: r.agent.id, prefillTokens, toolName: r.tc.name, callId: r.callId, args: r.tc.arguments, probe: undefined });
         }
       }
       // Due retries re-enter first — their agents have been parked since the
@@ -2196,10 +2692,11 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           // is a no-op for them. One at a time → maximum per-report headroom
           // (the lossless path).
           for (const a of agents) {
-            // A user-cancelled agent is DISCARDED — never force-recover it, even if its
-            // branch couldn't be pruned (non-leaf/recursed → safePrune no-op'd).
-            if (a.status === 'idle' && !a.result && !a.branch.disposed && !cancelledIds.has(a.id)) {
-              yield* recoverInline(a, policy, ctx, store, tw, poolScope.traceId, poolChannel, pressureOpts, terminalGrammar, terminalToolName);
+            // A DISCARDED agent — user-cancelled or media-poisoned — is never
+            // force-recovered, even when its branch could not be pruned
+            // (non-leaf/recursed → safePrune no-op'd).
+            if (a.status === 'idle' && !a.result && !a.branch.disposed && !discardedIds.has(a.id)) {
+              yield* recoverInline(a, policy, ctx, store, tw, poolScopeId, poolChannel, pressureOpts, terminalGrammar, terminalToolName);
             }
           }
         }
@@ -2240,7 +2737,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     // Branch cleanup is handled by each branch's ensure() from setupAgent —
     // when this resource's scope exits, all ensure() callbacks fire.
     tw.write({
-      traceId: tw.nextId(), parentTraceId: poolScope.traceId, ts: performance.now(),
+      traceId: tw.nextId(), parentTraceId: poolScopeId, ts: performance.now(),
       type: 'pool:close',
       agents: agents.map(a => ({
         agentId: a.id, tokenCount: a.tokenCount,
@@ -2252,7 +2749,6 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       totalTokens: agents.reduce((s, a) => s + a.tokenCount, 0),
       steps, durationMs: performance.now() - poolT0,
     });
-    poolScope.close();
 
     const result: AgentPoolResult = {
       agents: agents.map(a => ({
@@ -2279,7 +2775,6 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
 
       } catch {
         // KV exhaustion or other decode failure — close with partial results
-        poolScope.close();
         const partial: AgentPoolResult = {
           agents: agents.map(a => ({
             agentId: a.id, parentAgentId: a.parentId, branch: a.branch, agent: a,

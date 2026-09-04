@@ -2,12 +2,29 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    "baseUrl": ".",
+    "paths": {
+      "@lloyal-labs/media/node": [
+        "../media/dist/node.d.ts"
+      ]
+    }
   },
-  "include": ["src/**/*.ts"],
+  "include": [
+    "src/**/*.ts"
+  ],
   "references": [
-    { "path": "../sdk" },
-    { "path": "../agents" },
-    { "path": "../channel-verify" }
+    {
+      "path": "../sdk"
+    },
+    {
+      "path": "../agents"
+    },
+    {
+      "path": "../channel-verify"
+    },
+    {
+      "path": "../media"
+    }
   ]
 }

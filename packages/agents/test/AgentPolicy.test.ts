@@ -4,10 +4,7 @@ import type { PolicyConfig } from '../src/AgentPolicy';
 import { Agent } from '../src/Agent';
 import { createMockBranch } from './helpers/mock-branch';
 
-const FMT = {
-  format: 0, reasoningFormat: 0, generationPrompt: '',
-  parser: '', grammar: '', grammarLazy: false, grammarTriggers: [],
-};
+import { FMT } from './helpers/format-config';
 
 const BASE_CONFIG: PolicyConfig = { maxTurns: 20, terminalToolName: 'report', hasNonTerminalTools: true };
 
@@ -18,7 +15,7 @@ function makeAgent(overrides?: { toolCallCount?: number; turns?: number; toolHis
   for (let i = 0; i < (overrides?.toolCallCount ?? 0); i++) a.incrementToolCalls();
   for (let i = 0; i < (overrides?.turns ?? 0); i++) a.incrementTurns();
   for (const h of overrides?.toolHistory ?? []) {
-    a.recordToolResult({ name: h.name, args: h.args, resultTokenCount: 100, contextAfterPercent: 80, timestamp: 0 });
+    a.recordToolResult({ name: h.name, args: h.args, resultCells: 100, contextAfterPercent: 80, timestamp: 0 });
   }
   return a;
 }
@@ -275,20 +272,20 @@ describe('DefaultAgentPolicy', () => {
 
   describe('onRecovery', () => {
     it('returns skip when no recovery config', () => {
-      const result = policy.onRecovery(makeAgent({ toolCallCount: 5 }));
+      const result = policy.onRecovery!(makeAgent({ toolCallCount: 5 }), pressure());
       expect(result).toEqual({ type: 'skip' });
     });
 
     it('returns skip when tokenCount < minTokens', () => {
       const p = new DefaultAgentPolicy({ recovery: { prompt: { system: 's', user: 'u' }, minTokens: 200 } });
       const a = makeAgent({ toolCallCount: 5 }); // tokenCount=0 < 200
-      expect(p.onRecovery(a)).toEqual({ type: 'skip' });
+      expect(p.onRecovery!(a, pressure())).toEqual({ type: 'skip' });
     });
 
     it('returns skip when toolCallCount < minToolCalls', () => {
       const p = new DefaultAgentPolicy({ recovery: { prompt: { system: 's', user: 'u' }, minToolCalls: 5 } });
       const a = makeAgent({ toolCallCount: 2 }); // 2 < 5
-      expect(p.onRecovery(a)).toEqual({ type: 'skip' });
+      expect(p.onRecovery!(a, pressure())).toEqual({ type: 'skip' });
     });
 
     it('returns extract with prompt when guard passes', () => {

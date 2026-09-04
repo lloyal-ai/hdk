@@ -17,9 +17,13 @@
 import { describe, it, expect } from 'vitest';
 import { Rerank, RerankCalibrationError, RETRIEVAL_INSTRUCTION } from '@lloyal-labs/sdk';
 import type { SessionContext, RerankInstruction } from '@lloyal-labs/sdk';
-import { MockSessionContext } from './MockSessionContext';
+import { MockSessionContext } from '../src/testing.js';
 
-const CUSTOM: RerankInstruction = {
+// `satisfies`, not an annotation: `RerankInstruction.smokeTest` is optional, so
+// annotating widens this fixture to `T | undefined` and every `{ ...CUSTOM
+// .smokeTest }` below becomes a spread of a possibly-undefined. `satisfies`
+// keeps the contract check AND the narrow literal type that says it is present.
+const CUSTOM = {
   text: 'Judge whether the statement is entailed by the evidence',
   smokeTest: {
     query: 'the assessor attended on 12 March',
@@ -28,7 +32,7 @@ const CUSTOM: RerankInstruction = {
     // The mock's default logits give a gap of 4.0, so this passes.
     minGap: 1.0,
   },
-};
+} satisfies RerankInstruction;
 
 const mock = (): MockSessionContext => new MockSessionContext();
 

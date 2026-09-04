@@ -106,6 +106,10 @@ function mkScoringReranker(expectedScores: Map<string, number>): Reranker {
     },
     scoreBatch: async (_q, texts) => texts.map(() => 0),
     tokenizeChunks: async () => {},
+    // The double must carry the WHOLE contract: `tokenize` returns tokens from
+    // the reranker's own vocabulary (BM25's first stage needs them). Omitting
+    // it compiled only because no tsc project covered this file.
+    tokenize: async (_text: string) => [],
     dispose: () => {},
   };
 }
@@ -127,7 +131,7 @@ describe('SearchTool envelope (TICK-001)', () => {
 
     const result = (await run(function* () {
       yield* Trace.set(new NullTraceWriter());
-      return yield* tool.execute({ query: 'q' }) as Generator<unknown, unknown, unknown>;
+      return yield* tool.execute({ query: 'q' });
     })) as { hits: ScoredChunk[]; thresholdScore: number; totalScored: number; topRejected: ScoredChunk[] };
 
     expect(result.hits).toEqual([]);
@@ -153,7 +157,7 @@ describe('SearchTool envelope (TICK-001)', () => {
 
     const result = (await run(function* () {
       yield* Trace.set(new NullTraceWriter());
-      return yield* tool.execute({ query: 'q' }) as Generator<unknown, unknown, unknown>;
+      return yield* tool.execute({ query: 'q' });
     })) as { hits: ScoredChunk[]; thresholdScore: number; totalScored: number; topRejected: ScoredChunk[] };
 
     expect(result.hits.map((h) => h.heading)).toEqual(['high', 'medium']);
@@ -173,7 +177,7 @@ describe('SearchTool envelope (TICK-001)', () => {
 
     const result = (await run(function* () {
       yield* Trace.set(new NullTraceWriter());
-      return yield* tool.execute({ query: 'q' }) as Generator<unknown, unknown, unknown>;
+      return yield* tool.execute({ query: 'q' });
     })) as { hits: ScoredChunk[]; thresholdScore: number };
 
     expect(result.hits.map((h) => h.heading)).toEqual(['high']);

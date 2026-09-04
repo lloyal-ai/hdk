@@ -21,6 +21,9 @@ const T = {
   glucose: 10,
   is: 100, // common stopword-like
   the: 101,
+  a: 102,
+  city: 103,
+  in: 104,
 };
 
 describe('BM25Index', () => {
