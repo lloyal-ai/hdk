@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/sdk",
-  "version": "4.0.0-alpha.2",
+  "version": "4.0.0-alpha.3",
   "description": "Backend-agnostic TypeScript SDK for the lloyal inference platform",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -35,6 +35,6 @@
     "LICENSE-FAQ.md"
   ],
   "devDependencies": {
-    "@lloyal-labs/lloyal.node": "3.2.0-alpha.2"
+    "@lloyal-labs/lloyal.node": "3.2.0-alpha.3"
   }
 }

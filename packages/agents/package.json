@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/lloyal-agents",
-  "version": "6.0.0-alpha.2",
+  "version": "6.0.0-alpha.3",
   "description": "Multi-agent inference inside the decode loop — structured concurrency over shared KV state",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -31,10 +31,10 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@lloyal-labs/sdk": "4.0.0-alpha.2",
+    "@lloyal-labs/sdk": "4.0.0-alpha.3",
     "effection": "^4.0.2",
     "eta": "^4.5.1",
-    "@lloyal-labs/media": "0.2.0-alpha.2"
+    "@lloyal-labs/media": "0.2.0-alpha.3"
   },
   "files": [
     "dist/",
