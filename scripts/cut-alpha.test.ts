@@ -4,7 +4,12 @@
  * here without a registry or a checkout.
  */
 import { describe, it, expect } from 'vitest';
-import { parseCut, latestVersion, planAlphas, rewriteManifest } from './cut-alpha.lib.mjs';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { satisfies } from 'semver';
+import {
+  CUTS, EXTERNAL, arcPackages, parseCut, latestVersion, planAlphas, rewriteManifest,
+} from './cut-alpha.lib.mjs';
 
 const e404 = Object.assign(new Error('npm ERR! code E404'), { stderr: 'npm ERR! code E404\nnpm ERR! 404 Not Found' });
 const reset = Object.assign(new Error('npm ERR! code ECONNRESET'), { stderr: 'npm ERR! code ECONNRESET' });
@@ -28,27 +33,31 @@ describe('latestVersion', () => {
 });
 
 describe('planAlphas', () => {
-  it('is a golden: the set the templates pin today', () => {
+  it('is a golden over the REAL arc table: what cut 1 stamps from the registry as it stood', () => {
+    // The table is imported, not copied: an earlier version of this test kept
+    // its own list, said sdk was a minor while the script said major, and
+    // stayed green while the cutter stamped 4.0.0. A golden that cannot see
+    // the table it is a golden OF proves nothing.
     const registry: Record<string, string> = {
       '@lloyal-labs/sdk': '3.1.0', '@lloyal-labs/lloyal-agents': '5.5.1', '@lloyal-labs/rig': '5.5.0',
       '@lloyal-labs/dev-tools': '0.4.3', '@lloyal-labs/lloyal.node': '3.1.1',
     };
+    const manifests: Record<string, { name: string; version: string }> = {
+      'packages/media': { name: '@lloyal-labs/media', version: '0.1.0' },
+      'packages/sdk': { name: '@lloyal-labs/sdk', version: '3.1.0' },
+      'packages/agents': { name: '@lloyal-labs/lloyal-agents', version: '5.5.1' },
+      'packages/rig': { name: '@lloyal-labs/rig', version: '5.5.0' },
+      'packages/dev-tools': { name: '@lloyal-labs/dev-tools', version: '0.4.3' },
+    };
     const view = (name: string) => { if (name in registry) return registry[name]; throw e404; };
     const alphas = planAlphas({
       cut: 1,
-      packages: [
-        { name: '@lloyal-labs/media', level: 'minor', fallback: '0.1.0' },
-        { name: '@lloyal-labs/sdk', level: 'minor', fallback: '0.0.0' },
-        { name: '@lloyal-labs/lloyal-agents', level: 'major', fallback: '0.0.0' },
-        { name: '@lloyal-labs/rig', level: 'minor', fallback: '0.0.0' },
-        { name: '@lloyal-labs/dev-tools', level: 'minor', fallback: '0.0.0' },
-        { name: '@lloyal-labs/lloyal.node', level: 'minor', fallback: '0.0.0' },
-      ],
+      packages: arcPackages(CUTS, EXTERNAL, (dir: string) => manifests[dir]),
       view,
     });
     expect(alphas).toEqual({
       '@lloyal-labs/media': '0.2.0-alpha.1',
-      '@lloyal-labs/sdk': '3.2.0-alpha.1',
+      '@lloyal-labs/sdk': '4.0.0-alpha.1',
       '@lloyal-labs/lloyal-agents': '6.0.0-alpha.1',
       '@lloyal-labs/rig': '5.6.0-alpha.1',
       '@lloyal-labs/dev-tools': '0.5.0-alpha.1',
@@ -80,7 +89,11 @@ describe('planAlphas', () => {
 describe('rewriteManifest', () => {
   const alphas = { '@lloyal-labs/sdk': '3.2.0-alpha.1', '@lloyal-labs/lloyal-agents': '6.0.0-alpha.1' };
 
-  it('stamps a cut package: its version and its exact internal pins, deps and peers alike', () => {
+  it('stamps a cut package: its version and its exact internal DEPENDENCIES; a range dependency becomes the pin', () => {
+    // A dependency is a resolution instruction and a range excludes
+    // prereleases, so `^3.1.0` on sdk would fail the install against the set;
+    // it becomes the exact alpha. A range PEER is a compatibility statement and
+    // is not the cutter's to rewrite (see below).
     const pkg = {
       name: '@lloyal-labs/rig', version: '5.5.0',
       dependencies: { '@lloyal-labs/sdk': '^3.1.0', effection: '^4' },
@@ -91,21 +104,67 @@ describe('rewriteManifest', () => {
     expect(pkg.version).toBe('5.6.0-alpha.1');
     expect(pkg.dependencies['@lloyal-labs/sdk']).toBe('3.2.0-alpha.1');
     expect(pkg.dependencies.effection).toBe('^4');
-    expect(pkg.peerDependencies['@lloyal-labs/lloyal-agents']).toBe('6.0.0-alpha.1');
+    expect(pkg.peerDependencies['@lloyal-labs/lloyal-agents']).toBe('^5');
   });
 
-  it('a workspace member outside the cut keeps its version but its pins follow the set', () => {
-    // The workspace must resolve as one set: an ability whose peer still named
-    // -alpha.1 after cut 2 would fail the install. Its VERSION is not the
-    // cutter's to move — abilities ship through the signed catalog, and their
-    // release bumps it there.
+  it('an EXACT peer from the previous set follows the new one (rig peers on the binding this way)', () => {
     const pkg = {
-      name: '@lloyal-labs/web-ability', version: '2.0.1',
-      peerDependencies: { '@lloyal-labs/lloyal-agents': '6.0.0-alpha.0', effection: '^4' },  // the previous set
+      name: '@lloyal-labs/rig', version: '5.6.0-alpha.0',
+      peerDependencies: { '@lloyal-labs/lloyal.node': '3.2.0-alpha.0' },  // the previous set
     };
-    expect(rewriteManifest(pkg, { version: undefined, alphas })).toBe(true);
-    expect(pkg.version).toBe('2.0.1');
-    expect(pkg.peerDependencies['@lloyal-labs/lloyal-agents']).toBe(alphas['@lloyal-labs/lloyal-agents']);
-    expect(pkg.peerDependencies.effection).toBe('^4');
+    const set = { ...alphas, '@lloyal-labs/lloyal.node': '3.2.0-alpha.1' };
+    expect(rewriteManifest(pkg, { version: '5.6.0-alpha.1', alphas: set })).toBe(true);
+    expect(pkg.peerDependencies['@lloyal-labs/lloyal.node']).toBe('3.2.0-alpha.1');
+  });
+
+  it('a RANGE peer is authored compatibility and is left alone', () => {
+    // An ability ships through the signed catalog to stable AND alpha users
+    // alike, so its peer is a range that admits both — not the set's exact
+    // pin, which the cutter must therefore not write over it.
+    const range = '^5.0.0 || >=6.0.0-0 <7.0.0';
+    const pkg = {
+      name: '@lloyal-labs/web-ability', version: '2.0.2',
+      peerDependencies: { '@lloyal-labs/lloyal-agents': range, effection: '^4' },
+    };
+    expect(rewriteManifest(pkg, { version: undefined, alphas })).toBe(false);
+    expect(pkg.peerDependencies['@lloyal-labs/lloyal-agents']).toBe(range);
+  });
+});
+
+describe('the abilities admit the set', () => {
+  // The install that fails on this is the front door: `lloyal new` vendors an
+  // ability from the catalog and npm checks its peers against the scaffold's
+  // exact alpha pins. A range admits a prerelease only when one comparator
+  // names that exact major.minor.patch with a prerelease tag — so `>=5 <7`
+  // rejects 6.0.0-alpha.2 and `>=6.0.0-0` is what admits it. Checked with the
+  // semver library npm itself resolves with.
+  const ROOT = join(__dirname, '..');
+  const manifestOf = (dir: string) =>
+    JSON.parse(readFileSync(join(ROOT, dir, 'package.json'), 'utf8')) as {
+      name: string; version: string; peerDependencies?: Record<string, string>;
+    };
+
+  it('every ability peer on a set member admits the version the NEXT cut stamps, and the stable before it', () => {
+    const registry: Record<string, string> = {
+      '@lloyal-labs/sdk': '3.1.0', '@lloyal-labs/lloyal-agents': '5.5.1', '@lloyal-labs/rig': '5.5.0',
+      '@lloyal-labs/dev-tools': '0.4.3', '@lloyal-labs/lloyal.node': '3.1.1',
+    };
+    const view = (name: string) => { if (name in registry) return registry[name]; throw e404; };
+    const stamped = planAlphas({ cut: 99, packages: arcPackages(CUTS, EXTERNAL, manifestOf), view });
+    for (const dir of ['packages/abilities/web', 'packages/abilities/corpus', 'packages/abilities/wikipedia']) {
+      const peers = manifestOf(dir).peerDependencies ?? {};
+      for (const [name, range] of Object.entries(peers)) {
+        if (!(name in stamped)) continue;
+        expect(satisfies(stamped[name], range), `${dir}: ${name} ${range} admits ${stamped[name]}`).toBe(true);
+        expect(satisfies(registry[name], range), `${dir}: ${name} ${range} admits stable ${registry[name]}`).toBe(true);
+      }
+    }
+  });
+
+  it('the trap is real: a plain range excludes the prerelease, the -0 comparator admits it', () => {
+    expect(satisfies('6.0.0-alpha.2', '>=5.0.0 <7.0.0')).toBe(false);
+    expect(satisfies('6.0.0-alpha.2', '^5.0.0 || >=6.0.0-0 <7.0.0')).toBe(true);
+    expect(satisfies('5.5.1', '^5.0.0 || >=6.0.0-0 <7.0.0')).toBe(true);
+    expect(satisfies('7.0.0-alpha.1', '^5.0.0 || >=6.0.0-0 <7.0.0')).toBe(false);
   });
 });

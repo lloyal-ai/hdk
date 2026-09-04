@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/wikipedia-ability",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "private": true,
   "description": "HDK reference app — Wikipedia research (search + fetch over Wikipedia's public REST). No auth required. Distributed via the signed-channel, never public npm.",
   "license": "SEE LICENSE IN LICENSE",
@@ -24,8 +24,8 @@
     "build": "tsc -b"
   },
   "peerDependencies": {
-    "@lloyal-labs/lloyal-agents": "6.0.0-alpha.1",
-    "@lloyal-labs/rig": "5.6.0-alpha.1",
+    "@lloyal-labs/lloyal-agents": "^5.0.0 || >=6.0.0-0 <7.0.0",
+    "@lloyal-labs/rig": "^5.5.0 || >=5.6.0-0 <6.0.0",
     "effection": "^4.0.2"
   }
 }
