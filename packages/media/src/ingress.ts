@@ -39,8 +39,9 @@ export interface PreparedContent {
  * Needs only the store, so it is safe on every runtime — unlike ingest, which
  * needs a native normalizer.
  *
- * @throws If any root or blob is missing. Silent degradation here would
- *         rebuild a different KV state behind an identical-looking prompt.
+ * @throws If any root or blob is missing or has drifted from its digest.
+ *         Silent degradation here would rebuild a different KV state behind
+ *         an identical-looking prompt.
  *
  * @category Media
  */
@@ -54,13 +55,14 @@ export function materialize(
     if (!manifest) {
       throw new Error(
         `materialize: attachment manifest ${root.digest.slice(0, 19)}… is not ` +
-          'in the content store.',
+          'in the content store, or its bytes no longer hash to its digest.',
       );
     }
     for (const rep of representationsOf(manifest)) {
-      // Verified: replay rebuilds KV from these bytes under this digest, so
-      // bytes that drifted on disk must refuse here, not decode as something else.
-      const bytes = store.get(rep.digest, { verify: true });
+      // Replay rebuilds KV from these bytes under this digest. The store
+      // refuses bytes that drifted from their name, so null here means absent
+      // or drifted — either must refuse, not decode as something else.
+      const bytes = store.get(rep.digest);
       if (!bytes) {
         throw new Error(
           `materialize: blob ${rep.digest.slice(0, 19)}… (${rep.mediaType}) is ` +

@@ -88,7 +88,8 @@ export class FileAttachmentStore implements AttachmentStore {
     // it by creating directories a run may never need.
     this._ensureLayout();
     const file = this._pathFor(digest)!;
-    // Content-addressed, so a file already at this path IS these bytes.
+    // Content-addressed, so a file already at this path IS these bytes — and
+    // if it has drifted, `get` refuses it; this write does not repair it.
     // Temp-then-rename so a reader never sees a half-written blob under a
     // digest that promises the whole of it.
     if (!existsSync(file)) {
@@ -149,16 +150,15 @@ export class FileAttachmentStore implements AttachmentStore {
     }
   }
 
-  get(digest: string, opts?: { verify?: boolean }): Uint8Array | null {
+  get(digest: string): Uint8Array | null {
     try {
       const file = this._pathFor(digest);
       if (!file) return null;
       const bytes = new Uint8Array(readFileSync(file));
-      if (opts?.verify) {
-        const actual = 'sha256:' + createHash('sha256').update(bytes).digest('hex');
-        if (actual !== digest) return null;
-      }
-      return bytes;
+      // The name is a promise about the bytes, kept on every read (see the
+      // contract). Sub-millisecond for a normalized representation.
+      const actual = 'sha256:' + createHash('sha256').update(bytes).digest('hex');
+      return actual === digest ? bytes : null;
     } catch {
       return null;
     }

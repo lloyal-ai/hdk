@@ -7,7 +7,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { createServer, type Server } from 'node:http';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AddressInfo } from 'node:net';
@@ -31,7 +31,7 @@ function fixture() {
   const rep = store.putBlob(PNG, 'image/png', { 'ai.lloyal.derive.quality': '82' });
   const source = store.putBlob(JPEG, 'image/jpeg');
   const root = store.putAttachment({ representations: [rep], source });
-  return { store, root, rep, source };
+  return { dir, store, root, rep, source };
 }
 
 async function withServer<T>(
@@ -100,6 +100,17 @@ describe('content routes', () => {
       expect((await fetch(`${base}/v1/media/${root.digest}/representations/1`)).status).toBe(404);
       // Nor is the source's own digest addressable as a manifest.
       expect((await fetch(`${base}/v1/media/${source.digest}/representations/0`)).status).toBe(404);
+    });
+  });
+
+  it('never serves drifted bytes under their digest — a corrupted blob is 404, not a false ETag', async () => {
+    const { dir, store, root, rep } = fixture();
+    // The digest is the ETag and the cache key: bytes that no longer hash to
+    // it must not go out under it. The store refuses them; the route says 404.
+    writeFileSync(join(dir, 'blobs', 'sha256', rep.digest.slice('sha256:'.length)), new Uint8Array([9, 9, 9]));
+    await withServer({ store }, async (base) => {
+      const res = await fetch(`${base}/v1/media/${root.digest}/representations/0`);
+      expect(res.status).toBe(404);
     });
   });
 
