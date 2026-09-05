@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { run, spawn, sleep } from 'effection';
 import { Agent } from '../src/Agent';
 import { createMockBranch } from './helpers/mock-branch';
 
@@ -74,6 +75,41 @@ describe('Agent', () => {
       const a = makeAgent();
       a.dispose();
       expect(() => a.transition('active')).toThrow('Invalid agent status transition');
+    });
+  });
+
+  describe('final', () => {
+    // `final` is the one future an orchestrator waits on: it resolves the first
+    // time the agent reaches a final status AFTER it lived, and never for the
+    // pre-activation idle an agent is born with.
+    it('is not resolved by the idle an agent is born with', async () => {
+      const a = makeAgent();
+      let settled = false;
+      await run(function* () {
+        yield* spawn(function* () { yield* a.final; settled = true; });
+        yield* sleep(5);
+      });
+      expect(settled).toBe(false);
+    });
+
+    it('resolves on the first idle after activation, and stays resolved', async () => {
+      const a = makeAgent();
+      a.transition('active');
+      a.transition('idle');
+      const order: string[] = [];
+      await run(function* () {
+        yield* a.final; order.push('first');
+        yield* a.final; order.push('again');   // a future: the same outcome every time
+      });
+      expect(order).toEqual(['first', 'again']);
+    });
+
+    it('resolves on dispose, however the agent got there', async () => {
+      const a = makeAgent();
+      a.dispose();
+      let settled = false;
+      await run(function* () { yield* a.final; settled = true; });
+      expect(settled).toBe(true);
     });
   });
 

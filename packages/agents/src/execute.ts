@@ -1,5 +1,5 @@
 import { call, ensure, spawn, scoped, action } from 'effection';
-import type { Operation, Task, Signal } from 'effection';
+import type { Operation, Task, Signal, Queue } from 'effection';
 import type { Branch, BranchStore, SessionContext, ParsedToolCall, MultimodalDelta } from '@lloyal-labs/sdk';
 import {
   CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, GrammarTriggerType,
@@ -161,7 +161,7 @@ export interface ExecDeps {
   inflight: Map<number, Task<void>>;
   permits: Permits;
   completed: ToolCompletion[];
-  wake: Signal<void, void>;
+  wake: Queue<void, never>;
   progress: Signal<AgentEvent, void>;
   scorer?: EntailmentScorer;
   toolIndexMap: Map<string, number>;
@@ -410,7 +410,7 @@ export class Executor {
         pressure: new ContextPressure(d.ctx, d.pressureOpts) });
     }
     this.applyLazyGrammar(a);
-    // The transition fires the agent's statusSignal — a waiting orchestrator resumes here.
+    // A later move into a final status resolves the agent's `final` future — a waiting orchestrator resumes there.
     a.transition('active');
     yield* d.emit.emit({ kind: 'spawned', agent: a, after: s.task.after });
     return true;
@@ -513,7 +513,7 @@ export class Executor {
             d.completed.push({ kind: 'error', agent, tc, callId, dispatchTraceId, err: toError(err) });
           }
         } finally {
-          d.wake.send();
+          d.wake.add();
         }
       }));
       return;

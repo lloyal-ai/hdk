@@ -49,7 +49,7 @@ export interface PoolContext {
   /** Fork an agent branch, prefill its suffix, transition to active. Tick loop picks it up. */
   spawn(spec: SpawnSpec): Operation<Agent>;
 
-  /** Suspend until agent.status becomes 'idle' | 'disposed'. Returns agent for chaining. */
+  /** Suspend until the agent is final (`idle` after it lived, or `disposed`) — its one `final` future. Returns the agent for chaining. */
   waitFor(agent: Agent): Operation<Agent>;
 
   /**

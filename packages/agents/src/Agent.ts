@@ -1,6 +1,7 @@
 import type { Branch, SessionContext, ParseChatOutputResult } from '@lloyal-labs/sdk';
 import type { GrammarTrigger } from '@lloyal-labs/sdk';
-import { createSignal, type Signal } from 'effection';
+import { withResolvers } from 'effection';
+import type { Operation } from 'effection';
 import type { TraceToken, AgentExitReason, AgentTaskSpec } from './types';
 import type { AgentTurnRecord } from './replay';
 import type { Lineage } from './state';
@@ -137,7 +138,9 @@ export class Agent {
   // ── Mutable state ───────────────────────────────────────
 
   private _status: AgentStatus = 'idle';
-  private _statusSignal: Signal<AgentStatus, void> = createSignal<AgentStatus, void>();
+  /** Resolved the first time the agent reaches a final status — `idle` after it
+   *  lived, or `disposed` — and never by the pre-activation idle it is born with. */
+  private readonly _final = withResolvers<void>('agent final');
   private _startedAt: number | null = null;
   private readonly _clock: () => number;
   private _rawOutput = '';
@@ -241,11 +244,11 @@ export class Agent {
   get status(): AgentStatus { return this._status; }
 
   /**
-   * Signal that fires on every status transition. Used by `PoolContext.waitFor`
-   * to suspend until the agent reaches a terminal status. Multi-subscriber —
-   * every active listener receives every transition.
+   * The future an orchestrator waits on (`PoolContext.waitFor`): completes
+   * once the agent is final — `idle` after it lived, or `disposed` — and
+   * yields the same outcome to every waiter, however many and however late.
    */
-  get statusSignal(): Signal<AgentStatus, void> { return this._statusSignal; }
+  get final(): Operation<void> { return this._final.operation; }
 
   /**
    * Transition to a new status. Enforces valid transitions:
@@ -256,7 +259,7 @@ export class Agent {
    * - awaiting_tool → idle (settle reject + kill)
    * - idle → disposed (branch pruned)
    *
-   * Emits the new status via `statusSignal` for orchestrator-side observers.
+   * A move into a final status resolves {@link final}.
    */
   transition(to: AgentStatus): void {
     const from = this._status;
@@ -271,7 +274,7 @@ export class Agent {
     if (to === 'active' && this._startedAt === null) {
       this._startedAt = this._clock();
     }
-    this._statusSignal.send(to);
+    if (to === 'idle' || to === 'disposed') this._final.resolve();
   }
 
   /**
@@ -460,6 +463,6 @@ export class Agent {
   /** Mark agent as disposed — called by pool when branch is pruned */
   dispose(): void {
     this._status = 'disposed';
-    this._statusSignal.send('disposed');
+    this._final.resolve();
   }
 }

@@ -1,4 +1,4 @@
-import { resource, ensure, createSignal, createChannel, spawn, each, sleep, action, race } from 'effection';
+import { resource, ensure, createSignal, createChannel, createQueue, spawn, each, sleep, action, race } from 'effection';
 import type { Operation, Subscription, Task, Signal } from 'effection';
 import type { SessionContext, BranchStore } from '@lloyal-labs/sdk';
 import { buildTurnDelta } from '@lloyal-labs/sdk';
@@ -146,8 +146,11 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     const inflight = new Map<number, Task<void>>();
     const completed: ToolCompletion[] = [];
     const pendingCancels: number[] = [];
-    /** One wake for everything that can make a waiting tick runnable. */
-    const wake = createSignal<void, void>();
+    /** One wake for everything that can make a waiting tick runnable: a queue,
+     *  because it is added to from other operations (the orchestrator, fan-out
+     *  children) and from plain callbacks (the signal watchers) alike, and read
+     *  by one consumer, the loop. A signal is for callbacks only. */
+    const wake = createQueue<void, never>();
     let windingDown = false;
     let orchestratorDone = false;
     let orchestratorError: unknown = null;
@@ -209,22 +212,17 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         const admitted = yield* action<Agent>((resolve, reject) => {
           const req: SpawnRequest = { ...forged, resolve, reject, discarded: false };
           pending.spawns.push(req);
-          wake.send();
+          wake.add();
           return () => { req.discarded = true; };
         });
         return admitted;
       },
 
       *waitFor(agent) {
-        // `spawn` resolves only once the agent is active, so `idle` here is
-        // terminal, never the pre-activation default. Check BEFORE subscribing:
-        // `each` blocks until the next emission, and a transition that already
-        // fired is not replayed.
-        if (agent.status === 'idle' || agent.status === 'disposed') return agent;
-        for (const s of yield* each(agent.statusSignal)) {
-          if (s === 'idle' || s === 'disposed') return agent;
-          yield* each.next();
-        }
+        // One future per agent: resolved the first time it is final — `idle`
+        // after it lived, or `disposed` — whether that happened before or after
+        // this wait began.
+        yield* agent.final;
         return agent;
       },
 
@@ -234,7 +232,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         return yield* action<number>((resolve, reject) => {
           const req = { tokens, userContent, assistantContent, resolve, reject, discarded: false };
           pending.extends.push(req);
-          wake.send();
+          wake.add();
           return () => { req.discarded = true; };
         });
       },
@@ -254,7 +252,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         orchestratorError = e;
       } finally {
         orchestratorDone = true;
-        wake.send();
+        wake.add();
       }
     });
 
@@ -268,7 +266,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         // otherwise resume its waitFor and let it spawn against a draining pool.
         yield* orchestratorTask.halt();
         windingDown = true;
-        wake.send();
+        wake.add();
         yield* emit.emit({ kind: 'windingDown' });
       });
     }
@@ -280,7 +278,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           const next = yield* sub.next();
           if (next.done) break;
           pendingCancels.push(next.value.agentId);
-          wake.send();
+          wake.add();
         }
       });
     }
@@ -292,7 +290,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           const next = yield* sub.next();
           if (next.done) break;
           paused = next.value;
-          wake.send();
+          wake.add();
         }
       });
     }
@@ -300,7 +298,6 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     // ── The tick loop ────────────────────────────────────────────
     yield* spawn(function*() {
       try {
-        const wakeSub = yield* wake;
         let tick = 0;
         let wasPaused = false;
         let heldAt = 0;
@@ -337,7 +334,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           if (paused && pendingCancels.length === 0) {
             // Hold: nothing decodes until play. A cancel arriving mid-hold runs
             // as a hold tick (reclamation needs no decode).
-            yield* wakeSub.next();
+            yield* wake.next();
             continue;
           }
           if (!paused && wasPaused) {
@@ -352,7 +349,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             const nextDue = pending.retries.length > 0
               ? Math.min(...pending.retries.map(r => r.notBefore)) - performance.now()
               : 50;
-            yield* race([sleep(Math.max(1, Math.min(50, nextDue))), wakeSub.next()]);
+            yield* race([sleep(Math.max(1, Math.min(50, nextDue))), wake.next()]);
             for (const c of completed.splice(0)) yield* executor.intake(c);
           }
           const state: TickState = {
