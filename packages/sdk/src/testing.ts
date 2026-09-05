@@ -72,6 +72,24 @@ export interface MockSessionContextOpts {
   stopToken?: number;
 }
 
+/**
+ * The kernel's rule for a batched call (`BranchStore::decode_each` /
+ * `decode_scatter` → `require_distinct_handles`): a handle may appear at most
+ * once per batch, because each item's start position is read when the batch
+ * is built and advances only after dispatch — two items on one branch would
+ * collide on position. The mock refuses the batch the kernel refuses.
+ */
+function requireDistinctHandles(handles: number[], who: string): void {
+  const seen = new Map<number, number>();
+  for (let i = 0; i < handles.length; i++) {
+    const first = seen.get(handles[i]);
+    if (first !== undefined) {
+      throw new Error(`MockSessionContext.${who}: duplicate handle at indices ${first} and ${i} (sequential calls required for multiple runs per branch)`);
+    }
+    seen.set(handles[i], i);
+  }
+}
+
 export class MockSessionContext implements SessionContext {
   // ── KV pressure state (mutable — configure before test run) ───
   nCtx: number;
@@ -177,6 +195,7 @@ export class MockSessionContext implements SessionContext {
   _branchAccept(_handle: number, _token: number): void {}
 
   async _storeCommit(handles: number[], _tokens: number[]): Promise<void> {
+    requireDistinctHandles(handles, '_storeCommit');
     for (const h of handles) {
       const b = this._branches.get(h);
       if (b && !b.disposed) {
@@ -187,6 +206,7 @@ export class MockSessionContext implements SessionContext {
   }
 
   async _storePrefill(handles: number[], tokenArrays: number[][]): Promise<void> {
+    requireDistinctHandles(handles, '_storePrefill');
     for (let i = 0; i < handles.length; i++) {
       const b = this._branches.get(handles[i]);
       if (b && !b.disposed) {

@@ -9,7 +9,7 @@ import type { Emitter } from './emit';
 import { ContextPressure } from './pressure';
 import { recoveryFor } from './scheduler';
 import {
-  type Schedule, type Outputs, type Pending, type Drop, type Recovery, type PrefillItem,
+  type Schedule, type Outputs, type Pending, type Drop, type Recovery, type PrefillItem, type SpawnRequest,
   type PrefillOutcome, type Ladder, type DropReason,
   alive, classifyRc, isFatalRc, MAX_DEFER_ATTEMPTS, BACKEND_TRIPWIRE_N, MAX_HEAL_ATTEMPTS,
 } from './state';
@@ -96,12 +96,11 @@ export class Applier {
       this.d.pending.items.push({ kind: 'toolResult', rail: 'token', agent: r.agent, tokens, toolName: r.tc.name, callId: r.callId, args: r.tc.arguments });
     }
     for (const req of S.rejectedSpawns) {
-      // A fork that never entered the pool: free it and tell the orchestrator.
-      req.agent.branch.pruneSync();
-      req.agent.dispose();
-      if (req.discarded) continue;
-      this.d.emit.trace({ kind: 'drop', agent: req.agent, reason: 'pressure_init', done: false });
-      req.reject(new Error(`useAgentPool: cannot fit agent suffix (${req.suffixTokens.length} tokens) under current pressure`));
+      if (!req.discarded) this.d.emit.trace({ kind: 'drop', agent: req.agent, reason: 'pressure_init', done: false });
+      discardSpawn(req, new Error(`useAgentPool: cannot fit agent suffix (${req.suffixTokens.length} tokens) under current pressure`));
+    }
+    for (const e of S.rejectedExtends) {
+      if (!e.discarded) e.reject(new Error(`useAgentPool: cannot fit spine extension (${e.tokens.length} tokens) — nothing left to free KV`));
     }
     if (S.sweep) yield* this.recover(S.sweep.agent, S.sweep.recovery, null);
   }
@@ -367,6 +366,19 @@ export class Applier {
 /** The ladder's bottom rung: the agent is DISCARDED — announced, pruned, never
  *  resumed. Shared with the executor's intake, whose failures carry the
  *  dispatch as their trace parent. */
+
+/**
+ * A fork that never entered the pool: free it and tell the orchestrator. Used
+ * for a spawn the scheduler could not admit and for one whose suffix prefill
+ * failed to land — either way the branch must not outlive the decision, and a
+ * `spawn()` suspended on it must see the error rather than hang.
+ */
+export function discardSpawn(req: SpawnRequest, err: Error): void {
+  req.agent.branch.pruneSync();
+  req.agent.dispose();
+  if (!req.discarded) req.reject(err);
+}
+
 export function* failSettled(
   emit: Emitter, a: Agent, reason: 'media_prefill_failed' | 'tool_result_failed',
   detail: string, rc?: number, parentTraceId?: number,

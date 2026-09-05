@@ -170,7 +170,10 @@ export interface Schedule {
   finishes: Agent[];
   spawns: SpawnRequest[];
   rejectedSpawns: SpawnRequest[];
+  /** Extends admitted against headroom; they land as ONE pair on the spine. */
   extends: ExtendRequest[];
+  /** Extends that can never fit: nothing alive or prunable is left to free KV. */
+  rejectedExtends: ExtendRequest[];
   heals: HealRequest[];
   /** Admitted items, in admission order. */
   prefills: PrefillItem[];

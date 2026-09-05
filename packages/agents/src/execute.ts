@@ -15,7 +15,7 @@ import type { Emitter } from './emit';
 import { ContextPressure } from './pressure';
 import { prepareBatch } from './prepare-content';
 import { replayAgentTurns } from './replay';
-import { failSettled } from './apply';
+import { failSettled, discardSpawn } from './apply';
 import type { EntailmentScorer } from './source';
 import type { TraceWriter } from './trace-writer';
 import type { TraceEvent } from './trace-types';
@@ -350,22 +350,34 @@ export class Executor {
       const setup = yield* setupAgent(d.spine, h.spec, d.ctx, d.enableThinking, d.runNow);
       heals.push({ h, ...setup });
     }
+    // One batch never carries a handle twice (`require_distinct_handles`), so
+    // every admitted extend rides as ONE pair on the spine, in request order.
+    const extendTokens = S.extends.flatMap(e => e.tokens);
     const pairs: [Branch, number[]][] = [
       ...S.spawns.map(s => [s.agent.branch, s.suffixTokens] as [Branch, number[]]),
       ...heals.map(x => [x.agent.branch, x.suffixTokens] as [Branch, number[]]),
-      ...S.extends.map(e => [d.spine, e.tokens] as [Branch, number[]]),
+      ...(extendTokens.length > 0 ? [[d.spine, extendTokens] as [Branch, number[]]] : []),
     ];
     try {
       if (pairs.length > 0) yield* prefill(d.store, pairs);
     } catch (err) {
-      for (const e of S.extends) e.reject(toError(err));
+      // Nothing in this batch entered the pool, so nothing may outlive it: the
+      // forks go back (their KV leases with them) and every waiter hears why.
+      const e = toError(err);
+      for (const x of S.extends) x.reject(e);
+      for (const s of S.spawns) discardSpawn(s, e);
+      for (const { agent } of heals) { agent.branch.pruneSync(); agent.dispose(); }
       out.fatal = { phase: 'prefill', err };
       return born;
     }
 
+    // Each request is answered with its own delta; its record carries the
+    // spine position as of ITS landing, the pair having advanced in order.
+    let positionAfter = d.spine.position - extendTokens.length;
     for (const e of S.extends) {
+      positionAfter += e.tokens.length;
       d.emit.trace({ kind: 'extended', userContent: e.userContent, assistantContent: e.assistantContent,
-        deltaTokens: e.tokens.length, positionAfter: d.spine.position });
+        deltaTokens: e.tokens.length, positionAfter });
       e.resolve(e.tokens.length);
     }
     for (const s of S.spawns) {

@@ -6,8 +6,8 @@ import { RECOVERY_PREFILL_OVERHEAD, BATCH_BUFFER } from './AgentPolicy';
 import type { Tool } from './Tool';
 import { type ContextPressure } from './pressure';
 import {
-  type TickState, type Schedule, type Pending, type PrefillItem, type Recovery,
-  type StallOutcome, type Drop, emptyPending, itemCells, alive,
+  type TickState, type Schedule, type Pending, type PrefillItem, type Recovery, type ExtendRequest,
+  type StallOutcome, type Drop, emptyPending, itemCells, alive, prunable,
 } from './state';
 
 /**
@@ -95,7 +95,7 @@ export class DefaultScheduler implements Scheduler {
     const remaining: Pending = emptyPending();
     const S: Schedule = {
       hold: false, halts: [], drops: [], finishes: [],
-      spawns: [], rejectedSpawns: [], extends: [], heals: [],
+      spawns: [], rejectedSpawns: [], extends: [], rejectedExtends: [], heals: [],
       prefills: [], stall: [], abandoned: [], sweep: null, dispatch: [], decode: [],
       pressure: P0, alive: 0, remaining, mode: this.opts.recovery, roster: state.agents, close: false,
     };
@@ -107,6 +107,11 @@ export class DefaultScheduler implements Scheduler {
       if (state.inflight.has(id)) S.halts.push(a);
       S.drops.push({ agent: a, reason: 'user_cancel', done: false, recovery: { type: 'none' } });
     }
+    // An agent cancelled here gets nothing else from this schedule. The drop is
+    // enacted only after the schedule is built, so its status still reads live;
+    // admission, retries and dispatch consult this set instead. (The verdicts
+    // below drop only `active` agents, which own no queued work.)
+    const dropped = new Set(S.drops.map(d => d.agent));
     if (signals.paused) {
       // A hold keeps everything waiting exactly where it is.
       S.hold = true;
@@ -131,9 +136,18 @@ export class DefaultScheduler implements Scheduler {
         S.rejectedSpawns.push(req);
       }
     }
+    // An extend is admitted like everything else: against headroom. The spine
+    // is the one branch that cannot be pruned and replayed, so it is never
+    // handed a prefill on faith — `decode_scatter` moves the books per chunk
+    // and an overflow would leave it half-advanced.
+    const deferredExtends: ExtendRequest[] = [];
     for (const e of pending.extends) {
       if (e.discarded) continue;
-      S.extends.push(e); spent += e.tokens.length;
+      if (e.tokens.length <= headroom) {
+        S.extends.push(e); headroom -= e.tokens.length; spent += e.tokens.length;
+      } else {
+        deferredExtends.push(e);
+      }
     }
     S.heals.push(...pending.heals);
 
@@ -143,7 +157,8 @@ export class DefaultScheduler implements Scheduler {
     const deferred: PrefillItem[] = [];
     for (const it of pending.items) {
       const a = it.agent;
-      if (a.status === 'idle' || a.status === 'disposed') continue;   // the agent is gone; so is its item
+      // The agent is gone, or goes this schedule; so does its item.
+      if (a.status === 'idle' || a.status === 'disposed' || dropped.has(a)) continue;
       const cells = itemCells(it);
       if (it.kind === 'recovery' && a.recoverySerial) {
         // Serial recovery is ungated (the report owns the freed headroom) and
@@ -196,12 +211,12 @@ export class DefaultScheduler implements Scheduler {
     // 3. Retries: due ones re-dispatch; wind-down abandons the rest.
     const wall = performance.now();
     for (const r of pending.retries) {
-      if (r.agent.status !== 'awaiting_tool') continue;   // cancelled while parked
+      if (r.agent.status !== 'awaiting_tool' || dropped.has(r.agent)) continue;   // cancelled while parked
       if (signals.windDown) { S.abandoned.push(r); continue; }
       if (r.notBefore <= wall) S.dispatch.push({ agent: r.agent, tc: r.tc, retryAttempt: r.attempt, retryCallId: r.callId });
       else remaining.retries.push(r);
     }
-    S.dispatch.push(...pending.dispatches);
+    S.dispatch.push(...pending.dispatches.filter(d => !dropped.has(d.agent)));
 
     // 4. Stall-break: deferred items with no sibling left to free KV.
     const reactivating = S.prefills.length > 0 || S.spawns.length > 0 || S.heals.length > 0;
@@ -243,12 +258,21 @@ export class DefaultScheduler implements Scheduler {
     } else {
       remaining.items.push(...deferred);
     }
+    // A deferred extend waits while KV can still be freed — an agent alive to
+    // return, a prune owed, a drop or finish decided here — and is rejected
+    // once nothing can, so the orchestrator hears why instead of hanging.
+    if (deferredExtends.length > 0) {
+      const kvCanStillFree = state.agents.some(a => alive(a) || prunable(a))
+        || reactivating || S.drops.length > 0 || S.finishes.length > 0 || S.stall.some(o => o.drop !== null);
+      if (kvCanStillFree) remaining.extends.push(...deferredExtends);
+      else S.rejectedExtends.push(...deferredExtends);
+    }
 
     // 5. Close, or the close-time sweep: one serial recovery per tick for an
     //    agent that idled without a result and was never discarded.
     const allIdle = state.agents.every(a => a.status === 'idle' || a.status === 'disposed');
     const nothingWaiting =
-      remaining.items.length === 0 && remaining.retries.length === 0 &&
+      remaining.items.length === 0 && remaining.retries.length === 0 && remaining.extends.length === 0 &&
       S.prefills.length === 0 && S.spawns.length === 0 && S.extends.length === 0 &&
       S.heals.length === 0 && S.dispatch.length === 0 && S.decode.length === 0 &&
       S.drops.length === 0 && S.stall.length === 0 && S.finishes.length === 0 && S.abandoned.length === 0 &&

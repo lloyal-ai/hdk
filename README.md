@@ -242,11 +242,6 @@ packages/
     corpus/      @lloyal-labs/corpus-ability    — first-party local-corpus research Ability
     wikipedia/   @lloyal-labs/wikipedia-ability — first-party Wikipedia demo Ability
   channel-verify/ @lloyal-labs/channel-verify — canonical-JSON + Ed25519 channel verification (Apache 2.0, zero-dep)
-
-examples/
-  compare/       DAG primer (Ability-protocol-shaped): parallel research → compare → synthesize
-  react-agent/   Pre-Ability-protocol `useAgent` baseline (mechanism demo, not a 3.0 reference)
-  reflection/    Pre-Ability-protocol `diverge` primer (research → draft → critique → revise)
 ```
 
 `reasoning.run` is the production-grade reference harness — `npx reasoning.run` and read its source. The native binding [`@lloyal-labs/lloyal.node`](https://github.com/lloyal-ai/lloyal.node) lives in a separate repo and is pulled in as a dependency.

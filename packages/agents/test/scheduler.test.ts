@@ -223,4 +223,41 @@ describe('DefaultScheduler.schedule', () => {
     expect(seen).toEqual([st.pressure.cellsUsed + 100]);
     expect(S.pressure.cellsUsed).toBe(st.pressure.cellsUsed + 100);
   });
+
+  it('an agent cancelled this schedule gets nothing else from it: no admission, no retry, no dispatch', () => {
+    const a = agent(7, 'awaiting_tool');
+    const tc = { name: 'web_search', arguments: '{}', id: 'x' };
+    const cancelled = { paused: false, windDown: false, cancelled: [7], orchestratorDone: false };
+    const S = scheduler().schedule(
+      state([a], 8000, { signals: cancelled }, {
+        items: [resultItem(a, 3)],
+        retries: [{ agent: a, tc, callId: 'r1', notBefore: 0, attempt: 1 }],
+        dispatches: [{ agent: a, tc }],
+      }),
+      quiet,
+    );
+    expect(S.drops.map(d => [d.agent.id, d.reason])).toEqual([[7, 'user_cancel']]);
+    expect(S.prefills).toEqual([]);
+    expect(S.dispatch).toEqual([]);
+    // Dropped, not carried: the agent is gone, so is its work.
+    expect(S.remaining.items).toEqual([]);
+    expect(S.remaining.retries).toEqual([]);
+  });
+
+  it('an extend larger than headroom is carried, not admitted', () => {
+    const a = agent(1);
+    const req = { tokens: Array(9000).fill(1), userContent: 'u', assistantContent: 'a', resolve: () => {}, reject: () => {}, discarded: false };
+    const S = scheduler().schedule(state([a], 8000, {}, { extends: [req] }), quiet);
+    expect(S.extends).toEqual([]);
+    expect(S.remaining.extends).toEqual([req]);
+    expect(S.decode).toEqual([a]);
+  });
+
+  it('an extend that can never fit — nothing decoding, nothing re-activating — is rejected, not parked forever', () => {
+    const req = { tokens: Array(9000).fill(1), userContent: 'u', assistantContent: 'a', resolve: () => {}, reject: () => {}, discarded: false };
+    const S = scheduler().schedule(state([], 8000, {}, { extends: [req] }), quiet);
+    expect(S.extends).toEqual([]);
+    expect(S.remaining.extends).toEqual([]);
+    expect(S.rejectedExtends).toEqual([req]);
+  });
 });

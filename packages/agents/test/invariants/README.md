@@ -74,6 +74,8 @@ Implemented as predicates in `predicates.ts`, each wired into at least one test:
 - I31 (trace-attribution) — `scenarios/trace-attribution.scenario.test.ts`
 - I32 (pause-holds-native) — `scenarios/pause.scenario.test.ts`
 - I33 (agent-failure-isolated) — `scenarios/media-*.scenario.test.ts`
+- I41 (terminal-is-last) — `scenarios/agent-cancel-with-queued-work.scenario.test.ts`
+- I42 (no-leaked-branches) — `scenarios/spawn-batch-failure-leaves-no-fork.scenario.test.ts`
 
 The stall-break reason distinction (once "I25") is asserted directly by
 `scenarios/pressure-exit-via-stall-break.scenario.test.ts` and
