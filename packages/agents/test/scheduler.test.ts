@@ -31,7 +31,7 @@ function agent(id: number, status: 'active' | 'awaiting_tool' | 'idle' = 'active
 /** A tick state at `remaining` cells with the default thresholds (soft 1024, hard 512). */
 function state(agents: Agent[], remaining = 8000, over: Partial<TickState> = {}, pending: Partial<Pending> = {}): TickState {
   return {
-    tick: 0, now: 0,
+    tick: 0, now: 0, wall: 0,
     pressure: new ContextPressure({ nCtx: 16384, cellsUsed: 16384 - remaining, remaining }, { softLimit: 1024, hardLimit: 512 }),
     agents,
     pending: { ...emptyPending(), ...pending },
@@ -259,5 +259,41 @@ describe('DefaultScheduler.schedule', () => {
     expect(S.extends).toEqual([]);
     expect(S.remaining.extends).toEqual([]);
     expect(S.rejectedExtends).toEqual([req]);
+  });
+
+  it('queued work belongs to an agent still awaiting it: a cancelled owner from an earlier tick gets no dispatch, no retry, no item', () => {
+    // The hold path returns pending untouched while the cancel is enacted, so
+    // on resume the owner reads idle + failed and this schedule's drop set is
+    // empty. Status is the durable truth; the tick set covers only its own tick.
+    const a = agent(9, 'awaiting_tool');
+    a.transition('idle'); a.failed = 'user_cancel'; a.pruneRequested = true;
+    const tc = { name: 'web_search', arguments: '{}', id: 'x' };
+    const S = scheduler().schedule(
+      state([a], 8000, {}, {
+        dispatches: [{ agent: a, tc }],
+        retries: [{ agent: a, tc, callId: 'r1', notBefore: 0, attempt: 1 }],
+        items: [resultItem(a, 3)],
+      }),
+      quiet,
+    );
+    expect(S.dispatch).toEqual([]);
+    expect(S.prefills).toEqual([]);
+    expect(S.remaining.dispatches).toEqual([]);
+    expect(S.remaining.retries).toEqual([]);
+    expect(S.remaining.items).toEqual([]);
+  });
+
+  it('a parked retry is due against the tick\'s sampled wall clock, not the ambient one', () => {
+    // The schedule is a function of its input: the same state decides the
+    // same way whenever it runs. Parks are wall-time (a rate-limit window keeps
+    // running through a pause), so the wall is sampled into the tick with the
+    // pressure, one reading per tick.
+    const a = agent(1, 'awaiting_tool');
+    const park = { agent: a, tc: { name: 'web_search', arguments: '{}', id: 'c1' }, callId: 'c1', notBefore: 10, attempt: 1 };
+    let S = scheduler().schedule(state([a], 8000, { wall: 5 }, { retries: [park] }), quiet);
+    expect(S.dispatch).toEqual([]);
+    expect(S.remaining.retries).toEqual([park]);
+    S = scheduler().schedule(state([a], 8000, { wall: 10 }, { retries: [park] }), quiet);
+    expect(S.dispatch).toEqual([{ agent: a, tc: park.tc, retryAttempt: 1, retryCallId: 'c1' }]);
   });
 });

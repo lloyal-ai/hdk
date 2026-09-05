@@ -318,6 +318,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           const state: TickState = {
             tick: tick++,
             now: runNow(),
+            wall: performance.now(),
             pressure: new ContextPressure(ctx, pressureOpts),
             agents,
             pending,

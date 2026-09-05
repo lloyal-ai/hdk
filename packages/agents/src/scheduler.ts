@@ -107,11 +107,14 @@ export class DefaultScheduler implements Scheduler {
       if (state.inflight.has(id)) S.halts.push(a);
       S.drops.push({ agent: a, reason: 'user_cancel', done: false, recovery: { type: 'none' } });
     }
-    // An agent cancelled here gets nothing else from this schedule. The drop is
-    // enacted only after the schedule is built, so its status still reads live;
-    // admission, retries and dispatch consult this set instead. (The verdicts
-    // below drop only `active` agents, which own no queued work.)
+    // Queued work belongs to an agent still awaiting it. Status is the durable
+    // truth across ticks and holds; the drop set covers the one window status
+    // cannot — between this schedule's cancels and their enactment, when the
+    // agent still reads live. (The verdicts below drop only `active` agents,
+    // which own no queued work.) Work whose owner no longer awaits it is
+    // dropped, never carried.
     const dropped = new Set(S.drops.map(d => d.agent));
+    const awaits = (a: Agent): boolean => a.status === 'awaiting_tool' && !dropped.has(a);
     if (signals.paused) {
       // A hold keeps everything waiting exactly where it is.
       S.hold = true;
@@ -156,8 +159,7 @@ export class DefaultScheduler implements Scheduler {
     const deferred: PrefillItem[] = [];
     for (const it of pending.items) {
       const a = it.agent;
-      // The agent is gone, or goes this schedule; so does its item.
-      if (a.status === 'idle' || a.status === 'disposed' || dropped.has(a)) continue;
+      if (!awaits(a)) continue;
       const cells = itemCells(it);
       if (it.kind === 'recovery' && a.recoverySerial) {
         // Serial recovery is ungated (the report owns the freed headroom) and
@@ -207,15 +209,16 @@ export class DefaultScheduler implements Scheduler {
       S.decode.push(a);
     }
 
-    // 3. Retries: due ones re-dispatch; wind-down abandons the rest.
-    const wall = performance.now();
+    // 3. Retries: due ones re-dispatch; wind-down abandons the rest. Parks are
+    //    wall-time and the wall was sampled into the tick, so the same state
+    //    decides the same way whenever this runs.
     for (const r of pending.retries) {
-      if (r.agent.status !== 'awaiting_tool' || dropped.has(r.agent)) continue;   // cancelled while parked
+      if (!awaits(r.agent)) continue;
       if (signals.windDown) { S.abandoned.push(r); continue; }
-      if (r.notBefore <= wall) S.dispatch.push({ agent: r.agent, tc: r.tc, retryAttempt: r.attempt, retryCallId: r.callId });
+      if (r.notBefore <= state.wall) S.dispatch.push({ agent: r.agent, tc: r.tc, retryAttempt: r.attempt, retryCallId: r.callId });
       else remaining.retries.push(r);
     }
-    S.dispatch.push(...pending.dispatches.filter(d => !dropped.has(d.agent)));
+    S.dispatch.push(...pending.dispatches.filter(d => awaits(d.agent)));
 
     // 4. Stall-break: deferred items with no sibling left to free KV.
     const reactivating = S.prefills.length > 0 || S.spawns.length > 0;

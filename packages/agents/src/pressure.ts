@@ -92,13 +92,18 @@ export class ContextPressure {
   }
 
   /**
-   * The snapshot after `cells` more cells are spent (negative = freed). The
-   * scheduler derives the post-admission value from its own ledger instead of
-   * reading the store again mid-decision; the thresholds ride along.
+   * The snapshot after `cells` more cells are spent. The scheduler derives the
+   * post-admission value from its own ledger instead of reading the store
+   * again mid-decision; the thresholds ride along. The ledger only spends —
+   * refunds come from the store at the next sample, never from arithmetic
+   * here — and `remaining` clamps at zero the way the kernel's `KvPressure`
+   * does, so a derived snapshot keeps every invariant a sampled one has.
    */
   minus(cells: number): ContextPressure {
+    if (!(cells >= 0)) throw new Error(`ContextPressure.minus: cells must be non-negative, got ${cells}`);
+    const cellsUsed = this.cellsUsed + cells;
     return new ContextPressure(
-      { nCtx: this.nCtx, cellsUsed: this.cellsUsed + cells, remaining: this.nCtx - (this.cellsUsed + cells) },
+      { nCtx: this.nCtx, cellsUsed, remaining: Math.max(0, this.nCtx - cellsUsed) },
       { softLimit: this.softLimit, hardLimit: this.hardLimit },
     );
   }

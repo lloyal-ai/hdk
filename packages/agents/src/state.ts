@@ -103,8 +103,10 @@ export function emptyPending(): Pending {
 /** Everything `schedule()` may read. Built once per tick. */
 export interface TickState {
   tick: number;
-  /** The run clock — wall time minus paused spans. */
+  /** The run clock — wall time minus paused spans (policy budgets). */
   now: number;
+  /** The wall clock, sampled with the pressure: what retry parks are due against. */
+  wall: number;
   /** ONE sample, taken after the previous tick's effects landed. */
   pressure: ContextPressure;
   agents: readonly Agent[];

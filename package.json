@@ -18,6 +18,7 @@
     "verify:packed": "bash scripts/verify-packed-install.sh",
     "clean": "rm -rf packages/*/dist packages/abilities/*/dist packages/*/tsconfig.tsbuildinfo packages/abilities/*/tsconfig.tsbuildinfo",
     "docs": "npx typedoc",
+    "test": "vitest run",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
     "verify:oci": "bash scripts/verify-oci-conformance.sh"

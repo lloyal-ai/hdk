@@ -18,6 +18,7 @@ import type { JsonSchema } from '../../src/types';
 import type { AgentPolicy } from '../../src/AgentPolicy';
 import { runPool, STOP } from './harness';
 import { I24_settlePolicyConsulted } from './predicates';
+import { ContextPressure } from '../../src/pressure';
 
 class SizedTool extends Tool<{ query: string }> {
   readonly name = 'web_search';
@@ -109,5 +110,29 @@ describe('property: pressure-driven exits', () => {
       ),
       { numRuns: 30, seed: 7 },
     );
+  });
+
+  it('minus() keeps the snapshot invariants: cells never below zero, remaining never negative, and it only spends', () => {
+    // The ledger spends; it never refunds. The kernel's KvPressure clamps
+    // remaining at zero, and a snapshot derived from one must read the same.
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 32768 }),
+        fc.integer({ min: 0, max: 32768 }),
+        fc.integer({ min: 0, max: 65536 }),
+        (nCtx, used, spent) => {
+          const cellsUsed = Math.min(used, nCtx);
+          const p = new ContextPressure({ nCtx, cellsUsed, remaining: nCtx - cellsUsed }, { softLimit: 1024, hardLimit: 512 });
+          const q = p.minus(spent);
+          expect(q.cellsUsed).toBe(cellsUsed + spent);
+          expect(q.remaining).toBe(Math.max(0, nCtx - cellsUsed - spent));
+          expect(q.remaining).toBeGreaterThanOrEqual(0);
+          expect(q.percentAvailable).toBeLessThanOrEqual(100);
+        },
+      ),
+      { numRuns: 200 },
+    );
+    const p = new ContextPressure({ nCtx: 1000, cellsUsed: 50, remaining: 950 }, { softLimit: 100, hardLimit: 50 });
+    expect(() => p.minus(-100)).toThrow();
   });
 });
