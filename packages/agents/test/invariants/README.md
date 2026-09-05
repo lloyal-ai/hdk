@@ -64,14 +64,25 @@ learn the framework's contract.
 
 The full I1–I40 invariant catalog is tracked in the framework's planning
 notes (outside this repo). This directory implements them incrementally.
-Implemented so far:
+Implemented as predicates in `predicates.ts`, each wired into at least one test:
 
-- I24 (SETTLE-policy-consulted) — `pressure.prop.test.ts` +
-  `scenarios/pressure-exit-via-settle-policy-nudge.scenario.test.ts`
-- I25 (stall-break-distinct) — `scenarios/pressure-exit-via-stall-break.scenario.test.ts`
+- I1 (native-store-single-fiber) — `fanout-*`, `parallel-recovery`, `wind-down`, `concurrent-extend-spine`
+- I4 (SPAWN-batched) — `scenarios/concurrent-extend-spine.scenario.test.ts`
+- I24 (SETTLE-policy-consulted) — `pressure.prop.test.ts`
 - I29 (recovery-diagnostic-complete) — `scenarios/recovery-fails.scenario.test.ts`
+- I30 (exit-reason-matches-trace) — `exit-reason.prop.test.ts`
+- I31 (trace-attribution) — `scenarios/trace-attribution.scenario.test.ts`
+- I32 (pause-holds-native) — `scenarios/pause.scenario.test.ts`
+- I33 (agent-failure-isolated) — `scenarios/media-*.scenario.test.ts`
+- I41 (terminal-is-last) — `scenarios/agent-cancel-with-queued-work.scenario.test.ts`
+- I42 (no-leaked-branches) — `scenarios/spawn-batch-failure-leaves-no-fork.scenario.test.ts`
 
-Remaining invariants (I1–I23, I26–I28, I30–I40) land incrementally.
+The stall-break reason distinction (once "I25") is asserted directly by
+`scenarios/pressure-exit-via-stall-break.scenario.test.ts` and
+`decision-matrix.scenario.test.ts`; the predicate that carried the number
+failed on every correct run and was removed.
+
+Remaining invariants land incrementally.
 
 ## Running
 

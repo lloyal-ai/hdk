@@ -2,7 +2,7 @@
  * Scenario: a recovery that yields no terminal-tool call → pool:recoveryFailed
  *
  * Shape: agent free-texts (no voluntary terminal call), policy says idle → agent
- * dropped → recoverInline runs → the recovery decode produces output that
+ * dropped → the serial recovery turn runs → the recovery decode produces output that
  * parseChatOutput finds NO terminal call in → finishRecovery reports the failure
  * (not silent).
  *
@@ -18,11 +18,12 @@
 import { describe, it, expect } from 'vitest';
 import type { AgentPolicy } from '../../../src/AgentPolicy';
 import { runPool, STOP } from '../harness';
+import { I29_recoveryDiagnostic, formatResult } from '../predicates';
 
 describe('scenario: recovery generates no terminal call', () => {
-  it('drop → recoverInline output has no terminal call → pool:recoveryFailed with excerpt', async () => {
+  it('drop → recovery output has no terminal call → pool:recoveryFailed with excerpt', async () => {
     const policy: AgentPolicy = {
-      // Free-text every turn → idle drop → recoverInline runs (default staggered).
+      // Free-text every turn → idle drop → serial recovery runs (default staggered).
       onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
       onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
       onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),
@@ -32,7 +33,7 @@ describe('scenario: recovery generates no terminal call', () => {
     const run = await runPool({
       nCtx: 4096,
       cellsUsed: 3000,
-      // [1, STOP] initial turn → idle → recoverInline; [2, 3, STOP] recovery decode.
+      // [1, STOP] initial turn → idle → recovery turn; [2, 3, STOP] recovery decode.
       // The script declares NO toolCall, so the mock's parseChatOutput returns no
       // terminal call for the recovery output → finishRecovery fails (not silent).
       scripts: [{ tokens: [1, STOP, 2, 3, STOP], content: 'unparseable prose' }],
@@ -41,11 +42,12 @@ describe('scenario: recovery generates no terminal call', () => {
       maxTurns: 5,
     });
 
-    // Recovery prefill happened (the blocking recoverInline path, role=recovery).
+    // Recovery prefill happened (role=recovery).
     const recoveryPrefills = run.traceEvents.filter(
       e => e.type === 'branch:prefill' && (e as any).role === 'recovery',
     );
     expect(recoveryPrefills.length).toBeGreaterThanOrEqual(1);
+    expect(formatResult('I29', I29_recoveryDiagnostic(run))).toBe('I29: ok');
 
     // Every recovery prefill is followed by exactly one diagnostic event.
     const reports = run.traceEvents.filter(e => e.type === 'pool:recoveryReturn');

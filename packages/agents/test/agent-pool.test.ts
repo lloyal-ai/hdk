@@ -910,7 +910,7 @@ describe('recovery edge cases', () => {
     // Agent spawns with room to produce, but by the time recovery runs,
     // cellsUsed has grown enough that the extraction prompt doesn't fit.
     // Use a very large recovery prompt to ensure it exceeds remaining.
-    const { result } = await runPool({
+    const { result, trace } = await runPool({
       nCtx: 16384,
       cellsUsed: 14000,  // remaining=2384, headroom=2384-128=2256 — room to spawn
       forkTokenQueues: [[STOP]],
@@ -928,9 +928,12 @@ describe('recovery edge cases', () => {
       }),
     });
 
-    // Agent spawned but recovery skipped — no result
+    // Agent spawned but recovery skipped — no result, and the oversized
+    // prompt was never handed to the store: no recovery prefill exists.
     expect(result.agents.length).toBeGreaterThanOrEqual(1);
     expect(result.agents[0].result).toBeNull();
+    expect(trace.ofType('branch:prefill').filter(e => e.role === 'recovery')).toHaveLength(0);
+    expect(trace.ofType('pool:recoveryFailed').map(e => e.reason)).toEqual(['recovery_skipped']);
   });
 
   it('T10: recovery with empty prompt completes without crash', async () => {
@@ -1375,7 +1378,7 @@ describe('SPLIT-SEMANTICS GATE: voluntary vs recovery emission', () => {
     expect(recovered.length).toBe(0);
   });
 
-  it('recovery extraction (recoverInline path) emits agent:recovered only', async () => {
+  it('recovery extraction (serial recovery path) emits agent:recovered only', async () => {
     // To trigger recovery's successful-extraction path we need:
     //   - agent stops without producing a voluntary result (initial STOP)
     //   - recovery's grammar-constrained generation produces tokens whose
@@ -1405,7 +1408,7 @@ describe('SPLIT-SEMANTICS GATE: voluntary vs recovery emission', () => {
     // Token sequence for the single agent's branch:
     //   [STOP, 100, STOP]
     //   - first STOP: agent's PRODUCE phase hits stop; the main turn's parse goes
-    //     through onProduced → idle (free_text_stop) → agent killed → recoverInline
+    //     through onProduced → idle (free_text_stop) → its serial recovery, decided at the drop
     //   - 100, STOP: recovery's produce/commit loop generates token 100, then STOP →
     //     finishRecovery parses the recovery output via parseChatOutput, which (below)
     //     returns the terminal `report` call → agent.setResult → agent:recovered

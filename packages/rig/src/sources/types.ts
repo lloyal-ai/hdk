@@ -1,12 +1,10 @@
 import type { Reranker } from '../tools/types';
 
 /**
- * Runtime context passed to {@link Source.bind} during pipeline setup.
- *
- * Carries the reranker instance needed by corpus sources to tokenize
- * chunks and by web sources for fetch-page chunk scoring. Orchestration
- * config (prompts, maxTurns, tools) belongs in {@link spawnAgents} opts,
- * not in the source context.
+ * The reranker a source needs at construction — corpus sources to tokenize
+ * chunks, web sources for fetch-page chunk scoring. Ability factories read
+ * it from `RerankerCtx` and pass it in; orchestration config (prompts,
+ * maxTurns, tools) belongs to the pool, not to the source.
  *
  * @category Rig
  */

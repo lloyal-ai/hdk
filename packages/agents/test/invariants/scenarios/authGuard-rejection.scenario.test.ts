@@ -50,7 +50,7 @@ describe('scenario: authGuard rejects protected tool calls without a grant (§10
       }],
       policy: new DefaultAgentPolicy({ terminalToolName: 'report' }),
       tools,
-      terminalTool: 'report',
+      terminalToolName: 'report',
       trace: true,
     });
 
@@ -73,7 +73,7 @@ describe('scenario: authGuard rejects protected tool calls without a grant (§10
       }],
       policy: new DefaultAgentPolicy({ terminalToolName: 'report' }),
       tools,
-      terminalTool: 'report',
+      terminalToolName: 'report',
       trace: true,
     });
 
@@ -107,7 +107,7 @@ describe('scenario: authGuard rejects protected tool calls without a grant (§10
       }],
       policy: new DefaultAgentPolicy({ terminalToolName: 'report' }),
       tools,
-      terminalTool: 'report',
+      terminalToolName: 'report',
       trace: true,
     });
 

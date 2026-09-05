@@ -9,7 +9,7 @@
  * streams) with a timer that never freezes.
  *
  * Locks: every agent that got `agent:done` gets a resolving terminal event, even on skip
- * (both `handleRecover`, parallel, and `recoverInline`, staggered).
+ * (cohort and serial recovery alike).
  */
 import { describe, it, expect } from 'vitest';
 import type { AgentPolicy } from '../../../src/AgentPolicy';
@@ -25,7 +25,7 @@ describe('scenario: skipped recovery emits agent:failed (no orphan)', () => {
     };
 
     // Free-text turn 1 (`1, 2, STOP`) → onProduced idle → the parallel idle path emits
-    // agent:done then calls handleRecover → onRecovery skip.
+    // agent:done then decides recovery → onRecovery skip.
     const run = await runPool({
       nCtx: 4096,
       cellsUsed: 0,
@@ -37,7 +37,7 @@ describe('scenario: skipped recovery emits agent:failed (no orphan)', () => {
     const done = run.channelEvents.filter(e => e.type === 'agent:done');
     const failed = run.channelEvents.filter(e => e.type === 'agent:failed');
     // agent:done fired once at the drop; the skip must be followed by a terminal agent:failed
-    // (pre-fix: handleRecover returned null silently → failed.length === 0 → orphan).
+    // (pre-fix: the skip was silent → failed.length === 0 → orphan).
     expect(done.length).toBe(1);
     expect(failed.length).toBe(1);
     expect((failed[0] as { reason: string }).reason).toBe('recovery_skipped');

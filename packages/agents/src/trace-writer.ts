@@ -38,10 +38,10 @@ export class NullTraceWriter implements TraceWriter {
 /**
  * JSONL file writer — one JSON object per line, buffered sync writes
  *
- * Buffers up to 64 events in memory before flushing to the underlying
- * file descriptor with `fs.writeSync`. Flush also occurs at every
- * {@link useTraceScope} close boundary to guarantee scope pairs are
- * persisted promptly.
+ * Buffers `bufferSize` events in memory before flushing to the underlying
+ * file descriptor with `fs.writeSync`; the default of 1 flushes every write.
+ * Flush also occurs at every {@link useTraceScope} close boundary to
+ * guarantee scope pairs are persisted promptly.
  *
  * Construct with an open file descriptor (e.g. from `fs.openSync`).
  * Write failures are silently swallowed — tracing must never crash

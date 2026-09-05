@@ -59,9 +59,15 @@ describe('Agent', () => {
       expect(a.status).toBe('disposed');
     });
 
-    it('rejects idle → awaiting_tool', () => {
+    it('rejects idle → awaiting_tool (idle is final: every drop decides its recovery while the agent is live)', () => {
       const a = makeAgent();
       expect(() => a.transition('awaiting_tool')).toThrow('Invalid agent status transition');
+    });
+
+    it('rejects active → disposed', () => {
+      const a = makeAgent();
+      a.transition('active');
+      expect(() => a.transition('disposed')).toThrow('Invalid agent status transition');
     });
 
     it('rejects disposed → active', () => {
@@ -172,46 +178,6 @@ describe('Agent', () => {
       expect(a.position).toBe(500);
       expect(a.forkHead).toBe(200);
       expect(a.uniqueCells).toBe(300);
-    });
-  });
-
-  describe('async iterator', () => {
-    it('yields tokens from branch and accumulates state', async () => {
-      const branch = createMockBranch({ handle: 1 });
-      branch._tokens = [
-        { token: 10, text: 'hello' },
-        { token: 20, text: ' world' },
-        { token: 30, text: '!' },
-      ];
-      const a = new Agent({ id: 1, parentId: 0, branch: branch as any, fmt: FMT });
-
-      const collected: Array<{ token: number; text: string }> = [];
-      for await (const produced of a) {
-        collected.push(produced);
-      }
-
-      expect(collected).toEqual([
-        { token: 10, text: 'hello' },
-        { token: 20, text: ' world' },
-        { token: 30, text: '!' },
-      ]);
-      expect(a.rawOutput).toBe('hello world!');
-      expect(a.tokenCount).toBe(3);
-    });
-
-    it('yields nothing when branch has no tokens', async () => {
-      const branch = createMockBranch({ handle: 1 });
-      branch._tokens = [];
-      const a = new Agent({ id: 1, parentId: 0, branch: branch as any, fmt: FMT });
-
-      const collected: Array<{ token: number; text: string }> = [];
-      for await (const produced of a) {
-        collected.push(produced);
-      }
-
-      expect(collected).toEqual([]);
-      expect(a.rawOutput).toBe('');
-      expect(a.tokenCount).toBe(0);
     });
   });
 });

@@ -29,6 +29,8 @@ export interface NativeCall {
   tEnd: number;
   branchCount: number;
   tokenCount: number;
+  /** The branch handles in the call, in order — a batch must never repeat one. */
+  handles: number[];
 }
 
 export interface PoolRun {
@@ -37,6 +39,8 @@ export interface PoolRun {
   channelEvents: AgentEvent[];
   nativeCalls: NativeCall[];
   ctx: InstrumentedMockSessionContext;
+  /** The root branch the pool was given; the one handle that may outlive the pool. */
+  rootHandle: number;
   /** Set if the pool run THREW (e.g. a decode OOM) instead of completing. The
    *  captured `traceEvents`/`channelEvents` still reflect everything up to the throw. */
   error?: unknown;
@@ -64,6 +68,7 @@ export class InstrumentedMockSessionContext extends MockSessionContext {
       seq, op: 'prefill', tStart, tEnd,
       branchCount: handles.length,
       tokenCount: tokenArrays.reduce((s, a) => s + a.length, 0),
+      handles: [...handles],
     });
   }
 
@@ -91,6 +96,7 @@ export class InstrumentedMockSessionContext extends MockSessionContext {
       branchCount: handles.length,
       // CELLS, not tokens — the unit admission actually spends on this rail.
       tokenCount: out.reduce((n, r) => n + (r?.tokensDecoded ?? 0), 0),
+      handles: [...handles],
     });
     return out;
   }
@@ -107,7 +113,18 @@ export class InstrumentedMockSessionContext extends MockSessionContext {
       seq, op: 'commit', tStart, tEnd,
       branchCount: handles.length,
       tokenCount: tokens.length,
+      handles: [...handles],
     });
+  }
+
+  /** Handles of every branch not yet disposed — what a fork leak looks like. */
+  liveHandles(): number[] {
+    return [...this._branches].filter(([, b]) => !b.disposed).map(([h]) => h);
+  }
+
+  /** A branch's decode position (0 for an unknown handle), for cell arithmetic. */
+  positionOf(handle: number): number {
+    return this._branchGetPosition(handle);
   }
 }
 
@@ -144,13 +161,6 @@ export interface PoolSpec {
   toolsJson?: string;
   /** The pool's terminal tool name — read by `runPool`. */
   terminalToolName?: string;
-  /**
-   * @deprecated Dead field — `runPool` reads `terminalToolName`, not this. Kept so
-   * the 6 existing call sites (authGuard-rejection, xss-cross-ability-prose) still
-   * type-check; migrating them to `terminalToolName` changes their behaviour and is
-   * tracked in lloyal-ai/hdk#24.
-   */
-  terminalTool?: string;
   maxTurns?: number;
   maxConcurrentTools?: number;
   taskCount?: number;
@@ -405,6 +415,7 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
     channelEvents,
     nativeCalls: ctx.nativeCalls,
     ctx,
+    rootHandle: root.handle,
   };
 }
 

@@ -5,11 +5,15 @@
  * `safePrune` only reclaims childless leaves. An agent that spawned a sub-agent (recursion
  * is a standing capability) has `branch.children.length > 0`, so `safePrune` no-ops at
  * cancel and the branch stays non-disposed. The termination sweep recovers any agent left
- * `idle && !result && !branch.disposed` — so pre-fix it would `recoverInline()` the
+ * `idle && !result && !branch.disposed` — so pre-fix it would force-recover the
  * cancelled agent, emitting a SECOND terminal event (here `agent:failed(recovery_skipped)`)
  * after the `agent:failed(user_cancel)`. The `discardedIds` guard excludes it.
  *
  * (PR #26 Copilot review, agent-pool.ts:1911.)
+ *
+ * The close-time sweep itself is gone (PR #119, round five): every drop decides
+ * its recovery at the drop, and a cancelled agent is `failed`, which no recovery
+ * site touches. The invariant stands; the history above is why it exists.
  */
 import { describe, it, expect } from 'vitest';
 import type { AgentPolicy } from '../../../src/AgentPolicy';
@@ -55,7 +59,7 @@ describe('scenario: cancelled non-leaf agent is not force-recovered by the sweep
     const aId = (cancelled[0] as { agentId: number }).agentId;
 
     // The cancelled agent must have EXACTLY ONE terminal event (the user_cancel) and NO
-    // recovery. Pre-fix, the sweep's recoverInline(A) emits a second agent:failed
+    // recovery. Pre-fix, the sweep's recovery of A emits a second agent:failed
     // (recovery_skipped) — this assertion is red then.
     const aFailures = run.channelEvents.filter(
       e => e.type === 'agent:failed' && (e as { agentId: number }).agentId === aId,
@@ -65,7 +69,7 @@ describe('scenario: cancelled non-leaf agent is not force-recovered by the sweep
     expect(
       run.channelEvents.some(e => e.type === 'agent:recovered' && (e as { agentId: number }).agentId === aId),
     ).toBe(false);
-    // No recovery prefill ran for the cancelled agent (recoverInline never entered).
+    // No recovery prefill ran for the cancelled agent (the sweep never picked it).
     const aRecoveryPrefills = run.traceEvents.filter(
       e => e.type === 'branch:prefill'
         && (e as { role?: string }).role === 'recovery'

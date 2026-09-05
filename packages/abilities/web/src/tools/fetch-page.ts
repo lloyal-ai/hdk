@@ -64,7 +64,7 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
     this._tokenBudget = opts?.tokenBudget ?? 2048;
   }
 
-  /** Inject reranker for chunk scoring. Call from Source.bind(). */
+  /** Inject reranker for chunk scoring. Called by the source at construction. */
   setReranker(reranker: Reranker): void {
     this._reranker = reranker;
   }

@@ -12,7 +12,9 @@
  * **What it provides:**
  * - Branch lifecycle: create, fork, prune with correct parent/child tracking
  * - Position tracking: advances on commit/prefill, forkHead set at fork time
- * - KV pressure: cellsUsed grows on commit/prefill, decrements on prune
+ * - KV pressure: cellsUsed grows on commit/prefill, decrements on prune by
+ *   what the branch charged — its position delta plus the embedding slack an
+ *   image left behind (cells above positions), as `BranchStore::release` does
  *   by `position - forkHead` (matching C++ BranchStore::release semantics)
  * - Chat formatting: simple stubs returning a format value > 1
  *   (passes the tool-calling support check in agent-pool.ts)
@@ -61,6 +63,9 @@ interface BranchState {
   parentHandle: number;
   children: Set<number>;
   disposed: boolean;
+  /** Cells the embedding rail charged this branch above its position advance
+   *  (the kernel's `img_slack_own`): refunded with the position delta on prune. */
+  imgSlack: number;
 }
 
 export interface MockSessionContextOpts {
@@ -70,6 +75,24 @@ export interface MockSessionContextOpts {
   cellsUsed?: number;
   /** Token ID treated as stop token. Default: 999 */
   stopToken?: number;
+}
+
+/**
+ * The kernel's rule for a batched call (`BranchStore::decode_each` /
+ * `decode_scatter` → `require_distinct_handles`): a handle may appear at most
+ * once per batch, because each item's start position is read when the batch
+ * is built and advances only after dispatch — two items on one branch would
+ * collide on position. The mock refuses the batch the kernel refuses.
+ */
+function requireDistinctHandles(handles: number[], who: string): void {
+  const seen = new Map<number, number>();
+  for (let i = 0; i < handles.length; i++) {
+    const first = seen.get(handles[i]);
+    if (first !== undefined) {
+      throw new Error(`MockSessionContext.${who}: duplicate handle at indices ${first} and ${i} (sequential calls required for multiple runs per branch)`);
+    }
+    seen.set(handles[i], i);
+  }
 }
 
 export class MockSessionContext implements SessionContext {
@@ -106,6 +129,7 @@ export class MockSessionContext implements SessionContext {
       parentHandle: 0,
       children: new Set(),
       disposed: false,
+      imgSlack: 0,
     });
     return handle;
   }
@@ -122,6 +146,7 @@ export class MockSessionContext implements SessionContext {
       parentHandle,
       children: new Set(),
       disposed: false,
+      imgSlack: 0,
     });
     return handle;
   }
@@ -134,8 +159,9 @@ export class MockSessionContext implements SessionContext {
     // twice is therefore safe THERE, and this mock must not be stricter than
     // the thing it stands in for.
     if (!b || b.disposed) return;
-    // Decrement cellsUsed by unique cells (matches C++ BranchStore::release)
-    const unique = Math.max(0, b.position - b.forkHead);
+    // Refund what this branch charged (matches C++ BranchStore::release): its
+    // unique positions plus the embedding slack its images left above them.
+    const unique = Math.max(0, b.position - b.forkHead) + b.imgSlack;
     this.cellsUsed = Math.max(0, this.cellsUsed - unique);
     b.disposed = true;
     // Remove from parent's children
@@ -177,6 +203,7 @@ export class MockSessionContext implements SessionContext {
   _branchAccept(_handle: number, _token: number): void {}
 
   async _storeCommit(handles: number[], _tokens: number[]): Promise<void> {
+    requireDistinctHandles(handles, '_storeCommit');
     for (const h of handles) {
       const b = this._branches.get(h);
       if (b && !b.disposed) {
@@ -187,6 +214,7 @@ export class MockSessionContext implements SessionContext {
   }
 
   async _storePrefill(handles: number[], tokenArrays: number[][]): Promise<void> {
+    requireDistinctHandles(handles, '_storePrefill');
     for (let i = 0; i < handles.length; i++) {
       const b = this._branches.get(handles[i]);
       if (b && !b.disposed) {
@@ -253,6 +281,7 @@ export class MockSessionContext implements SessionContext {
       const b = this._branches.get(handles[i]);
       if (b && !b.disposed) {
         b.position += positionAdvance;
+        b.imgSlack += tokensDecoded - positionAdvance;
         this.cellsUsed += tokensDecoded;
       }
       out.push({ tokensDecoded, positionAdvance });
