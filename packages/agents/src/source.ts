@@ -77,7 +77,7 @@ export abstract class Source<TCtx = unknown, TChunk = unknown> {
   /** Data access tools provided by this source */
   abstract get tools(): Tool[];
 
-  /** Reranker instance, set during {@link bind}. Used by {@link createScorer}. */
+  /** Reranker instance, injected at construction by the ability factory. Used by {@link createScorer}. */
   protected _reranker: ScorerReranker | null = null;
   /**
    * Minimum entailment score for delegation to proceed.
@@ -130,9 +130,6 @@ export abstract class Source<TCtx = unknown, TChunk = unknown> {
       },
     };
   }
-
-  /** Late-bind runtime deps not available at construction. Called before tools are used. */
-  *bind(_ctx: TCtx): Operation<void> {}
 
   /** Post-use chunks for reranking. Called after agents have used the tools. */
   getChunks(): TChunk[] { return []; }

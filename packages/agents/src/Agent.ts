@@ -1,7 +1,8 @@
 import type { Branch, SessionContext, ParseChatOutputResult } from '@lloyal-labs/sdk';
 import type { GrammarTrigger } from '@lloyal-labs/sdk';
 import { createSignal, type Signal } from 'effection';
-import type { TraceToken, AgentExitReason } from './types';
+import type { TraceToken, AgentExitReason, AgentTaskSpec } from './types';
+import type { AgentTurnRecord } from './replay';
 
 // ── Status ──────────────────────────────────────────────────
 
@@ -10,9 +11,13 @@ import type { TraceToken, AgentExitReason } from './types';
  *
  * - `idle`: created but not yet generating, OR finished but branch still
  *    alive (extraction window for recovery)
- * - `active`: generating tokens (between PRODUCE start and stop token)
- * - `awaiting_tool`: tool call parsed, waiting for result in SETTLE
+ * - `active`: generating tokens (between a sample and its stop token)
+ * - `awaiting_tool`: a tool call, nudge or recovery turn is pending admission
  * - `disposed`: branch pruned, agent no longer usable
+ *
+ * `extracting` is a separate, one-way latch orthogonal to status: an agent
+ * producing its forced recovery report is `awaiting_tool` while the turn is
+ * pending and `active` while it decodes.
  *
  * @category Agents
  */
@@ -26,7 +31,7 @@ export type AgentStatus = 'idle' | 'active' | 'awaiting_tool' | 'disposed';
 export type ResultSource =
   | 'voluntary_return' // agent voluntarily returned via the terminal tool
   | 'free_text'        // agent emitted prose without tool call
-  | 'recovery'         // extracted post-idle via the recovery path (recoverInline)
+  | 'recovery'         // extracted by a forced recovery turn after a drop
   | 'nudge'            // agent returned after nudge injection
   | 'tool_error';      // tool threw, error captured as findings
 
@@ -176,6 +181,29 @@ export class Agent {
   /** The agent that called the tool which spawned this agent's pool (null for top-level) */
   readonly parent: Agent | null = null;
 
+  // ── Pool bookkeeping (one fact, one place — on the agent it is about) ──
+
+  /**
+   * The terminal `agent:failed` reason, once one has been announced. An agent
+   * with this set is DISCARDED: never force-recovered by the close sweep,
+   * never handed a late tool completion. `null` while it is live or finished
+   * on its own terms.
+   */
+  failed: string | null = null;
+  /** The branch holds cells nothing will read again; the next prune pass
+   *  reclaims it (a leaf only — a branch with live children keeps its prefix). */
+  pruneRequested = false;
+  /** The spec this agent was born from — what a heal reproduces. */
+  spec: AgentTaskSpec | null = null;
+  /** Every KV delta since spawn, in order — the heal's replay material. */
+  readonly records: AgentTurnRecord[] = [];
+  /** How many times this lineage has been healed (a replacement inherits +1). */
+  healAttempt = 0;
+  /** rc==1 deferrals of this agent's pending item; cleared when one lands. */
+  deferAttempts = 0;
+  /** Serial recovery: the report is uncapped and one runs at a time. */
+  recoverySerial = false;
+
   // ── Constructor ─────────────────────────────────────────
 
   constructor(opts: {
@@ -216,6 +244,7 @@ export class Agent {
   /**
    * Transition to a new status. Enforces valid transitions:
    * - idle → active (first produce)
+   * - idle → awaiting_tool (the close sweep's forced recovery turn)
    * - active → awaiting_tool (tool call parsed)
    * - active → idle (stop token, report, or kill)
    * - awaiting_tool → active (tool result settled)
@@ -227,7 +256,7 @@ export class Agent {
   transition(to: AgentStatus): void {
     const from = this._status;
     const valid =
-      (from === 'idle' && (to === 'active' || to === 'disposed')) ||
+      (from === 'idle' && (to === 'active' || to === 'awaiting_tool' || to === 'disposed')) ||
       (from === 'active' && (to === 'awaiting_tool' || to === 'idle')) ||
       (from === 'awaiting_tool' && (to === 'active' || to === 'idle'));
     if (!valid) {
@@ -265,11 +294,13 @@ export class Agent {
   /** Tokens produced in the CURRENT turn — what the voluntary report cap checks. */
   get turnTokens(): number { return this._tokenCount - this._turnTokenBase; }
   /** Mark the agent as producing its recovery report (idempotent, one-way). Records
-   *  the per-report budget `b` and snapshots the token base for the cap. */
-  markExtracting(budget: number): void {
+   *  the per-report budget `b` (Infinity = uncapped) and snapshots the token base
+   *  for the cap. */
+  markExtracting(budget: number, serial = false): void {
     this._extracting = true;
     this._recoveryBudget = budget;
     this._recoveryTokenBase = this._tokenCount;
+    this.recoverySerial = serial;
   }
 
   /** Accumulate generated token text into the current turn */
@@ -417,26 +448,6 @@ export class Agent {
   /** Whether the grammar allows free text output (not tool-call-only) */
   get grammarAllowsFreeText(): boolean {
     return !this.fmt.grammarLazy || !this.fmt.grammar;
-  }
-
-  // ── Async iteration ─────────────────────────────────────
-
-  /**
-   * Async iterator — delegates to Branch, accumulates state
-   *
-   * Each yielded token is already committed to KV (Branch's commit-before-yield
-   * semantics). Agent accumulates rawOutput and tokenCount as tokens flow.
-   *
-   * Available for Layer 1 users who create Agents directly and want to
-   * stream with state accumulation. The pool's tick loop does NOT use this
-   * iterator — it calls `produceSync()`/`store.commit()` directly for
-   * batched multi-agent generation.
-   */
-  async *[Symbol.asyncIterator](): AsyncIterableIterator<{ token: number; text: string }> {
-    for await (const produced of this.branch) {
-      this.accumulateToken(produced.text);
-      yield produced;
-    }
   }
 
   // ── Lifecycle ───────────────────────────────────────────

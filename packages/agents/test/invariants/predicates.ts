@@ -46,9 +46,14 @@ export function I4_spawnBatched(run: PoolRun): PredicateResult {
     e => e.type === 'branch:create' && (e as any).role === 'agentFork',
   ).length;
   if (forks === 0) return ok();
-  const firstPrefill = run.nativeCalls.find(c => c.op === 'prefill');
+  // The harness prefills the root before any fork (ledger entry 0); the SPAWN
+  // batch is the first prefill that lands after the first agentFork create.
+  const firstFork = run.traceEvents.find(
+    e => e.type === 'branch:create' && (e as any).role === 'agentFork',
+  ) as { ts: number };
+  const firstPrefill = run.nativeCalls.find(c => c.op === 'prefill' && c.tStart >= firstFork.ts);
   if (!firstPrefill) {
-    return fail('I4', `${forks} agentFork(s) but no store.prefill call recorded`);
+    return fail('I4', `${forks} agentFork(s) but no store.prefill call recorded after the first fork`);
   }
   if (firstPrefill.branchCount !== forks) {
     return fail(
@@ -90,36 +95,6 @@ export function I24_settlePolicyConsulted(
 }
 
 /**
- * I25 Stall-break-last-resort: settle_stall_break fires only when policy
- * said nudge and the nudge itself re-deferred (or policy is absent). A drop
- * with reason `settle_stall_break` must NOT occur when there exists an
- * active agent at the time the decision was made.
- *
- * Weakly verified via: no two drops with reason 'settle_stall_break' can
- * happen while another agent is still active in the trace.
- *
- * Strongly verified by inspecting production code paths — future work.
- * For now, check that `settle_stall_break` is used at all (not collapsed
- * with `pressure_settle_reject`).
- */
-export function I25_stallBreakDistinct(run: PoolRun): PredicateResult {
-  const drops = run.traceEvents.filter(e => e.type === 'pool:agentDrop');
-  const reasons = new Set(drops.map(d => (d as any).reason));
-  const hasSettleReject = reasons.has('pressure_settle_reject');
-  const hasStallBreak = reasons.has('settle_stall_break');
-  const hasStallBreakReason = drops.some(
-    d => (d as any).reason === 'settle_stall_break',
-  );
-  if (hasSettleReject && !hasStallBreak) {
-    return fail(
-      'I25',
-      `pressure_settle_reject present but settle_stall_break never — reasons are collapsed into one`,
-    );
-  }
-  return ok();
-}
-
-/**
  * I29 Recovery-diagnostic-complete: every recovery attempt emits exactly
  * one of pool:recoveryReturn / pool:recoveryFailed after its
  * branch:prefill role=recovery.
@@ -153,7 +128,7 @@ export function I29_recoveryDiagnostic(run: PoolRun): PredicateResult {
  */
 export function nudgeMessageContainsBudget(
   run: PoolRun,
-  reason?: 'settle_reject' | 'nudge' | 'pressure_softcut' | 'pressure_settle_reject' | 'time_nudge',
+  reason?: 'settle_reject' | 'nudge' | 'pressure_softcut' | 'pressure_settle_reject',
 ): PredicateResult {
   const nudges = run.traceEvents.filter(e => e.type === 'pool:agentNudge');
   const filtered = reason
@@ -195,6 +170,7 @@ const RECORDED_EXIT_REASONS = new Set<AgentExitReason>([
   'policy_exit',
   'pressure_softcut',
   'maxTurns',
+  'report_cap',
 ]);
 
 export function I30_exitReasonMatchesTrace(run: PoolRun): PredicateResult {

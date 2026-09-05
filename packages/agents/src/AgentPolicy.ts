@@ -1,12 +1,12 @@
 import type { Agent, ToolHistoryEntry } from './Agent';
 import type { ToolRetryError } from './Tool';
-import { ContextPressure } from './agent-pool';
+import { ContextPressure } from './pressure';
 import type { ParsedToolCall } from '@lloyal-labs/sdk';
 import type { PressureThresholds } from './types';
 import { renderTemplate } from './prompt';
 
 // Recovery-phase KV accounting constants. These size the hardLimit reserve
-// allocation for recoverInline: the prefill cost of the recovery prompt +
+// allocation for a recovery turn: the prefill cost of the recovery prompt +
 // room for llama.cpp's batch workspace. Used to compute the budget
 // communicated to the model in its recovery prompt.
 export const RECOVERY_PREFILL_OVERHEAD = 150;
@@ -331,7 +331,7 @@ export interface AgentPolicy {
 
   /**
    * Recovery reap shape.
-   * `'staggered'` (default) — recover one agent at a time (`recoverInline`),
+   * `'staggered'` (default) — recover one agent at a time (serial recovery),
    * pruning each before the next so every report gets the full freed headroom
    * (uncapped, lossless; the high-effort path).
    * `'parallel'` — recover killed-without-result agents IN-LOOP: the recovery turn
@@ -437,7 +437,7 @@ export interface DefaultAgentPolicyOpts {
     /** KV context budget (tokens remaining). softLimit = nudge floor, hardLimit = kill floor.
      *  COUPLING (non-obvious): RECOVERY budgets from the `hardLimit` RESERVE, not `softLimit`.
      *  The forced-report budget `b` and the SETTLE admission for an extracting agent draw from
-     *  `remaining − hardLimit` (see {@link AgentPolicy.onRecovery} + agent-pool `handleRecover`),
+     *  `remaining − hardLimit` (see {@link AgentPolicy.onRecovery} + the scheduler's `planRecovery`),
      *  so recovery may decode the soft reserve down to `hardLimit`. `softLimit` is the model
      *  NUDGE floor, reserved for downstream work (synth) — raising it nudges EARLIER but does
      *  NOT shorten recovery reports. (`softLimit` is advisory: it gates the wrap-up nudge +
@@ -524,14 +524,9 @@ export class DefaultAgentPolicy implements AgentPolicy {
   }
 
   /** Recovery reap shape. The pool reads this to pick in-loop bin-packed recovery
-   *  (`parallel`) vs the blocking per-agent `recoverInline` (`staggered`). */
+   *  (`parallel`) vs one serial report at a time (`staggered`). */
   get recoveryShape(): 'staggered' | 'parallel' {
     return this._recoveryShape;
-  }
-
-  /** Flip the reap shape at runtime — wind-down sets `'parallel'`. */
-  setRecoveryShape(shape: 'staggered' | 'parallel'): void {
-    this._recoveryShape = shape;
   }
 
   /** Explicit per-report token budget for in-loop recovery (undefined = adaptive,
@@ -613,7 +608,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
       if (!this._nudgedThisTick) {
         this._nudgedThisTick = true;
         // Budget the model can emit before `pressure.critical` kills it.
-        // Overshoot → kill → recoverInline extracts from the hardLimit reserve.
+        // Overshoot → kill → the recovery turn extracts from the hardLimit reserve.
         // Expressed in words (not tokens) because tokenizers vary across
         // models but words are universal. Under-advertised + rounded down
         // so the model has slack on the ceiling.

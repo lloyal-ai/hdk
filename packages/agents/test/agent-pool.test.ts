@@ -1375,7 +1375,7 @@ describe('SPLIT-SEMANTICS GATE: voluntary vs recovery emission', () => {
     expect(recovered.length).toBe(0);
   });
 
-  it('recovery extraction (recoverInline path) emits agent:recovered only', async () => {
+  it('recovery extraction (serial recovery path) emits agent:recovered only', async () => {
     // To trigger recovery's successful-extraction path we need:
     //   - agent stops without producing a voluntary result (initial STOP)
     //   - recovery's grammar-constrained generation produces tokens whose
@@ -1405,7 +1405,7 @@ describe('SPLIT-SEMANTICS GATE: voluntary vs recovery emission', () => {
     // Token sequence for the single agent's branch:
     //   [STOP, 100, STOP]
     //   - first STOP: agent's PRODUCE phase hits stop; the main turn's parse goes
-    //     through onProduced → idle (free_text_stop) → agent killed → recoverInline
+    //     through onProduced → idle (free_text_stop) → the close sweep's serial recovery
     //   - 100, STOP: recovery's produce/commit loop generates token 100, then STOP →
     //     finishRecovery parses the recovery output via parseChatOutput, which (below)
     //     returns the terminal `report` call → agent.setResult → agent:recovered

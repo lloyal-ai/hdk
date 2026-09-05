@@ -1,6 +1,6 @@
 
 import type { Operation } from "effection";
-import { waitUntilSettled } from "./combinators";
+import { prefillBranch, prefillBranchMultimodal } from "./execute";
 import { Branch, mediaContent } from "@lloyal-labs/sdk";
 import type { SessionContext } from "@lloyal-labs/sdk";
 import { Ctx, Trace, TraceParent, SpineFmt, Attachments, Ingress } from "./context";
@@ -173,7 +173,7 @@ export function* withSpine<T>(
   // so a failure on any of them cannot leak a slot or a poisoned branch.
   try {
     if (prefillTokens.length > 0) {
-      yield* waitUntilSettled( spine.prefill(prefillTokens));
+      yield* prefillBranch(spine, prefillTokens);
       tw.write({
         traceId: tw.nextId(),
         parentTraceId: scopeId,
@@ -271,8 +271,7 @@ export function* withSpine<T>(
       let attached: readonly Attachment[] | undefined;
       if (bitmaps.length > 0) {
         writeSpineSeed();
-        const counts = yield* waitUntilSettled(
-          spine.prefillMultimodal(formatted.prompt, bitmaps));
+        const counts = yield* prefillBranchMultimodal(spine, formatted.prompt, bitmaps);
         headerCells = counts.tokensDecoded;
         // Already committed by the barrier above — this only carries the roots
         // onto the trace. Recording used to happen HERE, after the prefill, so
@@ -283,7 +282,7 @@ export function* withSpine<T>(
         writeSpineSeed(headerTokens.length);
         headerCells = headerTokens.length;
         if (headerTokens.length > 0) {
-          yield* waitUntilSettled( spine.prefill(headerTokens));
+          yield* prefillBranch(spine, headerTokens);
         }
       }
       if (headerCells > 0) {

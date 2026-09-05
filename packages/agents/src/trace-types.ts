@@ -35,9 +35,11 @@ interface TraceEventBase {
  *
  * Every variant extends {@link TraceEventBase} with a `type` discriminant.
  * Events cover the full lifecycle of agent execution: scope open/close,
- * prompt formatting, branch creation/prefill/prune, generation start/end,
- * agent pool ticks, tool dispatch/result, diverge attempts, reranker
- * passes, and source bindings.
+ * prompt formatting, branch creation/prefill/prune, agent pool ticks, tool
+ * dispatch/result, reranker passes and retrieval scoring.
+ *
+ * Every variant declared here has an emit site — `test/trace-vocabulary.test.ts`
+ * holds the file to that.
  *
  * Written to a {@link TraceWriter} throughout the runtime. Consumers
  * (e.g. {@link JsonlTraceWriter}) serialize events to JSONL for
@@ -71,7 +73,7 @@ export type TraceEvent =
       messages: string;
       tools?: string;
       grammar?: string;
-      role: 'spine' | 'agentSuffix' | 'generate' | 'diverge' | 'toolResultDelta';
+      role: 'spine' | 'agentSuffix';
     }
 
   // ── Branch events ───────────────────────────
@@ -80,7 +82,7 @@ export type TraceEvent =
       branchHandle: number;
       parentHandle: number | null;
       position: number;
-      role: 'root' | 'spine' | 'agentFork' | 'divergeAttempt';
+      role: 'root' | 'spine' | 'agentFork';
     }
   | TraceEventBase & {
       type: 'branch:prefill';
@@ -108,7 +110,7 @@ export type TraceEvent =
       probeText?: string;
       /** Verbatim prefilled text. Populated for `warmDelta` (session-trunk
        *  conversation turns) so the spine's accreting content is visible in
-       *  the trace — parallels `generate:end.output`. Omitted for the
+       *  the trace. Omitted for the
        *  pool-side prefills (spineHeader/toolResult/recovery), whose text is
        *  already recoverable from prompt:format / tool:result / pool:recovery*. */
       content?: string;
@@ -131,22 +133,6 @@ export type TraceEvent =
       attachments?: readonly Attachment[];
     }
   | TraceEventBase & { type: 'branch:prune'; branchHandle: number; position: number }
-
-  // ── Generation events ───────────────────────
-  | TraceEventBase & {
-      type: 'generate:start';
-      branchHandle: number;
-      hasGrammar: boolean;
-      hasParent: boolean;
-      role: string;
-    }
-  | TraceEventBase & {
-      type: 'generate:end';
-      branchHandle: number;
-      tokenCount: number;
-      output: string;
-      parsed?: unknown;
-    }
 
   // ── Agent pool events ───────────────────────
   | TraceEventBase & {
@@ -195,11 +181,9 @@ export type TraceEvent =
         | 'pressure_softcut'
         | 'pressure_settle_reject'
         | 'settle_stall_break'
-        | 'time_exceeded'
         | 'policy_exit'
         | 'maxTurns'
         | 'tool_error'
-        | 'stop_token'
         | 'wind_down'
         | 'user_cancel'
         | 'report_cap';
@@ -207,7 +191,7 @@ export type TraceEvent =
   | TraceEventBase & {
       type: 'pool:agentNudge';
       agentId: number;
-      reason: 'pressure_softcut' | 'pressure_settle_reject' | 'settle_reject' | 'time_nudge' | 'nudge';
+      reason: 'pressure_softcut' | 'pressure_settle_reject' | 'settle_reject' | 'nudge';
       message?: string;
       /** The tool call the nudge replaced (PRODUCE nudges reject a parsed
        *  call; settle_reject nudges replace an oversized result). Absent
@@ -221,7 +205,7 @@ export type TraceEvent =
     }
 
   // ── Recovery diagnostics ────────────────────
-  // Emitted by recoverInline so silent failures become visible in the
+  // Emitted by the recovery path so silent failures become visible in the
   // trace. A recovery prefill is always followed by exactly one of:
   // `pool:recoveryReturn` (parsed findings captured) or
   // `pool:recoveryFailed` (produce completed but output unparseable).
@@ -413,16 +397,6 @@ export type TraceEvent =
       lineageHistory: readonly ToolHistoryEntry[];
     }
 
-  // ── Diverge events ──────────────────────────
-  | TraceEventBase & { type: 'diverge:start'; attempts: number; prefixLength: number }
-  | TraceEventBase & {
-      type: 'diverge:end';
-      bestIdx: number;
-      ppls: number[];
-      outputs: string[];
-      totalTokens: number;
-    }
-
   // ── BM25 first-stage events (corpus ability) ─────
   | TraceEventBase & {
       type: 'bm25:start';
@@ -464,11 +438,6 @@ export type TraceEvent =
       /** Candidates actually cross-encoded (the reranker's `total`). */
       totalScored?: number;
     }
-
-  // ── Source events (rig package) ─────────────
-  | TraceEventBase & { type: 'source:bind'; sourceName: string }
-  | TraceEventBase & { type: 'source:research'; sourceName: string; questions: string[] }
-  | TraceEventBase & { type: 'source:chunks'; sourceName: string; chunkCount: number }
 
   // ── Entailment scoring events ──────────────
   | TraceEventBase & { type: 'entailment:search'; tool: string; query: string; [key: string]: unknown }

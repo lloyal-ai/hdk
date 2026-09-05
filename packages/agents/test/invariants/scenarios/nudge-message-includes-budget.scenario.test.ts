@@ -17,6 +17,7 @@ import type { Operation } from 'effection';
 import type { JsonSchema } from '../../../src/types';
 import { DefaultAgentPolicy } from '../../../src/AgentPolicy';
 import { runPool, STOP } from '../harness';
+import { nudgeMessageContainsBudget, formatResult } from '../predicates';
 
 class BigResultTool extends Tool<{ query: string }> {
   readonly name = 'web_search';
@@ -51,6 +52,7 @@ describe('scenario: nudge message includes the remaining token budget', () => {
       e => e.type === 'pool:agentNudge' && (e as any).reason === 'settle_reject',
     );
     expect(settleNudges.length).toBeGreaterThanOrEqual(1);
+    expect(formatResult('budget', nudgeMessageContainsBudget(run, 'settle_reject'))).toBe('budget: ok');
 
     // Message pattern: "Tool result too large … within N words."
     // Tokens-to-words: floor(tokens * 0.7 / 10) * 10. Words are used in

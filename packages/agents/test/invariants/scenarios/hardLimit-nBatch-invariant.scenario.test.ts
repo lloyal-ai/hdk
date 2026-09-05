@@ -1,7 +1,7 @@
 /**
  * Scenario: useAgentPool validates `hardLimit >= nBatch` at startup.
  *
- * When `pressure.critical` fires, the kill path invokes `recoverInline`
+ * When `pressure.critical` fires, the kill path runs a recovery turn
  * which prefills + decodes within the `hardLimit` reserve. If hardLimit
  * is smaller than the context's nBatch (native batch allocation size),
  * recovery's decode will OOM with "no memory slot for batch of size N".

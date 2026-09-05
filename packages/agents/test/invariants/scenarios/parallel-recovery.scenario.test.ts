@@ -18,8 +18,8 @@ const REPORT_CALL = { name: 'report', arguments: '{"result":"recovered"}' };
 /**
  * Every agent drops to idle WITHOUT a voluntary result on its first stop
  * (`free_text_stop`), so each is recovered: `parallel` injects the recovery turn
- * IN-LOOP (handleRecover → SETTLE admission → bin-packed decode); `staggered`
- * blocks via `recoverInline`. `reportBudget` is the FIXED per-report cap `b`.
+ * as a cohort (recovery item → admission → bin-packed decode); `staggered`
+ * recovers one at a time. `reportBudget` is the FIXED per-report cap `b`.
  */
 function idleNoResultPolicy(
   shape: 'staggered' | 'parallel',
@@ -35,14 +35,17 @@ function idleNoResultPolicy(
   };
 }
 
-// role='recovery' → the BLOCKING `recoverInline` path (staggered + the stall-break
-// fallback). role='toolResult' → the IN-LOOP recovery turn prefilled through SETTLE
-// (the parallel path). In these no-tool scenarios `toolResult` prefills are exactly
-// the in-loop recovery turns.
-const inlinePrefills = (r: PoolRun) =>
+// A recovery turn's prefill carries role='recovery' whatever the shape. The
+// SHAPE is on the trace: `tool:settle_order` lists the items that landed in one
+// admission, so cohort recovery shows one batch of N recovery turns and serial
+// recovery shows N batches of one.
+const recoveryPrefills = (r: PoolRun) =>
   r.traceEvents.filter(e => e.type === 'branch:prefill' && (e as { role?: string }).role === 'recovery');
-const inLoopPrefills = (r: PoolRun) =>
-  r.traceEvents.filter(e => e.type === 'branch:prefill' && (e as { role?: string }).role === 'toolResult');
+const recoveryBatches = (r: PoolRun): number[] =>
+  r.traceEvents
+    .filter((e): e is Extract<typeof e, { type: 'tool:settle_order' }> => e.type === 'tool:settle_order')
+    .map(e => e.batch.filter(b => b.callId.startsWith('recovery:')).length)
+    .filter(n => n > 0);
 const recoveryProduce = (r: PoolRun) =>
   r.traceEvents.filter(e => e.type === 'pool:recoveryProduce');
 const recoveryReturn = (r: PoolRun) =>
@@ -62,19 +65,19 @@ const idleScripts = () => idleScriptsN(N);
  * `b` (prompt advisory + token-stop), sized so the WHOLE cohort's prefill+decode
  * fits headroom in one tick — so every reaped agent recovers, nothing is deferred or
  * lost. `staggered` (high effort) is the lossless serial path — blocking
- * `recoverInline`, uncapped — and is unchanged.
+ * serial, uncapped — and is unchanged.
  */
 describe('scenario: parallel recovery (in-loop via SETTLE)', () => {
-  it('recovers every parallel agent IN-LOOP via SETTLE — never the blocking recoverInline', async () => {
+  it('recovers every parallel agent as ONE cohort', async () => {
     const r = await runPool({
       nCtx: 8192, cellsUsed: 0, scripts: idleScripts(),
       policy: idleNoResultPolicy('parallel'),
     });
 
-    // Every agent's recovery turn was prefilled through SETTLE (role=toolResult)…
-    expect(inLoopPrefills(r).length).toBe(N);
-    // …and NONE went through the blocking private-loop recoverInline (role=recovery).
-    expect(inlinePrefills(r).length).toBe(0);
+    // Every agent's recovery turn was prefilled…
+    expect(recoveryPrefills(r).length).toBe(N);
+    // …as ONE cohort: a single admission carried all N recovery turns.
+    expect(recoveryBatches(r)).toEqual([N]);
     // Every agent extracted a result in-loop (no loss).
     expect(recoveryProduce(r).length).toBe(N);
     expect(recoveryReturn(r).length).toBe(N);
@@ -86,7 +89,7 @@ describe('scenario: parallel recovery (in-loop via SETTLE)', () => {
   it('stall-regression: a killed agent\'s recovery decodes bin-packed in a COMMIT with a LIVE sibling', async () => {
     // Agent 0 keeps producing (the live sibling); agent 1 stops early and is
     // recovered MID-RUN. The regression (the bug this whole change fixes): the old
-    // recoverInline ran agent 1's recovery in a private blocking loop that froze
+    // serial recovery ran agent 1's report in a private blocking loop that froze
     // agent 0 for the duration. In-loop, agent 1's recovery tokens ride the tick's
     // batched COMMIT *with* agent 0's live tokens — proven by a branchCount≥2 commit
     // landing strictly inside agent 1's recovery window.
@@ -100,10 +103,10 @@ describe('scenario: parallel recovery (in-loop via SETTLE)', () => {
     });
 
     // The short agent recovers FIRST; derive its id from the first recovery-turn
-    // prefill (role=toolResult) rather than hardcoding a fork handle. Its recovery
-    // window runs from that prefill to its recovery extraction (pool:recoveryProduce).
+    // prefill rather than hardcoding a fork handle. Its recovery window runs from
+    // that prefill to its recovery extraction (pool:recoveryProduce).
     const prefill = r.traceEvents.find(
-      e => e.type === 'branch:prefill' && (e as { role?: string }).role === 'toolResult',
+      e => e.type === 'branch:prefill' && (e as { role?: string }).role === 'recovery',
     );
     expect(prefill).toBeDefined();
     const recoveringId = (prefill as { branchHandle: number }).branchHandle;
@@ -121,8 +124,6 @@ describe('scenario: parallel recovery (in-loop via SETTLE)', () => {
     );
     expect(coBatched.length).toBeGreaterThanOrEqual(1);
 
-    // And it never fell back to the blocking recoverInline path.
-    expect(inlinePrefills(r).length).toBe(0);
     expect(recoveryReturn(r).some(e => (e as { agentId?: number }).agentId === recoveringId)).toBe(true);
     expect(I1_nativeStoreSingleFiber(r).ok).toBe(true);
   });
@@ -153,7 +154,7 @@ describe('scenario: parallel recovery (in-loop via SETTLE)', () => {
     // passes the `pressure_init` spawn guard) RESEARCHES the KV down BELOW softLimit, then
     // reaps and must recover. At reap `headroom = remaining − softLimit < 0`, so the OLD
     // SETTLE gate (`cost > headroom`) DEFERS every recovery → stall-break → serial
-    // `recoverInline` (role=recovery). The NEW gate budgets extracting items against
+    // serial recovery. The NEW gate budgets extracting items against
     // `headroom + reserveBand` (= remaining − hardLimit) → it ADMITS in-loop (role=toolResult).
     // Born at remaining 3192 (> soft 3000); ~400 research commits drain it to ≈2750
     // (headroom ≈ −250, but remaining − hardLimit ≈ 2240 — plenty for the report).
@@ -162,11 +163,11 @@ describe('scenario: parallel recovery (in-loop via SETTLE)', () => {
       scripts: [{ tokens: [...Array(400).fill(1), STOP, 1, STOP], content: 'research then reap', toolCall: REPORT_CALL }],
       policy: { ...idleNoResultPolicy('parallel'), pressureThresholds: { softLimit: 3000, hardLimit: 512 } },
     });
-    // Recovered (no loss), IN-LOOP via SETTLE — NOT the serial recoverInline the old
-    // softLimit floor would have forced under this negative headroom.
+    // Recovered (no loss), admitted first try from the `remaining − hardLimit` band —
+    // never via the stall-break, which the old softLimit floor would have forced.
     expect(recoveryReturn(r).length).toBe(1);
-    expect(inLoopPrefills(r).length).toBeGreaterThanOrEqual(1);
-    expect(inlinePrefills(r).length).toBe(0);
+    expect(recoveryPrefills(r).length).toBeGreaterThanOrEqual(1);
+    expect(r.traceEvents.filter(e => e.type === 'pool:agentDrop').length).toBe(0);
     expect(I1_nativeStoreSingleFiber(r).ok).toBe(true);
   });
 
@@ -180,7 +181,7 @@ describe('scenario: parallel recovery (in-loop via SETTLE)', () => {
       scripts: [{ tokens: [1, STOP, 1, 1, 1, 1, 1, 1, 1, 1, STOP], content: 'x', toolCall: REPORT_CALL }],
       policy: idleNoResultPolicy('parallel', 4),
     });
-    expect(inLoopPrefills(r).length).toBe(1);
+    expect(recoveryPrefills(r).length).toBe(1);
     // The report was cut at exactly the budget — not the 8 the script would produce.
     expect((recoveryProduce(r)[0] as { tokenCount: number }).tokenCount).toBe(4);
     // …and the (partial) call was still extracted — the cap bounds, never drops.
@@ -193,7 +194,7 @@ describe('scenario: parallel recovery (in-loop via SETTLE)', () => {
     // tick (the flat+medium run reaped 4 agents at 358s). The old SETTLE admission charged
     // each recovery item (prompt + report-budget) against headroom and DEFERRED the
     // overflow — and when the pool terminated after the admitted ones finished, the
-    // deferred agents' findings were LOST. Now `b` is sized in handleRecover so
+    // deferred agents' findings were LOST. Now `b` is sized in planRecovery so
     // aliveCount·(prompt + b) ≤ headroom: the cohort's recovery turns all prefill + decode
     // together in ONE batched tick (O(1) in branch count), nothing defers, nothing is lost.
     // cellsUsed simulates a partly-filled KV so the adaptive sizing actually bites.
@@ -203,8 +204,8 @@ describe('scenario: parallel recovery (in-loop via SETTLE)', () => {
     });
     expect(recoveryReturn(r).length).toBe(N);    // every agent recovered — ZERO loss (the headline)
     expect(recoveryProduce(r).length).toBe(N);
-    expect(inLoopPrefills(r).length).toBe(N);     // …all in-loop in one tick (admitted together, not deferred)
-    expect(inlinePrefills(r).length).toBe(0);     // …never the serial recoverInline fallback
+    expect(recoveryPrefills(r).length).toBe(N);
+    expect(recoveryBatches(r)).toEqual([N]);      // …all admitted together, in one batch
     expect(I1_nativeStoreSingleFiber(r).ok).toBe(true);
     expect(r.result).toBeDefined();
   });
@@ -245,8 +246,8 @@ describe('scenario: parallel recovery (in-loop via SETTLE)', () => {
       policy: alwaysExit,
     });
 
-    // It entered recovery (in-loop) exactly once…
-    expect(inLoopPrefills(r).length).toBe(1);
+    // It entered recovery exactly once…
+    expect(recoveryPrefills(r).length).toBe(1);
     // …was reaped exactly ONCE (the initial kill), never re-killed while extracting…
     expect(r.traceEvents.filter(e => e.type === 'pool:agentDrop').length).toBe(1);
     // …and its report survived to completion (not lost).
@@ -271,8 +272,8 @@ describe('scenario: parallel recovery (in-loop via SETTLE)', () => {
     expect(recoveryReturn(crowd).length).toBe(6); // …and the whole crowd still recovered
   });
 
-  it('staggered (high effort) recovers via the blocking recoverInline path, UNCAPPED (lossless) — unchanged', async () => {
-    // The lossless path: each report serializes through recoverInline and owns full
+  it('staggered (high effort) recovers one agent at a time, UNCAPPED (lossless) — unchanged', async () => {
+    // The lossless path: each report is admitted alone and owns full
     // headroom — NO token-stop, so even with a reportBudget set the report runs to
     // its natural stop. This is what `parallel` trades away for responsiveness.
     const r = await runPool({
@@ -283,9 +284,9 @@ describe('scenario: parallel recovery (in-loop via SETTLE)', () => {
       policy: idleNoResultPolicy('staggered', 4), // budget set, but staggered ignores the token-stop
     });
 
-    // Every agent recovered via recoverInline (role=recovery), none in-loop.
-    expect(inlinePrefills(r).length).toBe(N);
-    expect(inLoopPrefills(r).length).toBe(0);
+    // Every agent recovered one at a time: N recovery prefills, N batches of one.
+    expect(recoveryPrefills(r).length).toBe(N);
+    expect(recoveryBatches(r)).toEqual([1, 1, 1]);
     // Uncapped: each report produced all 8 tokens (the full script), NOT cut at b=4.
     for (const p of recoveryProduce(r)) expect((p as { tokenCount: number }).tokenCount).toBe(8);
     expect(recoveryReturn(r).length).toBe(N);

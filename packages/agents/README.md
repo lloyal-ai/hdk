@@ -58,7 +58,7 @@ main(function* () {
   );
 
   yield* initAgents(ctx);
-  // Ctx, Store, Events now set — useAgent(), agentPool(), diverge()
+  // Ctx, Store, Events now set — useAgent() and agentPool()
   // find them automatically. Session + context disposed on scope exit.
 });
 ```
@@ -169,23 +169,6 @@ The framework provides hallucination detection at two levels.
 
 Enable `trace: true` on agent pools to capture entropy and surprisal on every `agent:produce` event.
 
-**Multi-branch semantic comparison.** `diverge()` forks N branches from a shared frontier, generates independently, and returns all outputs with their perplexity scores:
-
-```typescript
-const result = yield* diverge({
-  parent: root,            // shared frontier
-  attempts: 3,             // fork 3 branches
-  params: { temperature: 0.7 },
-});
-// result.best — lowest-perplexity branch, still alive
-// result.attempts — all branches with output, ppl, token count
-// Losers already pruned. Winner's branch is the caller's responsibility.
-```
-
-The harness decides how to compare. `diverge()` returns all outputs with their perplexity scores — the harness can apply any equivalence measure: bigram overlap, embedding similarity, or model-based evaluation. Where branches agree, the model is confident; where they diverge, hallucination risk is high.
-
-This directly operationalizes the semantic entropy work from Farquhar et al. ([Nature, 2024](https://www.nature.com/articles/s41586-024-07421-0)) — but as a runtime primitive, not a post-hoc metric. The key constraint: divergence from a common computational ancestor is signal. Divergence from independently-constructed contexts is sampling variance. This measurement is only meaningful because agents share a frontier.
-
 ## Session Accumulation
 
 `Session.commitTurn(query, answer)` extends the trunk with a new query–answer pair. Future queries fork from this trunk — its KV cache already contains everything the prior turn established.
@@ -274,7 +257,6 @@ import {
   useAgent, agent,   // single-agent helpers
   agentPool,         // multi-agent pool with a swappable orchestrator
   useAgentPool,      // lower-level Effection resource (advanced)
-  diverge,           // multi-branch perplexity selection
   parallel, chain, fanout, dag, reduce,  // orchestrators / combinators
   withSpine,         // scoped spine branch with guaranteed teardown
   Tool, Source,

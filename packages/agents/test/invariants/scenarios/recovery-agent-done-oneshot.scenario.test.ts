@@ -4,7 +4,7 @@
  *
  * Shape: a free-texting agent (recoveryShape 'parallel') crosses the hardLimit
  * → `pressure.critical` kills it in PRODUCE, emitting `agent:done` (kill). The
- * kill path calls `handleRecover`, which marks the agent `extracting` +
+ * kill path plans a cohort recovery, which marks the agent `extracting` +
  * `awaiting_tool` and queues a recovery turn. Under critical, that turn's SETTLE
  * admission budget is `remaining − hardLimit < 0`, so it always DEFERS; with no
  * active siblings the stall-break drop block runs.
@@ -36,7 +36,7 @@ describe('scenario: agent:done is one-shot through defer→stall-break recovery'
 
     // nCtx 700, default hardLimit 512: after root+suffix prefill (~31) + ~158
     // committed tokens, remaining < 512 → pressure.critical fires. The agent emits
-    // no terminal call (no partialToolCall) → handleRecover, not salvage. Single
+    // no terminal call (no partialToolCall) → a recovery turn, not salvage. Single
     // agent → the deferred recovery reaches the stall-break with no active siblings.
     const run = await runPool({
       nCtx: 700,

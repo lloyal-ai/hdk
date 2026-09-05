@@ -1,6 +1,6 @@
 import { resource, ensure, call, scoped } from 'effection';
 import type { Operation } from 'effection';
-import { waitUntilSettled } from './combinators';
+import { prefillBranch } from './execute';
 import { Branch } from '@lloyal-labs/sdk';
 import type { Session, SessionContext } from '@lloyal-labs/sdk';
 import { Agent } from './Agent';
@@ -116,7 +116,7 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
 
     const prefillTokens = warmParent ? ctx.getTurnSeparator() : [];
     if (prefillTokens.length > 0) {
-      yield* waitUntilSettled( root.prefill(prefillTokens));
+      yield* prefillBranch(root, prefillTokens);
     }
 
     // Eager grammar from schema. Compile here, but apply it on the GENERATING

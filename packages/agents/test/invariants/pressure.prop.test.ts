@@ -17,6 +17,7 @@ import type { Operation } from 'effection';
 import type { JsonSchema } from '../../src/types';
 import type { AgentPolicy } from '../../src/AgentPolicy';
 import { runPool, STOP } from './harness';
+import { I24_settlePolicyConsulted } from './predicates';
 
 class SizedTool extends Tool<{ query: string }> {
   readonly name = 'web_search';
@@ -62,17 +63,8 @@ describe('property: pressure-driven exits', () => {
             maxTurns: 3,
           });
 
-          const settleDrops = run.traceEvents.filter(
-            e => e.type === 'pool:agentDrop'
-              && (e as any).reason === 'pressure_settle_reject',
-          );
-
-          // Invariant: any pressure_settle_reject drop implies the policy
-          // was consulted.
-          if (settleDrops.length > 0) {
-            return onSettleRejectCalls >= 1;
-          }
-          return true;  // no drop → invariant trivially holds
+          // Invariant: any settle-related drop implies the policy was consulted.
+          return I24_settlePolicyConsulted(run, onSettleRejectCalls).ok;
         },
       ),
       { numRuns: 30, seed: 42 },

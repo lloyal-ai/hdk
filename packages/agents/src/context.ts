@@ -139,10 +139,8 @@ export const SpineFmt = createContext<FormatConfig | null>('lloyal.spineFmt', nu
  * third-party abilities) read this via `yield* RerankerCtx.expect()` at
  * construction time and pass it to their `Source` / search tools.
  *
- * Replaces the per-source `source.bind({reranker})` pattern — chunks
- * tokenized by one reranker can't be re-bound to another without
- * re-tokenization, so one cross-encoder per harness
- * is the invariant.
+ * One reranker per harness is the invariant: chunks tokenized by one
+ * reranker can't be re-scored by another without re-tokenization.
  *
  * @category Contract
  */
@@ -252,7 +250,7 @@ export const CancelAgent = createContext<Signal<{ agentId: number }, void>>('llo
  * clock — rate limits elapse in the real world.
  *
  * Pause takes effect at the next tick boundary: an in-flight recovery decode
- * (`recoverInline`, the termination sweep) completes first. Lifecycle
+ * (the close-time recovery sweep) completes first. Lifecycle
  * sequencing is the harness's job — the pool holds while paused regardless of
  * other signals; conflicting commands (wind-down while paused) are the
  * consumer's to refuse. Absent context = no pause capability.

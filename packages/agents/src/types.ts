@@ -223,7 +223,7 @@ export interface PressureThresholds {
 }
 
 /**
- * Configuration for {@link useAgentPool} and {@link runAgents}
+ * Configuration for {@link useAgentPool}
  *
  * @category Agents
  */
@@ -361,7 +361,7 @@ export interface AgentResult {
 /**
  * Aggregate result from a completed agent pool run
  *
- * Returned by both {@link useAgentPool} and {@link runAgents}. Contains
+ * Returned by {@link useAgentPool}. Contains
  * per-agent results plus aggregate statistics for display and telemetry.
  *
  * @category Agents
@@ -384,103 +384,6 @@ export interface AgentPoolResult {
   };
 }
 
-// ── Generate types ─────────────────────────────────────────────
-
-/**
- * Options for single-branch {@link generate}
- *
- * @category Agents
- */
-export interface GenerateOptions {
-  /** Pre-formatted prompt string (from `formatChat()` + `tokenize()`) */
-  prompt: string;
-  /** GBNF grammar string for constrained generation */
-  grammar?: string;
-  /** Sampling parameters */
-  params?: SamplingParams;
-  /** Optional parser applied to the raw output string */
-  parse?: (output: string) => unknown;
-  /** Fork from parent instead of creating a fresh root. Prompt is prefilled as a delta (with turn separator). */
-  parent?: Branch;
-}
-
-/**
- * Result from single-branch {@link generate}
- *
- * @category Agents
- */
-export interface GenerateResult<T = unknown> {
-  /** Raw generated text */
-  output: string;
-  /** Number of tokens generated */
-  tokenCount: number;
-  /** Parsed output (present only when `parse` was provided in options) */
-  parsed?: T;
-}
-
-// ── Diverge types ──────────────────────────────────────────────
-
-/**
- * Options for multi-branch {@link diverge}
- *
- * Either `parent` or `prompt` must be provided. When `parent` is given,
- * branches fork from it and no new root is created. When only `prompt`
- * is given, a fresh root is created, prefilled, and cleaned up on error.
- *
- * @category Agents
- */
-export interface DivergeOptions {
-  /** Pre-formatted prompt for creating a fresh root (mutually exclusive with parent) */
-  prompt?: string;
-  /** Number of parallel generation attempts */
-  attempts: number;
-  /** Parent branch to fork from (mutually exclusive with prompt) */
-  parent?: Branch;
-  /** Sampling parameters for all attempts */
-  params?: SamplingParams;
-  /** Base seed for sampler diversity across attempts. @default 2000 */
-  seedBase?: number;
-}
-
-/**
- * Single attempt result from {@link diverge}
- *
- * @category Agents
- */
-export interface DivergeAttempt {
-  /** The attempt's branch (only the best branch survives after diverge) */
-  branch: Branch;
-  /** Generated text for this attempt */
-  output: string;
-  /** Number of tokens generated */
-  tokenCount: number;
-  /** Model perplexity — lower indicates more coherent generation */
-  ppl: number;
-}
-
-/**
- * Aggregate result from {@link diverge}
- *
- * The `best` branch is still alive; all other attempt branches have been
- * pruned. The caller owns cleanup — typically via {@link Session.promote}
- * to make the best branch the new conversation trunk.
- *
- * @category Agents
- */
-export interface DivergeResult {
-  /** Lowest-perplexity branch — still alive, caller owns cleanup */
-  best: Branch;
-  /** Text output from the best attempt */
-  bestOutput: string;
-  /** All attempts (losers already pruned, branches disposed) */
-  attempts: DivergeAttempt[];
-  /** Sum of all attempt token counts */
-  totalTokens: number;
-  /** Number of batched commit steps */
-  steps: number;
-  /** Shared prefix length in tokens (for KV savings calculation) */
-  prefixLength: number;
-}
 
 // ── Runtime events ─────────────────────────────────────────────
 
