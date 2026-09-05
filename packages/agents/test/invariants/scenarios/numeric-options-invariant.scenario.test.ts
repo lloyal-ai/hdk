@@ -8,9 +8,14 @@
  * or negative no permit is ever granted and the first fan-out call hangs the
  * agent forever. Both are public numbers read raw at open.
  *
- * What this locks: `useAgentPool` validates them where it already validates
- * `hardLimit >= nBatch` — at entry, with the value named — instead of letting
- * the run fail quietly later.
+ * The pressure thresholds are the same kind of number with a quieter failure:
+ * `hardLimit: NaN` passes `hardLimit < nBatch` and disables `critical`;
+ * `hardLimit: Infinity` passes it and makes every reading critical; a negative
+ * or NaN `softLimit` widens or poisons `headroom`, so the pool over-admits or
+ * admits nothing.
+ *
+ * What this locks: `useAgentPool` validates every resolved number at entry,
+ * with the value named — instead of letting the run fail quietly later.
  */
 import { describe, it, expect } from 'vitest';
 import type { AgentPolicy } from '../../../src/AgentPolicy';
@@ -38,6 +43,20 @@ describe('scenario: numeric options are validated at open', () => {
         nCtx: 4096, scripts: [{ tokens: [1, STOP] }],
         policy: quiet(), maxConcurrentTools: bad,
       })).rejects.toThrow(/maxConcurrentTools/);
+    });
+  }
+  for (const [name, thresholds] of [
+    ['softLimit NaN', { softLimit: Number.NaN }],
+    ['softLimit -1', { softLimit: -1 }],
+    ['softLimit 1.5', { softLimit: 1.5 }],
+    ['hardLimit NaN', { hardLimit: Number.NaN }],
+    ['hardLimit Infinity', { hardLimit: Number.POSITIVE_INFINITY }],
+  ] as const) {
+    it(`${name} → the pool refuses to start`, async () => {
+      await expect(runPool({
+        nCtx: 4096, scripts: [{ tokens: [1, STOP] }],
+        policy: quiet({ pressureThresholds: { ...thresholds } }),
+      })).rejects.toThrow(/softLimit|hardLimit/);
     });
   }
   it('valid values start cleanly', async () => {

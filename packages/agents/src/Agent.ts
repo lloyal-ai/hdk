@@ -3,6 +3,7 @@ import type { GrammarTrigger } from '@lloyal-labs/sdk';
 import { createSignal, type Signal } from 'effection';
 import type { TraceToken, AgentExitReason, AgentTaskSpec } from './types';
 import type { AgentTurnRecord } from './replay';
+import type { Lineage } from './state';
 
 // ── Status ──────────────────────────────────────────────────
 
@@ -199,6 +200,11 @@ export class Agent {
   readonly records: AgentTurnRecord[] = [];
   /** How many times this lineage has been healed (a replacement inherits +1). */
   healAttempt = 0;
+  /** The heal this agent is owed after a poison — its lineage, recorded by the
+   *  ladder at the failure and forged by the loop at the next observe, after
+   *  the prune pass, so the replacement asks for a lease once this branch has
+   *  given its own back. Cleared when forged, whether or not the forge succeeds. */
+  heal: Lineage | null = null;
   /** rc==1 deferrals of this agent's pending item; cleared when one lands. */
   deferAttempts = 0;
   /** Serial recovery: the report is uncapped and one runs at a time. */
@@ -244,7 +250,6 @@ export class Agent {
   /**
    * Transition to a new status. Enforces valid transitions:
    * - idle → active (first produce)
-   * - idle → awaiting_tool (the close sweep's forced recovery turn)
    * - active → awaiting_tool (tool call parsed)
    * - active → idle (stop token, report, or kill)
    * - awaiting_tool → active (tool result settled)
@@ -256,7 +261,7 @@ export class Agent {
   transition(to: AgentStatus): void {
     const from = this._status;
     const valid =
-      (from === 'idle' && (to === 'active' || to === 'awaiting_tool' || to === 'disposed')) ||
+      (from === 'idle' && (to === 'active' || to === 'disposed')) ||
       (from === 'active' && (to === 'awaiting_tool' || to === 'idle')) ||
       (from === 'awaiting_tool' && (to === 'active' || to === 'idle'));
     if (!valid) {

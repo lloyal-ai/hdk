@@ -31,10 +31,10 @@ export const MAX_RECOVERY_BUDGET = 2048;
 export interface SchedulerOptions {
   /**
    * How reaped agents recover. `serial` (the high-effort path): one at a
-   * time, ungated, uncapped — each report owns the freed headroom.
-   * `cohort`: every reap's recovery turn is admitted against the recovery
-   * reserve and decodes bin-packed with live siblings under a per-recovery
-   * budget. Wind-down forces `cohort`.
+   * time, exempt from the soft reserve, uncapped — each report owns the freed
+   * headroom. `cohort`: every reap's recovery turn is admitted against the
+   * recovery reserve and decodes bin-packed with live siblings under a
+   * per-recovery budget. Wind-down forces `cohort`.
    */
   recovery: 'serial' | 'cohort';
   /** Explicit per-recovery cap for cohort recovery and the voluntary report
@@ -96,7 +96,7 @@ export class DefaultScheduler implements Scheduler {
     const S: Schedule = {
       hold: false, halts: [], drops: [], finishes: [],
       spawns: [], rejectedSpawns: [], extends: [], rejectedExtends: [],
-      prefills: [], stall: [], abandoned: [], sweep: null, dispatch: [], decode: [],
+      prefills: [], stall: [], abandoned: [], dispatch: [], decode: [],
       pressure: P0, alive: 0, remaining, mode: this.opts.recovery, roster: state.agents, close: false,
     };
 
@@ -162,16 +162,22 @@ export class DefaultScheduler implements Scheduler {
     // A serial report already DECODING (active) blocks the next; one that is
     // merely awaiting its turn is the candidate this pass admits.
     let serialInFlight = state.agents.some(a => a.extracting && a.recoverySerial && a.status === 'active');
+    // Serial recovery is exempt from the soft reserve, not from the cache: the
+    // prompt must fit what physically remains after this tick's earlier
+    // admissions, minus the hardLimit reserve its own decode needs.
+    const fitsSerial = (cells: number): boolean => cells <= P0.remaining - spent - P0.hardLimit;
     const deferred: PrefillItem[] = [];
     for (const it of pending.items) {
       const a = it.agent;
       if (!awaits(a)) continue;
       const cells = itemCells(it);
       if (it.kind === 'recovery' && a.recoverySerial) {
-        // Serial recovery is ungated (the report owns the freed headroom) and
-        // one at a time (the next waits for this one's prune).
+        // One at a time (the next waits for this one's prune); the report owns
+        // the freed headroom, so it spends from the same ledger as everything
+        // after it.
         if (serialInFlight) { remaining.items.push(it); continue; }
-        S.prefills.push(it); spent += cells; serialInFlight = true;
+        if (!fitsSerial(cells)) { deferred.push(it); continue; }
+        S.prefills.push(it); headroom -= cells; spent += cells; serialInFlight = true;
         continue;
       }
       // A recovery item reserves the REPORT room too (prompt + b) and may spend
@@ -238,10 +244,13 @@ export class DefaultScheduler implements Scheduler {
         const action = policy.onSettleReject?.(a, itemCells(it), P0, this.opts.config);
         const reason = action ? 'pressure_settle_reject' as const : 'settle_stall_break' as const;
         if (it.kind === 'recovery') {
-          // An extracting agent whose cohort turn never fit: its span already
-          // ended at the kill, so no second `agent:done`; the turn is re-decided
-          // serial so the report decodes from the reserve, one at a time.
-          S.stall.push({ agent: a, nudge: null, drop: { agent: a, reason, done: false, recovery: this.recovery(a, policy, P0, S.alive, 'serial') } });
+          // An extracting agent whose recovery turn never fit: its span already
+          // ended at the kill, so no second `agent:done`. A cohort turn whose
+          // band was too small is re-decided serial, so the report decodes from
+          // the reserve one at a time; a turn the serial rule cannot admit
+          // either — the prompt exceeds what physically remains — is skipped.
+          const recovery: Recovery = fitsSerial(itemCells(it)) ? this.recovery(a, policy, P0, S.alive, 'serial') : { type: 'skip' };
+          S.stall.push({ agent: a, nudge: null, drop: { agent: a, reason, done: false, recovery } });
           continue;
         }
         let nudge: StallOutcome['nudge'] = null;
@@ -275,8 +284,9 @@ export class DefaultScheduler implements Scheduler {
       else S.rejectedExtends.push(...deferredExtends);
     }
 
-    // 5. Close, or the close-time sweep: one serial recovery per tick for an
-    //    agent that idled without a result and was never discarded.
+    // 5. Close: the orchestrator is done, every agent is final and nothing
+    //    waits. Every drop decided its recovery at the drop, so an idle agent
+    //    IS final — there is nothing left to sweep.
     const allIdle = state.agents.every(a => a.status === 'idle' || a.status === 'disposed');
     const nothingWaiting =
       remaining.items.length === 0 && remaining.retries.length === 0 && remaining.extends.length === 0 &&
@@ -284,17 +294,9 @@ export class DefaultScheduler implements Scheduler {
       S.dispatch.length === 0 && S.decode.length === 0 &&
       S.drops.length === 0 && S.stall.length === 0 && S.finishes.length === 0 && S.abandoned.length === 0 &&
       state.inflight.size === 0;
-    if (signals.orchestratorDone && allIdle && nothingWaiting) {
-      const c = state.agents.find(a =>
-        a.status === 'idle' && !a.result && a.failed === null && !a.extracting);
-      if (c) {
-        S.sweep = { agent: c, recovery: this.recovery(c, policy, P0, 1, 'serial') };
-      } else {
-        // The prune pass runs before every schedule; anything still owed a
-        // prune is a branch with live children, which the close cannot free.
-        S.close = true;
-      }
-    }
+    // The prune pass runs before every schedule; anything still owed a prune
+    // is a branch with live children, which the close cannot free.
+    if (signals.orchestratorDone && allIdle && nothingWaiting) S.close = true;
     return S;
   }
 

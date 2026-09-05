@@ -14,7 +14,6 @@ const STATUSES: readonly AgentStatus[] = ['idle', 'active', 'awaiting_tool', 'di
 /** The legal moves — the one table `Agent.transition` enforces. */
 const LEGAL = new Set([
   'idle>active',          // first sample
-  'idle>awaiting_tool',   // the close sweep parks an idle agent on its recovery turn
   'idle>disposed',        // branch pruned
   'active>awaiting_tool', // tool call, nudge or recovery turn pending
   'active>idle',          // stop token, report, or kill
@@ -50,7 +49,8 @@ describe('property: agent transitions follow the table', () => {
     fc.assert(
       fc.property(fc.constantFrom(...STATUSES.filter(s => s !== 'disposed')), fc.constantFrom(...STATUSES), (via, to) => {
         const a = agent();
-        if (via !== 'idle') a.transition(via);
+        if (via !== 'idle') a.transition('active');
+        if (via === 'awaiting_tool') a.transition('awaiting_tool');
         a.dispose();
         expect(a.status).toBe('disposed');
         expect(() => a.transition(to)).toThrow('Invalid agent status transition');

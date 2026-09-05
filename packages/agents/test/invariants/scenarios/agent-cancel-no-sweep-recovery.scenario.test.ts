@@ -10,6 +10,10 @@
  * after the `agent:failed(user_cancel)`. The `discardedIds` guard excludes it.
  *
  * (PR #26 Copilot review, agent-pool.ts:1911.)
+ *
+ * The close-time sweep itself is gone (PR #119, round five): every drop decides
+ * its recovery at the drop, and a cancelled agent is `failed`, which no recovery
+ * site touches. The invariant stands; the history above is why it exists.
  */
 import { describe, it, expect } from 'vitest';
 import type { AgentPolicy } from '../../../src/AgentPolicy';

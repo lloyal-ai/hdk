@@ -124,9 +124,7 @@ export function* setupAgent(
       && (fmt.format === CHAT_FORMAT_CONTENT_ONLY || fmt.format === CHAT_FORMAT_GENERIC)) {
     throw new Error('Model does not support tool calling. Please use a model with native tool support (e.g. Qwen3, Llama 3.x, Mistral).');
   }
-  const branch = parent.forkSync();
   const suffixTokens = [...ctx.getTurnSeparator(), ...ctx.tokenizeSync(fmt.prompt, false)];
-  if (task.seed != null) branch.reseedSampler(task.seed);
 
   let callingAgent: Agent | null = null;
   try { const a = yield* CallingAgent.get(); if (a) callingAgent = a; } catch { /* top-level — no caller */ }
@@ -137,6 +135,12 @@ export function* setupAgent(
     parser: src.parser, grammar: src.grammar, grammarLazy: src.grammarLazy, grammarTriggers: src.grammarTriggers,
     enableThinking,
   };
+  // The fork is the last fallible step: a failure above leaves no lease
+  // behind, and the one native call after it gives the lease back on failure.
+  const branch = parent.forkSync();
+  if (task.seed != null) {
+    try { branch.reseedSampler(task.seed); } catch (e) { branch.pruneSync(); throw e; }
+  }
   const agent = new Agent({
     id: branch.handle, parentId: parent.handle, branch, parent: callingAgent,
     task: task.content, fmt: fmtConfig, assignedAbility: task.assignedAbility ?? null, clock,

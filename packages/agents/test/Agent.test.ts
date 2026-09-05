@@ -59,10 +59,9 @@ describe('Agent', () => {
       expect(a.status).toBe('disposed');
     });
 
-    it('allows idle → awaiting_tool (the close sweep parks an idle agent on its recovery turn)', () => {
+    it('rejects idle → awaiting_tool (idle is final: every drop decides its recovery while the agent is live)', () => {
       const a = makeAgent();
-      a.transition('awaiting_tool');
-      expect(a.status).toBe('awaiting_tool');
+      expect(() => a.transition('awaiting_tool')).toThrow('Invalid agent status transition');
     });
 
     it('rejects active → disposed', () => {

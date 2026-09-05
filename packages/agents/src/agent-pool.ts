@@ -105,19 +105,23 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     let pausedTotal = 0;
     const runNow = (): number => performance.now() - pausedTotal;
     policy.bindClock?.(runNow);
-    const pressureOpts: PressureThresholds = policy.pressureThresholds
-      ?? { softLimit: ContextPressure.DEFAULT_SOFT_LIMIT, hardLimit: ContextPressure.DEFAULT_HARD_LIMIT };
-
-    // Invariant: hardLimit ≥ nBatch, else recovery's next batch allocation OOMs.
-    const nBatch = ContextPressure.ASSUMED_N_BATCH;
-    const hardLimitVal = pressureOpts.hardLimit ?? ContextPressure.DEFAULT_HARD_LIMIT;
-    if (hardLimitVal < nBatch) {
-      throw new Error(
-        `useAgentPool: Invariant Violation — hardLimit (${hardLimitVal}) must be >= nBatch (${nBatch}). ` +
-        `Recovery reserves hardLimit cells for its own decode; if smaller than nBatch, the next batch ` +
-        `allocation will OOM. Increase policy.budget.context.hardLimit to at least ${nBatch}.`,
-      );
-    }
+    // Public numbers read raw would fail quietly later: a non-positive recovery
+    // budget cuts every report at its first token; a non-positive permit count
+    // hangs the first fan-out call forever; a NaN hard limit disables
+    // `critical`, an infinite one makes every reading critical; a negative or
+    // NaN soft limit widens or poisons `headroom`. Refused here, with the value
+    // named. Cells are integers, so every one of them is an integer.
+    const requireInteger = (name: string, value: number, min: number, why = ''): number => {
+      if (!Number.isInteger(value) || value < min) {
+        throw new Error(`useAgentPool: ${name} must be an integer >= ${min}${why}, got ${value}`);
+      }
+      return value;
+    };
+    const pressureOpts: PressureThresholds = {
+      softLimit: requireInteger('softLimit', policy.pressureThresholds?.softLimit ?? ContextPressure.DEFAULT_SOFT_LIMIT, 0),
+      hardLimit: requireInteger('hardLimit', policy.pressureThresholds?.hardLimit ?? ContextPressure.DEFAULT_HARD_LIMIT,
+        ContextPressure.ASSUMED_N_BATCH, ' (nBatch: recovery reserves hardLimit cells for its own decode, and a smaller reserve OOMs the next batch)'),
+    };
 
     // authGuard inputs, resolved once: protected names and the session's grants.
     const protectedTools = new Set([...tools].filter(([, t]) => t.protected).map(([name]) => name));
@@ -128,17 +132,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         grants = new Set(yield* grantStore.granted());
       } catch { /* no grant store — fail-closed */ }
     }
-    // Public numbers read raw would fail quietly later: a non-positive recovery
-    // budget cuts every report at its first token; a non-positive permit count
-    // hangs the first fan-out call forever. Refused here, with the value named.
-    const requirePositiveInteger = (name: string, value: number | undefined): void => {
-      if (value === undefined) return;
-      if (!Number.isInteger(value) || value <= 0) {
-        throw new Error(`useAgentPool: ${name} must be a positive integer, got ${value}`);
-      }
-    };
-    requirePositiveInteger('policy.recoveryBudget', policy.recoveryBudget);
-    requirePositiveInteger('maxConcurrentTools', opts.maxConcurrentTools);
+    if (policy.recoveryBudget !== undefined) requireInteger('policy.recoveryBudget', policy.recoveryBudget, 1);
+    if (opts.maxConcurrentTools !== undefined) requireInteger('maxConcurrentTools', opts.maxConcurrentTools, 1);
 
     const config: PolicyConfig = { maxTurns, terminalToolName, hasNonTerminalTools, protectedTools, grants };
 
@@ -170,24 +165,24 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       terminalToolName, config,
     }, ctx, tools);
     /**
-     * The one way a spawn request is made: fork, format the suffix, and — for
-     * a heal — build and price the lineage the replacement will replay, so
-     * admission sees everything the request will prefill. A replacement forks
-     * the spine, as the original's replay carries what came after the fork.
+     * The one way a spawn request is made: price, then fork. For a heal the
+     * lineage the replacement will replay is built and priced FIRST, so
+     * admission sees everything the request will prefill, and a lineage that
+     * cannot be rebuilt (its content gone from the store) fails before any
+     * fork exists. A replacement forks the spine, as the original's replay
+     * carries what came after the fork.
      */
     function* forge(task: AgentTaskSpec, lineage?: Lineage): Operation<Omit<SpawnRequest, 'resolve' | 'reject' | 'discarded'>> {
+      const replay = lineage ? yield* prepareReplay(lineage.records, { enableThinking }) : null;
       const parent = lineage ? spine : (task.parent ?? spine);
       const { agent, suffixTokens, formattedPrompt } = yield* setupAgent(parent, task, ctx, enableThinking, runNow);
-      if (!lineage) return { agent, suffixTokens, formattedPrompt, task };
-      const { steps, cells } = yield* prepareReplay(lineage.records, { enableThinking: agent.fmt.enableThinking });
-      return { agent, suffixTokens, formattedPrompt, task, replay: { steps, cells, of: lineage.of, rc: lineage.rc, attempt: lineage.attempt } };
+      if (!lineage || !replay) return { agent, suffixTokens, formattedPrompt, task };
+      return { agent, suffixTokens, formattedPrompt, task, replay: { ...replay, of: lineage.of, rc: lineage.rc, attempt: lineage.attempt } };
     }
 
     const applier = new Applier({
       ctx, policy, config, tools, emit, pending, ladder,
-      recovery: policy.recoveryShape === 'parallel' ? 'cohort' : 'serial',
       recoveryBudget: policy.recoveryBudget, terminalToolName, pruneOnReturn, pressureOpts, totals,
-      forge,
     });
     const executor = new Executor({
       ctx, store, tools, emit, tw, pending, agents, inflight,
@@ -316,6 +311,24 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           if (executor.prunePass() > 0) {
             yield* emit.emit({ kind: 'kvTick', pressure: new ContextPressure(ctx, pressureOpts) });
           }
+          // Heals the ladder decided are forged here, after the prune pass has
+          // reclaimed what it could: a replacement forks the spine and needs a
+          // lease, and the poisoned branch is the one that just gave one back.
+          // An original with live children is not reclaimed yet; its heal is
+          // forged all the same — once, now — and admitted or refused by fit
+          // like any spawn, never held for a reclamation that may not come.
+          // A forge that throws (lineage content gone, no lease) stands down:
+          // the original's failure already stands, and nothing else goes with it.
+          for (const a of agents) {
+            const lineage = a.heal;
+            if (!lineage) continue;
+            a.heal = null;
+            if (windingDown || !a.spec) continue;
+            try {
+              const forged = yield* forge(a.spec, lineage);
+              pending.spawns.push({ ...forged, resolve: () => {}, reject: () => {}, discarded: false });
+            } catch { /* the heal stands down */ }
+          }
           if (paused && !wasPaused) {
             heldAt = performance.now();
             yield* emit.emit({ kind: 'paused', ts: heldAt });
@@ -369,7 +382,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           // retries, in-flight tools, or an orchestrator that may still spawn.
           const ran = S.prefills.length + S.spawns.length + S.extends.length
             + S.dispatch.length + S.decode.length + S.drops.length + S.finishes.length
-            + S.halts.length + S.stall.length + (S.sweep ? 1 : 0) + S.abandoned.length;
+            + S.halts.length + S.stall.length + S.abandoned.length;
           const waiting = pending.items.length + pending.dispatches.length + pending.spawns.length
             + pending.extends.length;
           idleTicks = ran === 0 && waiting === 0 ? idleTicks + 1 : 0;

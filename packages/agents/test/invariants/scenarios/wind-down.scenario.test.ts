@@ -68,9 +68,8 @@ describe('scenario: graceful wind-down (drain)', () => {
   it('FORCES in-loop recovery even when recoveryShape is staggered (wind-down overrides the shape)', async () => {
     const windStag = await runPool({ nCtx: 8192, cellsUsed: 0, scripts: activeScriptsN(N), policy: activePolicy('staggered'), windDownAfter: onFirstSpawn });
     const windPar  = await runPool({ nCtx: 8192, cellsUsed: 0, scripts: activeScriptsN(N), policy: activePolicy('parallel'),  windDownAfter: onFirstSpawn });
-    // Baseline: the SAME staggered policy WITHOUT wind-down — agents run to STOP,
-    // land idle-no-result, and the termination sweep recovers them one-at-a-time
-    // one at a time (the close sweep's serial recovery).
+    // Baseline: the SAME staggered policy WITHOUT wind-down — agents run to STOP
+    // without a result and each recovers at its own drop, serially: one at a time.
     const baseStag = await runPool({ nCtx: 8192, cellsUsed: 0, scripts: activeScriptsN(N), policy: activePolicy('staggered') });
 
     // Wind-down — staggered shape AND parallel shape alike — admits every reap's

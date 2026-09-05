@@ -115,11 +115,11 @@ describe('DefaultScheduler.schedule', () => {
     expect(S.decode).toEqual([]);
   });
 
-  it('serial recovery admits one turn at a time, ungated by headroom', () => {
+  it('serial recovery admits one turn at a time, exempt from the soft reserve', () => {
     const a = agent(1, 'awaiting_tool'); a.markExtracting(Infinity, true);
     const b = agent(2, 'awaiting_tool'); b.markExtracting(Infinity, true);
-    // No headroom at all — serial still admits, because the report owns the freed cells.
-    let S = scheduler({ recovery: 'serial' }).schedule(state([a, b], 100, {}, { items: [recoveryItem(a), recoveryItem(b)] }), quiet);
+    // No headroom at all (600 < softLimit) — serial still admits, because the report owns the freed cells.
+    let S = scheduler({ recovery: 'serial' }).schedule(state([a, b], 600, {}, { items: [recoveryItem(a), recoveryItem(b)] }), quiet);
     expect(S.prefills.map(i => i.agent)).toEqual([a]);
     expect(S.remaining.items.map(i => i.agent)).toEqual([b]);
 
@@ -128,6 +128,51 @@ describe('DefaultScheduler.schedule', () => {
     S = scheduler({ recovery: 'serial' }).schedule(state([decoding, a], 8000, {}, { items: [recoveryItem(a)] }), quiet);
     expect(S.prefills).toEqual([]);
     expect(S.remaining.items.map(i => i.agent)).toEqual([a]);
+  });
+
+  it('serial recovery is exempt from the soft reserve, not from the hard one: it fits what physically remains after earlier admissions', () => {
+    const withRecovery: AgentPolicy = { ...quiet, onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }) };
+    const serial = () => scheduler({ recovery: 'serial' });
+    // remaining 1000, hardLimit 512: a serial prompt may take 488 cells.
+    const a = agent(1, 'awaiting_tool'); a.markExtracting(Infinity, true);
+    let S = serial().schedule(state([a], 1000, {}, { items: [recoveryItem(a, 400)] }), withRecovery);
+    expect(S.prefills.map(i => i.agent)).toEqual([a]);
+    expect(S.pressure.cellsUsed).toBe(state([], 1000).pressure.cellsUsed + 400);
+
+    // Earlier admissions count: at remaining 2000 a 300-cell spawn leaves 1188 for the prompt,
+    // and the spawn re-activating keeps the stall-break out of it.
+    const task: AgentTaskSpec = { systemPrompt: 's', content: 'c' };
+    const req = { agent: agent(9, 'idle'), suffixTokens: Array(300).fill(1), formattedPrompt: '', task, resolve: () => {}, reject: () => {}, discarded: false };
+    S = serial().schedule(state([a], 2000, {}, { spawns: [req], items: [recoveryItem(a, 1200)] }), withRecovery);
+    expect(S.spawns).toEqual([req]);
+    expect(S.prefills).toEqual([]);
+    expect(S.remaining.items.map(i => i.agent)).toEqual([a]);
+
+    // A serial prompt that landed leaves the plain item after it no room above softLimit either: one ledger.
+    const t = agent(3, 'awaiting_tool');
+    S = serial().schedule(state([agent(4), a, t], 2000, {}, { items: [recoveryItem(a, 1400), resultItem(t, 900)] }), withRecovery);
+    expect(S.prefills.map(i => i.agent)).toEqual([a]);            // 1400 ≤ 2000 − 512; 900 > 976 − 1400
+    expect(S.remaining.items.map(i => i.agent)).toEqual([t]);
+
+    // Too big while a sibling decodes: carried, no stall.
+    const live = agent(2);
+    S = serial().schedule(state([live, a], 1000, {}, { items: [recoveryItem(a, 600)] }), withRecovery);
+    expect(S.prefills).toEqual([]);
+    expect(S.remaining.items.map(i => i.agent)).toEqual([a]);
+    expect(S.stall).toEqual([]);
+
+    // Too big with nothing left to free KV: the stall-break skips the recovery — no second `agent:done`, no re-decision.
+    S = serial().schedule(state([a], 1000, {}, { items: [recoveryItem(a, 600)] }), withRecovery);
+    expect(S.prefills).toEqual([]);
+    expect(S.stall).toEqual([{ agent: a, nudge: null, drop: { agent: a, reason: 'settle_stall_break', done: false, recovery: { type: 'skip' } } }]);
+    expect(S.remaining.items).toEqual([]);
+
+    // A cohort turn that cannot fit its band is re-decided serial only when the serial rule admits it; otherwise skipped outright.
+    const c = agent(5, 'awaiting_tool'); c.markExtracting(1000);
+    S = scheduler().schedule(state([c], 1000, {}, { items: [recoveryItem(c, 300)] }), withRecovery);
+    expect(S.stall[0]?.drop?.recovery).toMatchObject({ type: 'extract', serial: true });   // 300 ≤ 488
+    S = scheduler().schedule(state([c], 1000, {}, { items: [recoveryItem(c, 600)] }), withRecovery);
+    expect(S.stall[0]?.drop?.recovery).toEqual({ type: 'skip' });                         // 600 > 488
   });
 
   it('a cohort recovery turn reserves prompt + budget against the recovery band; a plain result stays above softLimit', () => {
@@ -194,21 +239,21 @@ describe('DefaultScheduler.schedule', () => {
     expect(S.dispatch).toEqual([]);
   });
 
-  it('the close sweep recovers the first idle agent without a result that was never discarded, then closes', () => {
+  it('closes once the orchestrator is done, every agent is final and nothing waits — idle is final, nothing is swept', () => {
     const reported = agent(1, 'idle'); reported.setResult('r', 'voluntary_return');
     const discarded = agent(2, 'idle'); discarded.failed = 'user_cancel';
-    const clean = agent(3, 'idle');
     const done = { paused: false, windDown: false, cancelled: [], orchestratorDone: true };
     const withRecovery: AgentPolicy = { ...quiet, onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }) };
 
-    let S = scheduler().schedule(state([reported, discarded, clean], 8000, { signals: done }), withRecovery);
-    expect(S.sweep?.agent).toBe(clean);
-    expect(S.sweep?.recovery).toMatchObject({ type: 'extract', serial: true, budget: Infinity });
-    expect(S.close).toBe(false);
-
-    S = scheduler().schedule(state([reported, discarded], 8000, { signals: done }), withRecovery);
-    expect(S.sweep).toBeNull();
+    let S = scheduler().schedule(state([reported, discarded], 8000, { signals: done }), withRecovery);
     expect(S.close).toBe(true);
+    expect(S.drops).toEqual([]);
+
+    // Not while the orchestrator may still spawn, nor while any agent is live.
+    S = scheduler().schedule(state([reported, discarded], 8000), withRecovery);
+    expect(S.close).toBe(false);
+    S = scheduler().schedule(state([reported, agent(3)], 8000, { signals: done }), withRecovery);
+    expect(S.close).toBe(false);
   });
 
   it('cells admitted this tick lower the pressure the verdicts read', () => {

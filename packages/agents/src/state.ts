@@ -194,8 +194,6 @@ export interface Schedule {
   stall: StallOutcome[];
   /** Wind-down: parked retries settled as an honest failure instead of waited out. */
   abandoned: RetryPark[];
-  /** The close-time sweep: one idle-without-result agent recovers serially, with no drop record. */
-  sweep: { agent: Agent; recovery: Recovery } | null;
   dispatch: DispatchRequest[];
   /** Agents that sample this tick: active now and not dropped. Agents the
    *  execute step itself re-activates (admitted items, spawns) join

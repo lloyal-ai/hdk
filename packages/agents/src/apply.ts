@@ -10,10 +10,10 @@ import { ContextPressure } from './pressure';
 import { recoveryFor } from './scheduler';
 import {
   type Schedule, type Outputs, type Pending, type Drop, type Recovery, type PrefillItem, type SpawnRequest,
-  type PrefillOutcome, type Ladder, type DropReason, type Lineage,
+  type PrefillOutcome, type Ladder, type DropReason,
   alive, classifyRc, isFatalRc, MAX_DEFER_ATTEMPTS, BACKEND_TRIPWIRE_N, MAX_HEAL_ATTEMPTS,
 } from './state';
-import type { PressureThresholds, AgentTaskSpec } from './types';
+import type { PressureThresholds } from './types';
 
 /**
  * The interpreter: turns decisions and outcomes into agent transitions.
@@ -34,15 +34,11 @@ export interface ApplyDeps {
   emit: Emitter;
   pending: Pending;
   ladder: Ladder;
-  recovery: 'serial' | 'cohort';
   recoveryBudget?: number;
   terminalToolName?: string;
   pruneOnReturn: boolean;
   pressureOpts: PressureThresholds;
   totals: { toolCalls: number; steps: number };
-  /** The pool's one way to make a spawn request: fork, format, and price —
-   *  the suffix, and for a heal the lineage it will replay. */
-  forge: (task: AgentTaskSpec, lineage?: Lineage) => Operation<Omit<SpawnRequest, 'resolve' | 'reject' | 'discarded'>>;
 }
 
 /** Strip a trailing UNCLOSED `<tool_call>` fragment from text captured as an
@@ -105,7 +101,6 @@ export class Applier {
     for (const e of S.rejectedExtends) {
       if (!e.discarded) e.reject(new Error(`useAgentPool: cannot fit spine extension (${e.tokens.length} tokens) — nothing left to free KV`));
     }
-    if (S.sweep) yield* this.recover(S.sweep.agent, S.sweep.recovery, null);
   }
 
   /** One drop, whatever decided it: the record, then the recovery it carries. */
@@ -119,9 +114,6 @@ export class Applier {
       return;
     }
     if (d.exitReason) a.exitReason = d.exitReason;
-    // An agent that simply idles (no recovery) transitions first, so a
-    // waiting orchestrator resumes on the same edge it always has.
-    if (d.recovery.type === 'none' && a.status !== 'idle') a.transition('idle');
     yield* this.d.emit.emit({ kind: 'drop', agent: a, reason: d.reason, done: d.done });
     yield* this.recover(a, d.recovery, d.reason);
     void S;
@@ -250,15 +242,16 @@ export class Applier {
         yield* this.d.emit.emit({ kind: 'returned', agent: a, via: 'free_text' });
         return;
       case 'idle': {
+        // The span ends here, and so does the decision: every drop decides its
+        // recovery at the drop, in every shape. The agent parks on its recovery
+        // turn without passing through `idle`, so an orchestrator waiting on it
+        // resumes against the recovered result, never a missing one.
         const reason: DropReason | null = action.reason === 'free_text_stop' ? null
           : action.reason === 'max_turns' ? 'maxTurns' : 'pressure_softcut';
         const exitReason = reason === 'maxTurns' || reason === 'pressure_softcut' ? reason : undefined;
-        const mode = S.mode;
         yield* this.enactDrop({
           agent: a, reason, done: true, exitReason,
-          recovery: mode === 'cohort'
-            ? recoveryFor(a, this.d.policy, S.pressure, S.alive, 'cohort', this.d.recoveryBudget)
-            : { type: 'none' },
+          recovery: recoveryFor(a, this.d.policy, S.pressure, S.alive, S.mode, this.d.recoveryBudget),
         }, S);
         return;
       }
@@ -350,11 +343,12 @@ export class Applier {
     if (!this.d.ladder.backendSuspect && attempt <= MAX_HEAL_ATTEMPTS && a.spec) {
       const records = a.records.slice();
       while (records.length > 0 && records[records.length - 1].kind === 'assistant') records.pop();
-      // A heal is a spawn wearing a lineage: forked and priced now — suffix
-      // and replay — admitted against headroom like any spawn, replayed once
-      // its suffix has landed. Nobody awaits it.
-      const forged = yield* this.d.forge(a.spec, { records, of: a.id, ...(o.rc !== undefined ? { rc: o.rc } : {}), attempt });
-      this.d.pending.spawns.push({ ...forged, resolve: () => {}, reject: () => {}, discarded: false });
+      // The ladder DECIDES the heal; the loop FORGES it at the next observe,
+      // after the prune pass — a replacement forks the spine and needs the
+      // lease this agent is about to give back. From there it is a spawn
+      // wearing a lineage: priced whole, admitted by fit, replayed once its
+      // suffix has landed. Nobody awaits it.
+      a.heal = { records, of: a.id, ...(o.rc !== undefined ? { rc: o.rc } : {}), attempt };
     }
   }
 
