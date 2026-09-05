@@ -13,7 +13,7 @@ import {
   type PrefillOutcome, type Ladder, type DropReason,
   alive, classifyRc, isFatalRc, MAX_DEFER_ATTEMPTS, BACKEND_TRIPWIRE_N, MAX_HEAL_ATTEMPTS,
 } from './state';
-import type { PressureThresholds } from './types';
+import type { PressureThresholds, AgentTaskSpec } from './types';
 
 /**
  * The interpreter: turns decisions and outcomes into agent transitions.
@@ -40,6 +40,9 @@ export interface ApplyDeps {
   pruneOnReturn: boolean;
   pressureOpts: PressureThresholds;
   totals: { toolCalls: number; steps: number };
+  /** Fork the spine and format a task's suffix — what `PoolContext.spawn` does
+   *  before it queues; a heal queues the same way. */
+  setup: (task: AgentTaskSpec) => Operation<{ agent: Agent; suffixTokens: number[]; formattedPrompt: string }>;
 }
 
 /** Strip a trailing UNCLOSED `<tool_call>` fragment from text captured as an
@@ -176,17 +179,18 @@ export class Applier {
     const parsed = this.d.ctx.parseChatOutput(output, a.fmt.format, {
       reasoningFormat: a.fmt.reasoningFormat, generationPrompt: a.fmt.generationPrompt, parser: a.fmt.parser,
     });
-    // With a terminal tool designated the report MUST be that tool's call;
-    // without one, whatever the model produced.
+    // Read the way the voluntary path reads: with a terminal tool designated
+    // the report MUST be that tool's call; without one, whatever the model
+    // produced — a call's result if it made one, else its prose (the twin of
+    // `free_text_return`).
     const terminal = this.d.terminalToolName;
     const call = terminal ? parsed.toolCalls.find(c => c.name === terminal) : parsed.toolCalls[0];
-    if (call) {
-      const result = extractTerminalResult(call.arguments);
-      if (result) {
-        a.setResult(stripDanglingToolCall(result), 'recovery');
-        yield* this.d.emit.emit({ kind: 'recovered', agent: a, result: a.result! });
-        return true;
-      }
+    const result = call ? extractTerminalResult(call.arguments)
+      : !terminal && parsed.content ? parsed.content : '';
+    if (result) {
+      a.setResult(stripDanglingToolCall(result), 'recovery');
+      yield* this.d.emit.emit({ kind: 'recovered', agent: a, result: a.result! });
+      return true;
     }
     const reason = call ? 'empty_terminal_result' : 'no_terminal_call';
     yield* this.d.emit.emit({ kind: 'recoveryFailed', agent: a, reason, outputExcerpt: output.slice(0, 200) });
@@ -346,7 +350,13 @@ export class Applier {
     if (!this.d.ladder.backendSuspect && attempt <= MAX_HEAL_ATTEMPTS && a.spec) {
       const records = a.records.slice();
       while (records.length > 0 && records[records.length - 1].kind === 'assistant') records.pop();
-      this.d.pending.heals.push({ spec: a.spec, records, of: a.id, ...(o.rc !== undefined ? { rc: o.rc } : {}), attempt });
+      // A heal is a spawn wearing a lineage: forked and measured now, admitted
+      // against headroom like any spawn, replayed once its suffix has landed.
+      const { agent, suffixTokens, formattedPrompt } = yield* this.d.setup(a.spec);
+      this.d.pending.spawns.push({
+        agent, suffixTokens, formattedPrompt, task: a.spec, resolve: () => {}, reject: () => {}, discarded: false,
+        replay: { records, of: a.id, ...(o.rc !== undefined ? { rc: o.rc } : {}), attempt },
+      });
     }
   }
 

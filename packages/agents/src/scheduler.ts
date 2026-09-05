@@ -95,7 +95,7 @@ export class DefaultScheduler implements Scheduler {
     const remaining: Pending = emptyPending();
     const S: Schedule = {
       hold: false, halts: [], drops: [], finishes: [],
-      spawns: [], rejectedSpawns: [], extends: [], rejectedExtends: [], heals: [],
+      spawns: [], rejectedSpawns: [], extends: [], rejectedExtends: [],
       prefills: [], stall: [], abandoned: [], sweep: null, dispatch: [], decode: [],
       pressure: P0, alive: 0, remaining, mode: this.opts.recovery, roster: state.agents, close: false,
     };
@@ -149,7 +149,6 @@ export class DefaultScheduler implements Scheduler {
         deferredExtends.push(e);
       }
     }
-    S.heals.push(...pending.heals);
 
     // A serial report already DECODING (active) blocks the next; one that is
     // merely awaiting its turn is the candidate this pass admits.
@@ -181,7 +180,7 @@ export class DefaultScheduler implements Scheduler {
 
     // 2. Produce-phase verdicts, in agents order (the policy's per-tick
     //    stagger relies on that order).
-    S.alive = state.agents.filter(alive).length + S.spawns.length + S.heals.length;
+    S.alive = state.agents.filter(alive).length + S.spawns.length;
     const cap = Math.min(this.opts.recoveryBudget ?? MAX_RECOVERY_BUDGET, MAX_RECOVERY_BUDGET);
     for (const a of state.agents) {
       if (a.status !== 'active') continue;
@@ -219,7 +218,7 @@ export class DefaultScheduler implements Scheduler {
     S.dispatch.push(...pending.dispatches.filter(d => !dropped.has(d.agent)));
 
     // 4. Stall-break: deferred items with no sibling left to free KV.
-    const reactivating = S.prefills.length > 0 || S.spawns.length > 0 || S.heals.length > 0;
+    const reactivating = S.prefills.length > 0 || S.spawns.length > 0;
     if (deferred.length > 0 && S.decode.length === 0 && !reactivating) {
       let stallHeadroom = P0.headroom;
       for (const it of deferred) {
@@ -274,12 +273,12 @@ export class DefaultScheduler implements Scheduler {
     const nothingWaiting =
       remaining.items.length === 0 && remaining.retries.length === 0 && remaining.extends.length === 0 &&
       S.prefills.length === 0 && S.spawns.length === 0 && S.extends.length === 0 &&
-      S.heals.length === 0 && S.dispatch.length === 0 && S.decode.length === 0 &&
+      S.dispatch.length === 0 && S.decode.length === 0 &&
       S.drops.length === 0 && S.stall.length === 0 && S.finishes.length === 0 && S.abandoned.length === 0 &&
       state.inflight.size === 0;
     if (signals.orchestratorDone && allIdle && nothingWaiting) {
       const c = state.agents.find(a =>
-        a.status === 'idle' && !a.result && !a.branch.disposed && a.failed === null && !a.extracting);
+        a.status === 'idle' && !a.result && a.failed === null && !a.extracting);
       if (c) {
         S.sweep = { agent: c, recovery: this.recovery(c, policy, P0, 1, 'serial') };
       } else {

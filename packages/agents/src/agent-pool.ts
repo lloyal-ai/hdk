@@ -160,6 +160,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       ctx, policy, config, tools, emit, pending, ladder,
       recovery: policy.recoveryShape === 'parallel' ? 'cohort' : 'serial',
       recoveryBudget: policy.recoveryBudget, terminalToolName, pruneOnReturn, pressureOpts, totals,
+      setup: (task) => setupAgent(spine, task, ctx, enableThinking, runNow),
     });
     const executor = new Executor({
       ctx, store, tools, emit, tw, pending, agents, inflight,
@@ -338,11 +339,11 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
 
           // Quiet = nothing ran and nothing admissible waits: only parked
           // retries, in-flight tools, or an orchestrator that may still spawn.
-          const ran = S.prefills.length + S.spawns.length + S.extends.length + S.heals.length
+          const ran = S.prefills.length + S.spawns.length + S.extends.length
             + S.dispatch.length + S.decode.length + S.drops.length + S.finishes.length
             + S.halts.length + S.stall.length + (S.sweep ? 1 : 0) + S.abandoned.length;
           const waiting = pending.items.length + pending.dispatches.length + pending.spawns.length
-            + pending.extends.length + pending.heals.length;
+            + pending.extends.length;
           idleTicks = ran === 0 && waiting === 0 ? idleTicks + 1 : 0;
         }
 

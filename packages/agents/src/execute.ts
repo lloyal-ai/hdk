@@ -21,8 +21,7 @@ import type { TraceWriter } from './trace-writer';
 import type { TraceEvent } from './trace-types';
 import {
   type Schedule, type Outputs, type Pending, type PrefillItem, type ToolCompletion,
-  type DispatchRequest, type Ladder, classifyRc, prunable,
-} from './state';
+  type DispatchRequest, type Ladder, classifyRc, prunable, type SpawnRequest } from './state';
 import type { AgentTaskSpec, AgentEvent, ToolContext, PressureThresholds } from './types';
 
 /**
@@ -35,7 +34,7 @@ import type { AgentTaskSpec, AgentEvent, ToolContext, PressureThresholds } from 
  * the single-fiber invariant is a property of the module, not of vigilance.
  *
  * {@link Executor.run} runs a {@link Schedule} in one fixed order:
- * halts → admitted prefills → tool dispatch → spawns/extends/heals → sampling
+ * halts → admitted prefills → tool dispatch → spawns/extends → sampling
  * → the batched commit. Prefills complete before any agent samples.
  */
 
@@ -199,12 +198,12 @@ export class Executor {
     // 2. Tool dispatch — inline on this fiber, fan-out on a child.
     for (const req of S.dispatch) yield* this.dispatch(req);
 
-    // 3. Spawns, extends and heals: one batched prefill onto forks and the spine.
+    // 3. Spawns (heals among them) and extends: one batched prefill onto forks and the spine.
     const born = yield* this.spawn(S, out);
     if (out.fatal) return out;
 
     // 4. Sampling — the scheduled decode set, in roster order. Agents that
-    //    became active in THIS step (admitted items, spawns, heals) sample next
+    //    became active in THIS step (admitted items, spawns) sample next
     //    tick, after the scheduler has had its say on them.
     void landed; void born;
     const set = new Set<Agent>(S.decode);
@@ -339,23 +338,17 @@ export class Executor {
     return landed;
   }
 
-  /** Spawns, extends and heals land as one prefill; the new agents activate. */
+  /** Spawns (heals among them) and extends land as one prefill; the new agents activate. */
   private *spawn(S: Schedule, out: Outputs): Operation<Agent[]> {
     const d = this.d;
     const born: Agent[] = [];
-    if (S.spawns.length === 0 && S.extends.length === 0 && S.heals.length === 0) return born;
+    if (S.spawns.length === 0 && S.extends.length === 0) return born;
 
-    const heals: { h: Schedule['heals'][number]; agent: Agent; suffixTokens: number[]; formattedPrompt: string }[] = [];
-    for (const h of S.heals) {
-      const setup = yield* setupAgent(d.spine, h.spec, d.ctx, d.enableThinking, d.runNow);
-      heals.push({ h, ...setup });
-    }
     // One batch never carries a handle twice (`require_distinct_handles`), so
     // every admitted extend rides as ONE pair on the spine, in request order.
     const extendTokens = S.extends.flatMap(e => e.tokens);
     const pairs: [Branch, number[]][] = [
       ...S.spawns.map(s => [s.agent.branch, s.suffixTokens] as [Branch, number[]]),
-      ...heals.map(x => [x.agent.branch, x.suffixTokens] as [Branch, number[]]),
       ...(extendTokens.length > 0 ? [[d.spine, extendTokens] as [Branch, number[]]] : []),
     ];
     try {
@@ -366,7 +359,6 @@ export class Executor {
       const e = toError(err);
       for (const x of S.extends) x.reject(e);
       for (const s of S.spawns) discardSpawn(s, e);
-      for (const { agent } of heals) { agent.branch.pruneSync(); agent.dispose(); }
       out.fatal = { phase: 'prefill', err };
       return born;
     }
@@ -384,45 +376,40 @@ export class Executor {
       const a = s.agent;
       a.spec = s.task;
       d.agents.push(a);
-      yield* this.activate(a, s.formattedPrompt, s.task, s.suffixTokens.length);
+      if (!(yield* this.activate(s))) continue;
       s.resolve(a);
       born.push(a);
-    }
-    for (const { h, agent, suffixTokens, formattedPrompt } of heals) {
-      agent.spec = h.spec;
-      agent.healAttempt = h.attempt;
-      d.agents.push(agent);
-      d.emit.trace({ kind: 'created', agent });
-      d.emit.trace({ kind: 'formatted', agent, promptText: formattedPrompt, taskContent: h.spec.content,
-        tokenCount: suffixTokens.length, systemPrompt: h.spec.systemPrompt, tools: h.spec.tools });
-      try {
-        yield* replayAgentTurns(agent.branch, h.records, { enableThinking: agent.fmt.enableThinking });
-      } catch {
-        // The replay could not land. The original already failed honestly;
-        // the half-built replacement is discarded.
-        d.emit.trace({ kind: 'drop', agent, reason: 'pressure_init', done: false });
-        agent.failed = 'pressure_init';
-        agent.pruneRequested = true;
-        continue;
-      }
-      d.emit.trace({ kind: 'healed', of: h.of, agent, rc: h.rc, attempt: h.attempt, pressure: new ContextPressure(d.ctx, d.pressureOpts) });
-      this.applyLazyGrammar(agent);
-      agent.transition('active');
-      yield* d.emit.emit({ kind: 'spawned', agent, after: h.spec.after });
-      born.push(agent);
     }
     return born;
   }
 
-  private *activate(a: Agent, formattedPrompt: string, task: AgentTaskSpec, tokenCount: number): Operation<void> {
+  /** Announce the fork, replay its lineage if it has one, and activate it.
+   *  False when the replay could not land: the half-built replacement is
+   *  discarded and the original's failure stands. */
+  private *activate(s: SpawnRequest): Operation<boolean> {
     const d = this.d;
+    const a = s.agent;
     d.emit.trace({ kind: 'created', agent: a });
-    d.emit.trace({ kind: 'formatted', agent: a, promptText: formattedPrompt, taskContent: task.content,
-      tokenCount, systemPrompt: task.systemPrompt, tools: task.tools });
+    d.emit.trace({ kind: 'formatted', agent: a, promptText: s.formattedPrompt, taskContent: s.task.content,
+      tokenCount: s.suffixTokens.length, systemPrompt: s.task.systemPrompt, tools: s.task.tools });
+    if (s.replay) {
+      a.healAttempt = s.replay.attempt;
+      try {
+        yield* replayAgentTurns(a.branch, s.replay.records, { enableThinking: a.fmt.enableThinking });
+      } catch {
+        d.emit.trace({ kind: 'drop', agent: a, reason: 'pressure_init', done: false });
+        a.failed = 'pressure_init';
+        a.pruneRequested = true;
+        return false;
+      }
+      d.emit.trace({ kind: 'healed', of: s.replay.of, agent: a, rc: s.replay.rc, attempt: s.replay.attempt,
+        pressure: new ContextPressure(d.ctx, d.pressureOpts) });
+    }
     this.applyLazyGrammar(a);
     // The transition fires the agent's statusSignal — a waiting orchestrator resumes here.
     a.transition('active');
-    yield* d.emit.emit({ kind: 'spawned', agent: a, after: task.after });
+    yield* d.emit.emit({ kind: 'spawned', agent: a, after: s.task.after });
+    return true;
   }
 
   /** Eager grammar (schema agents) beats the lazy tool-call grammar; with no
@@ -657,6 +644,10 @@ export class Executor {
       this.d.emit.trace({ kind: 'pruned', agent: a, position: a.branch.position });
       a.branch.pruneSync();
       a.pruneRequested = false;
+      // The status mirrors the branch. Through the table: only an idle agent
+      // is ever pruned here, and a live one reaching this line is a bug that
+      // should fail loud, not a state that reads plausibly.
+      a.transition('disposed');
       n++;
     }
     return n;
@@ -672,5 +663,8 @@ export function pruneAll(agents: readonly Agent[], emit: Emitter): void {
       emit.trace({ kind: 'pruned', agent: a, position: a.branch.position });
       a.branch.pruneSync();
     }
+    // Teardown may find an agent mid-flight (a partial close); the pool is
+    // ending, so the status is forced rather than transitioned.
+    if (a.branch.disposed && a.status !== 'disposed') a.dispose();
   }
 }

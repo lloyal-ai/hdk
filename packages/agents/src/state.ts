@@ -68,6 +68,13 @@ export interface DispatchRequest {
 export interface SpawnRequest {
   agent: Agent; suffixTokens: number[]; formattedPrompt: string; task: AgentTaskSpec;
   resolve: (agent: Agent) => void; reject: (err: Error) => void; discarded: boolean;
+  /** A heal is a spawn wearing a lineage: the original's record, replayed onto
+   *  the fork once its suffix has landed. Nobody awaits it (`resolve`/`reject`
+   *  are no-ops) and a rejection drops it with `pressure_init`. */
+  replay?: SpawnReplay;
+}
+export interface SpawnReplay {
+  records: AgentTurnRecord[]; of: number; rc?: number; attempt: number;
 }
 
 /** An orchestrator's `extendSpine`, prefilled onto the spine with the spawns. */
@@ -76,11 +83,6 @@ export interface ExtendRequest {
   resolve: (deltaTokens: number) => void; reject: (err: Error) => void; discarded: boolean;
 }
 
-/** A poisoned agent's warm respawn: a fresh fork of the spine that replays
- *  the original's record (docs/self-healing.md). */
-export interface HealRequest {
-  spec: AgentTaskSpec; records: AgentTurnRecord[]; of: number; rc?: number; attempt: number;
-}
 
 /** Everything that is waiting, by kind. ONE record the loop owns; the
  *  scheduler reads it and returns what remains after this tick's admissions. */
@@ -90,11 +92,10 @@ export interface Pending {
   dispatches: DispatchRequest[];
   spawns: SpawnRequest[];
   extends: ExtendRequest[];
-  heals: HealRequest[];
 }
 
 export function emptyPending(): Pending {
-  return { items: [], retries: [], dispatches: [], spawns: [], extends: [], heals: [] };
+  return { items: [], retries: [], dispatches: [], spawns: [], extends: [] };
 }
 
 // ── The tick's inputs and outputs ───────────────────────────────
@@ -174,7 +175,6 @@ export interface Schedule {
   extends: ExtendRequest[];
   /** Extends that can never fit: nothing alive or prunable is left to free KV. */
   rejectedExtends: ExtendRequest[];
-  heals: HealRequest[];
   /** Admitted items, in admission order. */
   prefills: PrefillItem[];
   /** Stall-break outcomes for items that could not be admitted, in item order. */
@@ -185,7 +185,7 @@ export interface Schedule {
   sweep: { agent: Agent; recovery: Recovery } | null;
   dispatch: DispatchRequest[];
   /** Agents that sample this tick: active now and not dropped. Agents the
-   *  execute step itself re-activates (admitted items, spawns, heals) join
+   *  execute step itself re-activates (admitted items, spawns) join
    *  the decode set as they land. */
   decode: Agent[];
   /** The post-admission pressure — what produce-phase and dispatch decisions read. */
