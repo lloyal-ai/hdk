@@ -7,7 +7,7 @@ import type { Tool } from './Tool';
 import { type ContextPressure } from './pressure';
 import {
   type TickState, type Schedule, type Pending, type PrefillItem, type Recovery, type ExtendRequest,
-  type StallOutcome, type Drop, emptyPending, itemCells, spawnCells, alive, prunable,
+  type StallOutcome, type Drop, emptyPending, itemCells, spawnCells, alive,
 } from './state';
 
 /**
@@ -231,16 +231,27 @@ export class DefaultScheduler implements Scheduler {
     }
     S.dispatch.push(...pending.dispatches.filter(d => awaits(d.agent)));
 
-    // 4. Stall-break: deferred items with no sibling left to free KV.
+    // 4. Stall-break: deferred work with no route left to a later admission.
+    //    Stall only when no admitted work, independently progressing operation,
+    //    scheduled retry or reclamation decided here can enable one. Every
+    //    lane counted either advances on its own (a decode stops, a tool
+    //    returns, a retry comes due) or is bounded to this schedule (a drop, a
+    //    finish, an abandoned retry become a prune or an item next tick).
+    //    Outstanding obligations are NOT progress: a pending prune on a branch
+    //    with live children, or an item the kernel once refused that no longer
+    //    fits, would suppress the stall for as long as their own dependencies
+    //    are blocked — which is forever, when those dependencies are the
+    //    deferred items themselves. An in-flight tool is the one external
+    //    liveness dependency here: the close already waits on it.
     const reactivating = S.prefills.length > 0 || S.spawns.length > 0;
-    if (deferred.length > 0 && S.decode.length === 0 && !reactivating) {
+    const progress = reactivating || S.decode.length > 0
+      || S.dispatch.length > 0 || state.inflight.size > 0 || remaining.retries.length > 0 || S.abandoned.length > 0
+      || S.drops.length > 0 || S.finishes.length > 0;
+    if (deferred.length > 0 && !progress) {
       let stallHeadroom = P0.headroom;
       for (const it of deferred) {
         const a = it.agent;
         if (a.status !== 'awaiting_tool' || a.branch.disposed) continue;
-        // rc-deferred items ride through: their retry is a re-dispatch with
-        // its own budget (MAX_DEFER_ATTEMPTS), not a headroom problem.
-        if (a.deferAttempts > 0) { remaining.items.push(it); continue; }
         const action = policy.onSettleReject?.(a, itemCells(it), P0, this.opts.config);
         const reason = action ? 'pressure_settle_reject' as const : 'settle_stall_break' as const;
         if (it.kind === 'recovery') {
@@ -274,13 +285,12 @@ export class DefaultScheduler implements Scheduler {
     } else {
       remaining.items.push(...deferred);
     }
-    // A deferred extend waits while KV can still be freed — an agent alive to
-    // return, a prune owed, a drop or finish decided here — and is rejected
-    // once nothing can, so the orchestrator hears why instead of hanging.
+    // A deferred extend waits on the same rule — and on the stall-break's own
+    // decisions, which become prunes or replacement items next tick — and is
+    // rejected once nothing can make progress, so the orchestrator hears why
+    // instead of hanging.
     if (deferredExtends.length > 0) {
-      const kvCanStillFree = state.agents.some(a => alive(a) || prunable(a))
-        || reactivating || S.drops.length > 0 || S.finishes.length > 0 || S.stall.some(o => o.drop !== null);
-      if (kvCanStillFree) remaining.extends.push(...deferredExtends);
+      if (progress || S.stall.length > 0) remaining.extends.push(...deferredExtends);
       else S.rejectedExtends.push(...deferredExtends);
     }
 

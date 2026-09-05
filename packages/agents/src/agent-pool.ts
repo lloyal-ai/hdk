@@ -375,14 +375,16 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           const out = yield* executor.run(S);
           yield* applier.applyOutputs(out, S);
 
-          // Quiet = nothing ran and nothing admissible waits: only parked
-          // retries, in-flight tools, or an orchestrator that may still spawn.
+          // Quiet = nothing ran. Whatever is still pending is either carried
+          // (deferred for capacity, waiting on a sibling's progress) or arrived
+          // with a wake the next wait will see: every push into the pending
+          // record happens inside a tick that ran something, or comes with
+          // `wake.add()`. Counting pending work here made a carried item spin
+          // the loop at full speed for as long as a sibling's tool was in flight.
           const ran = S.prefills.length + S.spawns.length + S.extends.length
             + S.dispatch.length + S.decode.length + S.drops.length + S.finishes.length
             + S.halts.length + S.stall.length + S.abandoned.length;
-          const waiting = pending.items.length + pending.dispatches.length + pending.spawns.length
-            + pending.extends.length;
-          idleTicks = ran === 0 && waiting === 0 ? idleTicks + 1 : 0;
+          idleTicks = ran === 0 ? idleTicks + 1 : 0;
         }
 
         emit.trace({ kind: 'closed', agents, steps: totals.steps, durationMs: performance.now() - poolT0 });

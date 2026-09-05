@@ -218,6 +218,77 @@ describe('DefaultScheduler.schedule', () => {
     expect(S.remaining.items).toEqual([S.stall[0].nudge!.replacement]);
   });
 
+  it('the stall-break waits while any sibling can still make progress, for a plain item and a serial recovery turn alike', () => {
+    const withRecovery: AgentPolicy = { ...quiet, onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }) };
+    const serial = () => scheduler({ recovery: 'serial' });
+    const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
+    // Two shapes of blocked owner: a plain oversized result, and a serial recovery prompt that cannot fit.
+    const blocked = () => {
+      const plain = agent(1, 'awaiting_tool');
+      const rec = agent(2, 'awaiting_tool'); rec.markExtracting(Infinity, true);
+      return { plain, rec, items: [resultItem(plain, 5000), recoveryItem(rec, 600)] };
+    };
+    const carried = (S: ReturnType<DefaultScheduler['schedule']>, b: ReturnType<typeof blocked>) => {
+      expect(S.stall, 'the stall-break fired while a sibling could still make progress').toEqual([]);
+      expect(S.remaining.items.map(i => i.agent)).toEqual([b.plain, b.rec]);
+    };
+
+    // A sibling with a tool in flight: its result is coming.
+    let b = blocked(); const inflight = agent(3, 'awaiting_tool');
+    carried(serial().schedule(state([b.plain, b.rec, inflight], 1000, { inflight: new Set([3]) }, { items: b.items }), withRecovery), b);
+    // A sibling dispatching this schedule.
+    b = blocked(); const dispatching = agent(3, 'awaiting_tool');
+    carried(serial().schedule(state([b.plain, b.rec, dispatching], 1000, {}, { items: b.items, dispatches: [{ agent: dispatching, tc }] }), withRecovery), b);
+    // A sibling with a parked retry, not yet due.
+    b = blocked(); const parked = agent(3, 'awaiting_tool');
+    carried(serial().schedule(state([b.plain, b.rec, parked], 1000, { wall: 0 }, { items: b.items, retries: [{ agent: parked, tc, callId: 'r', notBefore: 10, attempt: 1 }] }), withRecovery), b);
+    // A sibling whose retry is abandoned by wind-down this schedule: an item next tick.
+    b = blocked(); const abandoned = agent(3, 'awaiting_tool');
+    carried(serial().schedule(state([b.plain, b.rec, abandoned], 1000, { signals: { paused: false, windDown: true, cancelled: [], orchestratorDone: false } }, { items: b.items, retries: [{ agent: abandoned, tc, callId: 'r', notBefore: 0, attempt: 1 }] }), withRecovery), b);
+    // A sibling dropped this schedule: a prune is owed at the next observe.
+    b = blocked(); const doomed = agent(3);
+    let S = serial().schedule(state([b.plain, b.rec, doomed], 1000, {}, { items: b.items }), { ...withRecovery, shouldExit: () => true });
+    expect(S.drops.map(d => d.agent)).toEqual([doomed]);
+    carried(S, b);
+    // A sibling finishing its extraction this schedule.
+    b = blocked(); const finishing = agent(3); finishing.markExtracting(0);
+    S = serial().schedule(state([b.plain, b.rec, finishing], 1000, {}, { items: b.items }), withRecovery);
+    expect(S.finishes).toEqual([finishing]);
+    carried(S, b);
+
+    // Nothing left that can make progress: the stall-break fires for both.
+    b = blocked();
+    S = serial().schedule(state([b.plain, b.rec], 1000, {}, { items: b.items }), withRecovery);
+    expect(S.stall.map(o => o.agent)).toEqual([b.plain, b.rec]);
+    expect(S.remaining.items).toEqual([]);
+  });
+
+  it('outstanding obligations are not progress: a prune-requested parent with blocked children, and an rc-deferred item that no longer fits', () => {
+    const withRecovery: AgentPolicy = { ...quiet, onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }) };
+    // The parent cannot be pruned while its children live, and its children are the blocked ones.
+    const parent = agent(9, 'idle'); parent.transition('active'); parent.transition('idle'); parent.pruneRequested = true;
+    const a = agent(1, 'awaiting_tool'); const b = agent(2, 'awaiting_tool');
+    let S = scheduler().schedule(state([parent, a, b], 1000, {}, { items: [resultItem(a, 5000), resultItem(b, 5000)] }), withRecovery);
+    expect(S.stall.map(o => o.agent), 'a pending prune on a non-leaf suppressed the stall-break').toEqual([a, b]);
+
+    // An item the kernel refused once (rc 1) and that no longer fits admission is an oversized item like any other.
+    const rc = agent(3, 'awaiting_tool'); rc.deferAttempts = 1;
+    const other = agent(4, 'awaiting_tool');
+    S = scheduler().schedule(state([rc, other], 1000, {}, { items: [resultItem(rc, 5000), resultItem(other, 5000)] }), withRecovery);
+    expect(S.stall.map(o => o.agent), 'an rc-deferred item rode through the stall-break with no route back to admission').toEqual([rc, other]);
+    expect(S.remaining.items).toEqual([]);
+  });
+
+  it('a deferred extend is carried on the same progress rule, and rejected when nothing can make progress', () => {
+    const ext = { tokens: Array(5000).fill(1), userContent: 'u', assistantContent: 'a', resolve: () => {}, reject: () => {}, discarded: false };
+    const inflight = agent(3, 'awaiting_tool');
+    let S = scheduler().schedule(state([inflight], 1000, { inflight: new Set([3]) }, { extends: [ext] }), quiet);
+    expect(S.remaining.extends).toEqual([ext]);
+    expect(S.rejectedExtends).toEqual([]);
+    S = scheduler().schedule(state([], 1000, {}, { extends: [ext] }), quiet);
+    expect(S.rejectedExtends).toEqual([ext]);
+  });
+
   it('wind-down forces the cohort shape and reaps every active agent that is not mid-report', () => {
     const reporting = emitting(agent(1), 'report');
     const researching = agent(2);

@@ -203,8 +203,8 @@ export const GrantStoreCtx = createContext<GrantStore>('lloyal.grantStore');
  * in the pool's run scope and `.send()`s it on its Stop/Wrap-up command. The pool
  * reads it at boot (`yield* WindDown.get()`); on emission it stops spawning new
  * agents, reaps active ones to recovery, and lets in-flight tool calls **drain**
- * (complete + settle) before reaping — then the termination sweep runs each
- * policy's `onRecovery`. Answer-agnostic: what recovery yields (a report, or
+ * (complete + settle) before reaping — every reap decides its recovery through
+ * the policy's `onRecovery` at the drop. Answer-agnostic: what recovery yields (a report, or
  * `skip`) is the policy's call. Parked tool RETRIES are the one thing not
  * drained: a rate-limit park (often 60–90s) is abandoned with an honest
  * failure result, because the drain reports with what agents have. The flip
@@ -249,11 +249,14 @@ export const CancelAgent = createContext<Signal<{ agentId: number }, void>>('llo
  * measure RUN time (paused spans excluded); retry parks stay on the wall
  * clock — rate limits elapse in the real world.
  *
- * Pause takes effect at the next tick boundary: an in-flight recovery decode
- * (the close-time recovery sweep) completes first. Lifecycle
- * sequencing is the harness's job — the pool holds while paused regardless of
- * other signals; conflicting commands (wind-down while paused) are the
- * consumer's to refuse. Absent context = no pause capability.
+ * Pause suspends DECODE at the next tick boundary: the tick in flight — a
+ * prefill, a sampling pass, a commit, a recovery turn's decode — completes
+ * first, and no new one starts until play. Control handling does not stop:
+ * cancels still run (as hold ticks) and the prune pass still reclaims what a
+ * cancel frees. Lifecycle sequencing is the harness's job — the pool holds
+ * while paused regardless of other signals; conflicting commands (wind-down
+ * while paused) are the consumer's to refuse. Absent context = no pause
+ * capability.
  *
  * This is the whole-run sibling of {@link WindDown} (drain) and
  * {@link CancelAgent} (targeted discard); `halt()` remains the discard-now

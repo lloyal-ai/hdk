@@ -19,8 +19,8 @@ import type { PressureThresholds } from './types';
  * The interpreter: turns decisions and outcomes into agent transitions.
  *
  * Two entry points, one per half of the tick. {@link Applier.applySchedule}
- * enacts what the scheduler decided BEFORE the store runs (drops, the
- * stall-break, the sweep); {@link Applier.applyOutputs} interprets what the
+ * enacts what the scheduler decided BEFORE the store runs (drops, finishes,
+ * the stall-break, rejections); {@link Applier.applyOutputs} interprets what the
  * store gave back (the ladder on failed prefills, stopped agents through
  * `policy.onProduced`, the commit). Both write agents only through their
  * methods and announce every change through the one {@link Emitter}.

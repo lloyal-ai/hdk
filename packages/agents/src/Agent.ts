@@ -189,9 +189,9 @@ export class Agent {
 
   /**
    * The terminal `agent:failed` reason, once one has been announced. An agent
-   * with this set is DISCARDED: never force-recovered by the close sweep,
-   * never handed a late tool completion. `null` while it is live or finished
-   * on its own terms.
+   * with this set is DISCARDED: never recovered, never handed a late tool
+   * completion (a fan-out result that lands after the cancel is dropped at
+   * intake). `null` while it is live or finished on its own terms.
    */
   failed: string | null = null;
   /** The branch holds cells nothing will read again; the next prune pass
