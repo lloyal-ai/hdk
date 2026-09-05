@@ -6,7 +6,7 @@ import { RECOVERY_PREFILL_OVERHEAD, BATCH_BUFFER } from './AgentPolicy';
 import type { Tool } from './Tool';
 import { type ContextPressure } from './pressure';
 import {
-  type TickState, type Schedule, type Pending, type PrefillItem, type RecoveryPlan,
+  type TickState, type Schedule, type Pending, type PrefillItem, type Recovery,
   type StallOutcome, type Drop, emptyPending, itemCells, alive,
 } from './state';
 
@@ -22,24 +22,24 @@ import {
  * deterministic.
  */
 
-/** Adaptive per-report budget bounds for cohort recovery when no explicit
- *  `reportBudget` is set: a fair share of headroom across the live agents,
+/** Adaptive per-recovery budget bounds for cohort recovery when no explicit
+ *  `recoveryBudget` is set: a fair share of headroom across the live agents,
  *  clamped to [MIN, MAX]. */
-export const MIN_REPORT_BUDGET = 128;
-export const MAX_REPORT_BUDGET = 2048;
+export const MIN_RECOVERY_BUDGET = 128;
+export const MAX_RECOVERY_BUDGET = 2048;
 
 export interface SchedulerOptions {
   /**
    * How reaped agents recover. `serial` (the high-effort path): one at a
    * time, ungated, uncapped — each report owns the freed headroom.
    * `cohort`: every reap's recovery turn is admitted against the recovery
-   * reserve and decodes bin-packed with live siblings under a per-report
+   * reserve and decodes bin-packed with live siblings under a per-recovery
    * budget. Wind-down forces `cohort`.
    */
   recovery: 'serial' | 'cohort';
-  /** Explicit per-report cap for cohort recovery and the voluntary report
+  /** Explicit per-recovery cap for cohort recovery and the voluntary report
    *  guillotine; absent = adaptive. */
-  reportBudget?: number;
+  recoveryBudget?: number;
   terminalToolName?: string;
   config: PolicyConfig;
 }
@@ -55,25 +55,25 @@ export function emittingTerminal(a: Agent, terminalToolName: string | undefined)
 }
 
 /**
- * How a dropped agent recovers — the ONE place the per-report budget `b` is
+ * How a dropped agent recovers — the ONE place the per-recovery budget `b` is
  * sized, shared by every drop site (schedule-time and produce-time alike).
  *
  * Cohort: `aliveCount·(OVERHEAD + b) ≤ (remaining − hardLimit) − BATCH_BUFFER`,
  * so the whole cohort's prefill+decode fits the recovery reserve in one tick;
- * an explicit `reportBudget` is clamped DOWN to that ceiling. Serial: the
+ * an explicit `recoveryBudget` is clamped DOWN to that ceiling. Serial: the
  * policy derives its own full-headroom advisory and nothing caps the report.
  */
-export function planRecovery(
+export function recoveryFor(
   a: Agent, policy: AgentPolicy, pressure: ContextPressure, aliveCount: number,
-  mode: 'serial' | 'cohort', reportBudget: number | undefined,
-): RecoveryPlan {
+  mode: 'serial' | 'cohort', recoveryBudget: number | undefined,
+): Recovery {
   let budget: number;
   let action;
   if (mode === 'cohort') {
     const fits = Math.floor((pressure.remaining - pressure.hardLimit - BATCH_BUFFER) / Math.max(1, aliveCount)) - RECOVERY_PREFILL_OVERHEAD;
-    budget = reportBudget != null
-      ? (fits > 0 ? Math.min(reportBudget, fits) : reportBudget)
-      : Math.min(MAX_REPORT_BUDGET, Math.max(MIN_REPORT_BUDGET, fits));
+    budget = recoveryBudget != null
+      ? (fits > 0 ? Math.min(recoveryBudget, fits) : recoveryBudget)
+      : Math.min(MAX_RECOVERY_BUDGET, Math.max(MIN_RECOVERY_BUDGET, fits));
     action = policy.onRecovery?.(a, pressure, budget);
   } else {
     budget = Infinity;
@@ -167,12 +167,12 @@ export class DefaultScheduler implements Scheduler {
     // 2. Produce-phase verdicts, in agents order (the policy's per-tick
     //    stagger relies on that order).
     S.alive = state.agents.filter(alive).length + S.spawns.length + S.heals.length;
-    const cap = Math.min(this.opts.reportBudget ?? MAX_REPORT_BUDGET, MAX_REPORT_BUDGET);
+    const cap = Math.min(this.opts.recoveryBudget ?? MAX_RECOVERY_BUDGET, MAX_RECOVERY_BUDGET);
     for (const a of state.agents) {
       if (a.status !== 'active') continue;
       if (S.drops.some(d => d.agent === a)) continue;   // cancelled above
       if (signals.windDown && !a.extracting && !emittingTerminal(a, terminal)) {
-        S.drops.push({ agent: a, reason: 'wind_down', done: true, recovery: this.plan(a, policy, P0, S.alive, mode) });
+        S.drops.push({ agent: a, reason: 'wind_down', done: true, recovery: this.recovery(a, policy, P0, S.alive, mode) });
         continue;
       }
       const exit = policy.shouldExit?.(a, Pd);
@@ -181,13 +181,13 @@ export class DefaultScheduler implements Scheduler {
         const reason = Pd.critical ? 'pressure_critical' as const : 'policy_exit' as const;
         S.drops.push({
           agent: a, reason, done: true, exitReason: reason,
-          recovery: emittingTerminal(a, terminal) ? { type: 'salvage' } : this.plan(a, policy, P0, S.alive, mode),
+          recovery: emittingTerminal(a, terminal) ? { type: 'salvage' } : this.recovery(a, policy, P0, S.alive, mode),
         });
         continue;
       }
       if (a.extracting && a.recoveryTokens >= a.recoveryBudget) { S.finishes.push(a); continue; }
       if (!a.extracting && emittingTerminal(a, terminal) && a.turnTokens >= cap) {
-        S.drops.push({ agent: a, reason: 'report_cap', done: true, exitReason: 'report_cap', recovery: { type: 'salvage' } });
+        S.drops.push({ agent: a, reason: 'terminal_cap', done: true, exitReason: 'terminal_cap', recovery: { type: 'salvage' } });
         continue;
       }
       S.decode.push(a);
@@ -217,9 +217,9 @@ export class DefaultScheduler implements Scheduler {
         const reason = action ? 'pressure_settle_reject' as const : 'settle_stall_break' as const;
         if (it.kind === 'recovery') {
           // An extracting agent whose cohort turn never fit: its span already
-          // ended at the kill, so no second `agent:done`; the turn is re-planned
+          // ended at the kill, so no second `agent:done`; the turn is re-decided
           // serial so the report decodes from the reserve, one at a time.
-          S.stall.push({ agent: a, nudge: null, drop: { agent: a, reason, done: false, recovery: this.plan(a, policy, P0, S.alive, 'serial') } });
+          S.stall.push({ agent: a, nudge: null, drop: { agent: a, reason, done: false, recovery: this.recovery(a, policy, P0, S.alive, 'serial') } });
           continue;
         }
         let nudge: StallOutcome['nudge'] = null;
@@ -237,7 +237,7 @@ export class DefaultScheduler implements Scheduler {
         }
         // The policy's suggestion was infeasible (or it said idle, or it is absent): drop.
         const drop: Drop | null = nudge?.replacement ? null
-          : { agent: a, reason, done: true, recovery: this.plan(a, policy, P0, S.alive, mode) };
+          : { agent: a, reason, done: true, recovery: this.recovery(a, policy, P0, S.alive, mode) };
         S.stall.push({ agent: a, nudge, drop });
       }
     } else {
@@ -257,7 +257,7 @@ export class DefaultScheduler implements Scheduler {
       const c = state.agents.find(a =>
         a.status === 'idle' && !a.result && !a.branch.disposed && a.failed === null && !a.extracting);
       if (c) {
-        S.sweep = { agent: c, recovery: this.plan(c, policy, P0, 1, 'serial') };
+        S.sweep = { agent: c, recovery: this.recovery(c, policy, P0, 1, 'serial') };
       } else {
         // The prune pass runs before every schedule; anything still owed a
         // prune is a branch with live children, which the close cannot free.
@@ -267,8 +267,8 @@ export class DefaultScheduler implements Scheduler {
     return S;
   }
 
-  private plan(a: Agent, policy: AgentPolicy, P0: ContextPressure, aliveCount: number, mode: 'serial' | 'cohort'): RecoveryPlan {
-    return planRecovery(a, policy, P0, aliveCount, mode, this.opts.reportBudget);
+  private recovery(a: Agent, policy: AgentPolicy, P0: ContextPressure, aliveCount: number, mode: 'serial' | 'cohort'): Recovery {
+    return recoveryFor(a, policy, P0, aliveCount, mode, this.opts.recoveryBudget);
   }
 }
 

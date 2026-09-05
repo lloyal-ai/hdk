@@ -99,8 +99,8 @@ describe('DefaultScheduler.schedule', () => {
   it('the voluntary report cap force-finishes a report at the budget', () => {
     const a = emitting(agent(1), 'report');
     for (let i = 0; i < 4; i++) a.accumulateToken('x');
-    const S = scheduler({ reportBudget: 4 }).schedule(state([a]), quiet);
-    expect(S.drops[0]).toMatchObject({ reason: 'report_cap', exitReason: 'report_cap', recovery: { type: 'salvage' } });
+    const S = scheduler({ recoveryBudget: 4 }).schedule(state([a]), quiet);
+    expect(S.drops[0]).toMatchObject({ reason: 'terminal_cap', exitReason: 'terminal_cap', recovery: { type: 'salvage' } });
   });
 
   it('an extracting agent is exempt from the kill and finishes at its token-stop', () => {

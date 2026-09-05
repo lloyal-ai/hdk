@@ -153,13 +153,13 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     // policy (where callers configure them) and handed to the scheduler.
     const scheduler = new DefaultScheduler({
       recovery: policy.recoveryShape === 'parallel' ? 'cohort' : 'serial',
-      reportBudget: policy.reportBudget,
+      recoveryBudget: policy.recoveryBudget,
       terminalToolName, config,
     }, ctx, tools);
     const applier = new Applier({
       ctx, policy, config, tools, emit, pending, ladder,
       recovery: policy.recoveryShape === 'parallel' ? 'cohort' : 'serial',
-      reportBudget: policy.reportBudget, terminalToolName, pruneOnReturn, pressureOpts, totals,
+      recoveryBudget: policy.recoveryBudget, terminalToolName, pruneOnReturn, pressureOpts, totals,
     });
     const executor = new Executor({
       ctx, store, tools, emit, tw, pending, agents, inflight,

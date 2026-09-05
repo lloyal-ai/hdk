@@ -170,7 +170,7 @@ const RECORDED_EXIT_REASONS = new Set<AgentExitReason>([
   'policy_exit',
   'pressure_softcut',
   'maxTurns',
-  'report_cap',
+  'terminal_cap',
 ]);
 
 export function I30_exitReasonMatchesTrace(run: PoolRun): PredicateResult {

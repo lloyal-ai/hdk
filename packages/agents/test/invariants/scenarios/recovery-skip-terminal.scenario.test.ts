@@ -25,7 +25,7 @@ describe('scenario: skipped recovery emits agent:failed (no orphan)', () => {
     };
 
     // Free-text turn 1 (`1, 2, STOP`) → onProduced idle → the parallel idle path emits
-    // agent:done then plans recovery → onRecovery skip.
+    // agent:done then decides recovery → onRecovery skip.
     const run = await runPool({
       nCtx: 4096,
       cellsUsed: 0,

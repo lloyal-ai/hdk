@@ -167,8 +167,8 @@ export class Agent {
   // `parallel` recovery path): PRODUCE routes its isStop to finishRecovery
   // instead of onProduced, and the kill/reap guards skip it.
   private _extracting = false;
-  // Per-report cap for the in-loop recovery report. `_recoveryBudget` is the token
-  // target the pool set (policy.reportBudget, else a headroom share across the live
+  // Per-recovery cap for the in-loop recovery report. `_recoveryBudget` is the token
+  // target the pool set (policy.recoveryBudget, else a headroom share across the live
   // agents); the token-stop fires once the report's own tokens reach it.
   // `_recoveryTokenBase` snapshots the cumulative `_tokenCount` at recovery entry so
   // the cap counts ONLY the report's tokens (resetTurn clears rawOutput, not _tokenCount).
@@ -287,14 +287,14 @@ export class Agent {
   get parsed(): ParseChatOutputResult | null { return this._parsed; }
   /** Whether this agent is mid forced-recovery-report (in-loop parallel path). */
   get extracting(): boolean { return this._extracting; }
-  /** The fixed per-report token cap for this recovery (set at {@link markExtracting}). */
+  /** The fixed per-recovery token cap for this recovery (set at {@link markExtracting}). */
   get recoveryBudget(): number { return this._recoveryBudget; }
   /** Tokens produced SINCE recovery entry — what the token-stop backstop checks. */
   get recoveryTokens(): number { return this._tokenCount - this._recoveryTokenBase; }
   /** Tokens produced in the CURRENT turn — what the voluntary report cap checks. */
   get turnTokens(): number { return this._tokenCount - this._turnTokenBase; }
   /** Mark the agent as producing its recovery report (idempotent, one-way). Records
-   *  the per-report budget `b` (Infinity = uncapped) and snapshots the token base
+   *  the per-recovery budget `b` (Infinity = uncapped) and snapshots the token base
    *  for the cap. */
   markExtracting(budget: number, serial = false): void {
     this._extracting = true;

@@ -186,7 +186,7 @@ export type TraceEvent =
         | 'tool_error'
         | 'wind_down'
         | 'user_cancel'
-        | 'report_cap';
+        | 'terminal_cap';
     }
   | TraceEventBase & {
       type: 'pool:agentNudge';

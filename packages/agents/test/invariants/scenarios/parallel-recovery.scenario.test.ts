@@ -19,11 +19,11 @@ const REPORT_CALL = { name: 'report', arguments: '{"result":"recovered"}' };
  * Every agent drops to idle WITHOUT a voluntary result on its first stop
  * (`free_text_stop`), so each is recovered: `parallel` injects the recovery turn
  * as a cohort (recovery item → admission → bin-packed decode); `staggered`
- * recovers one at a time. `reportBudget` is the FIXED per-report cap `b`.
+ * recovers one at a time. `recoveryBudget` is the FIXED per-recovery cap `b`.
  */
 function idleNoResultPolicy(
   shape: 'staggered' | 'parallel',
-  reportBudget?: number,
+  recoveryBudget?: number,
 ): AgentPolicy {
   return {
     onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
@@ -31,7 +31,7 @@ function idleNoResultPolicy(
     onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),
     shouldExit: () => false,
     recoveryShape: shape,
-    ...(reportBudget !== undefined ? { reportBudget } : {}),
+    ...(recoveryBudget !== undefined ? { recoveryBudget } : {}),
   };
 }
 
@@ -61,7 +61,7 @@ const idleScripts = () => idleScriptsN(N);
  * recovery prompt injected IN-LOOP via the nudge/SETTLE path — prefilled as a
  * `toolResult`, re-activated with the native terminal-tool grammar, and decoded
  * BIN-PACKED in the tick loop alongside live siblings (one O(1) llama_decode per
- * tick, regardless of how many recover at once). The per-report cap is the budget
+ * tick, regardless of how many recover at once). The per-recovery cap is the budget
  * `b` (prompt advisory + token-stop), sized so the WHOLE cohort's prefill+decode
  * fits headroom in one tick — so every reaped agent recovers, nothing is deferred or
  * lost. `staggered` (high effort) is the lossless serial path — blocking
@@ -174,7 +174,7 @@ describe('scenario: parallel recovery (in-loop via SETTLE)', () => {
   it('token-stop caps an over-long report at the fixed budget `b` (salvaged, not lost)', async () => {
     // The cap that closes the deadlock: a non-compliant report that runs past its
     // word advisory is force-finished at `b` tokens rather than decoding unbounded.
-    // reportBudget=4; the recovery script would emit 8 tokens, but the token-stop
+    // recoveryBudget=4; the recovery script would emit 8 tokens, but the token-stop
     // fires at 4 — and the partial report is still salvaged (no loss).
     const r = await runPool({
       nCtx: 8192, cellsUsed: 0,
@@ -194,7 +194,7 @@ describe('scenario: parallel recovery (in-loop via SETTLE)', () => {
     // tick (the flat+medium run reaped 4 agents at 358s). The old SETTLE admission charged
     // each recovery item (prompt + report-budget) against headroom and DEFERRED the
     // overflow — and when the pool terminated after the admitted ones finished, the
-    // deferred agents' findings were LOST. Now `b` is sized in planRecovery so
+    // deferred agents' findings were LOST. Now `b` is sized in recoveryFor so
     // aliveCount·(prompt + b) ≤ headroom: the cohort's recovery turns all prefill + decode
     // together in ONE batched tick (O(1) in branch count), nothing defers, nothing is lost.
     // cellsUsed simulates a partly-filled KV so the adaptive sizing actually bites.
@@ -256,12 +256,12 @@ describe('scenario: parallel recovery (in-loop via SETTLE)', () => {
     expect(r.result).toBeDefined();
   });
 
-  it('without an explicit reportBudget the cap ADAPTS to headroom ÷ live agents — more agents, shorter reports', async () => {
+  it('without an explicit recoveryBudget the cap ADAPTS to headroom ÷ live agents — more agents, shorter reports', async () => {
     // The default cap is a fair share of CURRENT headroom across the live agents,
     // not a fixed number: recovering alone licenses a longer report than recovering
     // as one of many. A recovery that would run long is token-stopped at that
-    // adaptive `b`, so the per-report token count is strictly smaller with more
-    // co-alive agents. (No reportBudget → the adaptive path.)
+    // adaptive `b`, so the per-recovery token count is strictly smaller with more
+    // co-alive agents. (No recoveryBudget → the adaptive path.)
     const longRecovery = (n: number) =>
       Array.from({ length: n }, () => ({ tokens: [1, STOP, ...Array(2200).fill(1), STOP], content: 'x', toolCall: REPORT_CALL }));
     const solo = await runPool({ nCtx: 4096, cellsUsed: 0, scripts: longRecovery(1), policy: idleNoResultPolicy('parallel') });
@@ -274,7 +274,7 @@ describe('scenario: parallel recovery (in-loop via SETTLE)', () => {
 
   it('staggered (high effort) recovers one agent at a time, UNCAPPED (lossless) — unchanged', async () => {
     // The lossless path: each report is admitted alone and owns full
-    // headroom — NO token-stop, so even with a reportBudget set the report runs to
+    // headroom — NO token-stop, so even with a recoveryBudget set the report runs to
     // its natural stop. This is what `parallel` trades away for responsiveness.
     const r = await runPool({
       nCtx: 8192, cellsUsed: 0,

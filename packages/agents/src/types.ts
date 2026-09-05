@@ -324,7 +324,7 @@ export type AgentExitReason =
   | 'policy_exit'
   | 'pressure_softcut'
   | 'maxTurns'
-  | 'report_cap';
+  | 'terminal_cap';
 
 export interface AgentResult {
   /** Stable agent identifier (branch handle at creation time) */

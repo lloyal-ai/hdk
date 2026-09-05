@@ -4,7 +4,7 @@
  *
  * Shape: a free-texting agent (recoveryShape 'parallel') crosses the hardLimit
  * → `pressure.critical` kills it in PRODUCE, emitting `agent:done` (kill). The
- * kill path plans a cohort recovery, which marks the agent `extracting` +
+ * kill path decides a cohort recovery, which marks the agent `extracting` +
  * `awaiting_tool` and queues a recovery turn. Under critical, that turn's SETTLE
  * admission budget is `remaining − hardLimit < 0`, so it always DEFERS; with no
  * active siblings the stall-break drop block runs.

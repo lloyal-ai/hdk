@@ -7,9 +7,9 @@ import type { Tool } from './Tool';
 import { TOOL_IMAGE_ERROR_KEY } from './Tool';
 import type { Emitter } from './emit';
 import { ContextPressure } from './pressure';
-import { planRecovery } from './scheduler';
+import { recoveryFor } from './scheduler';
 import {
-  type Schedule, type Outputs, type Pending, type Drop, type RecoveryPlan, type PrefillItem,
+  type Schedule, type Outputs, type Pending, type Drop, type Recovery, type PrefillItem,
   type PrefillOutcome, type Ladder, type DropReason,
   alive, classifyRc, isFatalRc, MAX_DEFER_ATTEMPTS, BACKEND_TRIPWIRE_N, MAX_HEAL_ATTEMPTS,
 } from './state';
@@ -35,7 +35,7 @@ export interface ApplyDeps {
   pending: Pending;
   ladder: Ladder;
   recovery: 'serial' | 'cohort';
-  reportBudget?: number;
+  recoveryBudget?: number;
   terminalToolName?: string;
   pruneOnReturn: boolean;
   pressureOpts: PressureThresholds;
@@ -125,15 +125,15 @@ export class Applier {
     void S;
   }
 
-  /** Enact a recovery plan for an agent whose span has ended. */
-  *recover(a: Agent, plan: RecoveryPlan, reason: DropReason | null): Operation<void> {
-    switch (plan.type) {
+  /** Enact the recovery decided for an agent whose span has ended. */
+  *recover(a: Agent, recovery: Recovery, reason: DropReason | null): Operation<void> {
+    switch (recovery.type) {
       case 'none':
         return;
       case 'salvage': {
         // Mid-terminal-call: parse what it already emitted; no further decode.
         // `rawOutput` is the report turn alone (resetTurn cleared the rest).
-        const produced = reason === 'report_cap' ? a.turnTokens : this.d.ctx.tokenizeSync(a.rawOutput, false).length;
+        const produced = reason === 'terminal_cap' ? a.turnTokens : this.d.ctx.tokenizeSync(a.rawOutput, false).length;
         yield* this.finishRecovery(a, a.rawOutput, produced);
         a.transition('idle');
         a.pruneRequested = true;
@@ -153,10 +153,10 @@ export class Applier {
         // anything else happens, so it never passes through `idle` on the way
         // — an orchestrator waiting on it would otherwise resume against a
         // result that does not exist yet.
-        const tokens = buildUserDelta(this.d.ctx, plan.action.prompt.user, { system: plan.action.prompt.system, enableThinking: false });
+        const tokens = buildUserDelta(this.d.ctx, recovery.action.prompt.user, { system: recovery.action.prompt.system, enableThinking: false });
         a.incrementTurns();
         if (a.status !== 'awaiting_tool') a.transition('awaiting_tool');
-        a.markExtracting(plan.budget, plan.serial);
+        a.markExtracting(recovery.budget, recovery.serial);
         a.resetTurn();
         this.d.pending.items.push({ kind: 'recovery', rail: 'token', agent: a, tokens, toolName: 'recovery', callId: `recovery:${a.id}`, args: '' });
         return;
@@ -254,7 +254,7 @@ export class Applier {
         yield* this.enactDrop({
           agent: a, reason, done: true, exitReason,
           recovery: mode === 'cohort'
-            ? planRecovery(a, this.d.policy, S.pressure, S.alive, 'cohort', this.d.reportBudget)
+            ? recoveryFor(a, this.d.policy, S.pressure, S.alive, 'cohort', this.d.recoveryBudget)
             : { type: 'none' },
         }, S);
         return;

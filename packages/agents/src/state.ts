@@ -127,7 +127,7 @@ export interface TickState {
  * - `skip`: the policy declined; the agent fails cleanly.
  * - `none`: nothing to recover (a cancel).
  */
-export type RecoveryPlan =
+export type Recovery =
   | { type: 'salvage' }
   | { type: 'extract'; action: Extract<RecoveryAction, { type: 'extract' }>; budget: number; serial: boolean }
   | { type: 'skip' }
@@ -143,7 +143,7 @@ export interface Drop {
    *  re-drop of an already-extracting agent do not. */
   done: boolean;
   exitReason?: AgentExitReason;
-  recovery: RecoveryPlan;
+  recovery: Recovery;
 }
 
 /** One deferred item's fate at the stall-break, in the order it is announced:
@@ -179,7 +179,7 @@ export interface Schedule {
   /** Wind-down: parked retries settled as an honest failure instead of waited out. */
   abandoned: RetryPark[];
   /** The close-time sweep: one idle-without-result agent recovers serially, with no drop record. */
-  sweep: { agent: Agent; recovery: RecoveryPlan } | null;
+  sweep: { agent: Agent; recovery: Recovery } | null;
   dispatch: DispatchRequest[];
   /** Agents that sample this tick: active now and not dropped. Agents the
    *  execute step itself re-activates (admitted items, spawns, heals) join
