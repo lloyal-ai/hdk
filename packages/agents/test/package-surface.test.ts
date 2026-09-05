@@ -48,4 +48,23 @@ describe('package surface', () => {
     ].join('\n');
     expect(namesTakenFrom(fixture, SPECIFIER).sort()).toEqual(['Agent', 'AgentPolicy', 'ProduceAction', 'Tool', 'parallel']);
   });
+
+  it('documentation code blocks import only what the package exports', () => {
+    // A README that shows an import the package no longer has is a break a
+    // reader hits before any compiler does. Fenced code in tracked markdown is
+    // scanned with the same scanner as source.
+    const exports = exportedNames(readFileSync(join(__dirname, '..', 'src', 'index.ts'), 'utf8'));
+    const docs = execFileSync('git', ['ls-files', '*.md'], { cwd: REPO, encoding: 'utf8' })
+      .split('\n').filter(f => f && existsSync(join(REPO, f)));
+    const dangling: string[] = [];
+    for (const file of docs) {
+      const text = readFileSync(join(REPO, file), 'utf8');
+      for (const block of text.matchAll(/```[a-zA-Z]*\n([\s\S]*?)```/g)) {
+        for (const name of namesTakenFrom(block[1], SPECIFIER)) {
+          if (!exports.has(name)) dangling.push(`${file} shows ${name}`);
+        }
+      }
+    }
+    expect(dangling, dangling.join('\n')).toEqual([]);
+  });
 });

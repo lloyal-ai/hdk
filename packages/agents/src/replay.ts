@@ -1,10 +1,11 @@
 import { ensure } from 'effection';
 import type { Operation } from 'effection';
-import { prefill, prefillBranch, prefillBranchMultimodal } from './execute';
+import { prefill, prefillBranch, prefillBranchMultimodal, measureCells } from './execute';
 import {
   Branch, buildAssistantDelta, buildToolResultDelta,
   buildToolResultDeltaMultimodal, buildTurnDelta, MEDIA_MARKER,
 } from '@lloyal-labs/sdk';
+import type { MultimodalDelta } from '@lloyal-labs/sdk';
 import { Ctx, Store, Attachments } from './context';
 import type { TraceEvent } from './trace-types';
 import type { Attachment } from '@lloyal-labs/media';
@@ -278,40 +279,76 @@ export type AgentTurnRecord =
     }
   | { kind: 'probe'; text: string };
 
+/** One prefill of a replayed lineage: built once, priced in cells. */
+export type ReplayStep =
+  | { kind: 'tokens'; tokens: number[] }
+  | { kind: 'media'; delta: MultimodalDelta; cells: number };
+
+/** A lineage ready to replay — its steps in order, and what they will cost. */
+export interface PreparedReplay { steps: ReplayStep[]; cells: number }
+
 /**
- * Replay an agent's recorded deltas onto a branch, in order.
- *
- * The agent-shaped sibling of {@link replayTurns} — an agent's KV timeline
- * is assistant turns, tool-result deltas and probe prefills, not
- * user/assistant pairs. Same contract: provenance-blind (the branch is
- * typically a fork of the live spine, whose prefix — seed images included —
- * rides for free), lifetime-free, and media-bearing turns resolve through
- * `materialize()` with the throwing single-branch prefill, so a record whose
- * content is gone fails loudly rather than replaying a marker as text.
+ * Build every delta of a record ONCE, with the same builders the live path
+ * uses, and price them. The admission that decides a heal reads `cells`;
+ * {@link runReplay} prefills exactly the steps that were priced. Media-bearing
+ * results resolve through `materialize()` here, so a record whose content is
+ * gone fails at pricing, before any fork exists.
+ */
+export function* prepareReplay(
+  records: readonly AgentTurnRecord[],
+  opts: { enableThinking?: boolean } = {},
+): Operation<PreparedReplay> {
+  const ctx = yield* Ctx.expect();
+  const attachments = yield* Attachments.expect();
+  const steps: ReplayStep[] = [];
+  let cells = 0;
+  const tokenStep = (tokens: number[]): void => {
+    if (tokens.length === 0) return;
+    steps.push({ kind: 'tokens', tokens });
+    cells += tokens.length;
+  };
+  for (const r of records) {
+    if (r.kind === 'assistant') {
+      tokenStep(buildAssistantDelta(ctx, r.text, opts));
+    } else if (r.kind === 'probe') {
+      tokenStep(ctx.tokenizeSync(r.text, false));
+    } else if (r.attachments && r.attachments.length > 0) {
+      const { bitmaps } = materialize(attachments, r.attachments);
+      const delta = buildToolResultDeltaMultimodal(ctx, r.resultStr, r.callId, [...bitmaps], opts);
+      const priced = yield* measureCells(ctx, delta);
+      steps.push({ kind: 'media', delta, cells: priced });
+      cells += priced;
+    } else {
+      tokenStep(buildToolResultDelta(ctx, r.resultStr, r.callId, opts));
+    }
+  }
+  return { steps, cells };
+}
+
+/** Prefill a prepared lineage onto a branch, in order. Provenance-blind and
+ *  lifetime-free, like {@link replayTurns}. */
+export function* runReplay(branch: Branch, steps: readonly ReplayStep[]): Operation<void> {
+  const store = yield* Store.expect();
+  for (const step of steps) {
+    if (step.kind === 'tokens') yield* prefill(store, [[branch, step.tokens]]);
+    else yield* prefillBranchMultimodal(branch, step.delta.prompt, step.delta.bitmaps, step.delta.sep);
+  }
+}
+
+/**
+ * Replay an agent's recorded deltas onto a branch, in order — prepare, then
+ * run. The agent-shaped sibling of {@link replayTurns}: an agent's KV timeline
+ * is assistant turns, tool-result deltas and probe prefills, not user/assistant
+ * pairs. Same contract: provenance-blind (the branch is typically a fork of
+ * the live spine, whose prefix — seed images included — rides for free),
+ * lifetime-free, and a media-bearing record whose content is gone fails
+ * loudly rather than replaying a marker as text.
  */
 export function* replayAgentTurns(
   branch: Branch,
   records: readonly AgentTurnRecord[],
   opts: { enableThinking?: boolean } = {},
 ): Operation<void> {
-  const ctx = yield* Ctx.expect();
-  const store = yield* Store.expect();
-  const attachments = yield* Attachments.expect();
-  for (const r of records) {
-    if (r.kind === 'assistant') {
-      const tokens = buildAssistantDelta(ctx, r.text, opts);
-      yield* prefill(store, [[branch, tokens]]);
-    } else if (r.kind === 'probe') {
-      const tokens = ctx.tokenizeSync(r.text, false);
-      if (tokens.length > 0) yield* prefill(store, [[branch, tokens]]);
-    } else if (r.attachments && r.attachments.length > 0) {
-      const { bitmaps } = materialize(attachments, r.attachments);
-      const delta = buildToolResultDeltaMultimodal(
-        ctx, r.resultStr, r.callId, [...bitmaps], opts);
-      yield* prefillBranchMultimodal(branch, delta.prompt, delta.bitmaps, delta.sep);
-    } else {
-      const tokens = buildToolResultDelta(ctx, r.resultStr, r.callId, opts);
-      yield* prefill(store, [[branch, tokens]]);
-    }
-  }
+  const { steps } = yield* prepareReplay(records, opts);
+  yield* runReplay(branch, steps);
 }

@@ -160,7 +160,7 @@ export interface AgentTaskSpec {
  * Sampling parameters for generation
  *
  * Controls the sampler chain applied during token generation. Passed to
- * {@link Branch.create}, {@link generate}, {@link diverge}, and agent
+ * {@link Branch.create}, {@link useAgent}, and agent
  * pool tasks.
  *
  * @category Agents

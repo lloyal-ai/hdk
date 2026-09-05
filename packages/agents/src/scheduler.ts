@@ -7,7 +7,7 @@ import type { Tool } from './Tool';
 import { type ContextPressure } from './pressure';
 import {
   type TickState, type Schedule, type Pending, type PrefillItem, type Recovery, type ExtendRequest,
-  type StallOutcome, type Drop, emptyPending, itemCells, alive, prunable,
+  type StallOutcome, type Drop, emptyPending, itemCells, spawnCells, alive, prunable,
 } from './state';
 
 /**
@@ -100,21 +100,26 @@ export class DefaultScheduler implements Scheduler {
       pressure: P0, alive: 0, remaining, mode: this.opts.recovery, roster: state.agents, close: false,
     };
 
-    // 0. Cancels — always, paused or not. Reclamation needs no decode.
-    for (const id of signals.cancelled) {
-      const a = state.agents.find(x => x.id === id);
-      if (!a || !alive(a)) continue;
-      if (state.inflight.has(id)) S.halts.push(a);
-      S.drops.push({ agent: a, reason: 'user_cancel', done: false, recovery: { type: 'none' } });
-    }
+    // One drop per agent per schedule. A drop is enacted after the schedule
+    // is built, so a dropped agent still reads live here: every step that
+    // could decide something for an agent consults this set, and every drop
+    // is decided through `decide`, so the set and the list cannot disagree.
+    const dropped = new Set<Agent>();
+    const decide = (drop: Drop): void => { S.drops.push(drop); dropped.add(drop.agent); };
     // Queued work belongs to an agent still awaiting it. Status is the durable
     // truth across ticks and holds; the drop set covers the one window status
-    // cannot — between this schedule's cancels and their enactment, when the
-    // agent still reads live. (The verdicts below drop only `active` agents,
-    // which own no queued work.) Work whose owner no longer awaits it is
-    // dropped, never carried.
-    const dropped = new Set(S.drops.map(d => d.agent));
+    // cannot — this schedule's own decisions. Work whose owner no longer
+    // awaits it is dropped, never carried.
     const awaits = (a: Agent): boolean => a.status === 'awaiting_tool' && !dropped.has(a);
+
+    // 0. Cancels — always, paused or not. Reclamation needs no decode. Two
+    //    signals for one agent (a double click) are one decision.
+    for (const id of signals.cancelled) {
+      const a = state.agents.find(x => x.id === id);
+      if (!a || !alive(a) || dropped.has(a)) continue;
+      if (state.inflight.has(id)) S.halts.push(a);
+      decide({ agent: a, reason: 'user_cancel', done: false, recovery: { type: 'none' } });
+    }
     if (signals.paused) {
       // A hold keeps everything waiting exactly where it is.
       S.hold = true;
@@ -133,8 +138,9 @@ export class DefaultScheduler implements Scheduler {
     let spent = 0;
     for (const req of pending.spawns) {
       if (req.discarded) { S.rejectedSpawns.push(req); continue; }
-      if (req.suffixTokens.length <= headroom) {
-        S.spawns.push(req); headroom -= req.suffixTokens.length; spent += req.suffixTokens.length;
+      const cost = spawnCells(req);
+      if (cost <= headroom) {
+        S.spawns.push(req); headroom -= cost; spent += cost;
       } else {
         S.rejectedSpawns.push(req);
       }
@@ -185,17 +191,16 @@ export class DefaultScheduler implements Scheduler {
     S.alive = state.agents.filter(alive).length + S.spawns.length;
     const cap = Math.min(this.opts.recoveryBudget ?? MAX_RECOVERY_BUDGET, MAX_RECOVERY_BUDGET);
     for (const a of state.agents) {
-      if (a.status !== 'active') continue;
-      if (S.drops.some(d => d.agent === a)) continue;   // cancelled above
+      if (a.status !== 'active' || dropped.has(a)) continue;
       if (signals.windDown && !a.extracting && !emittingTerminal(a, terminal)) {
-        S.drops.push({ agent: a, reason: 'wind_down', done: true, recovery: this.recovery(a, policy, P0, S.alive, mode) });
+        decide({ agent: a, reason: 'wind_down', done: true, recovery: this.recovery(a, policy, P0, S.alive, mode) });
         continue;
       }
       const exit = policy.shouldExit?.(a, Pd);
       // `??`: a policy returning `false` vetoes; abstaining defers to pressure.
       if (!a.extracting && (exit ?? Pd.critical)) {
         const reason = Pd.critical ? 'pressure_critical' as const : 'policy_exit' as const;
-        S.drops.push({
+        decide({
           agent: a, reason, done: true, exitReason: reason,
           recovery: emittingTerminal(a, terminal) ? { type: 'salvage' } : this.recovery(a, policy, P0, S.alive, mode),
         });
@@ -203,7 +208,7 @@ export class DefaultScheduler implements Scheduler {
       }
       if (a.extracting && a.recoveryTokens >= a.recoveryBudget) { S.finishes.push(a); continue; }
       if (!a.extracting && emittingTerminal(a, terminal) && a.turnTokens >= cap) {
-        S.drops.push({ agent: a, reason: 'terminal_cap', done: true, exitReason: 'terminal_cap', recovery: { type: 'salvage' } });
+        decide({ agent: a, reason: 'terminal_cap', done: true, exitReason: 'terminal_cap', recovery: { type: 'salvage' } });
         continue;
       }
       S.decode.push(a);

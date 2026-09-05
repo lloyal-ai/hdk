@@ -4,7 +4,7 @@ import type { Agent } from './Agent';
 import type { ContextPressure } from './pressure';
 import type { RecoveryAction } from './AgentPolicy';
 import type { AgentTaskSpec, AgentExitReason } from './types';
-import type { AgentTurnRecord } from './replay';
+import type { ReplayStep, AgentTurnRecord } from './replay';
 import type { TraceEvent } from './trace-types';
 
 /**
@@ -74,7 +74,18 @@ export interface SpawnRequest {
   replay?: SpawnReplay;
 }
 export interface SpawnReplay {
-  records: AgentTurnRecord[]; of: number; rc?: number; attempt: number;
+  /** The lineage, built once and priced — what the replacement will prefill after its suffix. */
+  steps: ReplayStep[]; cells: number;
+  of: number; rc?: number; attempt: number;
+}
+
+/** What a heal hands to the pool to forge its replacement from. */
+export interface Lineage { records: readonly AgentTurnRecord[]; of: number; rc?: number; attempt: number }
+
+/** What admission spends on a spawn — the suffix, and the lineage a heal
+ *  replays. The ONE place that answers it, like {@link itemCells}. */
+export function spawnCells(req: SpawnRequest): number {
+  return req.suffixTokens.length + (req.replay?.cells ?? 0);
 }
 
 /** An orchestrator's `extendSpine`, prefilled onto the spine with the spawns. */

@@ -262,16 +262,16 @@ import {
   Tool, Source,
   DefaultAgentPolicy,
   Ctx, Store, Events,
-  // App protocol primitives — types + contexts the registry + agent pool
-  // pick up. Construction lives in `@lloyal-labs/rig` (`defineApp`,
-  // `createAppRegistry`).
-  AppRegistryCtx, AppConfigStoreCtx, GrantStoreCtx, RerankerCtx,
+  // Ability protocol primitives — types + contexts the registry + agent pool
+  // pick up. Construction lives in `@lloyal-labs/rig` (`defineAbility`,
+  // `createAbilityRegistry`).
+  AbilityRegistryCtx, AbilityConfigStoreCtx, GrantStoreCtx, RerankerCtx,
 } from "@lloyal-labs/lloyal-agents";
 
 import type {
-  App, AppManifest, AppProtocol, AppFactory, AppState,
+  Ability, AbilityManifest, AbilityProtocol, AbilityFactory, AbilityState,
   AgentRenderCtx, SkillTemplateFn,
-  AppConfigStore, GrantStore,
+  AbilityConfigStore, GrantStore,
 } from "@lloyal-labs/lloyal-agents";
 ```
 

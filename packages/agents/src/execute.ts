@@ -14,7 +14,7 @@ import { Tool, ToolRetryError, takeToolMedia, TOOL_CONTEXT_KEY, TOOL_IMAGE_ERROR
 import type { Emitter } from './emit';
 import { ContextPressure } from './pressure';
 import { prepareBatch } from './prepare-content';
-import { replayAgentTurns } from './replay';
+import { runReplay } from './replay';
 import { failSettled, discardSpawn } from './apply';
 import type { EntailmentScorer } from './source';
 import type { TraceWriter } from './trace-writer';
@@ -395,7 +395,7 @@ export class Executor {
     if (s.replay) {
       a.healAttempt = s.replay.attempt;
       try {
-        yield* replayAgentTurns(a.branch, s.replay.records, { enableThinking: a.fmt.enableThinking });
+        yield* runReplay(a.branch, s.replay.steps);
       } catch {
         d.emit.trace({ kind: 'drop', agent: a, reason: 'pressure_init', done: false });
         a.failed = 'pressure_init';

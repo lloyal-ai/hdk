@@ -12,9 +12,10 @@ import { Emitter } from './emit';
 import { DefaultScheduler } from './scheduler';
 import { Applier } from './apply';
 import { Executor, setupAgent, makePermits, pruneAll, DEFAULT_MAX_CONCURRENT_TOOLS } from './execute';
+import { prepareReplay } from './replay';
 import type { Tool } from './Tool';
 import {
-  type Pending, type TickState, type ToolCompletion, type Ladder, emptyPending,
+  type Pending, type TickState, type ToolCompletion, type Ladder, type SpawnRequest, type Lineage, emptyPending,
 } from './state';
 import type { PoolContext } from './orchestrators';
 import type { AgentTaskSpec, AgentPoolOptions, AgentPoolResult, AgentEvent, PressureThresholds } from './types';
@@ -127,6 +128,18 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         grants = new Set(yield* grantStore.granted());
       } catch { /* no grant store — fail-closed */ }
     }
+    // Public numbers read raw would fail quietly later: a non-positive recovery
+    // budget cuts every report at its first token; a non-positive permit count
+    // hangs the first fan-out call forever. Refused here, with the value named.
+    const requirePositiveInteger = (name: string, value: number | undefined): void => {
+      if (value === undefined) return;
+      if (!Number.isInteger(value) || value <= 0) {
+        throw new Error(`useAgentPool: ${name} must be a positive integer, got ${value}`);
+      }
+    };
+    requirePositiveInteger('policy.recoveryBudget', policy.recoveryBudget);
+    requirePositiveInteger('maxConcurrentTools', opts.maxConcurrentTools);
+
     const config: PolicyConfig = { maxTurns, terminalToolName, hasNonTerminalTools, protectedTools, grants };
 
     // ── The pool's state ─────────────────────────────────────────
@@ -156,11 +169,25 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       recoveryBudget: policy.recoveryBudget,
       terminalToolName, config,
     }, ctx, tools);
+    /**
+     * The one way a spawn request is made: fork, format the suffix, and — for
+     * a heal — build and price the lineage the replacement will replay, so
+     * admission sees everything the request will prefill. A replacement forks
+     * the spine, as the original's replay carries what came after the fork.
+     */
+    function* forge(task: AgentTaskSpec, lineage?: Lineage): Operation<Omit<SpawnRequest, 'resolve' | 'reject' | 'discarded'>> {
+      const parent = lineage ? spine : (task.parent ?? spine);
+      const { agent, suffixTokens, formattedPrompt } = yield* setupAgent(parent, task, ctx, enableThinking, runNow);
+      if (!lineage) return { agent, suffixTokens, formattedPrompt, task };
+      const { steps, cells } = yield* prepareReplay(lineage.records, { enableThinking: agent.fmt.enableThinking });
+      return { agent, suffixTokens, formattedPrompt, task, replay: { steps, cells, of: lineage.of, rc: lineage.rc, attempt: lineage.attempt } };
+    }
+
     const applier = new Applier({
       ctx, policy, config, tools, emit, pending, ladder,
       recovery: policy.recoveryShape === 'parallel' ? 'cohort' : 'serial',
       recoveryBudget: policy.recoveryBudget, terminalToolName, pruneOnReturn, pressureOpts, totals,
-      setup: (task) => setupAgent(spine, task, ctx, enableThinking, runNow),
+      forge,
     });
     const executor = new Executor({
       ctx, store, tools, emit, tw, pending, agents, inflight,
@@ -183,9 +210,9 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         };
         // Fork now (metadata only); the suffix prefill and the activation are
         // the scheduler's. Suspend until admitted — or rejected for pressure.
-        const { agent, suffixTokens, formattedPrompt } = yield* setupAgent(parent, task, ctx, enableThinking, runNow);
+        const forged = yield* forge(task);
         const admitted = yield* action<Agent>((resolve, reject) => {
-          const req = { agent, suffixTokens, formattedPrompt, task, resolve, reject, discarded: false };
+          const req: SpawnRequest = { ...forged, resolve, reject, discarded: false };
           pending.spawns.push(req);
           wake.send();
           return () => { req.discarded = true; };

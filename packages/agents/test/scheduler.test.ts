@@ -296,4 +296,15 @@ describe('DefaultScheduler.schedule', () => {
     S = scheduler().schedule(state([a], 8000, { wall: 10 }, { retries: [park] }), quiet);
     expect(S.dispatch).toEqual([{ agent: a, tc: park.tc, retryAttempt: 1, retryCallId: 'c1' }]);
   });
+
+  it('one drop per agent per schedule: two cancels for the same live agent decide one drop', () => {
+    // A double click is two signals in one tick. The agent reads live for both
+    // (the drop is enacted after the schedule), so without the rule the second
+    // would be a second terminal event and an idle → idle transition.
+    const a = agent(7, 'awaiting_tool');
+    const st = state([a], 8000, { signals: { paused: false, windDown: false, cancelled: [7, 7], orchestratorDone: false }, inflight: new Set([7]) });
+    const S = scheduler().schedule(st, quiet);
+    expect(S.drops.map(d => [d.agent.id, d.reason])).toEqual([[7, 'user_cancel']]);
+    expect(S.halts).toEqual([a]);
+  });
 });

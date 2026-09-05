@@ -211,10 +211,10 @@ The honest comparison is full stack against full stack. Each row of the right co
 ```typescript
 // Agent runtime
 import {
-  initAgents, useAgent, agent, agentPool, useAgentPool, diverge,
+  initAgents, useAgent, agent, agentPool, useAgentPool,
   parallel, chain, fanout, dag, reduce, withSpine,
   Tool, Source, DefaultAgentPolicy,
-  Ctx, Store, Events, AppRegistryCtx, AppConfigStoreCtx, GrantStoreCtx, RerankerCtx,
+  Ctx, Store, Events, AbilityRegistryCtx, AbilityConfigStoreCtx, GrantStoreCtx, RerankerCtx,
 } from "@lloyal-labs/lloyal-agents";
 
 // Ability protocol + framework tools

@@ -17,7 +17,7 @@ import type { GrantStore } from './grant-store';
  * Effection context holding the active {@link SessionContext}
  *
  * Set by {@link initAgents} in the caller's scope. All agent operations
- * (`useAgent`, `agentPool`, `useAgentPool`, `withSpine`, `diverge`) read from this
+ * (`useAgent`, `agentPool`, `useAgentPool`, `withSpine`) read from this
  * context via `yield* Ctx.expect()`.
  *
  * @category Agents
@@ -27,7 +27,7 @@ export const Ctx = createContext<SessionContext>('lloyal.ctx');
 /**
  * Effection context holding the active {@link BranchStore}
  *
- * Set by {@link initAgents}. Used by {@link diverge} and {@link useAgentPool}
+ * Set by {@link initAgents}. Used by {@link useAgentPool}
  * for batched commit/prefill across multiple branches.
  *
  * @category Agents

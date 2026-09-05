@@ -10,7 +10,7 @@ import { ContextPressure } from './pressure';
 import { recoveryFor } from './scheduler';
 import {
   type Schedule, type Outputs, type Pending, type Drop, type Recovery, type PrefillItem, type SpawnRequest,
-  type PrefillOutcome, type Ladder, type DropReason,
+  type PrefillOutcome, type Ladder, type DropReason, type Lineage,
   alive, classifyRc, isFatalRc, MAX_DEFER_ATTEMPTS, BACKEND_TRIPWIRE_N, MAX_HEAL_ATTEMPTS,
 } from './state';
 import type { PressureThresholds, AgentTaskSpec } from './types';
@@ -40,9 +40,9 @@ export interface ApplyDeps {
   pruneOnReturn: boolean;
   pressureOpts: PressureThresholds;
   totals: { toolCalls: number; steps: number };
-  /** Fork the spine and format a task's suffix — what `PoolContext.spawn` does
-   *  before it queues; a heal queues the same way. */
-  setup: (task: AgentTaskSpec) => Operation<{ agent: Agent; suffixTokens: number[]; formattedPrompt: string }>;
+  /** The pool's one way to make a spawn request: fork, format, and price —
+   *  the suffix, and for a heal the lineage it will replay. */
+  forge: (task: AgentTaskSpec, lineage?: Lineage) => Operation<Omit<SpawnRequest, 'resolve' | 'reject' | 'discarded'>>;
 }
 
 /** Strip a trailing UNCLOSED `<tool_call>` fragment from text captured as an
@@ -350,13 +350,11 @@ export class Applier {
     if (!this.d.ladder.backendSuspect && attempt <= MAX_HEAL_ATTEMPTS && a.spec) {
       const records = a.records.slice();
       while (records.length > 0 && records[records.length - 1].kind === 'assistant') records.pop();
-      // A heal is a spawn wearing a lineage: forked and measured now, admitted
-      // against headroom like any spawn, replayed once its suffix has landed.
-      const { agent, suffixTokens, formattedPrompt } = yield* this.d.setup(a.spec);
-      this.d.pending.spawns.push({
-        agent, suffixTokens, formattedPrompt, task: a.spec, resolve: () => {}, reject: () => {}, discarded: false,
-        replay: { records, of: a.id, ...(o.rc !== undefined ? { rc: o.rc } : {}), attempt },
-      });
+      // A heal is a spawn wearing a lineage: forked and priced now — suffix
+      // and replay — admitted against headroom like any spawn, replayed once
+      // its suffix has landed. Nobody awaits it.
+      const forged = yield* this.d.forge(a.spec, { records, of: a.id, ...(o.rc !== undefined ? { rc: o.rc } : {}), attempt });
+      this.d.pending.spawns.push({ ...forged, resolve: () => {}, reject: () => {}, discarded: false });
     }
   }
 

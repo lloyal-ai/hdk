@@ -26,7 +26,9 @@ export function namesTakenFrom(source: string, specifier: string): string[] {
   const pattern = new RegExp(String.raw`(?:import|export)\s+(?:type\s+)?\{([^}]*)\}\s+from\s+['"]${escaped}['"]`, 'g');
   const out: string[] = [];
   for (const m of source.matchAll(pattern)) {
-    for (const raw of m[1].split(',')) {
+    // Comments inside the braces are not names.
+    const list = m[1].replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    for (const raw of list.split(',')) {
       const entry = raw.trim();
       if (!entry) continue;
       out.push(entry.replace(/^type\s+/, '').split(/\s+as\s+/)[0].trim());
