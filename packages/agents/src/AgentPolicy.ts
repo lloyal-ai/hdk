@@ -343,10 +343,21 @@ export interface AgentPolicy {
    */
   recoveryShape?: 'staggered' | 'parallel';
 
-  /** Explicit per-recovery token budget for in-loop (parallel / wind-down) recovery —
-   *  the prompt's word advisory + the pool's token-stop. Absent → adaptive: a fair
-   *  share of current headroom across the live agents, clamped to a [min, max].
-   *  Unused by `staggered` (full-length reports). */
+  /**
+   * Explicit token cap, enforced in two places:
+   * - a cohort recovery turn (`'parallel'`, and wind-down in either shape) —
+   *   rendered into the recovery prompt as a word advisory AND enforced by the
+   *   pool's token-stop;
+   * - a voluntary terminal report, in EITHER shape — the in-flight call is cut
+   *   and salvaged once it has run this many tokens.
+   *
+   * Serial (`'staggered'`) forced recovery has no configured cap: it ends at its
+   * stop token or when the pressure turns critical.
+   *
+   * Absent → adaptive for cohort turns (a fair share of current headroom across
+   * the agents that will still hold KV, clamped to a [min, max]) and 2048 for a
+   * voluntary report.
+   */
   readonly recoveryBudget?: number;
 }
 
@@ -424,14 +435,8 @@ export interface DefaultAgentPolicyOpts {
   };
   /** Recovery reap shape — see {@link AgentPolicy.recoveryShape}. @default 'staggered' */
   recoveryShape?: 'staggered' | 'parallel';
-  /** Explicit token cap, in two places: a cohort recovery turn (PARALLEL /
-   *  wind-down) — rendered into the recovery prompt (advisory "within N words")
-   *  AND enforced by the pool's token-stop (hard) — and a voluntary terminal
-   *  report, in either shape. Serial (`staggered`) forced recovery has no
-   *  configured cap: it ends at its stop token or when the pressure turns
-   *  critical. The consumer sets it per Effort level. @default unset → adaptive
-   *  for cohort turns (a fair share of current headroom across the live agents,
-   *  clamped), 2048 for a voluntary report. */
+  /** See {@link AgentPolicy.recoveryBudget} — the one contract; the consumer
+   *  sets it per Effort level. @default unset */
   recoveryBudget?: number;
   /** Budget thresholds. softLimit = nudge, hardLimit = kill.
    *  Same naming pattern for both resource types.

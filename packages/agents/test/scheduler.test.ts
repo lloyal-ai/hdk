@@ -337,6 +337,18 @@ describe('DefaultScheduler.schedule', () => {
     expect(S.drops.map(d => d.reason)).toEqual(['terminal_cap']);
   });
 
+  it('the adaptive cohort budget is shared among agents that will still hold KV — agents cancelled this schedule are not among them', () => {
+    // remaining 3500, hardLimit 512, BATCH_BUFFER 512, OVERHEAD 150: three shares
+    // give floor(2476 / 3) − 150 = 675; one share gives 2476 − 150 = 2326 → clamped 2048.
+    const withRecovery: AgentPolicy = { ...quiet, onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }), shouldExit: () => true };
+    const a = agent(1); const b = agent(2); const c = agent(3);
+    const cancelled = { paused: false, windDown: false, cancelled: [1, 2], orchestratorDone: false };
+    const S = scheduler().schedule(state([a, b, c], 3500, { signals: cancelled }), withRecovery);
+    expect(S.drops.map(d => [d.agent.id, d.reason])).toEqual([[1, 'user_cancel'], [2, 'user_cancel'], [3, 'policy_exit']]);
+    expect(S.alive, 'cancelled agents counted as sharers of the reserve').toBe(1);
+    expect(S.drops[2].recovery).toMatchObject({ type: 'extract', budget: 2048 });
+  });
+
   it('wind-down forces the cohort shape and reaps every active agent that is not mid-report', () => {
     const reporting = emitting(agent(1), 'report');
     const researching = agent(2);

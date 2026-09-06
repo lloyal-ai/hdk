@@ -197,7 +197,14 @@ export class DefaultScheduler implements Scheduler {
 
     // 2. Produce-phase verdicts, in agents order (the policy's per-tick
     //    stagger relies on that order).
-    S.alive = state.agents.filter(alive).length + S.spawns.length;
+    // The sharers of the recovery reserve: agents that will still hold or take
+    // KV after this schedule — the live roster plus the spawns admitted above,
+    // minus the agents cancelled in step 0, who never decode again and whose
+    // cells return at the next observe. Drops decided below with a salvage or a
+    // skip also stop decoding, but a pre-verdict count cannot know them, and
+    // one divisor for the whole cohort beats a running one that would hand
+    // earlier reaps a smaller share than later ones.
+    S.alive = state.agents.filter(a => alive(a) && !dropped.has(a)).length + S.spawns.length;
     // One configured number for both capped paths: an explicit budget caps a
     // voluntary report as it caps a cohort turn, above the adaptive ceiling too.
     const cap = this.opts.recoveryBudget ?? MAX_RECOVERY_BUDGET;

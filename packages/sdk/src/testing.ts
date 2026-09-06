@@ -254,6 +254,9 @@ export class MockSessionContext implements SessionContext {
     prompts: string[],
     bitmaps: Uint8Array[][],
   ): Promise<MultimodalPrefillResult[]> {
+    // The binding applies the kernel's rule to this rail too, before its worker
+    // runs (`_storePrefillMultimodal` → `require_distinct_handles`).
+    requireDistinctHandles(handles, '_storePrefillMultimodal');
     const out: MultimodalPrefillResult[] = [];
     this.multimodalPrefills.push({
       handles: [...handles],
