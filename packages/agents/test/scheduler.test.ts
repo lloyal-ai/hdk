@@ -103,16 +103,23 @@ describe('DefaultScheduler.schedule', () => {
     expect(S.drops[0]).toMatchObject({ reason: 'terminal_cap', exitReason: 'terminal_cap', recovery: { type: 'salvage' } });
   });
 
-  it('an extracting agent is exempt from the kill and finishes at its token-stop', () => {
+  it('an extracting agent is exempt from the kill: never dropped, finished at its token-stop or when the pressure is critical', () => {
     const a = agent(1);
     a.markExtracting(3);
-    let S = scheduler().schedule(state([a], 100), { ...quiet, shouldExit: () => true });
+    // Room above the reserve, budget left, a policy that wants it gone: it decodes.
+    let S = scheduler().schedule(state([a], 2000), { ...quiet, shouldExit: () => true });
     expect(S.drops).toEqual([]);
     expect(S.decode).toEqual([a]);
+    // Budget spent: finished.
     for (let i = 0; i < 3; i++) a.accumulateToken('x');
-    S = scheduler().schedule(state([a], 100), { ...quiet, shouldExit: () => true });
+    S = scheduler().schedule(state([a], 2000), { ...quiet, shouldExit: () => true });
     expect(S.finishes).toEqual([a]);
     expect(S.decode).toEqual([]);
+    // Below the reserve with budget left: finished, still never dropped.
+    const b = agent(2); b.markExtracting(1000);
+    S = scheduler().schedule(state([b], 100), { ...quiet, shouldExit: () => true });
+    expect(S.drops).toEqual([]);
+    expect(S.finishes).toEqual([b]);
   });
 
   it('serial recovery admits one turn at a time, exempt from the soft reserve', () => {
@@ -287,6 +294,27 @@ describe('DefaultScheduler.schedule', () => {
     expect(S.rejectedExtends).toEqual([]);
     S = scheduler().schedule(state([], 1000, {}, { extends: [ext] }), quiet);
     expect(S.rejectedExtends).toEqual([ext]);
+  });
+
+  it('an extracting agent is finished when the post-admission pressure turns critical, not only when its budget is spent', () => {
+    // Serial: an infinite budget never finishes by itself; the hard reserve must.
+    const serial = agent(1); serial.markExtracting(Infinity, true);
+    let S = scheduler({ recovery: 'serial' }).schedule(state([serial], 100), quiet);      // remaining 100 < hardLimit 512
+    expect(S.decode, 'a report decoded into a cache below the hard reserve').toEqual([]);
+    expect(S.finishes).toEqual([serial]);
+    expect(S.drops).toEqual([]);
+
+    // Cohort: budget left, but the cache is already below the reserve — the
+    // reservation lived only in the tick that admitted the turn.
+    const cohort = agent(2); cohort.markExtracting(1000);
+    S = scheduler().schedule(state([cohort], 100), quiet);
+    expect(S.finishes).toEqual([cohort]);
+
+    // Above the reserve, with budget left: decodes.
+    const fine = agent(4); fine.markExtracting(1000);
+    S = scheduler().schedule(state([fine], 2000), quiet);
+    expect(S.decode).toEqual([fine]);
+    expect(S.finishes).toEqual([]);
   });
 
   it('wind-down forces the cohort shape and reaps every active agent that is not mid-report', () => {

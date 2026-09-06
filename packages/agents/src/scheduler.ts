@@ -212,7 +212,13 @@ export class DefaultScheduler implements Scheduler {
         });
         continue;
       }
-      if (a.extracting && a.recoveryTokens >= a.recoveryBudget) { S.finishes.push(a); continue; }
+      // A report owns the room it was granted, not the hard reserve: it ends
+      // when its budget is spent OR the post-admission pressure is critical
+      // (a serial budget is infinite; a cohort's reservation lives only in the
+      // tick that admitted it, and later admissions can eat it). Finishing
+      // salvages what it produced, the way the terminal cap does, instead of
+      // committing into a cache that cannot hold the next batch.
+      if (a.extracting && (a.recoveryTokens >= a.recoveryBudget || Pd.critical)) { S.finishes.push(a); continue; }
       if (!a.extracting && emittingTerminal(a, terminal) && a.turnTokens >= cap) {
         decide({ agent: a, reason: 'terminal_cap', done: true, exitReason: 'terminal_cap', recovery: { type: 'salvage' } });
         continue;

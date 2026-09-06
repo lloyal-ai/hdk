@@ -347,44 +347,67 @@ export class Executor {
     const d = this.d;
     const born: Agent[] = [];
     if (S.spawns.length === 0 && S.extends.length === 0) return born;
+    const self = this;
 
-    // One batch never carries a handle twice (`require_distinct_handles`), so
-    // every admitted extend rides as ONE pair on the spine, in request order.
-    const extendTokens = S.extends.flatMap(e => e.tokens);
-    const pairs: [Branch, number[]][] = [
-      ...S.spawns.map(s => [s.agent.branch, s.suffixTokens] as [Branch, number[]]),
-      ...(extendTokens.length > 0 ? [[d.spine, extendTokens] as [Branch, number[]]] : []),
-    ];
-    try {
-      if (pairs.length > 0) yield* prefill(d.store, pairs);
-    } catch (err) {
-      // Nothing in this batch entered the pool, so nothing may outlive it: the
-      // forks go back (their KV leases with them) and every waiter hears why.
-      const e = toError(err);
-      for (const x of S.extends) x.reject(e);
-      for (const s of S.spawns) discardSpawn(s, e);
-      out.fatal = { phase: 'prefill', err };
+    // The batch's forks are owned HERE until they enter the roster. The prefill
+    // is a native call the loop suspends on, and the window between admission
+    // and activation is open to everything that can happen during a yield: the
+    // orchestrator halted by wind-down or by its own failure (its requests
+    // become `discarded`), or the pool itself halted (teardown), which unwinds
+    // this operation without visiting any catch. A fork not handed over by the
+    // time this scope exits goes back, its lease with it — the same cleanup on
+    // return, error and halt.
+    const handed = new Set<SpawnRequest>();
+    return yield* scoped(function* () {
+      yield* ensure(() => {
+        // Reached with forks still unhanded only on a halt: the pool is going,
+        // and its orchestrator with it, so the forks go back without a word.
+        for (const s of S.spawns) if (!handed.has(s)) discardSpawn(s);
+      });
+
+      // One batch never carries a handle twice (`require_distinct_handles`), so
+      // every admitted extend rides as ONE pair on the spine, in request order.
+      const extendTokens = S.extends.flatMap(e => e.tokens);
+      const pairs: [Branch, number[]][] = [
+        ...S.spawns.map(s => [s.agent.branch, s.suffixTokens] as [Branch, number[]]),
+        ...(extendTokens.length > 0 ? [[d.spine, extendTokens] as [Branch, number[]]] : []),
+      ];
+      try {
+        if (pairs.length > 0) yield* prefill(d.store, pairs);
+      } catch (err) {
+        // Nothing in this batch entered the pool, so nothing may outlive it: the
+        // forks go back (their KV leases with them) and every waiter hears why.
+        const e = toError(err);
+        for (const x of S.extends) x.reject(e);
+        for (const s of S.spawns) { discardSpawn(s, e); handed.add(s); }
+        out.fatal = { phase: 'prefill', err };
+        return born;
+      }
+
+      // Each request is answered with its own delta; its record carries the
+      // spine position as of ITS landing, the pair having advanced in order.
+      let positionAfter = d.spine.position - extendTokens.length;
+      for (const e of S.extends) {
+        positionAfter += e.tokens.length;
+        d.emit.trace({ kind: 'extended', userContent: e.userContent, assistantContent: e.assistantContent,
+          deltaTokens: e.tokens.length, positionAfter });
+        e.resolve(e.tokens.length);
+      }
+      for (const s of S.spawns) {
+        // Discarded while the batch was in flight: its suffix landed, but nobody
+        // awaits it and the pool is draining or its orchestrator is gone. The
+        // fork goes back rather than into a roster that would only reap it.
+        if (s.discarded) { discardSpawn(s); handed.add(s); continue; }
+        const a = s.agent;
+        a.spec = s.task;
+        d.agents.push(a);
+        handed.add(s);   // in the roster: teardown owns it from here
+        if (!(yield* self.activate(s))) continue;
+        s.resolve(a);
+        born.push(a);
+      }
       return born;
-    }
-
-    // Each request is answered with its own delta; its record carries the
-    // spine position as of ITS landing, the pair having advanced in order.
-    let positionAfter = d.spine.position - extendTokens.length;
-    for (const e of S.extends) {
-      positionAfter += e.tokens.length;
-      d.emit.trace({ kind: 'extended', userContent: e.userContent, assistantContent: e.assistantContent,
-        deltaTokens: e.tokens.length, positionAfter });
-      e.resolve(e.tokens.length);
-    }
-    for (const s of S.spawns) {
-      const a = s.agent;
-      a.spec = s.task;
-      d.agents.push(a);
-      if (!(yield* this.activate(s))) continue;
-      s.resolve(a);
-      born.push(a);
-    }
-    return born;
+    });
   }
 
   /** Announce the fork, replay its lineage if it has one, and activate it.
@@ -636,25 +659,38 @@ export class Executor {
 
   // ── Reclamation ──────────────────────────────────────────────
 
-  /** Prune every branch that is owed a prune and is a childless leaf. Returns
-   *  how many were freed. A branch with live children keeps its prefix; the
-   *  request stands until the children go. */
+  /** Prune every branch that is owed a prune and is a childless leaf, until
+   *  nothing reclaimable is left. Returns how many were freed.
+   *
+   *  A branch with live children keeps its prefix and the request stands until
+   *  the children go — and pruning a child can be exactly what frees its
+   *  parent, in this same pass. The pass therefore runs to a fixpoint: three
+   *  readers take it as complete — the pressure sample taken right after it,
+   *  the stall-break's rule that an outstanding prune is not progress, and
+   *  the close, which cannot free anything — and all three are true only if
+   *  no reclaimable leaf survives an observe. Registration order would reach
+   *  the same fixpoint walked in reverse; the loop states the invariant
+   *  instead of relying on the order. */
   prunePass(): number {
-    let n = 0;
-    for (const a of this.d.agents) {
-      if (!prunable(a)) { if (a.pruneRequested && a.branch.disposed) a.pruneRequested = false; continue; }
-      a.harvestMetrics();
-      if (a.branch.children.length > 0) continue;
-      this.d.emit.trace({ kind: 'pruned', agent: a, position: a.branch.position });
-      a.branch.pruneSync();
-      a.pruneRequested = false;
-      // The status mirrors the branch. Through the table: only an idle agent
-      // is ever pruned here, and a live one reaching this line is a bug that
-      // should fail loud, not a state that reads plausibly.
-      a.transition('disposed');
-      n++;
+    let total = 0;
+    for (;;) {
+      let n = 0;
+      for (const a of this.d.agents) {
+        if (!prunable(a)) { if (a.pruneRequested && a.branch.disposed) a.pruneRequested = false; continue; }
+        a.harvestMetrics();
+        if (a.branch.children.length > 0) continue;
+        this.d.emit.trace({ kind: 'pruned', agent: a, position: a.branch.position });
+        a.branch.pruneSync();
+        a.pruneRequested = false;
+        // The status mirrors the branch. Through the table: only an idle agent
+        // is ever pruned here, and a live one reaching this line is a bug that
+        // should fail loud, not a state that reads plausibly.
+        a.transition('disposed');
+        n++;
+      }
+      total += n;
+      if (n === 0) return total;
     }
-    return n;
   }
 }
 

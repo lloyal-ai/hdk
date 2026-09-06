@@ -219,6 +219,13 @@ export interface PoolSpec {
   /** Capture a thrown pool run into `PoolRun.error` instead of rejecting — for scenarios
    *  that expect a throw AND need the events emitted before it. Default: re-throw (fail-loud). */
   captureError?: boolean;
+  /**
+   * Hands the scenario the signal senders themselves, so a signal can be fired
+   * from INSIDE an instrumented native call — the one place the event-driven
+   * `windDownAfter` cannot reach, since no event flows while a prefill is
+   * suspended. Providing it installs the `WindDown` context.
+   */
+  signals?: (s: { windDown: () => void }) => void;
 }
 
 /**
@@ -324,7 +331,8 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
     yield* Attachments.set(contentStore);
     yield* Ingress.set(spec.ingress ?? rawIngress(contentStore));
     const windDownSignal = createSignal<void, void>();
-    if (spec.windDownAfter) yield* WindDown.set(windDownSignal);
+    if (spec.windDownAfter || spec.signals) yield* WindDown.set(windDownSignal);
+    spec.signals?.({ windDown: () => windDownSignal.send() });
     const cancelSignal = createSignal<{ agentId: number }, void>();
     if (spec.cancelAfter || spec.pauseAfter) yield* CancelAgent.set(cancelSignal);
     const pauseSignal = createSignal<boolean, void>();

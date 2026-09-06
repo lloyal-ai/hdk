@@ -370,15 +370,18 @@ export class Applier {
  *  dispatch as their trace parent. */
 
 /**
- * A fork that never entered the pool: free it and tell the orchestrator. Used
- * for a spawn the scheduler could not admit and for one whose suffix prefill
- * failed to land — either way the branch must not outlive the decision, and a
- * `spawn()` suspended on it must see the error rather than hang.
+ * A fork that never entered the pool: free it and, given a reason, tell the
+ * orchestrator. Used for a spawn the scheduler could not admit, for one whose
+ * suffix prefill failed to land, and for one abandoned while its batch was in
+ * flight — either way the branch must not outlive the decision. With `err`, a
+ * `spawn()` suspended on the request sees the error rather than hanging;
+ * without it (a pool being halted, whose orchestrator is being halted with
+ * it) the fork simply goes back.
  */
-export function discardSpawn(req: SpawnRequest, err: Error): void {
+export function discardSpawn(req: SpawnRequest, err?: Error): void {
   req.agent.branch.pruneSync();
   req.agent.dispose();
-  if (!req.discarded) req.reject(err);
+  if (err && !req.discarded) req.reject(err);
 }
 
 export function* failSettled(
