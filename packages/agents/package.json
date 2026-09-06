@@ -39,6 +39,7 @@
   "files": [
     "dist/",
     "LICENSE",
-    "LICENSE-FAQ.md"
+    "LICENSE-FAQ.md",
+    "docs/"
   ]
 }
