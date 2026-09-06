@@ -12,10 +12,10 @@
  * **What it provides:**
  * - Branch lifecycle: create, fork, prune with correct parent/child tracking
  * - Position tracking: advances on commit/prefill, forkHead set at fork time
- * - KV pressure: cellsUsed grows on commit/prefill, decrements on prune by
- *   what the branch charged — its position delta plus the embedding slack an
- *   image left behind (cells above positions), as `BranchStore::release` does
- *   by `position - forkHead` (matching C++ BranchStore::release semantics)
+ * - KV pressure: cellsUsed grows on commit/prefill and decrements on prune by
+ *   what the branch charged: `(position - forkHead) + imgSlack`, the position
+ *   delta plus the embedding slack its images left above it, matching
+ *   `BranchStore::release`
  * - Chat formatting: simple stubs returning a format value > 1
  *   (passes the tool-calling support check in agent-pool.ts)
  * - Tokenization: deterministic ~1 token per 4 chars
