@@ -1,4 +1,3 @@
-import type { Operation } from 'effection';
 import type { Tool } from './Tool';
 
 /**
@@ -60,24 +59,24 @@ export interface ScorerReranker {
 }
 
 /**
- * Abstract base class for data sources
+ * Abstract base class for data sources.
  *
- * A source is a named collection of data access tools with a bind
- * lifecycle and an entailment scoring factory. It does not orchestrate
- * agents — that is the harness's job via {@link spawnAgents}.
+ * A source is a named collection of data access tools plus an entailment
+ * scoring factory. Its reranker is injected at construction by the ability
+ * factory (`_reranker`); there is no bind lifecycle. It does not orchestrate
+ * agents — the harness does, through the pool.
  *
- * @typeParam TCtx - Runtime context passed to {@link bind} (e.g. reranker)
  * @typeParam TChunk - Chunk type returned by {@link getChunks} for post-use reranking
  *
  * @category Agents
  */
-export abstract class Source<TCtx = unknown, TChunk = unknown> {
+export abstract class Source<TChunk = unknown> {
   /** Human-readable source name (e.g. 'web', 'corpus') for labeling output */
   abstract readonly name: string;
   /** Data access tools provided by this source */
   abstract get tools(): Tool[];
 
-  /** Reranker instance, set during {@link bind}. Used by {@link createScorer}. */
+  /** Reranker instance, injected at construction by the ability factory. Used by {@link createScorer}. */
   protected _reranker: ScorerReranker | null = null;
   /**
    * Minimum entailment score for delegation to proceed.
@@ -130,9 +129,6 @@ export abstract class Source<TCtx = unknown, TChunk = unknown> {
       },
     };
   }
-
-  /** Late-bind runtime deps not available at construction. Called before tools are used. */
-  *bind(_ctx: TCtx): Operation<void> {}
 
   /** Post-use chunks for reranking. Called after agents have used the tools. */
   getChunks(): TChunk[] { return []; }

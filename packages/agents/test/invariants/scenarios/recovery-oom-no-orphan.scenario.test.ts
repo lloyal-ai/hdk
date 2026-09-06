@@ -5,7 +5,7 @@
  * The COMMIT batch where admitted reports decode can throw (KV exhausted by
  * concurrent reports). The pool then tears down — but each in-flight extractor
  * must FIRST receive a terminal `agent:failed`, else the UI spins forever on
- * "writing report". The blocking `recoverInline` path has its own `scope_error`
+ * "writing report". The serial path used to have its own `scope_error`
  * catch; this locks the same guarantee for the in-loop COMMIT path.
  */
 import { describe, it, expect } from 'vitest';
@@ -22,7 +22,7 @@ describe('scenario: in-loop recovery decode OOM emits agent:failed (no orphan)',
       onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),
     };
 
-    // Loose KV (nCtx 8000): free-text turn 1 (`1, 2, STOP`) → idle → `handleRecover`
+    // Loose KV (nCtx 8000): free-text turn 1 (`1, 2, STOP`) → idle → cohort recovery
     // (parallel) → the recovery is ADMITTED at SETTLE (fits, not deferred) → agent
     // re-activates as an in-loop extractor → its report (`3, 4, 777`) decodes in the
     // tick loop's COMMIT. The 777 sentinel makes that commit throw (mock decode OOM)

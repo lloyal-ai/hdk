@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { FMT } from './helpers/format-config';
 import { createToolkit } from '../src/toolkit';
+import { ContextPressure } from '../src/pressure';
 import { Agent } from '../src/Agent';
 import { MockTool } from './helpers/mock-tool';
 import { createMockReranker } from './helpers/mock-reranker';
@@ -10,6 +11,11 @@ import type { EntailmentScorer } from '../src/source';
 import { DefaultAgentPolicy } from '../src/AgentPolicy';
 
 // ── Pure unit tests (no Effection) ──────────────────────────
+
+/** A frozen pressure reading — the real value, not a hand-rolled twin. */
+function pressureAt(remaining: number, nCtx: number): ContextPressure {
+  return new ContextPressure({ nCtx, cellsUsed: nCtx - remaining, remaining }, { softLimit: 1024, hardLimit: 128 });
+}
 
 describe('spawnAgents — toolkit composition', () => {
   // We can't call spawnAgents directly without Effection, but we can
@@ -384,10 +390,7 @@ describe('Explore/exploit decoupled from lifecycle', () => {
     a.incrementToolCalls();
 
     // Pressure at 45% — below context threshold (0.5) → exploit mode
-    const p = {
-      headroom: 5000, critical: false, remaining: 7372, nCtx: 16384,
-      cellsUsed: 9012, percentAvailable: 45, canFit: () => true, softLimit: 1024, hardLimit: 128,
-    };
+    const p = pressureAt(7372, 16384);
 
     // shouldExplore = false (exploit)
     expect(policy.shouldExplore(a, p)).toBe(false);
@@ -418,10 +421,7 @@ describe('Explore/exploit decoupled from lifecycle', () => {
     for (let i = 0; i < 25; i++) a.incrementTurns();
 
     // Pressure at 60% — above threshold → explore mode
-    const p = {
-      headroom: 5000, critical: false, remaining: 9830, nCtx: 16384,
-      cellsUsed: 6554, percentAvailable: 60, canFit: () => true, softLimit: 1024, hardLimit: 128,
-    };
+    const p = pressureAt(9830, 16384);
 
     // shouldExplore = true (explore)
     expect(policy.shouldExplore(a, p)).toBe(true);
@@ -442,14 +442,8 @@ describe('Explore/exploit decoupled from lifecycle', () => {
       fmt: FMT,
     });
 
-    const highPressure = {
-      headroom: 5000, critical: false, remaining: 12000, nCtx: 16384,
-      cellsUsed: 4384, percentAvailable: 73, canFit: () => true, softLimit: 1024, hardLimit: 128,
-    };
-    const lowPressure = {
-      headroom: 5000, critical: false, remaining: 4915, nCtx: 16384,
-      cellsUsed: 11469, percentAvailable: 30, canFit: () => true, softLimit: 1024, hardLimit: 128,
-    };
+    const highPressure = pressureAt(12000, 16384);
+    const lowPressure = pressureAt(4915, 16384);
 
     // High pressure: explore=true, shouldExit=false
     expect(policy.shouldExplore(a, highPressure)).toBe(true);
@@ -460,10 +454,7 @@ describe('Explore/exploit decoupled from lifecycle', () => {
     expect(policy.shouldExit(a, lowPressure)).toBe(false);
 
     // Critical: shouldExit=true, explore is irrelevant but still computable
-    const criticalPressure = {
-      headroom: -900, critical: true, remaining: 100, nCtx: 16384,
-      cellsUsed: 16284, percentAvailable: 1, canFit: () => false, softLimit: 1024, hardLimit: 128,
-    };
+    const criticalPressure = pressureAt(100, 16384);
     expect(policy.shouldExit(a, criticalPressure)).toBe(true);
     expect(policy.shouldExplore(a, criticalPressure)).toBe(false);
   });

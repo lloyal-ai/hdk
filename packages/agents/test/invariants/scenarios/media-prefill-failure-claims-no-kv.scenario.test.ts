@@ -67,7 +67,7 @@ describe('scenario: a poisoned media prefill claims no KV', () => {
 
   it('is not recorded as a RECOVERY failure', async () => {
     // `pool:recoveryFailed` has a stated meaning — "produce completed but
-    // output unparseable", emitted by recoverInline — and `outputExcerpt` is
+    // output unparseable", emitted by the recovery path — and `outputExcerpt` is
     // the MODEL'S output. A native decode error is neither. Overloading the
     // event makes the field's own invariant false and leaves a reader unable
     // to tell an unparseable answer from a failed prefill without matching on

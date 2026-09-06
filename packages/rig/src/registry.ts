@@ -31,7 +31,7 @@
  * @category Protocol
  */
 
-import { call, createScope, ensure, suspend } from 'effection';
+import { call, createScope, ensure, scoped, suspend } from 'effection';
 import type { Operation } from 'effection';
 import {
   AbilityRegistryCtx,
@@ -127,7 +127,20 @@ export function* createAbilityRegistry(
 
       const [scope, destroy] = createScope();
       let added = false;
-      try {
+      return yield* scoped(function* () {
+        // Factory threw, validation failed, or the caller was halted before
+        // the ability entered the registry → tear down its detached scope
+        // (best-effort; the original error wins). Registered with ensure(),
+        // not a finally: cleanup that yields inside a finally takes a halted
+        // frame out of unwind mode and the halt is lost (Effection's contract).
+        yield* ensure(function* () {
+          if (added) return;
+          try {
+            yield* call(() => destroy());
+          } catch {
+            /* teardown error on the failure path — original error wins */
+          }
+        });
         // Run the factory in a DETACHED scope (so its teardown errors stay
         // isolated and swallowable), seeded with the framework contexts.
         // It resolves the Ability out, then suspends — keeping the Ability and its
@@ -212,18 +225,7 @@ export function* createAbilityRegistry(
         order.push(ability.manifest.name);
         added = true;
         return ability;
-      } finally {
-        // Factory threw, validation failed, or the caller was halted before
-        // the ability entered the registry → tear down its detached scope
-        // (best-effort; don't mask the original error).
-        if (!added) {
-          try {
-            yield* call(() => destroy());
-          } catch {
-            /* teardown error on the failure path — original error wins */
-          }
-        }
-      }
+      });
     },
     *disable(name: string): Operation<void> {
       const entry = entries.get(name);

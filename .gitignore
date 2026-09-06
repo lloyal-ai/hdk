@@ -5,6 +5,7 @@ dist/
 docs/_internal
 tmp/
 docs/
+!packages/agents/docs/
 trace-*.jsonl
 harness.json
 

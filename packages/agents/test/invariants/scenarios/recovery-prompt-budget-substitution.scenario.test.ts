@@ -92,7 +92,7 @@ describe('scenario: recovery prompt budget substitution', () => {
 
     const agent: any = { tokenCount: 200, toolCallCount: 5 };
 
-    // The parallel fold passes its fixed per-report budget `b` as onRecovery's 3rd
+    // The parallel fold passes its fixed per-recovery budget `b` as onRecovery's 3rd
     // arg so the prompt advisory matches the grammar maxLength cap. b=200 →
     // words = floor(200 * 0.7 / 10) * 10 = 140 (NOT the pressure-derived ~5130).
     const overridden = policy.onRecovery(agent, mkPressure(8000), 200) as

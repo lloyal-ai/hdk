@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { run, spawn, sleep } from 'effection';
 import { Agent } from '../src/Agent';
 import { createMockBranch } from './helpers/mock-branch';
 
@@ -59,15 +60,56 @@ describe('Agent', () => {
       expect(a.status).toBe('disposed');
     });
 
-    it('rejects idle → awaiting_tool', () => {
+    it('rejects idle → awaiting_tool (idle is final: every drop decides its recovery while the agent is live)', () => {
       const a = makeAgent();
       expect(() => a.transition('awaiting_tool')).toThrow('Invalid agent status transition');
+    });
+
+    it('rejects active → disposed', () => {
+      const a = makeAgent();
+      a.transition('active');
+      expect(() => a.transition('disposed')).toThrow('Invalid agent status transition');
     });
 
     it('rejects disposed → active', () => {
       const a = makeAgent();
       a.dispose();
       expect(() => a.transition('active')).toThrow('Invalid agent status transition');
+    });
+  });
+
+  describe('final', () => {
+    // `final` is the one future an orchestrator waits on: it resolves the first
+    // time the agent reaches a final status AFTER it lived, and never for the
+    // pre-activation idle an agent is born with.
+    it('is not resolved by the idle an agent is born with', async () => {
+      const a = makeAgent();
+      let settled = false;
+      await run(function* () {
+        yield* spawn(function* () { yield* a.final; settled = true; });
+        yield* sleep(5);
+      });
+      expect(settled).toBe(false);
+    });
+
+    it('resolves on the first idle after activation, and stays resolved', async () => {
+      const a = makeAgent();
+      a.transition('active');
+      a.transition('idle');
+      const order: string[] = [];
+      await run(function* () {
+        yield* a.final; order.push('first');
+        yield* a.final; order.push('again');   // a future: the same outcome every time
+      });
+      expect(order).toEqual(['first', 'again']);
+    });
+
+    it('resolves on dispose, however the agent got there', async () => {
+      const a = makeAgent();
+      a.dispose();
+      let settled = false;
+      await run(function* () { yield* a.final; settled = true; });
+      expect(settled).toBe(true);
     });
   });
 
@@ -172,46 +214,6 @@ describe('Agent', () => {
       expect(a.position).toBe(500);
       expect(a.forkHead).toBe(200);
       expect(a.uniqueCells).toBe(300);
-    });
-  });
-
-  describe('async iterator', () => {
-    it('yields tokens from branch and accumulates state', async () => {
-      const branch = createMockBranch({ handle: 1 });
-      branch._tokens = [
-        { token: 10, text: 'hello' },
-        { token: 20, text: ' world' },
-        { token: 30, text: '!' },
-      ];
-      const a = new Agent({ id: 1, parentId: 0, branch: branch as any, fmt: FMT });
-
-      const collected: Array<{ token: number; text: string }> = [];
-      for await (const produced of a) {
-        collected.push(produced);
-      }
-
-      expect(collected).toEqual([
-        { token: 10, text: 'hello' },
-        { token: 20, text: ' world' },
-        { token: 30, text: '!' },
-      ]);
-      expect(a.rawOutput).toBe('hello world!');
-      expect(a.tokenCount).toBe(3);
-    });
-
-    it('yields nothing when branch has no tokens', async () => {
-      const branch = createMockBranch({ handle: 1 });
-      branch._tokens = [];
-      const a = new Agent({ id: 1, parentId: 0, branch: branch as any, fmt: FMT });
-
-      const collected: Array<{ token: number; text: string }> = [];
-      for await (const produced of a) {
-        collected.push(produced);
-      }
-
-      expect(collected).toEqual([]);
-      expect(a.rawOutput).toBe('');
-      expect(a.tokenCount).toBe(0);
     });
   });
 });

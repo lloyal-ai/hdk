@@ -23,7 +23,7 @@ import type { Operation } from 'effection';
 import type { AgentPolicy } from '../../../src/AgentPolicy';
 import type { PoolContext } from '../../../src/orchestrators';
 import { runPool, STOP } from '../harness';
-import { I1_nativeStoreSingleFiber } from '../predicates';
+import { I1_nativeStoreSingleFiber, I4_spawnBatched, formatResult } from '../predicates';
 
 describe('scenario: concurrent extendSpine has no native-call overlap', () => {
   const minimalPolicy: AgentPolicy = {
@@ -71,6 +71,8 @@ describe('scenario: concurrent extendSpine has no native-call overlap', () => {
     // I1: no native-call temporal overlap across the entire run.
     const i1 = I1_nativeStoreSingleFiber(run);
     expect(i1.ok, i1.violations.map(v => v.detail).join('\n')).toBe(true);
+    // I4: the three concurrent spawns land as ONE native prefill carrying three branches.
+    expect(formatResult('I4', I4_spawnBatched(run))).toBe('I4: ok');
 
     // Each extend emitted its spine:extend trace event — the drain resolved
     // the rendezvous action for every request.

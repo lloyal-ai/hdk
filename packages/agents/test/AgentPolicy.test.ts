@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { DefaultAgentPolicy, defaultToolGuards } from '../src/AgentPolicy';
+import { ContextPressure } from '../src/pressure';
 import type { PolicyConfig } from '../src/AgentPolicy';
 import { Agent } from '../src/Agent';
 import { createMockBranch } from './helpers/mock-branch';
@@ -20,18 +21,9 @@ function makeAgent(overrides?: { toolCallCount?: number; turns?: number; toolHis
   return a;
 }
 
-function pressure(remaining = 5000, nCtx = 16384) {
-  return {
-    headroom: remaining - 1024,
-    critical: remaining < 128,
-    remaining,
-    nCtx,
-    cellsUsed: nCtx - remaining,
-    percentAvailable: nCtx > 0 ? Math.max(0, Math.round((remaining / nCtx) * 100)) : 100,
-    canFit: (n: number) => n <= remaining - 1024,
-    softLimit: 1024,
-    hardLimit: 128,
-  };
+/** A frozen pressure reading — the real value, not a hand-rolled twin. */
+function pressure(remaining = 5000, nCtx = 16384): ContextPressure {
+  return new ContextPressure({ nCtx, cellsUsed: nCtx - remaining, remaining }, { softLimit: 1024, hardLimit: 128 });
 }
 
 describe('DefaultAgentPolicy', () => {

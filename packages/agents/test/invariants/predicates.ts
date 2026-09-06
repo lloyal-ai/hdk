@@ -38,22 +38,29 @@ export function I1_nativeStoreSingleFiber(run: PoolRun): PredicateResult {
 /**
  * I4 SPAWN-batched: when multiple agents spawn "at once" (same tick), their
  * suffix prefill lands in one native prefill call with N pairs, not N calls.
- * Implemented as: the first store.prefill of a run carries branchCount
- * equal to the number of agentFork branch:create events preceding it.
+ * Implemented as: the spawn batch is the LAST store.prefill that started
+ * before the first agentFork `branch:create` — the create is written once the
+ * suffix has landed, so the batch precedes it and the root's own prefill is
+ * earlier still. It must carry branchCount equal to the number of agentFork
+ * creates.
  */
 export function I4_spawnBatched(run: PoolRun): PredicateResult {
   const forks = run.traceEvents.filter(
     e => e.type === 'branch:create' && (e as any).role === 'agentFork',
   ).length;
   if (forks === 0) return ok();
-  const firstPrefill = run.nativeCalls.find(c => c.op === 'prefill');
-  if (!firstPrefill) {
-    return fail('I4', `${forks} agentFork(s) but no store.prefill call recorded`);
+  const firstFork = run.traceEvents.find(
+    e => e.type === 'branch:create' && (e as any).role === 'agentFork',
+  ) as { ts: number };
+  const before = run.nativeCalls.filter(c => c.op === 'prefill' && c.tStart < firstFork.ts);
+  const spawnBatch = before[before.length - 1];
+  if (!spawnBatch) {
+    return fail('I4', `${forks} agentFork(s) but no store.prefill call recorded before the first fork create`);
   }
-  if (firstPrefill.branchCount !== forks) {
+  if (spawnBatch.branchCount !== forks) {
     return fail(
       'I4',
-      `SPAWN-phase prefill carried ${firstPrefill.branchCount} branches, expected ${forks} (batched as one native call)`,
+      `SPAWN-phase prefill carried ${spawnBatch.branchCount} branches, expected ${forks} (batched as one native call)`,
     );
   }
   return ok();
@@ -84,36 +91,6 @@ export function I24_settlePolicyConsulted(
     return fail(
       'I24',
       `${settleDrops.length} settle-related drop(s) but policy.onSettleReject was never invoked`,
-    );
-  }
-  return ok();
-}
-
-/**
- * I25 Stall-break-last-resort: settle_stall_break fires only when policy
- * said nudge and the nudge itself re-deferred (or policy is absent). A drop
- * with reason `settle_stall_break` must NOT occur when there exists an
- * active agent at the time the decision was made.
- *
- * Weakly verified via: no two drops with reason 'settle_stall_break' can
- * happen while another agent is still active in the trace.
- *
- * Strongly verified by inspecting production code paths — future work.
- * For now, check that `settle_stall_break` is used at all (not collapsed
- * with `pressure_settle_reject`).
- */
-export function I25_stallBreakDistinct(run: PoolRun): PredicateResult {
-  const drops = run.traceEvents.filter(e => e.type === 'pool:agentDrop');
-  const reasons = new Set(drops.map(d => (d as any).reason));
-  const hasSettleReject = reasons.has('pressure_settle_reject');
-  const hasStallBreak = reasons.has('settle_stall_break');
-  const hasStallBreakReason = drops.some(
-    d => (d as any).reason === 'settle_stall_break',
-  );
-  if (hasSettleReject && !hasStallBreak) {
-    return fail(
-      'I25',
-      `pressure_settle_reject present but settle_stall_break never — reasons are collapsed into one`,
     );
   }
   return ok();
@@ -153,7 +130,7 @@ export function I29_recoveryDiagnostic(run: PoolRun): PredicateResult {
  */
 export function nudgeMessageContainsBudget(
   run: PoolRun,
-  reason?: 'settle_reject' | 'nudge' | 'pressure_softcut' | 'pressure_settle_reject' | 'time_nudge',
+  reason?: 'settle_reject' | 'nudge' | 'pressure_softcut' | 'pressure_settle_reject',
 ): PredicateResult {
   const nudges = run.traceEvents.filter(e => e.type === 'pool:agentNudge');
   const filtered = reason
@@ -195,6 +172,7 @@ const RECORDED_EXIT_REASONS = new Set<AgentExitReason>([
   'policy_exit',
   'pressure_softcut',
   'maxTurns',
+  'terminal_cap',
 ]);
 
 export function I30_exitReasonMatchesTrace(run: PoolRun): PredicateResult {
@@ -301,6 +279,15 @@ export function I32_pauseHoldsNative(run: PoolRun): PredicateResult {
   return ok();
 }
 
+/** The agent an event is about, on either stream. Branch events carry the
+ *  handle instead, and for an agent fork the handle IS the agent id. */
+function idOf(e: AgentEvent | TraceEvent): number | undefined {
+  const r = e as { agentId?: number; branchHandle?: number };
+  return r.agentId ?? r.branchHandle;
+}
+/** Channel events that end an agent's span. */
+const TERMINAL = new Set(['agent:return', 'agent:recovered', 'agent:failed', 'agent:done']);
+
 /**
  * I33 Agent-failure-is-isolated — a SCENARIO predicate, not a global invariant.
  *
@@ -325,9 +312,6 @@ export function I33_agentFailureIsIsolated(
   reason?: string,
 ): PredicateResult {
   const evs = run.channelEvents;
-  const idOf = (e: AgentEvent): number | undefined =>
-    (e as { agentId?: number }).agentId;
-  const TERMINAL = new Set(['agent:return', 'agent:recovered', 'agent:failed', 'agent:done']);
 
   // FIRST, and unconditionally: a torn-down run emits NO `agent:failed` at all,
   // so keying the whole check off failures makes it vacuous exactly when the
@@ -369,5 +353,83 @@ export function I33_agentFailureIsIsolated(
     }
   }
 
+  return ok();
+}
+
+/**
+ * I41 terminal-is-last: once the pool has announced an agent FAILED, it does
+ * no further work for that agent — no admission, no dispatch, no sampling.
+ *
+ * `agent:failed` is the one terminal event with nothing legitimately after it
+ * (`agent:done` precedes a recovery stream by design, so it is not checked).
+ * Both streams are read: the channel for what a consumer saw, the trace for
+ * what the pool actually did to the KV. A `tool:settle_order` batch counts
+ * through its entries, since the event itself carries no agentId.
+ */
+export function I41_terminalIsLast(run: PoolRun): PredicateResult {
+  const LATER_CHANNEL = new Set(['agent:tool_call', 'agent:produce', 'agent:tool_result', 'agent:spawn']);
+  const LATER_TRACE = new Set(['branch:prefill', 'tool:dispatch', 'agent:turn']);
+
+  const failedAt = new Map<number, number>();
+  run.channelEvents.forEach((e, i) => {
+    const id = idOf(e);
+    if (e.type === 'agent:failed' && id !== undefined && !failedAt.has(id)) failedAt.set(id, i);
+  });
+  for (const [id, at] of failedAt) {
+    const later = run.channelEvents.slice(at + 1).find(e => idOf(e) === id && LATER_CHANNEL.has(e.type));
+    if (later) {
+      return fail('I41', `agent ${id}: \`${later.type}\` on the channel after its agent:failed`, at);
+    }
+  }
+
+  // The trace has no `agent:failed`; its mirrors are the user_cancel drop and
+  // the settle failure, the two records whose bus twin is `agent:failed`.
+  const failedTs = new Map<number, number>();
+  for (const e of run.traceEvents) {
+    const id = idOf(e);
+    const mirrors = e.type === 'pool:settleFailed'
+      || (e.type === 'pool:agentDrop' && (e as { reason?: string }).reason === 'user_cancel');
+    if (mirrors && id !== undefined && !failedTs.has(id)) failedTs.set(id, e.ts);
+  }
+  for (const e of run.traceEvents) {
+    if (e.type === 'tool:settle_order') {
+      for (const entry of (e as { batch: { agentId: number }[] }).batch) {
+        const t0 = failedTs.get(entry.agentId);
+        if (t0 !== undefined && e.ts > t0) {
+          return fail('I41', `agent ${entry.agentId}: admitted (tool:settle_order) after its agent:failed`);
+        }
+      }
+      continue;
+    }
+    const id = idOf(e);
+    if (id === undefined || !LATER_TRACE.has(e.type)) continue;
+    const t0 = failedTs.get(id);
+    if (t0 !== undefined && e.ts > t0) {
+      return fail('I41', `agent ${id}: \`${e.type}\` in the trace after its agent:failed`);
+    }
+  }
+  return ok();
+}
+
+/**
+ * I42 no-leaked-branches: at pool end the only live branch is the root the
+ * pool was given, whichever path ended the pool.
+ *
+ * A fork holds a KV sequence lease (`kv::tenancy`) that only `release()`
+ * returns, and leases are the scarce resource — `branches: 4` on a laptop.
+ * The trace cannot see a fork that never landed (`branch:create` is written
+ * after its suffix prefill), so this reads the mock's branch table directly:
+ * every handle but the root must be disposed, and the cell gauge must be back
+ * to the root's own position.
+ */
+export function I42_noLeakedBranches(run: PoolRun): PredicateResult {
+  const live = run.ctx.liveHandles().filter(h => h !== run.rootHandle);
+  if (live.length > 0) {
+    return fail('I42', `${live.length} branch(es) still live at pool end besides the root: ${live.join(', ')}`);
+  }
+  const rootPosition = run.ctx.positionOf(run.rootHandle);
+  if (run.ctx.cellsUsed !== rootPosition) {
+    return fail('I42', `cellsUsed is ${run.ctx.cellsUsed} at pool end, the root alone holds ${rootPosition}`);
+  }
   return ok();
 }

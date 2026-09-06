@@ -54,7 +54,7 @@ export interface AgentHandle<E = AgentEvent> {
  *   }));
  *
  *   const { session, events } = yield* initAgents(ctx);
- *   // Ctx, Store, Events are now set — generate(), diverge(),
+ *   // Ctx, Store, Events are now set — useAgent(),
  *   // useAgentPool() will find them automatically.
  *   // Cleanup runs on scope exit.
  * });

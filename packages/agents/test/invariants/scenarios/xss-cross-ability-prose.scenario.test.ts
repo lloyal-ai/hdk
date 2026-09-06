@@ -67,7 +67,7 @@ describe('scenario: cross-ability prose cannot escalate from open reads to prote
       }],
       policy: new DefaultAgentPolicy({ terminalToolName: 'report' }),
       tools,
-      terminalTool: 'report',
+      terminalToolName: 'report',
       trace: true,
     });
 
@@ -96,7 +96,7 @@ describe('scenario: cross-ability prose cannot escalate from open reads to prote
       }],
       policy: new DefaultAgentPolicy({ terminalToolName: 'report' }),
       tools,
-      terminalTool: 'report',
+      terminalToolName: 'report',
       trace: true,
     });
 
@@ -124,7 +124,7 @@ describe('scenario: cross-ability prose cannot escalate from open reads to prote
       }],
       policy: new DefaultAgentPolicy({ terminalToolName: 'report' }),
       tools,
-      terminalTool: 'report',
+      terminalToolName: 'report',
       trace: true,
     });
 

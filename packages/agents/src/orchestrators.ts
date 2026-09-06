@@ -49,12 +49,14 @@ export interface PoolContext {
   /** Fork an agent branch, prefill its suffix, transition to active. Tick loop picks it up. */
   spawn(spec: SpawnSpec): Operation<Agent>;
 
-  /** Suspend until agent.status becomes 'idle' | 'disposed'. Returns agent for chaining. */
+  /** Suspend until the agent is final (`idle` after it lived, or `disposed`) — its one `final` future. Returns the agent for chaining. */
   waitFor(agent: Agent): Operation<Agent>;
 
   /**
    * Serialize a user+assistant turn and prefill it into the spine, advancing spine.position.
-   * No-op (returns 0) when assistantContent is empty.
+   * No-op (returns 0) when assistantContent is empty. Admitted against headroom like
+   * every other prefill: it waits for room while agents can still free KV, and throws
+   * once nothing can — the spine is never handed a delta that does not fit.
    */
   extendSpine(userContent: string, assistantContent: string): Operation<number>;
 

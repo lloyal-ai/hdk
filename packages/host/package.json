@@ -36,7 +36,7 @@
   },
   "dependencies": {
     "@lloyal-labs/binding": "^0.1.0",
-    "effection": "^4.0.2"
+    "effection": "^4.1.0"
   },
   "devDependencies": {
     "@lloyal-labs/sdk": "4.0.0-alpha.3",

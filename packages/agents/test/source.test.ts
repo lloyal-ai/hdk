@@ -4,7 +4,7 @@ import type { EntailmentScorer, ScorerReranker } from '../src/source';
 import { createMockReranker } from './helpers/mock-reranker';
 
 // Concrete subclass for testing (Source is abstract)
-class TestSource extends Source<{ reranker: ScorerReranker }> {
+class TestSource extends Source {
   readonly name = 'test';
   get tools() { return []; }
 

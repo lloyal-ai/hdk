@@ -26,8 +26,8 @@ export { useAgent, agent } from './use-agent';
 export type { UseAgentOpts } from './use-agent';
 export { agentPool } from './create-agent-pool';
 export type { CreateAgentPoolOpts } from './create-agent-pool';
-export { diverge } from './diverge';
-export { useAgentPool, ContextPressure } from './agent-pool';
+export { useAgentPool } from './agent-pool';
+export { ContextPressure } from './pressure';
 export { createToolkit } from './toolkit';
 export { initAgents } from './init';
 export { withSpine } from './spine';
@@ -69,9 +69,6 @@ export type {
   AgentPoolOptions,
   AgentResult,
   AgentPoolResult,
-  DivergeOptions,
-  DivergeAttempt,
-  DivergeResult,
   AgentEvent,
   AgentTraceEvent,
 } from './types';
