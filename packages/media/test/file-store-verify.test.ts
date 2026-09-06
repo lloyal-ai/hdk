@@ -65,3 +65,22 @@ describe('content-addressed reads', () => {
     expect(() => materialize(store, [a])).toThrow(/manifest/i);
   });
 });
+
+describe('content-addressed writes', () => {
+  it('a put makes the bytes at the digest path true again, even over a planted or drifted file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'verify-'));
+    const store = new FileAttachmentStore(dir);
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const rep = store.putBlob(bytes, 'application/octet-stream');
+    writeFileSync(blobPath(dir, rep.digest), new Uint8Array([9, 9, 9, 9]));
+    expect(store.get(rep.digest)).toBeNull();
+
+    // The same content arrives again. The name is a promise about the bytes;
+    // a write that trusted the existing file would keep the promise broken
+    // for every future upload of this content.
+    const again = store.putBlob(bytes, 'application/octet-stream');
+
+    expect(again.digest).toBe(rep.digest);
+    expect(store.get(rep.digest)).toEqual(bytes);
+  });
+});

@@ -88,27 +88,27 @@ export class FileAttachmentStore implements AttachmentStore {
     // it by creating directories a run may never need.
     this._ensureLayout();
     const file = this._pathFor(digest)!;
-    // Content-addressed, so a file already at this path IS these bytes — and
-    // if it has drifted, `get` refuses it; this write does not repair it.
+    // Content-addressed: the name is a promise about the bytes. Every put
+    // keeps it by writing, never by trusting what is already at the path — a
+    // drifted or planted file there would otherwise leave this content
+    // unreplayable for good, while `get` kept refusing it. Rewriting identical
+    // bytes is idempotent, and concurrent puts of the same content converge.
     // Temp-then-rename so a reader never sees a half-written blob under a
-    // digest that promises the whole of it.
-    if (!existsSync(file)) {
-      // Matches `writeJsonAtomic` (rig/src/config-node.ts), which is the
-      // repo's reference for this: a RANDOM suffix so concurrent writers never
-      // collide on a guessable name (pid alone is deterministic and recycled),
-      // `wx` so a planted file or symlink at that path fails the write instead
-      // of being followed, and cleanup so a crash leaves no stray. The rename
-      // is same-filesystem and therefore atomic.
-      const tmp = join(
-        this._dir, '.tmp', `${digest.slice(7)}.${randomBytes(4).toString('hex')}`,
-      );
-      try {
-        writeFileSync(tmp, bytes, { flag: 'wx' });
-        renameSync(tmp, file);
-      } catch (e) {
-        try { rmSync(tmp, { force: true }); } catch { /* best effort */ }
-        throw e;
-      }
+    // digest that promises the whole of it. The staging name matches
+    // `writeJsonAtomic` (rig/src/config-node.ts): a RANDOM suffix so
+    // concurrent writers never collide on a guessable name, `wx` so a planted
+    // file or symlink at that path fails the write instead of being followed,
+    // and cleanup so a crash leaves no stray. The rename is same-filesystem and
+    // therefore atomic, over an existing file included.
+    const tmp = join(
+      this._dir, '.tmp', `${digest.slice(7)}.${randomBytes(4).toString('hex')}`,
+    );
+    try {
+      writeFileSync(tmp, bytes, { flag: 'wx' });
+      renameSync(tmp, file);
+    } catch (e) {
+      try { rmSync(tmp, { force: true }); } catch { /* best effort */ }
+      throw e;
     }
     return { mediaType, digest, size: bytes.byteLength, ...(annotations ? { annotations } : {}) };
   }
