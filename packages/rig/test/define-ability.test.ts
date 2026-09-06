@@ -42,7 +42,7 @@ class FakeTool extends Tool<Record<string, unknown>> {
   }
 }
 
-class FakeSource extends Source<unknown, unknown> {
+class FakeSource extends Source {
   readonly name = 'fake';
   readonly tools = [];
   *bind(_ctx: unknown): Operation<void> {}

@@ -424,11 +424,14 @@ export interface DefaultAgentPolicyOpts {
   };
   /** Recovery reap shape — see {@link AgentPolicy.recoveryShape}. @default 'staggered' */
   recoveryShape?: 'staggered' | 'parallel';
-  /** Explicit per-recovery token budget for in-loop (PARALLEL / wind-down) recovery —
-   *  rendered into the recovery prompt (advisory "within N words") AND enforced by
-   *  the pool's token-stop (hard). Unused by `staggered` (full-length reports). The
-   *  consumer sets it per Effort level. @default unset → adaptive (a fair share of
-   *  current headroom across the live agents, clamped). */
+  /** Explicit token cap, in two places: a cohort recovery turn (PARALLEL /
+   *  wind-down) — rendered into the recovery prompt (advisory "within N words")
+   *  AND enforced by the pool's token-stop (hard) — and a voluntary terminal
+   *  report, in either shape. Serial (`staggered`) forced recovery has no
+   *  configured cap: it ends at its stop token or when the pressure turns
+   *  critical. The consumer sets it per Effort level. @default unset → adaptive
+   *  for cohort turns (a fair share of current headroom across the live agents,
+   *  clamped), 2048 for a voluntary report. */
   recoveryBudget?: number;
   /** Budget thresholds. softLimit = nudge, hardLimit = kill.
    *  Same naming pattern for both resource types.

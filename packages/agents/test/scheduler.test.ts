@@ -317,6 +317,26 @@ describe('DefaultScheduler.schedule', () => {
     expect(S.finishes).toEqual([]);
   });
 
+  it('an explicit recoveryBudget is one budget for both paths: it caps the in-flight terminal call unchanged, above the adaptive ceiling too', () => {
+    // 2048 is the ADAPTIVE ceiling, for when no budget is configured. An
+    // explicit 3000 is honoured by cohort recovery (clamped only to what fits)
+    // and must cap a voluntary report at 3000 as well, not at 2048.
+    const reporting = emitting(agent(1), 'report');
+    for (let i = 0; i < 2500; i++) reporting.accumulateToken('x');
+    let S = scheduler({ recoveryBudget: 3000 }).schedule(state([reporting], 8000), quiet);
+    expect(S.drops, 'the explicit budget was capped at the adaptive ceiling').toEqual([]);
+    expect(S.decode).toEqual([reporting]);
+    for (let i = 0; i < 500; i++) reporting.accumulateToken('x');
+    S = scheduler({ recoveryBudget: 3000 }).schedule(state([reporting], 8000), quiet);
+    expect(S.drops.map(d => d.reason)).toEqual(['terminal_cap']);
+
+    // Without a configured budget the adaptive ceiling caps the report.
+    const adaptive = emitting(agent(2), 'report');
+    for (let i = 0; i < 2048; i++) adaptive.accumulateToken('x');
+    S = scheduler().schedule(state([adaptive], 8000), quiet);
+    expect(S.drops.map(d => d.reason)).toEqual(['terminal_cap']);
+  });
+
   it('wind-down forces the cohort shape and reaps every active agent that is not mid-report', () => {
     const reporting = emitting(agent(1), 'report');
     const researching = agent(2);

@@ -24,7 +24,8 @@ import {
 
 /** Adaptive per-recovery budget bounds for cohort recovery when no explicit
  *  `recoveryBudget` is set: a fair share of headroom across the live agents,
- *  clamped to [MIN, MAX]. */
+ *  clamped to [MIN, MAX]. MAX is also the default cap on a voluntary terminal
+ *  report when no budget is configured; an explicit budget replaces it. */
 export const MIN_RECOVERY_BUDGET = 128;
 export const MAX_RECOVERY_BUDGET = 2048;
 
@@ -37,8 +38,10 @@ export interface SchedulerOptions {
    * per-recovery budget. Wind-down forces `cohort`.
    */
   recovery: 'serial' | 'cohort';
-  /** Explicit per-recovery cap for cohort recovery and the voluntary report
-   *  guillotine; absent = adaptive. */
+  /** Explicit token cap for cohort recovery turns and for a voluntary terminal
+   *  report in either shape (absent: adaptive for cohort, `MAX_RECOVERY_BUDGET`
+   *  for the report). Serial forced recovery has no configured cap; it ends at
+   *  its stop token or when the pressure turns critical. */
   recoveryBudget?: number;
   terminalToolName?: string;
   config: PolicyConfig;
@@ -195,7 +198,9 @@ export class DefaultScheduler implements Scheduler {
     // 2. Produce-phase verdicts, in agents order (the policy's per-tick
     //    stagger relies on that order).
     S.alive = state.agents.filter(alive).length + S.spawns.length;
-    const cap = Math.min(this.opts.recoveryBudget ?? MAX_RECOVERY_BUDGET, MAX_RECOVERY_BUDGET);
+    // One configured number for both capped paths: an explicit budget caps a
+    // voluntary report as it caps a cohort turn, above the adaptive ceiling too.
+    const cap = this.opts.recoveryBudget ?? MAX_RECOVERY_BUDGET;
     for (const a of state.agents) {
       if (a.status !== 'active' || dropped.has(a)) continue;
       if (signals.windDown && !a.extracting && !emittingTerminal(a, terminal)) {

@@ -26,7 +26,7 @@ export interface CorpusSourceOpts {
  * tokenizes the chunks through the reranker, then hands them here. Because
  * `search` needs the reranker, a reranker is required at construction.
  */
-export class CorpusSource extends Source<{ reranker: Reranker }, Chunk> {
+export class CorpusSource extends Source<Chunk> {
   private _chunks: Chunk[];
   private _tools: Tool[];
 

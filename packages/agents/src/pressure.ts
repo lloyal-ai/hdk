@@ -67,7 +67,8 @@ export class ContextPressure {
    *  position would under-count an image by that factor. Every number on this
    *  class is cells, and `cellsUsed` is what the cache actually reports. */
   readonly nCtx: number;
-  /** KV cells currently in use (monotonic within a pool run). */
+  /** KV cells currently in use: grows on every prefill and commit, shrinks
+   *  when a branch is released (the prune pass, a discarded fork, teardown). */
   readonly cellsUsed: number;
   /**
    * KV slots remaining (`nCtx - cellsUsed`).
