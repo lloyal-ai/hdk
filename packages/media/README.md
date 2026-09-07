@@ -184,7 +184,7 @@ replay and any OCI tool read it exactly as they read a photo:
 | `ai.lloyal.derive.page` | the 1-based page it renders |
 | `ai.lloyal.derive.dpi`, `.width`, `.height`, `.format` | how it was rendered |
 | `ai.lloyal.derive.source` | the digest of the PDF blob it was rendered from |
-| `ai.lloyal.derive.bbox` | a figure crop's box on the page, in PDF user space |
+| `ai.lloyal.derive.bbox` | a figure crop's box on the page, in PDF user space, clipped to the page |
 
 `materialize` projects only representations in a format the projector
 decodes. A document root therefore yields no bitmaps — its text is for

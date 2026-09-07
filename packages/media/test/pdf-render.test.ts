@@ -13,6 +13,8 @@ import { FileAttachmentStore } from '../src/node';
 import { createDocumentIngress } from '../src/pdf';
 import { normalizeImage } from '../src/image';
 import { asDocumentMeta } from '../src/document';
+import { RENDER_MAX_SIDE } from '../src/pdf';
+import { DEFAULT_MAX_PIXELS } from '../src/image';
 import { representationsOf } from '../src/attachment';
 import { materialize } from '../src/ingress';
 import type { DocumentMeta } from '../src/document';
@@ -110,3 +112,56 @@ describe('the scanned page', () => {
     expect(meta.pages[0].render).toBeTruthy();
   }, 60_000);
 });
+
+describe('the bounds on figures', () => {
+  /** The crop's own record of its size: the derive annotations on its representation. */
+  function cropSize(store: FileAttachmentStore, meta: DocumentMeta, i = 0): { width: number; height: number } {
+    const manifest = store.getManifest(meta.figures[i].root.digest)!;
+    const a = manifest.layers[0].annotations ?? {};
+    return { width: Number(a['ai.lloyal.derive.width']), height: Number(a['ai.lloyal.derive.height']) };
+  }
+
+  it('an image painted far past the page is cropped to its visible part, under the same ceilings as a page', async () => {
+    // A 1×1 red image into a 2000-pt square on a 100-pt page: the object's
+    // bounds are 20× the page; only the page is visible.
+    const { store, meta } = await ingest('clipped.pdf');
+    expect(meta.pages[0].imageObjects).toBe(1);
+    expect(meta.figures).toHaveLength(1);
+    const [x0, y0, x1, y1] = meta.figures[0].bbox;
+    expect([x0, y0]).toEqual([0, 0]);
+    expect(x1).toBeCloseTo(100, 0);
+    expect(y1).toBeCloseTo(100, 0);
+    const { width, height } = cropSize(store, meta);
+    expect(Math.max(width, height)).toBeLessThanOrEqual(RENDER_MAX_SIDE);
+    expect(width * height).toBeLessThanOrEqual(DEFAULT_MAX_PIXELS);
+    // The crop is the visible page, so it is no larger than the page render.
+    const page = store.getManifest(meta.pages[0].render!.digest)!.layers[0].annotations ?? {};
+    expect(width).toBeLessThanOrEqual(Number(page['ai.lloyal.derive.width']));
+    const png = materialize(store, [meta.figures[0].root] as never).bitmaps[0];
+    const [r, g] = (await sharp(Buffer.from(png)).stats()).channels.map((c) => c.mean);
+    expect(r).toBeGreaterThan(200);
+    expect(g).toBeLessThan(40);
+  }, 90_000);
+
+  it('an image inside a Form XObject is counted, placed on the page through the form matrices, and cropped', async () => {
+    // A 2×2 green image in a form with /Matrix translate (10,10), drawn under
+    // an outer translate (40,40): page space [50,50]–[150,150] on a 200-pt page.
+    const { store, meta } = await ingest('form.pdf');
+    expect(meta.pages[0].imageObjects).toBe(1);
+    expect(meta.figures).toHaveLength(1);
+    const [x0, y0, x1, y1] = meta.figures[0].bbox;
+    expect(x0).toBeCloseTo(50, 0); expect(y0).toBeCloseTo(50, 0);
+    expect(x1).toBeCloseTo(150, 0); expect(y1).toBeCloseTo(150, 0);
+    const png = materialize(store, [meta.figures[0].root] as never).bitmaps[0];
+    const [r, g, b] = (await sharp(Buffer.from(png)).stats()).channels.map((c) => c.mean);
+    expect(g).toBeGreaterThan(120);
+    expect(r).toBeLessThan(60);
+    expect(b).toBeGreaterThan(60);
+  }, 90_000);
+
+  it('an image over the pixel ceiling is refused before anything renders — direct, and nested in a form alike', async () => {
+    await expect(ingest('bigimage.pdf', { maxRenderedPages: 0 })).rejects.toThrow(/pixel ceiling/);
+    await expect(ingest('bigform.pdf', { maxRenderedPages: 0 })).rejects.toThrow(/pixel ceiling/);
+  }, 90_000);
+});
+

@@ -56,10 +56,14 @@ describe('view_page', () => {
     expect(TOOL_ATTACHMENTS_KEY in r).toBe(false);
   });
 
-  it('page one is always projectable; a repeat by the same agent is a note, another agent sees it', async () => {
+  it('page one is always projectable; a repeat by the same agent carries the page again with a note — admission is the only gate', async () => {
     const { doc, renders, view } = setup();
     expect((await view({ document: documentId(doc), page: 1 }))[TOOL_ATTACHMENTS_KEY]).toEqual([renders[1]]);
-    expect((await view({ document: documentId(doc), page: 1 })).note).toMatch(/Already viewed page 1/);
+    // A settle rejection can replace the first result with a nudge; the tool
+    // cannot see that, so a repeat must still put the page in front of the model.
+    const again = await view({ document: documentId(doc), page: 1 });
+    expect(again[TOOL_ATTACHMENTS_KEY]).toEqual([renders[1]]);
+    expect(again.note).toMatch(/viewed page 1 before/);
     expect((await view({ document: documentId(doc), page: 1 }, [doc], 2))[TOOL_ATTACHMENTS_KEY]).toEqual([renders[1]]);
     expect((await view({ document: documentId(doc), page: 5 })).error).toMatch(/out of range/);
   });

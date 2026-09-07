@@ -142,3 +142,41 @@ for off in offsets: out.write(f"{off:010d} 00000 n \n".encode())
 out.write(f"trailer\n<< /Size {len(objs)+1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
 open(sys.argv[1], 'wb').write(out.getvalue())
 PY
+
+# Bounds fixtures, hand-written (Ghostscript would normalise them away):
+#  clipped.pdf  — a 1×1 red image painted into a 2000-pt square on a 100-pt page:
+#                 the visible figure is the page; the crop must not be the square.
+#  form.pdf     — a 2×2 green image inside a Form XObject (/Matrix translate 10,10
+#                 under an outer cm translate 40,40): the image is nested, at
+#                 page-space [50,50]–[150,150].
+#  bigimage.pdf — a direct image whose dictionary says 10001×10000 pixels.
+#  bigform.pdf  — the same image inside a Form XObject.
+python3 - <<'PY'
+import io
+def pdf(path, objs):
+    out = io.BytesIO(); out.write(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n"); offsets = []
+    for i, o in enumerate(objs, 1):
+        offsets.append(out.tell()); out.write(f"{i} 0 obj\n".encode() + o + b"\nendobj\n")
+    xref = out.tell()
+    out.write(f"xref\n0 {len(objs)+1}\n".encode() + b"0000000000 65535 f \n")
+    for off in offsets: out.write(f"{off:010d} 00000 n \n".encode())
+    out.write(f"trailer\n<< /Size {len(objs)+1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
+    open(path, 'wb').write(out.getvalue())
+def stream(dict_head, data): return dict_head + b" /Length " + str(len(data)).encode() + b" >>\nstream\n" + data + b"\nendstream"
+def image(w, h, rgb, data=None):
+    data = data if data is not None else bytes(rgb) * (w * h)
+    return stream(b"<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceRGB /BitsPerComponent 8" % (w, h), data)
+def page(box, content, xobjects):
+    return b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %d %d] /Resources << /XObject << %s >> >> /Contents 4 0 R >>" % (box, box, xobjects)
+CAT = b"<< /Type /Catalog /Pages 2 0 R >>"; PAGES = b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"
+pdf('clipped.pdf', [CAT, PAGES, page(100, None, b"/Im1 5 0 R"),
+    stream(b"<<", b"q 2000 0 0 2000 -950 -950 cm /Im1 Do Q"), image(1, 1, (255, 0, 0))])
+form = stream(b"<< /Type /XObject /Subtype /Form /BBox [0 0 100 100] /Matrix [1 0 0 1 10 10] /Resources << /XObject << /Im1 6 0 R >> >>", b"q 100 0 0 100 0 0 cm /Im1 Do Q")
+pdf('form.pdf', [CAT, PAGES, page(200, None, b"/Fx1 5 0 R"),
+    stream(b"<<", b"q 1 0 0 1 40 40 cm /Fx1 Do Q"), form, image(2, 2, (0, 170, 119))])
+big = image(10001, 10000, (0, 0, 0), data=b"\x00\x00\x00")
+pdf('bigimage.pdf', [CAT, PAGES, page(100, None, b"/Im1 5 0 R"), stream(b"<<", b"q 100 0 0 100 0 0 cm /Im1 Do Q"), big])
+bigform = stream(b"<< /Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resources << /XObject << /Im1 6 0 R >> >>", b"q 100 0 0 100 0 0 cm /Im1 Do Q")
+pdf('bigform.pdf', [CAT, PAGES, page(100, None, b"/Fx1 5 0 R"), stream(b"<<", b"q /Fx1 Do Q"), bigform, big])
+PY
+ls -la clipped.pdf form.pdf bigimage.pdf bigform.pdf

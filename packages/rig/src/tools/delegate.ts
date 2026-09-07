@@ -212,6 +212,10 @@ export class DelegateTool extends Tool<Record<string, unknown>> {
       parent: context?.branch,
       pruneOnReturn: opts.pruneOnReturn ?? true,
       scorer: context?.scorer,
+      // The child pool starts with the assets this call can see: the run's
+      // staged roots plus everything any agent admitted so far. The static
+      // pool options predate the run and cannot carry them.
+      attachments: context?.attachments,
     });
 
     const result = {

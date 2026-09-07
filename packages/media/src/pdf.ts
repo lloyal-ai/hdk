@@ -193,6 +193,33 @@ const MIN_FIGURE_AREA_RATIO = 0.02;
 // PDFium constants (fpdfview.h, fpdf_edit.h, fpdf_progressive.h).
 const PAGEOBJ_PATH = 2;
 const PAGEOBJ_IMAGE = 3;
+const PAGEOBJ_FORM = 5;
+/** How deep a walk follows Form XObjects nested in Form XObjects. */
+const MAX_FORM_DEPTH = 8;
+/** How many page objects one page's walk will visit, forms included. */
+const MAX_WALKED_OBJECTS = 20_000;
+
+/** A PDF matrix `[a b c d e f]`: (x, y) ↦ (a·x + c·y + e, b·x + d·y + f). */
+type Matrix = [number, number, number, number, number, number];
+const IDENTITY: Matrix = [1, 0, 0, 1, 0, 0];
+/** `outer ∘ inner`: apply `inner` first, then `outer`. */
+function compose(outer: Matrix, inner: Matrix): Matrix {
+  const [a, b, c, d, e, f] = outer; const [a2, b2, c2, d2, e2, f2] = inner;
+  return [a * a2 + c * b2, b * a2 + d * b2, a * c2 + c * d2, b * c2 + d * d2, a * e2 + c * f2 + e, b * e2 + d * f2 + f];
+}
+/** The axis-aligned bounds of a rectangle after a matrix. */
+function transformRect(m: Matrix, [x0, y0, x1, y1]: PageImage['bbox']): PageImage['bbox'] {
+  const xs: number[] = []; const ys: number[] = [];
+  for (const [x, y] of [[x0, y0], [x1, y0], [x0, y1], [x1, y1]] as const) {
+    xs.push(m[0] * x + m[2] * y + m[4]); ys.push(m[1] * x + m[3] * y + m[5]);
+  }
+  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+}
+/** The part of `r` inside the page, or null when nothing of it is. */
+function clipToPage(r: PageImage['bbox'], width: number, height: number): PageImage['bbox'] | null {
+  const c: PageImage['bbox'] = [Math.max(0, r[0]), Math.max(0, r[1]), Math.min(width, r[2]), Math.min(height, r[3])];
+  return c[2] > c[0] && c[3] > c[1] ? c : null;
+}
 const BITMAP_BGRA = 4;
 const FLAG_ANNOT = 0x01;
 const FLAG_REVERSE_BYTE_ORDER = 0x10;
@@ -316,15 +343,32 @@ function readPage(codec: Codec, doc: OpenDocument, index: number, opts: { text: 
     const read = readStruct(codec, page);
 
     // Objects: image bounds (and a decompression-bomb check on their pixel size
-    // before anything could decode them), and the path count.
+    // before anything could decode them), and the path count. The walk follows
+    // Form XObjects — rendering will decode what they hold, so the check and
+    // the counts must see it too — with each child's bounds carried into page
+    // space through the form matrices, and clipped to the page: an object may
+    // extend far past the page and the renderer clips it, so the visible part
+    // is the figure.
     const images: PageImage[] = [];
     let pathObjects = 0;
-    const count = pdfium.FPDFPage_CountObjects(page);
-    for (let i = 0; i < count; i++) {
-      const obj = pdfium.FPDFPage_GetObject(page, i);
+    let walked = 0;
+    const matrixBuf = codec.malloc(24);
+    const walk = (obj: number, depth: number, m: Matrix): void => {
+      if (++walked > MAX_WALKED_OBJECTS) return;
       const type = pdfium.FPDFPageObj_GetType(obj);
-      if (type === PAGEOBJ_PATH) pathObjects++;
-      if (type !== PAGEOBJ_IMAGE) continue;
+      if (type === PAGEOBJ_PATH) { pathObjects++; return; }
+      if (type === PAGEOBJ_FORM) {
+        if (depth >= MAX_FORM_DEPTH) return;
+        let fm: Matrix = IDENTITY;
+        if (pdfium.FPDFPageObj_GetMatrix(obj, matrixBuf)) {
+          fm = [0, 1, 2, 3, 4, 5].map((k) => pdfium.pdfium.getValue(matrixBuf + k * 4, 'float')) as Matrix;
+        }
+        const inner = compose(m, fm);
+        const n = pdfium.FPDFFormObj_CountObjects(obj);
+        for (let k = 0; k < n; k++) walk(pdfium.FPDFFormObj_GetObject(obj, k), depth + 1, inner);
+        return;
+      }
+      if (type !== PAGEOBJ_IMAGE) return;
       if (pdfium.FPDFImageObj_GetImagePixelSize(obj, scratch, scratch + 4)) {
         const w = pdfium.pdfium.getValue(scratch, 'i32');
         const h = pdfium.pdfium.getValue(scratch + 4, 'i32');
@@ -332,14 +376,22 @@ function readPage(codec: Codec, doc: OpenDocument, index: number, opts: { text: 
           throw new PdfError(`readPage: page ${index + 1} embeds a ${w}×${h} image, over the ${MAX_INPUT_PIXELS}-pixel ceiling`);
         }
       }
-      if (!pdfium.FPDFPageObj_GetBounds(obj, scratch, scratch + 4, scratch + 8, scratch + 12)) continue;
-      const bbox: PageImage['bbox'] = [
+      if (!pdfium.FPDFPageObj_GetBounds(obj, scratch, scratch + 4, scratch + 8, scratch + 12)) return;
+      const own: PageImage['bbox'] = [
         pdfium.pdfium.getValue(scratch, 'float'), pdfium.pdfium.getValue(scratch + 4, 'float'),
         pdfium.pdfium.getValue(scratch + 8, 'float'), pdfium.pdfium.getValue(scratch + 12, 'float'),
       ];
+      const bbox = clipToPage(depth === 0 ? own : transformRect(m, own), width, height);
+      if (!bbox) return;
       const mcid = pdfium.FPDFPageObj_GetMarkedContentID(obj);
       const altText = mcid >= 0 ? read?.altByMcid.get(mcid) : undefined;
-      images.push({ index: i, bbox, ...(altText ? { altText } : {}) });
+      images.push({ index: images.length, bbox, ...(altText ? { altText } : {}) });
+    };
+    try {
+      const count = pdfium.FPDFPage_CountObjects(page);
+      for (let i = 0; i < count; i++) walk(pdfium.FPDFPage_GetObject(page, i), 0, IDENTITY);
+    } finally {
+      codec.free(matrixBuf);
     }
 
     // Characters, with box, size, weight and marked-content id.
@@ -464,12 +516,17 @@ function readBookmarks(codec: Codec, doc: OpenDocument): Bookmark[] {
 
 /** Pixel size for a page at `dpi`, held under the side and area ceilings. */
 function renderSize(widthPt: number, heightPt: number, dpi: number): { width: number; height: number; scale: number } {
-  let scale = dpi / 72;
+  const scale = fitScale(widthPt, heightPt, dpi / 72);
+  return { width: Math.max(1, Math.floor(widthPt * scale)), height: Math.max(1, Math.floor(heightPt * scale)), scale };
+}
+
+/** `scale`, lowered until a `widthPt` × `heightPt` region fits the side and area ceilings. */
+function fitScale(widthPt: number, heightPt: number, scale: number): number {
   const longest = Math.max(widthPt, heightPt) * scale;
   if (longest > RENDER_MAX_SIDE) scale *= RENDER_MAX_SIDE / longest;
   const area = widthPt * heightPt * scale * scale;
   if (area > DEFAULT_MAX_PIXELS) scale *= Math.sqrt(DEFAULT_MAX_PIXELS / area);
-  return { width: Math.max(1, Math.floor(widthPt * scale)), height: Math.max(1, Math.floor(heightPt * scale)), scale };
+  return scale;
 }
 
 /** Copy a bitmap's RGBA rows off the heap (the stride may exceed the row). */
@@ -509,9 +566,12 @@ function renderPageRgba(codec: Codec, page: number, width: number, height: numbe
 }
 
 /** Render a region of a page — a figure's bounds — at `scale` pixels per point. */
-function renderRegionRgba(codec: Codec, page: number, pageHeightPt: number, bbox: PageImage['bbox'], scale: number): { rgba: Uint8Array; width: number; height: number } {
+function renderRegionRgba(codec: Codec, page: number, pageHeightPt: number, bbox: PageImage['bbox'], pageScale: number): { rgba: Uint8Array; width: number; height: number } {
   const { pdfium } = codec;
   const [x0, y0, x1, y1] = bbox;
+  // The bounds were clipped to the page when read, so at the page's scale the
+  // crop is never larger than the page render; the ceilings hold regardless.
+  const scale = fitScale(x1 - x0, y1 - y0, pageScale);
   const width = Math.max(1, Math.round((x1 - x0) * scale));
   const height = Math.max(1, Math.round((y1 - y0) * scale));
   const bmp = pdfium.FPDFBitmap_CreateEx(width, height, BITMAP_BGRA, 0, 0);

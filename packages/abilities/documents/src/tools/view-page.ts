@@ -35,6 +35,11 @@ export function projectable(page: PageFacts): boolean {
  * DESCRIPTOR: no bytes, no ingress, no normalizer permit; the pool resolves it
  * through the store and admits it on the media rail. A text-only page says
  * so instead, and a page past the render bound says it is not archived.
+ *
+ * A repeat by the same agent carries the page AGAIN, with a note. The tool
+ * cannot see whether its last result landed — the pool may have replaced it
+ * with a settle nudge — so suppressing a repeat would leave the model blind;
+ * admission is the only gate on what a page costs.
  */
 export class ViewPageTool extends Tool<{ document: string; page: number; figure?: number }> {
   readonly name = 'view_page';
@@ -68,9 +73,9 @@ export class ViewPageTool extends Tool<{ document: string; page: number; figure?
 
     const where = { document: doc.meta.title, id: doc.id, page: page.page };
     const key = `${context?.agentId ?? ''}:${doc.id}:${page.page}:${args.figure ?? ''}`;
-    if (this._viewed.has(key)) {
-      return { ...where, note: args.figure !== undefined ? `Already viewed figure ${args.figure} on page ${page.page}` : `Already viewed page ${page.page}` };
-    }
+    const again = this._viewed.has(key)
+      ? { note: args.figure !== undefined ? `You viewed figure ${args.figure} on page ${page.page} before.` : `You viewed page ${page.page} before.` }
+      : {};
 
     if (args.figure !== undefined) {
       const figures = doc.meta.figures.filter((f) => f.page === page.page);
@@ -81,13 +86,13 @@ export class ViewPageTool extends Tool<{ document: string; page: number; figure?
           : `Page ${page.page} has ${figures.length} figure(s); figure must be between 1 and ${figures.length}.` };
       }
       this._viewed.add(key);
-      return { ...where, figure: args.figure, ...(fig.caption ? { caption: fig.caption } : {}),
+      return { ...where, ...again, figure: args.figure, ...(fig.caption ? { caption: fig.caption } : {}),
         cite: pageCite(doc.attachment, page.page), [TOOL_ATTACHMENTS_KEY]: [fig.root] };
     }
 
     if (!projectable(page)) return { ...where, note: `Page ${page.page} is text only — read_document gives you its text.` };
     if (!page.render) return { ...where, note: `Page ${page.page} is not archived as an image.` };
     this._viewed.add(key);
-    return { ...where, cite: pageCite(doc.attachment, page.page), [TOOL_ATTACHMENTS_KEY]: [page.render] };
+    return { ...where, ...again, cite: pageCite(doc.attachment, page.page), [TOOL_ATTACHMENTS_KEY]: [page.render] };
   }
 }
