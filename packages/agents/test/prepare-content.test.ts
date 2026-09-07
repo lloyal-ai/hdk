@@ -12,7 +12,7 @@ import { MemoryAttachmentStore } from './helpers/memory-store';
 import { rawIngress } from './helpers/raw-ingress';
 
 const img = (n: number): Uint8Array[] =>
-  Array.from({ length: n }, (_, i) => new Uint8Array([i, i + 1, i + 2, 0x89]));
+  Array.from({ length: n }, (_, i) => new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, i]));
 
 describe('prepareBatch', () => {
   it('overlaps ingests instead of running them one after another', async () => {

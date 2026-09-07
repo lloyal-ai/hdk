@@ -18,7 +18,9 @@ import { materialize } from '@lloyal-labs/media';
  *
  * The barrier this enforces, in order:
  *
- * 1. **Prepare** every item, committing each root manifest.
+ * 1. **Prepare** every item, committing each root manifest. An item that is
+ *    already a root — a descriptor a tool read from the store — takes its
+ *    place in order without touching the door; only bytes are ingested.
  * 2. **Materialize** every representation.
  * 3. **Flatten** preserving attachment order, then representation order within
  *    each — markers correspond to REPRESENTATIONS, so a video contributes its
@@ -54,7 +56,7 @@ import { materialize } from '@lloyal-labs/media';
 export function* prepareBatch(
   ingress: ContentIngress,
   store: AttachmentStore,
-  items: readonly Uint8Array[],
+  items: readonly (Uint8Array | Attachment)[],
 ): Operation<PreparedContent> {
   // The scope's own signal, hoisted once. `call()` makes a halt OBSERVABLE at
   // this boundary but cannot stop the promise behind it — that is the leaked
@@ -65,7 +67,8 @@ export function* prepareBatch(
   // Concurrent, in input order: normalization is the expensive step and the
   // normalizer already bounds itself process-wide, so a batch of N must not
   // cost the sum of N decodes while permits sit idle. `all` keeps the order.
-  const roots: Attachment[] = yield* all(items.map((bytes) => call(() => ingress.ingest(bytes, signal))));
+  const roots: Attachment[] = yield* all(items.map((item) =>
+    (item instanceof Uint8Array ? call(() => ingress.ingest(item, signal)) : call(() => item))));
   // Resolve from the store rather than trusting what ingest returned, through
   // the SAME call replay uses — so a batch that materializes here is one that
   // can be rebuilt later, by construction rather than by assertion.

@@ -139,12 +139,10 @@ describe('Entailment boundary discipline', () => {
     // Verify EntailmentScorer interface has the right shape
     const scorer: EntailmentScorer = {
       scoreEntailmentBatch: async (texts) => texts.map(() => 0.5),
-      scoreRelevanceBatch: async (texts) => texts.map(() => 0.5),
       scoreSimilarityBatch: async (_ref, texts) => texts.map(() => 0),
       shouldProceed: (score) => score >= 0.25,
     };
     expect(scorer.scoreEntailmentBatch).toBeDefined();
-    expect(scorer.scoreRelevanceBatch).toBeDefined();
     expect(scorer.shouldProceed).toBeDefined();
   });
 
@@ -463,13 +461,13 @@ describe('Explore/exploit decoupled from lifecycle', () => {
 // ── EntailmentScorer interface shape ──────────────────────
 
 describe('EntailmentScorer interface', () => {
-  it('scoreRelevanceBatch exists on interface shape', () => {
+  it('scores against the original question, against a reference, and gates — exploit combines in admission, not here', () => {
     const scorer: EntailmentScorer = {
       scoreEntailmentBatch: async (texts) => texts.map(() => 0.5),
-      scoreRelevanceBatch: async (texts) => texts.map(() => 0.5),
       scoreSimilarityBatch: async (_ref, texts) => texts.map(() => 0),
       shouldProceed: (score) => score >= 0.25,
     };
-    expect(scorer.scoreRelevanceBatch).toBeDefined();
+    expect(scorer.scoreEntailmentBatch).toBeDefined();
+    expect('scoreRelevanceBatch' in scorer).toBe(false);
   });
 });

@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FileAttachmentStore } from '../src/node';
 import { createImageIngress } from '../src/image';
+import { materialize } from '../src/ingress';
 
 const png = () =>
   sharp({ create: { width: 64, height: 64, channels: 3, background: '#0a7' } }).png().toBuffer()
@@ -45,5 +46,36 @@ describe('createImageIngress', () => {
     const store = new FileAttachmentStore(mkdtempSync(join(tmpdir(), 'ingress-')));
     const root = await createImageIngress(store).ingest(await png(), new AbortController().signal);
     expect(store.getManifest(root.digest)).toBeTruthy();
+  });
+});
+
+describe('materialize — bitmaps are the projector-decodable representations', () => {
+  // A document's one representation is text. It reaches the model through
+  // retrieval and the spine outline, never through the projector, so a
+  // document root contributes NO bitmaps: feeding its bytes to the image
+  // decoder would poison the branch it was prefilled on.
+  it('yields no bitmaps for a root whose only representation is text/markdown', async () => {
+    const store = new FileAttachmentStore(mkdtempSync(join(tmpdir(), 'materialize-')));
+    const md = store.putBlob(new TextEncoder().encode('# Title\n\nBody.\n'), 'text/markdown');
+    const root = store.putAttachment({ representations: [md] });
+
+    const prepared = materialize(store, [root]);
+
+    expect(prepared.attachments).toEqual([root]);
+    expect(prepared.bitmaps).toEqual([]);
+  });
+
+  it('yields exactly the image bitmaps for a mixed batch, in root order', async () => {
+    const store = new FileAttachmentStore(mkdtempSync(join(tmpdir(), 'materialize-')));
+    const bytes = await png();
+    const image = await createImageIngress(store).ingest(bytes);
+    const md = store.putBlob(new TextEncoder().encode('text'), 'text/markdown');
+    const doc = store.putAttachment({ representations: [md] });
+
+    const prepared = materialize(store, [doc, image]);
+
+    expect(prepared.attachments).toEqual([doc, image]);
+    expect(prepared.bitmaps).toHaveLength(1);
+    expect(prepared.bitmaps[0]).toEqual(bytes);
   });
 });

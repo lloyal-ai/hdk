@@ -5,6 +5,7 @@ import type { AgentPolicy } from './AgentPolicy';
 import type { EntailmentScorer } from './source';
 import type { ToolHistoryEntry } from './Agent';
 import type { TraceEvent } from './trace-types';
+import type { Attachment } from '@lloyal-labs/media';
 
 // ── Tool base class types ──────────────────────────────────────
 
@@ -78,7 +79,7 @@ export interface ToolContext {
   scorer?: EntailmentScorer;
   /**
    * When false, content-boundary tools apply dual scoring
-   * (scoreRelevanceBatch) for tighter focus. Computed per-DISPATCH
+   * (min with the original-question score) for tighter focus. Computed per-DISPATCH
    * by policy.shouldExplore(). @default true
    */
   explore?: boolean;
@@ -95,6 +96,14 @@ export interface ToolContext {
    * a "resource unavailable" error to force diversification.
    */
   peerHistory?: ToolHistoryEntry[];
+  /**
+   * Assets available to the run at this call: the roots the host staged the
+   * pool with, then every root any agent's tool result has admitted so far,
+   * in admission order. Roots only — reading one costs no KV; the content
+   * store resolves it. Availability is not projection: nothing here is in
+   * the model's context unless a branch admitted it.
+   */
+  attachments?: readonly Attachment[];
 }
 
 // ── Trace types ───────────────────────────────────────────────
@@ -302,6 +311,12 @@ export interface AgentPoolOptions {
    *  Passed to every tool via {@link ToolContext.scorer}. */
   scorer?: EntailmentScorer;
   /**
+   * Assets available to the run from the start — roots the host stages the
+   * pool with. Zero KV: the pool never materializes them. Every tool call
+   * reads them, plus whatever the run admits, as {@link ToolContext.attachments}.
+   */
+  attachments?: readonly Attachment[];
+  /**
    * Eager GBNF grammar applied to every spawned agent's generating branch —
    * constrains generation from the first sampled token (no trigger). Used for
    * schema-constrained single-shot agents (e.g. the planner via
@@ -405,6 +420,12 @@ export type AgentEvent =
   | { type: 'agent:tool_result'; agentId: number; tool: string; result: string; contextAvailablePercent?: number }
   | { type: 'agent:tool_progress'; agentId: number; tool: string; filled: number; total: number }
   | { type: 'agent:tool_retry'; agentId: number; tool: string; retryAfterMs: number; attempt: number }
+  /** A prefill LANDED on the agent's branch — a tool result, a recovery
+   *  prompt or a probe — with the roots it admitted (`attachments`, present
+   *  when the result carried any). Admission is a run-record fact the host
+   *  books and shows, so it rides the bus like every other one; the trace's
+   *  `branch:prefill` is the same moment written for replay. */
+  | { type: 'agent:prefilled'; agentId: number; cells: number; role: 'toolResult' | 'recovery' | 'probe'; attachments?: readonly Attachment[] }
   | { type: 'agent:return'; agentId: number; result: string }
   | { type: 'agent:recovered'; agentId: number; result: string }
   | { type: 'agent:failed'; agentId: number; reason: string }

@@ -1,13 +1,14 @@
 /**
- * @file Identify an image format from its leading bytes.
+ * @file Identify a content format from its leading bytes.
  *
- * Its own file because it depends on nothing else in the content surface, and
- * because `spine.ts` and `agent-pool.ts` already import it on its own — the
- * callers treated it as a separate module before it was one.
+ * Its own file because it depends on nothing else in the content surface. The
+ * image normalizer consults it on a decode error, and the content ingress
+ * dispatches on it: the bytes say what they are, a caller never does.
  */
 
 /**
- * The image formats a vision projector decodes, by their leading bytes.
+ * Formats this package identifies by their leading bytes: the four image
+ * formats the projector decodes, and PDF.
  *
  * A table rather than a chain of ifs. Anything unmatched is still stored —
  * validating pixels belongs to the normalizer that runs before ingress, and to
@@ -18,6 +19,10 @@ const SIGNATURES: ReadonlyArray<{ mediaType: string; magic: readonly number[] }>
   { mediaType: 'image/png', magic: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] },
   { mediaType: 'image/gif', magic: [0x47, 0x49, 0x46, 0x38] },
   { mediaType: 'image/bmp', magic: [0x42, 0x4d] },
+  // `%PDF-`. Not a projector format (see below): the content ingress routes it
+  // to the document ingress; the image normalizer refuses it as it refuses any
+  // format it cannot decode.
+  { mediaType: 'application/pdf', magic: [0x25, 0x50, 0x44, 0x46, 0x2d] },
 ];
 
 /**
@@ -41,7 +46,7 @@ export function sniffMediaType(bytes: Uint8Array): string {
  * **Its own list, deliberately NOT derived from {@link SIGNATURES}.** These are
  * two different questions and they have different answers:
  *
- * - `SIGNATURES` — "what can I identify from leading bytes?" Four formats.
+ * - `SIGNATURES` — "what can I identify from leading bytes?" Four image formats and PDF.
  * - `PROJECTOR_FORMATS` — "what will mtmd decode?" Nine.
  *
  * Ground truth for this list is the kernel, not an assumption:

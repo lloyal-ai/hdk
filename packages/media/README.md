@@ -17,23 +17,26 @@ writes nothing new.
 
 ```bash
 npm i @lloyal-labs/media
-npm i sharp   # only in a process that accepts image uploads — see below
+npm i sharp              # only in a process that admits image uploads — see below
+npm i @embedpdf/pdfium   # only in a process that admits PDF uploads
 ```
 
 ```ts
 import { materialize } from '@lloyal-labs/media';
-import { FileAttachmentStore, createImageIngress } from '@lloyal-labs/media/node';
+import { FileAttachmentStore, createContentIngress } from '@lloyal-labs/media/node';
 
 const store = new FileAttachmentStore('media');        // a valid OCI Image Layout
-const ingress = createImageIngress(store);             // normalize → address → commit
+const ingress = createContentIngress(store);           // sniff → admit → address → commit
 
 const attachment = await ingress.ingest(bytes);        // one root descriptor
-const { bitmaps } = materialize(store, [attachment]);  // the exact admitted pixels
+const { bitmaps } = materialize(store, [attachment]);  // the exact admitted pixels — none for a document
 ```
 
-`ingest` admits bytes — converting, downscaling and stripping as the admission
-policy below requires — commits them, and returns a root descriptor small
-enough to ride any wire. `materialize` is the inverse: given roots, it returns
+`ingest` admits bytes and returns a root descriptor small enough to ride any
+wire. The bytes decide the door: an image goes through the normalizer
+(`createImageIngress` — converting, downscaling and stripping as the admission
+policy below requires), a PDF through the document ingress
+(`createDocumentIngress`, below); each is also exported on its own. `materialize` is the inverse: given roots, it returns
 the exact bytes to hand the projector (the model's vision encoder). Replay is
 `materialize` called later.
 
@@ -46,13 +49,13 @@ trace and replay. This package is the format and the gate.
 | entry | holds | needs |
 |---|---|---|
 | `@lloyal-labs/media` | the OCI shapes, the store and ingress contracts, `materialize` | nothing — browser-safe, zero dependencies |
-| `@lloyal-labs/media/node` | `FileAttachmentStore` (the layout on disk), `createImageIngress` (sharp) | `node:fs`; `sharp` as an optional peer |
+| `@lloyal-labs/media/node` | `FileAttachmentStore` (the layout on disk), `createContentIngress` — `createImageIngress` (sharp) and `createDocumentIngress` (PDFium) | `node:fs`; `sharp` and `@embedpdf/pdfium` as optional peers |
 
-The root entry never reaches `node:` or `sharp` — enforced by
+The root entry never reaches `node:`, `sharp` or the codec — enforced by
 `npm run verify:packed`, which walks the packed artifact's require graph on
-every push. `sharp` is required at call time, not module load, so a process
-that never accepts an image pays nothing, and one that does gets an error
-naming the install.
+every push. Both are required at call time, not module load, so a process
+that never accepts an image or a document pays nothing, and one that does
+gets an error naming the install.
 
 Where things live: the **format** — how bytes are addressed and laid out — is
 this package. The **policy** — where a project keeps its store — is
@@ -133,12 +136,72 @@ and nothing above it.
 ```
 
 The `config` slot is empty for an image, which has nothing to say beyond its
-layers. Timed media will use it: a timeline — timestamps, track descriptors,
-sampling policy — is typed structured data, and
+layers. A document fills it (next section), and timed media will: a timeline —
+timestamps, track descriptors, sampling policy — is typed structured data, and
 [annotations are `map<string,string>`](https://github.com/opencontainers/image-spec/blob/main/annotations.md),
-so the config blob is where it belongs. `putAttachment({ config })` already
-accepts one, and a reader branches on `config.mediaType`, so introducing a
-typed config later leaves every existing manifest valid.
+so the config blob is where such things belong. A reader branches on
+`config.mediaType`, so a manifest with the empty config stays valid beside one
+with a sidecar.
+
+## A document is the same graph
+
+A PDF admitted through `createDocumentIngress` becomes one manifest whose
+representation is what the model reads, whose source is the file as supplied,
+and whose config is a **sidecar** of facts about the document:
+
+```jsonc
+{
+  "artifactType": "application/vnd.lloyal.attachment.v1",
+  "config": { "mediaType": "application/vnd.lloyal.document.v1+json", "digest": "sha256:…", "size": 2210 },
+  "layers": [
+    { "mediaType": "text/markdown",   "digest": "sha256:…", "size": 18342,
+      "annotations": { "ai.lloyal.role": "representation" } },     // what the model reads
+    { "mediaType": "application/pdf", "digest": "sha256:…", "size": 812044,
+      "annotations": { "ai.lloyal.role": "source" } }              // what the user supplied
+  ]
+}
+```
+
+The sidecar (`DocumentMeta`, guarded by `asDocumentMeta` on the root entry)
+records the title; the sections with their heading path, line span and pages;
+a page map with per-page counts — characters, image objects, path objects,
+tagged tables and figures; the figures with their captions; the tagged tables;
+and the parameters the derivation ran under. Facts, not verdicts: whether a
+page is worth spending a model's attention on is a rule the reader applies
+over the counts. Lines are 1-based over the markdown's `\n` split, and
+`pagesOf(meta, startLine, endLine)` is the one function that turns a line
+span into pages.
+
+Every page within the render bound, and every figure crop, is its own
+single-image manifest — a **page root** — named from the sidecar by
+descriptor. A page root is an ordinary image attachment carrying `pdf.v1`
+derive annotations, so the normalizer never runs on it and `materialize`,
+replay and any OCI tool read it exactly as they read a photo:
+
+| key | value |
+|---|---|
+| `ai.lloyal.derive.profile` | `pdf.v1` |
+| `ai.lloyal.derive.page` | the 1-based page it renders |
+| `ai.lloyal.derive.dpi`, `.width`, `.height`, `.format` | how it was rendered |
+| `ai.lloyal.derive.source` | the digest of the PDF blob it was rendered from |
+| `ai.lloyal.derive.bbox` | a figure crop's box on the page, in PDF user space, clipped to the page |
+
+`materialize` projects only representations in a format the projector
+decodes. A document root therefore yields no bitmaps — its text is for
+retrieval, not the vision encoder — while a page root yields one. That single
+rule is what lets a document ride the same wire, trace and replay as an image
+without anything upstream learning a new kind.
+
+Bounds are declared constants on the node entry: `MAX_DOCUMENT_BYTES` (32 MiB,
+refused before the codec sees a byte), `MAX_RENDERED_PAGES` (200 — page one
+first, then graphics-bearing pages, then the rest, so the archive under the
+bound is a deterministic function of the input; a page past it simply has no
+render descriptor), `MAX_TEXT_PAGES` (400), `MAX_FIGURES` (16), and
+`DOCUMENT_TIMEOUT_MS` (120 s — a failure bound that publishes nothing, never
+a coverage knob). The same bytes under the same constants yield the same root
+on any machine. A document holds one permit of the shared admission gate for
+its whole duration, and one codec instance lives exactly as long as its
+document.
 
 ### Annotations we define
 
@@ -159,7 +222,9 @@ omitting it is a legitimate choice for a large original.
 
 ## Admission
 
-`ingest` (and `normalizeImage` underneath it) applies one policy.
+`createContentIngress` sniffs the bytes: an image goes to the policy below, a
+PDF to the document ingress above, anything else is refused at the door.
+For images, `ingest` (and `normalizeImage` underneath it) applies one policy.
 Byte-identical pass-through happens only when ALL of these hold:
 
 | | |
@@ -219,6 +284,7 @@ pointing at content that is not there.
 | **Video derivation** | The manifest already has the slot: source + N frame representations. What is missing is a decoder, and that decision carries real licensing and codec-patent weight. |
 | **Live capture** | The *locator* is not addressable; every bounded frame that reaches the model still is. Attachments are per-prefill rather than per-run, so a live run is many prefills — no growing manifest. |
 | **Reachability GC** | Nothing here deletes. Deletion needs refcounting across runs that may share a digest. |
+| **Rendering past the bound** | A page beyond `MAX_RENDERED_PAGES` has no render descriptor. Rendering on demand needs the source and a codec at read time; today a document is archived at admission only. |
 
 ## Known limitations
 

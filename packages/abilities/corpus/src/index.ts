@@ -1,8 +1,8 @@
 /**
  * `@lloyal-labs/corpus-ability` — HDK reference ability: local-corpus research.
  *
- * Requires a reranker (its `search` tool scores chunks); loads + tokenizes the
- * corpus at construction, and returns a validated {@link Ability} whose
+ * Requires a reranker (its `search` tool scores chunks); loads the corpus and
+ * fits it into reranker-sized windows at construction, and returns a validated {@link Ability} whose
  * {@link CorpusSource} is already-bound.
  *
  * @packageDocumentation
@@ -13,15 +13,13 @@ import { join } from "node:path";
 import { call } from "effection";
 import { AbilityConfigStoreCtx, RerankerCtx } from "@lloyal-labs/lloyal-agents";
 import type { AbilityManifest, Tool } from "@lloyal-labs/lloyal-agents";
-import { defineAbility } from "@lloyal-labs/rig";
+import { defineAbility, fitChunks, DEFAULT_CHUNK_TOKENS } from "@lloyal-labs/rig";
 import type { Reranker } from "@lloyal-labs/rig";
 import { loadResources, chunkResources } from "@lloyal-labs/rig/node";
 import { CorpusSource } from "./source";
 
 export { CorpusSource } from "./source";
 export type { CorpusSourceOpts, CorpusPromptData } from "./source";
-export { BM25Index } from "./bm25";
-export type { Bm25Opts, Bm25Hit } from "./bm25";
 
 // The declarative manifest + skill template, read once at module load. The
 // manifest is handed to defineAbility, which advertises it on the factory — so the
@@ -63,8 +61,11 @@ export const createCorpusAbility = defineAbility(manifest, function* () {
   }
 
   const resources = loadResources(corpusPath);
-  const chunks = chunkResources(resources);
-  yield* call(() => reranker.tokenizeChunks(chunks));
+  // Sections become windows the reranker scores whole; the size is a retrieval
+  // choice (see DEFAULT_CHUNK_TOKENS), the tokens are the reranker's own.
+  const chunks = yield* call(() =>
+    fitChunks(chunkResources(resources), { maxTokens: DEFAULT_CHUNK_TOKENS, tokenize: (t) => reranker.tokenize(t) }),
+  );
 
   const source = new CorpusSource(resources, chunks, reranker);
   const tools: Record<string, Tool> = {};

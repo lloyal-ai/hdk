@@ -41,7 +41,10 @@ export type PrefillItem = {
   resultStr?: string;
 } & (
   /** The token rail: the delta tokenized here and prefilled as tokens. */
-  | { rail: 'token'; tokens: number[]; media?: never }
+  | { rail: 'token'; tokens: number[]; media?: never;
+      /** Roots admitted with a token-rail result — ones that materialize to
+       *  no bitmaps — booked as assets available to the run. */
+      attachments?: readonly Attachment[] }
   /** The embedding rail. `llama_batch` is token-XOR-embd, so this cannot
    *  join a token batch — a separate call, not a separate strategy. */
   | { rail: 'media'; tokens?: never; media: { delta: MultimodalDelta; cells: number; attachments: readonly Attachment[] } }

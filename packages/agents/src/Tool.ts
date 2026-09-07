@@ -1,5 +1,7 @@
 import type { Operation } from 'effection';
 import type { JsonSchema, ToolSchema, ToolContext } from './types';
+import { asAttachment } from '@lloyal-labs/media';
+import type { Attachment } from '@lloyal-labs/media';
 
 /**
  * Abstract base class for tools usable by agents in the runtime
@@ -188,7 +190,7 @@ export class ToolRetryError extends Error {
  *
  * | key | direction | does the model read it? |
  * |---|---|---|
- * | `_images` | OUT of the result, before serializing | **no** — that is the point |
+ * | `_attachments` | OUT of the result, before serializing | **no** — that is the point |
  * | `_contextAvailablePercent` | INTO the result | yes |
  * | `_imageError` | INTO the result | yes — it exists to be read |
  *
@@ -203,8 +205,15 @@ export class ToolRetryError extends Error {
  *  Taken OUT before serializing, because these bytes must reach the cache down
  *  the embedding rail and must never reach it as JSON. A 180 KB image
  *  stringifies to ~700k characters of digits, which is not a degraded prefill
- *  but a destroyed one. */
-export const TOOL_MEDIA_KEY = '_images';
+ *  but a destroyed one.
+ *
+ *  An entry is raw bytes — admitted through the ingress door — or a root
+ *  descriptor already in the content store (a page render a tool looked up, a
+ *  document a tool fetched): no bytes, no door, the ingest-time digest. The
+ *  rail follows what the root materializes to: bitmaps ride the embedding
+ *  rail; a root with none rides the token rail beside the tool's text and is
+ *  booked as an asset available to the run. */
+export const TOOL_ATTACHMENTS_KEY = '_attachments';
 
 /** Split a tool result into the images it carried and the result WITHOUT them.
  *
@@ -215,30 +224,34 @@ export const TOOL_MEDIA_KEY = '_images';
  *  halves and hands each to exactly one consumer.
  *
  *  `result` is returned unchanged when there is no media, so a text-only tool
- *  copies nothing. Entries that are not `Uint8Array` are ignored — one marker
- *  is emitted per SURVIVING entry, so the prompt and the bitmap list stay in
- *  step whatever a tool hands over.
+ *  copies nothing. An entry is bytes or a root descriptor the store would
+ *  recognise; anything else is ignored — markers are emitted per SURVIVING
+ *  representation, so the prompt and the bitmap list stay in step whatever a
+ *  tool hands over.
  *
  *  @category Agents
  */
 export function takeToolMedia(
   result: unknown,
-): { media: Uint8Array[]; result: unknown } {
+): { media: (Uint8Array | Attachment)[]; result: unknown } {
   if (!result || typeof result !== 'object' || Array.isArray(result)) {
     return { media: [], result };
   }
-  if (!(TOOL_MEDIA_KEY in result)) return { media: [], result };
-  const { [TOOL_MEDIA_KEY]: raw, ...rest } = result as Record<string, unknown>;
+  if (!(TOOL_ATTACHMENTS_KEY in result)) return { media: [], result };
+  const { [TOOL_ATTACHMENTS_KEY]: raw, ...rest } = result as Record<string, unknown>;
   // The reserved key never survives into the serialized result, even when its
   // value is malformed — returning the original would JSON-encode byte
   // indices onto the token rail, the exact failure this helper exists to
   // prevent. An invalid value is simply zero media entries.
-  return {
-    media: Array.isArray(raw)
-      ? raw.filter((b): b is Uint8Array => b instanceof Uint8Array)
-      : [],
-    result: rest,
-  };
+  const media: (Uint8Array | Attachment)[] = [];
+  if (Array.isArray(raw)) {
+    for (const entry of raw) {
+      if (entry instanceof Uint8Array) { media.push(entry); continue; }
+      const root = asAttachment(entry);
+      if (root) media.push(root);
+    }
+  }
+  return { media, result: rest };
 }
 
 /**

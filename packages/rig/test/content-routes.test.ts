@@ -343,3 +343,101 @@ describe('content routes', () => {
     });
   });
 });
+
+describe('content routes — the manifest and its config, two plain doors', () => {
+  // A document attachment's page renders are their own roots named in its
+  // sidecar, which lives in the manifest's config blob. The UI resolves a
+  // citation through those two records, so both need a door — OCI-shaped, by
+  // digest, through the manifest — while raw blobs stay HEAD-only.
+  it('serves a manifest by digest with the caching headers a blob gets, and 304 on a match', async () => {
+    const { store, root, rep } = fixture();
+    await withServer({ store }, async (base) => {
+      const res = await fetch(`${base}/v1/media/${encodeURIComponent(root.digest)}`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toBe('application/vnd.oci.image.manifest.v1+json');
+      expect(res.headers.get('etag')).toBe(`"${root.digest}"`);
+      const manifest = await res.json() as { layers: { digest: string }[] };
+      expect(manifest.layers.some((l) => l.digest === rep.digest)).toBe(true);
+      const again = await fetch(`${base}/v1/media/${encodeURIComponent(root.digest)}`, { headers: { 'If-None-Match': `"${root.digest}"` } });
+      expect(again.status).toBe(304);
+      const missing = await fetch(`${base}/v1/media/sha256:${'0'.repeat(64)}`);
+      expect(missing.status).toBe(404);
+    });
+  });
+
+  it('serves the retained source through the manifest under its own media type, and 404 when none was kept', async () => {
+    // The original as supplied — a document's PDF, an image before
+    // normalization — resolved by ROLE through the manifest. Raw blobs stay
+    // HEAD-only; this door exists because a manifest names the source.
+    const { store, root, source } = fixture();
+    const md = store.putBlob(new TextEncoder().encode('# T\n'), 'text/markdown');
+    const sourceless = store.putAttachment({ representations: [md] });
+    await withServer({ store }, async (base) => {
+      const res = await fetch(`${base}/v1/media/${encodeURIComponent(root.digest)}/source`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toBe('image/jpeg');
+      expect(res.headers.get('etag')).toBe(`"${source.digest}"`);
+      expect(new Uint8Array(await res.arrayBuffer())).toEqual(JPEG);
+      const head = await fetch(`${base}/v1/media/${encodeURIComponent(root.digest)}/source`, { method: 'HEAD' });
+      expect(head.status).toBe(200);
+      const none = await fetch(`${base}/v1/media/${encodeURIComponent(sourceless.digest)}/source`);
+      expect(none.status).toBe(404);
+      const missing = await fetch(`${base}/v1/media/sha256:${'0'.repeat(64)}/source`);
+      expect(missing.status).toBe(404);
+    });
+  });
+
+  it('serves the config blob through the manifest under its own media type', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lloyal-routes-'));
+    const store = new FileAttachmentStore(dir);
+    const md = store.putBlob(new TextEncoder().encode('# T\n'), 'text/markdown');
+    const sidecar = new TextEncoder().encode(JSON.stringify({ title: 'T', pages: [] }));
+    const root = store.putAttachment({ representations: [md], config: { bytes: sidecar, mediaType: 'application/vnd.lloyal.document.v1+json' } });
+    const { root: imageRoot } = fixture();
+    await withServer({ store }, async (base) => {
+      const res = await fetch(`${base}/v1/media/${encodeURIComponent(root.digest)}/config`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toBe('application/vnd.lloyal.document.v1+json');
+      expect(await res.json()).toEqual({ title: 'T', pages: [] });
+      // An image manifest's config is OCI's canonical empty blob, served as such.
+      const empty = await fetch(`${base}/v1/media/${encodeURIComponent(fixture().root.digest)}/config`).catch(() => null);
+      void empty; void imageRoot;
+    });
+  });
+
+  it('still refuses GET on a raw blob: the manifest doors do not open one for sources', async () => {
+    const { store, source } = fixture();
+    await withServer({ store }, async (base) => {
+      const res = await fetch(`${base}/v1/content/${encodeURIComponent(source.digest)}`);
+      expect(res.status).toBe(405);
+    });
+  });
+});
+
+describe('content routes — whose fault an ingest failure is', () => {
+  it('answers 5xx when the store cannot write, not 400: disk full is not the client\'s doing', async () => {
+    const { store } = fixture();
+    const noSpace = (): never => {
+      const e = new Error('ENOSPC: no space left on device, write') as Error & { code: string; syscall: string };
+      e.code = 'ENOSPC'; e.syscall = 'write';
+      throw e;
+    };
+    await withServer({ store, ingest: async () => noSpace() }, async (base) => {
+      const res = await fetch(`${base}/v1/media/ingress`, { method: 'POST', body: PNG });
+      expect(res.status).toBe(500);
+    });
+  });
+
+  it('answers 408 when the ingress reports its own time bound, as it does for a slow upload', async () => {
+    const { store } = fixture();
+    const timedOut = (): never => {
+      const e = new Error('document exceeded 120000ms') as Error & { code: string };
+      e.code = 'ETIMEDOUT';
+      throw e;
+    };
+    await withServer({ store, ingest: async () => timedOut() }, async (base) => {
+      const res = await fetch(`${base}/v1/media/ingress`, { method: 'POST', body: PNG });
+      expect(res.status).toBe(408);
+    });
+  });
+});

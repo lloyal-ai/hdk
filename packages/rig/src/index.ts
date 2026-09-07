@@ -38,6 +38,15 @@ export type { SourceContext } from './sources/types';
 export { chunkFetchedPages, chunkHtml } from './sources/chunking';
 export type { FetchedPage } from './sources/chunking';
 
+// Retrieval primitives shared by every source ability (pure TS — RN-safe).
+export { BM25Index } from './bm25';
+export type { Bm25Opts, Bm25Hit } from './bm25';
+export { fitChunks, splitParagraphs, DEFAULT_CHUNK_TOKENS } from './resources/fit';
+export type { FitOpts } from './resources/fit';
+export { mergeRanges, subtractRanges } from './ranges';
+export { loadDocuments } from './resources/documents';
+export type { Document } from './resources/documents';
+
 // Resource types (pure TS — RN-safe)
 export type { Resource, Chunk } from './resources/types';
 

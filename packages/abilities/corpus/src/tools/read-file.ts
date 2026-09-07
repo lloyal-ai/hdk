@@ -2,64 +2,8 @@ import type { Operation } from 'effection';
 import { Tool } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema, ToolContext } from '@lloyal-labs/lloyal-agents';
 import type { Resource, Chunk } from '@lloyal-labs/rig';
+import { mergeRanges, subtractRanges } from '@lloyal-labs/rig';
 
-/**
- * Subtract previously-covered ranges from a target range
- *
- * Given a target half-open interval `[s, e)` and an array of
- * already-covered intervals, returns the sub-ranges of `[s, e)`
- * that have not yet been covered. Used by {@link ReadFileTool}
- * to avoid re-reading lines the agent has already seen.
- *
- * @param range - Target range `[start, end)` (0-indexed)
- * @param covered - Array of previously-covered `[start, end)` ranges
- * @returns Uncovered sub-ranges of the target
- *
- * @category Rig
- */
-export function subtractRanges(
-  [s, e]: [number, number],
-  covered: [number, number][],
-): [number, number][] {
-  let ranges: [number, number][] = [[s, e]];
-  for (const [cs, ce] of covered) {
-    ranges = ranges.flatMap(([a, b]): [number, number][] => {
-      if (ce <= a || cs >= b) return [[a, b]];
-      const result: [number, number][] = [];
-      if (a < cs) result.push([a, cs]);
-      if (ce < b) result.push([ce, b]);
-      return result;
-    });
-  }
-  return ranges;
-}
-
-/**
- * Merge overlapping or adjacent half-open ranges into a minimal set
- *
- * Sorts the input ranges by start position, then collapses any
- * overlapping or touching intervals. Used by {@link ReadFileTool}
- * to maintain a compact record of lines already read per agent.
- *
- * @param ranges - Array of `[start, end)` ranges to merge
- * @returns Merged non-overlapping ranges sorted by start
- *
- * @category Rig
- */
-export function mergeRanges(ranges: [number, number][]): [number, number][] {
-  if (ranges.length === 0) return [];
-  const sorted = [...ranges].sort((a, b) => a[0] - b[0]);
-  const merged: [number, number][] = [sorted[0]];
-  for (let i = 1; i < sorted.length; i++) {
-    const last = merged[merged.length - 1];
-    if (sorted[i][0] <= last[1]) {
-      last[1] = Math.max(last[1], sorted[i][1]);
-    } else {
-      merged.push(sorted[i]);
-    }
-  }
-  return merged;
-}
 
 /**
  * Read content from corpus files by line range

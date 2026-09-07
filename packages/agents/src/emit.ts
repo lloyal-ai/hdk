@@ -172,11 +172,17 @@ export function project(t: Transition): Emission[] {
         ...(t.rc !== undefined ? { rc: t.rc } : {}), attempt: t.attempt, pressure: pressureRecord(t.pressure),
       } }];
     case 'prefilled':
-      return [{ trace: {
-        type: 'branch:prefill', branchHandle: t.agent.id, cells: t.cells, role: t.role,
-        ...(t.attachments ? { attachments: t.attachments } : {}),
-        ...(t.probeText !== undefined ? { probeText: t.probeText } : {}),
-      } }];
+      return [
+        { bus: {
+          type: 'agent:prefilled', agentId: t.agent.id, cells: t.cells, role: t.role,
+          ...(t.attachments ? { attachments: t.attachments } : {}),
+        } },
+        { trace: {
+          type: 'branch:prefill', branchHandle: t.agent.id, cells: t.cells, role: t.role,
+          ...(t.attachments ? { attachments: t.attachments } : {}),
+          ...(t.probeText !== undefined ? { probeText: t.probeText } : {}),
+        } },
+      ];
     case 'settleOrder':
       return [{ trace: { type: 'tool:settle_order', batch: t.batch } }];
     case 'pruned':

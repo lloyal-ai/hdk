@@ -5,13 +5,13 @@ import {
   CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, GrammarTriggerType,
   buildToolResultDelta, buildToolResultDeltaMultimodal, decodeErrorOf, deltaCells,
 } from '@lloyal-labs/sdk';
-import type { Attachment, AttachmentStore, ContentIngress } from '@lloyal-labs/media';
+import type { Attachment, AttachmentStore, ContentIngress, PreparedContent } from '@lloyal-labs/media';
 import { waitUntilSettled } from './combinators';
 import { Trace, TraceParent, CallingAgent, SpineFmt } from './context';
 import { Agent, type FormatConfig } from './Agent';
 import type { AgentPolicy, ToolRetryAction } from './AgentPolicy';
 import { Tool, ToolRetryError, takeToolMedia, TOOL_CONTEXT_KEY, TOOL_IMAGE_ERROR_KEY } from './Tool';
-import type { Emitter } from './emit';
+import type { Emitter, Transition } from './emit';
 import { ContextPressure } from './pressure';
 import { prepareBatch } from './prepare-content';
 import { runReplay } from './replay';
@@ -177,6 +177,10 @@ export interface ExecDeps {
   pressureOpts: PressureThresholds;
   ingress: ContentIngress;
   attachments: AttachmentStore;
+  /** Assets available to the run: the roots the host staged, then every root
+   *  a tool result admitted, in admission order. Grows in `book()`; read by
+   *  every tool call. Roots only — the pool never materializes an entry. */
+  available: Attachment[];
   ladder: Ladder;
   trace: boolean;
 }
@@ -255,6 +259,10 @@ export class Executor {
     const landed: Agent[] = [];
     const order: { agentId: number; callId: string; cells: number }[] = [];
     const probes = new Map<number, string>();
+    // Admissions to announce once the rails are done: `prefilled` rides the
+    // bus as well as the trace, and a bus send may suspend, so it leaves the
+    // synchronous bookkeeping below and is emitted from this generator.
+    const admissions: Transition[] = [];
     const tokenItems = items.filter((it): it is PrefillItem & { rail: 'token' } => it.rail === 'token');
     const mediaItems = items.filter((it): it is PrefillItem & { rail: 'media' } => it.rail === 'media');
 
@@ -265,6 +273,11 @@ export class Executor {
         a.records.push({ kind: 'toolResult', resultStr: it.resultStr, callId: it.callId,
           ...(refs && refs.length > 0 ? { attachments: refs } : {}) });
       }
+      // Admitted roots become assets available to the whole run — pool state,
+      // so they outlive the agent that admitted them.
+      for (const r of refs ?? []) {
+        if (!d.available.some((x) => x.digest === r.digest)) d.available.push(r);
+      }
       landed.push(a);
       order.push({ agentId: a.id, callId: it.callId, cells });
       if (it.probe) probes.set(a.id, it.probe);
@@ -272,7 +285,7 @@ export class Executor {
       const after = new ContextPressure(d.ctx, d.pressureOpts);
       a.recordToolResult({ name: it.toolName, args: it.args, resultCells: cells,
         contextAfterPercent: after.percentAvailable, timestamp: performance.now() });
-      d.emit.trace({ kind: 'prefilled', agent: a, cells,
+      admissions.push({ kind: 'prefilled', agent: a, cells,
         role: it.kind === 'recovery' ? 'recovery' : 'toolResult', attachments: refs });
     };
 
@@ -282,7 +295,7 @@ export class Executor {
         d.counters.warmPrefillCalls++;
         d.counters.warmPrefillBranches += tokenItems.length;
         d.ladder.consecutiveFatalRc = 0;
-        for (const t of tokenItems) book(t, t.tokens.length);
+        for (const t of tokenItems) book(t, t.tokens.length, t.attachments);
         out.tokenRail = { items: tokenItems, outcome: { ok: true } };
       } catch (err) {
         const de = decodeErrorOf(err);
@@ -312,6 +325,8 @@ export class Executor {
       }
     }
 
+    for (const t of admissions) yield* d.emit.emit(t);
+
     if (landed.length > 0) {
       d.emit.trace({ kind: 'settleOrder', batch: order });
       const probePairs: [Branch, number[]][] = [];
@@ -326,7 +341,7 @@ export class Executor {
       if (probePairs.length > 0) {
         yield* prefill(d.store, probePairs);
         for (const m of probeMeta) {
-          d.emit.trace({ kind: 'prefilled', agent: m.agent, cells: m.cells, role: 'probe', probeText: m.text });
+          yield* d.emit.emit({ kind: 'prefilled', agent: m.agent, cells: m.cells, role: 'probe', probeText: m.text });
           m.agent.records.push({ kind: 'probe', text: m.text });
         }
       }
@@ -509,6 +524,7 @@ export class Executor {
       scorer: d.scorer, explore,
       pressurePercentAvailable: reading.percentAvailable,
       peerHistory,
+      attachments: [...d.available],
     };
 
     if (tool?.fanout) {
@@ -629,27 +645,39 @@ export class Executor {
       if (Array.isArray(obj.results)) agent.addNestedResults((obj.results as unknown[]).filter((f): f is string => typeof f === 'string'));
       if (Array.isArray(obj.nestedResults)) agent.addNestedResults((obj.nestedResults as unknown[]).filter((f): f is string => typeof f === 'string'));
     }
-    // Images come OUT before serializing; a model with no projector is TOLD.
+    // Media comes OUT before serializing. Bytes go through the ingress door;
+    // roots resolve through the store. The rail follows what the batch
+    // MATERIALIZES to, never the fact that media was there.
     const { media, result: told } = takeToolMedia(result);
-    if (media.length > 0 && !d.ctx.supportsVision()) {
+    const vision = d.ctx.supportsVision();
+    const hasBytes = media.some((m) => m instanceof Uint8Array);
+    // THE BARRIER: normalized and committed before a marker exists, before
+    // admission, before any KV moves. A failure here is not a tool retry.
+    // A model with no projector never ingests bytes; it still resolves roots,
+    // because a root that expands to no bitmaps — a document — asks nothing
+    // of sight and is admitted on the token rail.
+    let prepared: PreparedContent | null = null;
+    if (media.length > 0 && (vision || !hasBytes)) {
+      prepared = yield* prepareBatch(d.ingress, d.attachments, media);
+    }
+    if (media.length > 0 && !vision && (hasBytes || (prepared?.bitmaps.length ?? 0) > 0)) {
       (told as Record<string, unknown>)[TOOL_IMAGE_ERROR_KEY] =
         `${tc.name} returned ${media.length} image(s), but this model cannot see images. ` +
         `Work from the text, or use a different source.`;
+      prepared = null;
     }
     const resultStr = JSON.stringify(told);
     yield* d.emit.emit({ kind: 'toolTold', agent, tool: tc.name, resultStr, contextAvailablePercent });
     const common = { agent, toolName: tc.name, callId, args: tc.arguments, resultStr, probe: tool?.probe(told) ?? undefined };
     let item: PrefillItem;
-    if (media.length > 0 && d.ctx.supportsVision()) {
-      // THE BARRIER: normalized and committed before a marker exists, before
-      // admission, before any KV moves. A failure here is not a tool retry.
-      const prepared = yield* prepareBatch(d.ingress, d.attachments, media);
+    if (prepared && prepared.bitmaps.length > 0) {
       const delta = buildToolResultDeltaMultimodal(d.ctx, resultStr, callId, prepared.bitmaps as Uint8Array[], { enableThinking: agent.fmt.enableThinking });
       const cells = yield* measureCells(d.ctx, delta);
       item = { kind: 'toolResult', rail: 'media', ...common, media: { delta, cells, attachments: prepared.attachments } };
     } else {
       const tokens = buildToolResultDelta(d.ctx, resultStr, callId, { enableThinking: agent.fmt.enableThinking });
-      item = { kind: 'toolResult', rail: 'token', ...common, tokens };
+      item = { kind: 'toolResult', rail: 'token', ...common, tokens,
+        ...(prepared && prepared.attachments.length > 0 ? { attachments: prepared.attachments } : {}) };
     }
     d.emit.trace({ kind: 'toolResult', agent, tool: tc.name, result: told,
       cells: item.rail === 'media' ? item.media.cells : item.tokens.length,

@@ -135,9 +135,11 @@ function selectTopChunks(
  * greps; discovery signals (`alsoOnPage`) compensate.
  *
  * **Exploit mode** (`context.explore === false`, set by
- * `policy.shouldExplore`): every chunk is re-scored by the entailment scorer
- * against the query and re-sorted — `min(toolQueryScore, originalQueryScore)`
- * tightens focus when KV or time is short, at the cost of serendipity.
+ * `policy.shouldExplore`): every scored chunk is also scored by the
+ * entailment scorer against the ORIGINAL question — one extra pass; the
+ * tool-query scores are already in hand — and re-sorted by
+ * `min(toolQueryScore, originalQueryScore)`, which tightens focus when KV or
+ * time is short, at the cost of serendipity.
  *
  * Callers own everything around it: fetching/chunking (and
  * `tokenizeChunks` for budget mode), any first-stage narrowing (BM25),
@@ -189,11 +191,13 @@ export function* admitChunks(
       );
       return chunk?.text ?? '';
     });
-    const combinedScores: number[] = yield* call(() =>
-      context.scorer!.scoreRelevanceBatch(chunkTexts, query),
+    // One more pass, against the original question; the tool-query scores
+    // are the ones already in hand. Both must be high to rank: min().
+    const originalScores: number[] = yield* call(() =>
+      context.scorer!.scoreEntailmentBatch(chunkTexts),
     );
     const reordered: ScoredWithOriginal[] = scored
-      .map((sc, i) => ({ ...sc, score: combinedScores[i], _toolQueryScore: sc.score }))
+      .map((sc, i) => ({ ...sc, score: Math.min(sc.score, originalScores[i]), _toolQueryScore: sc.score }))
       .sort((a, b) => b.score - a.score);
     scored = reordered;
 

@@ -12,6 +12,7 @@
  */
 
 import type { Chunk } from '../resources/types';
+import { splitParagraphs } from '../resources/fit';
 
 /**
  * Raw page content buffered during web research for post-research reranking
@@ -46,35 +47,32 @@ export interface FetchedPage {
 export function chunkFetchedPages(pages: FetchedPage[]): Chunk[] {
   const chunks: Chunk[] = [];
   for (const page of pages) {
-    const paragraphs = page.text
-      .split(/\n\s*\n/)
-      .map((p) => p.trim())
-      .filter((p) => p.length > 40);
-
-    if (paragraphs.length === 0) {
-      if (page.text.trim().length > 40) {
-        chunks.push({
-          resource: page.url,
-          heading: page.title || page.url,
-          section: '',
-          text: page.text.trim(),
-          tokens: [],
-          startLine: 1,
-          endLine: 1,
-        });
-      }
-      continue;
-    }
-
-    for (let i = 0; i < paragraphs.length; i++) {
+    // Real line ranges over the page text: a consumer holding the same text can
+    // resolve any chunk, and windows over these chunks keep distinct start lines.
+    const lines = page.text.split('\n');
+    const before = chunks.length;
+    for (const [start, end] of splitParagraphs(lines)) {
+      const text = lines.slice(start, end).join('\n').trim();
+      if (text.length <= 40) continue;
       chunks.push({
         resource: page.url,
         heading: page.title || page.url,
         section: '',
-        text: paragraphs[i],
+        text,
         tokens: [],
-        startLine: i + 1,
-        endLine: i + 1,
+        startLine: start + 1,
+        endLine: end,
+      });
+    }
+    if (chunks.length === before && page.text.trim().length > 40) {
+      chunks.push({
+        resource: page.url,
+        heading: page.title || page.url,
+        section: '',
+        text: page.text.trim(),
+        tokens: [],
+        startLine: 1,
+        endLine: lines.length,
       });
     }
   }
@@ -107,21 +105,27 @@ export async function chunkHtml(html: string, url: string, title: string): Promi
   const chunks: Chunk[] = [];
   let currentHeading = title;
   let currentText = '';
-  let chunkIndex = 0;
+  // Real line ranges over the text this function builds: the emitted sections
+  // joined by one blank line. Distinct start lines per chunk, contiguous
+  // ranges, and a line count that matches each chunk's text.
+  let cursor = 0;
 
   function flushSection() {
     const text = currentText.trim();
     if (text.length > 40) {
+      if (chunks.length > 0) cursor += 1;
+      const startLine = cursor + 1;
+      const endLine = cursor + text.split('\n').length;
+      cursor = endLine;
       chunks.push({
         resource: url,
         heading: currentHeading || title || url,
         section: '',
         text,
         tokens: [],
-        startLine: chunkIndex + 1,
-        endLine: chunkIndex + 1,
+        startLine,
+        endLine,
       });
-      chunkIndex++;
     }
     currentText = '';
   }

@@ -6,6 +6,7 @@
  * batch is an orchestration concern and lives with the orchestrator.
  */
 import { representationsOf } from './attachment';
+import { PROJECTOR_FORMATS } from './media-type';
 import type { Attachment } from './attachment';
 import type { AttachmentStore } from './store';
 
@@ -23,9 +24,11 @@ import type { AttachmentStore } from './store';
 export interface PreparedContent {
   /** Roots, in ingest order — what the trace and the fold carry. */
   attachments: readonly Attachment[];
-  /** Every root's representations, flattened in order — the EXACT bytes to
-   *  hand a builder and then the projector. One image contributes one; a video
-   *  contributes its sampled frames. */
+  /** Every root's PROJECTOR-DECODABLE representations, flattened in order —
+   *  the EXACT bytes to hand a builder and then the projector. One image
+   *  contributes one; a video contributes its sampled frames; a document,
+   *  whose one representation is text, contributes none: its text reaches the
+   *  model through retrieval and the spine outline, never the decoder. */
   bitmaps: readonly Uint8Array[];
 }
 
@@ -59,6 +62,10 @@ export function materialize(
       );
     }
     for (const rep of representationsOf(manifest)) {
+      // Only what the projector decodes is a bitmap. A text representation is
+      // real content — retrieval reads it — but handing it to the image decoder
+      // would poison the branch it was prefilled on.
+      if (!PROJECTOR_FORMATS.includes(rep.mediaType)) continue;
       // Replay rebuilds KV from these bytes under this digest. The store
       // refuses bytes that drifted from their name, so null here means absent
       // or drifted — either must refuse, not decode as something else.

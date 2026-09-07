@@ -40,7 +40,7 @@ export { prepareBatch } from './prepare-content';
 // The one member of the framework-channel namespace a TOOL writes. The other
 // two are framework→model and no tool author ever sets them, so they stay
 // internal rather than growing the surface to describe a convention.
-export { TOOL_MEDIA_KEY } from './Tool';
+export { TOOL_ATTACHMENTS_KEY } from './Tool';
 export { useTraceScope } from './trace-scope';
 export { admitChunks } from './admission';
 export type { AdmitOpts, AdmitResult, AdmitSelect, AdmittedPassage } from './admission';

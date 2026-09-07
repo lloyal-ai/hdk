@@ -67,12 +67,12 @@ describe('createReranker — KV precision', () => {
       yield* createReranker('/fake/reranker.gguf', opts);
     });
 
-  it('requests q4_0 for both KV types when the caller specifies neither', async () => {
+  it('requests q8_0 for both KV types when the caller specifies neither — the resolution the verdicts need', async () => {
     await load();
     expect(createContext).toHaveBeenCalledTimes(1);
     const args = createContext.mock.calls[0][0];
-    expect(args.typeK).toBe('q4_0');
-    expect(args.typeV).toBe('q4_0');
+    expect(args.typeK).toBe('q8_0');
+    expect(args.typeV).toBe('q8_0');
   });
 
   it('requests the caller\'s KV types when given', async () => {

@@ -447,7 +447,7 @@ export type TraceEvent =
   | TraceEventBase & {
       /** Exploit-mode dual scoring at a content boundary (search/fetch_page).
        *  Emitted when policy.shouldExplore() returns false and the tool
-       *  applies scoreRelevanceBatch to tighten focus. */
+       *  ranks by min(tool score, original-question score) to tighten focus. */
       type: 'entailment:content:exploit';
       tool: string;
       /** Pressure snapshot that triggered exploit mode. Only the field the

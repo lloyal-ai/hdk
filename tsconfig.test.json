@@ -54,7 +54,8 @@
       "@lloyal-labs/relay": ["packages/relay/src/index.ts"],
       "@lloyal-labs/corpus-ability": ["packages/abilities/corpus/src/index.ts"],
       "@lloyal-labs/web-ability": ["packages/abilities/web/src/index.ts"],
-      "@lloyal-labs/wikipedia-ability": ["packages/abilities/wikipedia/src/index.ts"]
+      "@lloyal-labs/wikipedia-ability": ["packages/abilities/wikipedia/src/index.ts"],
+      "@lloyal-labs/documents-ability": ["packages/abilities/documents/src/index.ts"]
     }
   },
   "include": [

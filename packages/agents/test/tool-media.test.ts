@@ -7,12 +7,13 @@
  * and the tool's own object left alone.
  */
 import { describe, it, expect } from 'vitest';
-import { takeToolMedia, TOOL_MEDIA_KEY } from '../src/Tool';
+import { takeToolMedia, TOOL_ATTACHMENTS_KEY } from '../src/Tool';
+import { MANIFEST_TYPE } from '@lloyal-labs/media';
 import { PNG_BYTES } from './helpers/media';
 
 describe('takeToolMedia', () => {
   it('splits the images out from what the model is told', () => {
-    const { media, result } = takeToolMedia({ page: 'p1', [TOOL_MEDIA_KEY]: [PNG_BYTES] });
+    const { media, result } = takeToolMedia({ page: 'p1', [TOOL_ATTACHMENTS_KEY]: [PNG_BYTES] });
 
     expect(media).toEqual([PNG_BYTES]);
     expect(result).toEqual({ page: 'p1' });
@@ -22,18 +23,30 @@ describe('takeToolMedia', () => {
     // The bytes must reach neither the model's JSON nor the trace. Deleting
     // them in place made that a property of call order; this makes it a
     // property of the function.
-    const returned = { page: 'p1', [TOOL_MEDIA_KEY]: [PNG_BYTES] };
+    const returned = { page: 'p1', [TOOL_ATTACHMENTS_KEY]: [PNG_BYTES] };
     takeToolMedia(returned);
 
-    expect(returned[TOOL_MEDIA_KEY]).toEqual([PNG_BYTES]);
+    expect(returned[TOOL_ATTACHMENTS_KEY]).toEqual([PNG_BYTES]);
   });
 
   it('drops entries that are not bytes, so markers and bitmaps stay in step', () => {
     const { media } = takeToolMedia({
-      [TOOL_MEDIA_KEY]: [PNG_BYTES, 'not-an-image', null, PNG_BYTES],
+      [TOOL_ATTACHMENTS_KEY]: [PNG_BYTES, 'not-an-image', null, PNG_BYTES],
     });
 
     expect(media).toHaveLength(2);
+  });
+
+  it('keeps a descriptor the store would recognise, in order with bytes, and drops one it would not', () => {
+    // A tool that reads the content store returns ROOTS, not bytes: no
+    // ingress, no normalizer permit, the ingest-time digest. Anything that is
+    // neither bytes nor a root descriptor is not media and never was.
+    const root = { digest: 'sha256:' + 'a'.repeat(64), mediaType: MANIFEST_TYPE, size: 9 };
+    const { media, result } = takeToolMedia({
+      page: 'p1', [TOOL_ATTACHMENTS_KEY]: [PNG_BYTES, root, { digest: 'nope' }, 'x'],
+    });
+    expect(media).toEqual([PNG_BYTES, root]);
+    expect(result).toEqual({ page: 'p1' });
   });
 
   it('returns a text-only result as-is, copying nothing', () => {
@@ -51,15 +64,15 @@ describe('takeToolMedia', () => {
   });
 
   it('strips a MALFORMED channel rather than serializing it', () => {
-    // `_images: Uint8Array` (not an array of them) used to return the
+    // `_attachments: Uint8Array` (not an array of them) used to return the
     // original object — JSON-encoding every byte index onto the token rail,
     // the exact failure this helper exists to prevent. The reserved key
     // never survives; an invalid value is zero media entries.
     for (const bad of [PNG_BYTES, 'nope', 42, { 0: 1 }]) {
-      const { media, result } = takeToolMedia({ page: 'p1', [TOOL_MEDIA_KEY]: bad });
+      const { media, result } = takeToolMedia({ page: 'p1', [TOOL_ATTACHMENTS_KEY]: bad });
       expect(media).toEqual([]);
       expect(result).toEqual({ page: 'p1' });
-      expect(Object.keys(result as object)).not.toContain(TOOL_MEDIA_KEY);
+      expect(Object.keys(result as object)).not.toContain(TOOL_ATTACHMENTS_KEY);
     }
   });
 });

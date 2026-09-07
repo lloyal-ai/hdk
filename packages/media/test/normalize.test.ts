@@ -9,12 +9,13 @@
  */
 import { describe, it, expect } from 'vitest';
 import sharp from 'sharp';
-import { normalizeImage, DEFAULT_MAX_PIXELS, MAX_CONCURRENT_NORMALIZATIONS, MAX_QUEUED_NORMALIZATIONS, MAX_INPUT_PIXELS } from '../src/image';
+import { normalizeImage, DEFAULT_MAX_PIXELS, MAX_INPUT_PIXELS } from '../src/image';
+import { MAX_CONCURRENT_NORMALIZATIONS, MAX_QUEUED_NORMALIZATIONS } from '../src/gate';
 import type { NormalizedImage } from '../src/image';
 // Its own list of nine, sourced from stb_image — NOT derived from the sniff
 // table, which knows four. Deriving it was a defect: the pass-through gate read
 // as covering six formats and covered one.
-import { PROJECTOR_FORMATS } from '../src/index';
+import { PROJECTOR_FORMATS, sniffMediaType } from '../src/index';
 
 const solid = (width: number, height: number, format: 'jpeg' | 'png' | 'webp' | 'tiff' = 'jpeg') =>
   sharp({ create: { width, height, channels: 3, background: '#0a7' } })[format]().toBuffer()
@@ -178,6 +179,22 @@ describe('the two format lists are different questions', () => {
     // it under a contract that promises a ceiling.
     const tgaish = new Uint8Array([0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 4, 0, 24, 0]);
     await expect(normalizeImage(tgaish, {})).rejects.toThrow();
+  });
+});
+
+describe('a PDF is identified, and is not an image', () => {
+  const pdf = new TextEncoder().encode('%PDF-1.7\n1 0 obj << /Type /Catalog >> endobj\n%%EOF\n');
+
+  it('sniffs the PDF signature — the content ingress dispatches on it', () => {
+    expect(sniffMediaType(pdf)).toBe('application/pdf');
+  });
+
+  it('is not something the projector decodes', () => {
+    expect(PROJECTOR_FORMATS).not.toContain('application/pdf');
+  });
+
+  it('is refused by the image normalizer, exactly as an unknown format is', async () => {
+    await expect(normalizeImage(pdf, {})).rejects.toThrow();
   });
 });
 

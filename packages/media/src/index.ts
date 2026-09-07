@@ -28,3 +28,8 @@ export { materialize, NoContentIngress } from './ingress';
 export type { ContentIngress, PreparedContent } from './ingress';
 
 export { PROJECTOR_FORMATS, sniffMediaType, UNKNOWN_MEDIA_TYPE } from './media-type';
+
+// The document sidecar — facts about a document, kept in its manifest's config
+// slot. Pure data and a guard; a reader branches on DOCUMENT_CONFIG_TYPE.
+export { DOCUMENT_CONFIG_TYPE, asDocumentMeta, pagesOf } from './document';
+export type { DocumentMeta, SectionOrigin } from './document';

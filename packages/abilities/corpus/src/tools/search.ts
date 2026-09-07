@@ -4,7 +4,7 @@ import { Tool, Trace, admitChunks } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema, ToolContext } from '@lloyal-labs/lloyal-agents';
 import type { Chunk } from '@lloyal-labs/rig';
 import type { Reranker } from '@lloyal-labs/rig';
-import { BM25Index } from '../bm25';
+import { BM25Index } from '@lloyal-labs/rig';
 
 /**
  * Default score floor for search hits — a useful **discrimination signal**,
