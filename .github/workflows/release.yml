@@ -10,10 +10,16 @@ on:
         description: 'Skip npm publish (for testing)'
         type: boolean
         default: true
+      runner:
+        description: 'Runner label. self-hosted when hosted minutes are unavailable.'
+        type: string
+        default: 'ubuntu-latest'
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # `inputs` is null on the tag-push trigger, so the fallback is what keeps a
+    # release tag on hosted runners. An empty label queues forever, silently.
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
     permissions:
       contents: read
       id-token: write
@@ -69,6 +75,19 @@ jobs:
       - name: Typecheck
         run: npx tsc -b packages/media packages/sdk packages/agents packages/rig packages/channel-verify packages/binding packages/relay packages/host
 
+      # Publishing authenticates through trusted publishing, and the OIDC token
+      # is minted by the Actions service for the job — including on a
+      # self-hosted runner. This runs unconditionally so a skip_publish
+      # rehearsal proves the plumbing before a real cut depends on it. The
+      # request URL only, never the token.
+      - name: OIDC available?
+        run: |
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "OIDC token endpoint present - trusted publishing can authenticate."
+          else
+            echo "::warning::No OIDC token in this job, so trusted publishing cannot authenticate."
+          fi
+
       - name: Publish packages
         if: success() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.skip_publish))
         run: |
@@ -95,9 +114,15 @@ jobs:
             if npm view "$name@$version" version >/dev/null 2>&1; then
               echo "⏭ $name@$version already published, skipping"
             else
+              # A manual dispatch may only ever ship a prerelease. The tag falls
+              # through to `latest` for any version without a suffix, so one
+              # hand-edited manifest would otherwise move production. Releases
+              # go out through a v* tag, which is not affected by this.
+              if [ "$tag" = "latest" ] && [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+                echo "::error::$name@$version would publish to latest. A manual dispatch may only ship a prerelease; production goes through a v* tag."
+                exit 1
+              fi
               echo "Publishing $name@$version (tag: $tag)..."
               npm publish --workspace "$pkg" --access public --provenance --tag "$tag"
             fi
           done
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
