@@ -1,3 +1,4 @@
+import { parseHistoryArgs } from './Agent';
 import type { Agent, ToolHistoryEntry } from './Agent';
 import type { ToolRetryError } from './Tool';
 import { ContextPressure } from './pressure';
@@ -74,10 +75,6 @@ export interface ToolGuard {
 }
 
 /** Default guards for deduplication and recursion discipline */
-function parseHistoryArgs(argsStr: string): Record<string, unknown> {
-  try { return JSON.parse(argsStr); } catch { return {}; }
-}
-
 export const defaultToolGuards: ToolGuard[] = [
   // Framework-injected authGuard. Runs FIRST so a
   // protected-tool rejection fires before any dedup guard — the pool

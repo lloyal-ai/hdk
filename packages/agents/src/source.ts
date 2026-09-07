@@ -34,7 +34,9 @@ export interface EntailmentScorer {
    * @param texts - Content chunks to score
    * @param localQuery - The tool call's query argument (NOT the agent task)
    */
-  /** Score texts against an arbitrary reference string. Returns 0–1 per text. */
+  /** Score texts against an arbitrary reference string. Returns the reranker's
+   *  LOGIT difference per text — unbounded, centred on zero, positive meaning
+   *  "yes". Not a 0–1 similarity; a threshold over this must be in logits. */
   scoreSimilarityBatch(reference: string, texts: string[]): Promise<number[]>;
   /** Threshold gate — returns true if the score is high enough to proceed. */
   shouldProceed(score: number): boolean;

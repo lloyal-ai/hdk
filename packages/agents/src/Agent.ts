@@ -86,6 +86,20 @@ export interface ToolHistoryEntry {
   contextAfterPercent: number;
   /** Timestamp (performance.now) when result was recorded */
   timestamp: number;
+  /**
+   * WHAT landed on the branch, which is not always what was called. A settle
+   * rejection replaces an oversized tool result with a nudge that carries the
+   * ORIGINAL call's name and args, so without this an entry claims a call
+   * succeeded when the model never saw its result. Taken from the prefill
+   * item's own `kind`, so the two cannot drift.
+   */
+  outcome: 'toolResult' | 'nudge' | 'recovery';
+}
+
+/** A history entry's `args` as an object — `{}` when the model emitted
+ *  something unparseable. The one reader of that field's encoding. */
+export function parseHistoryArgs(argsStr: string): Record<string, unknown> {
+  try { return JSON.parse(argsStr) as Record<string, unknown>; } catch { return {}; }
 }
 
 // ── Agent ───────────────────────────────────────────────────
@@ -385,6 +399,32 @@ export class Agent {
     this._toolHistory.push(entry);
   }
 
+  /**
+   * The calls of one tool whose RESULTS this agent attends over — its own and
+   * its callers'.
+   *
+   * Attention in the literal sense: those tokens are in the KV this branch
+   * reads across. That is the question a tool is really asking when it asks
+   * whether it has already given this agent something, and it is not the same
+   * question as whether the call happened. A settle rejection puts a nudge on
+   * the branch carrying the ORIGINAL call's name and args, so the agent attends
+   * over that turn but never over its result. `outcome === 'toolResult'` is
+   * what separates the two, and the pool writes it only once the prefill lands.
+   *
+   * The scope is the caller chain {@link walkAncestors} walks, and it is the
+   * right scope because a forked child attends over its parent's prefix: what
+   * the caller received is already in the child's KV. That holds while the
+   * nesting tool forks the child from the caller's branch, which is what
+   * `DelegateTool` does by passing `parent: caller.branch`. A nested pool that
+   * forked from the spine instead would inherit nothing, and subtracting
+   * against its caller would withhold content the child never saw.
+   */
+  attendedResults(tool: string): Record<string, unknown>[] {
+    return this.walkAncestors((a) => a.toolHistory)
+      .filter((h) => h.name === tool && h.outcome === 'toolResult')
+      .map((h) => parseHistoryArgs(h.args));
+  }
+
   // ── Child findings ─────────────────────────────────────────
 
   /** Findings collected from recursive tool results (inner sub-agent findings) */
@@ -405,7 +445,7 @@ export class Agent {
    * @example Check if any ancestor fetched a URL
    * ```typescript
    * const fetched = agent.walkAncestors(a => a.toolHistory)
-   *   .some(h => h.name === 'fetch_page' && h.args === url);
+   *   .some(h => h.name === 'fetch_page' && parseHistoryArgs(h.args).url === url);
    * ```
    */
   walkAncestors<T>(fn: (agent: Agent) => readonly T[]): T[] {

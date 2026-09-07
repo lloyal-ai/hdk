@@ -52,23 +52,18 @@ export interface ToolSchema {
 }
 
 /**
- * Execution context passed to {@link Tool.execute}
+ * Execution context passed to {@link Tool.execute} — the values of THIS call,
+ * and nothing that outlives it.
  *
- * Provides callbacks for reporting progress during long-running tool
- * operations (e.g. reranker scoring chunks).
+ * WHO is calling is not here: read {@link CallingAgent}, which the pool sets on
+ * every dispatch and which carries the agent's id, its branch, and the history
+ * of what it has actually received ({@link Agent.attendedResults}). An id on this port
+ * invites a tool to keep private per-agent state, which is how three tools came
+ * to record evidence before the pool had admitted it.
  *
  * @category Agents
  */
 export interface ToolContext {
-  /** Stable agent identifier — branch handle at creation time */
-  agentId: number;
-  /**
-   * The calling agent's branch — use for recursive tools that spawn
-   * sub-agents via {@link withSpine} with `parent` option.
-   * Sub-agents forking from this branch inherit the agent's full
-   * KV state (Continuous Context).
-   */
-  branch?: Branch;
   /** Progress callback for long-running operations */
   onProgress?: (p: { filled: number; total: number }) => void;
   /**

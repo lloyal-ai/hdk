@@ -78,6 +78,7 @@ function makeAgent(opts: {
       resultCells: 100,
       contextAfterPercent: 80,
       timestamp: 0,
+      outcome: 'toolResult',
     });
   }
   return agent;

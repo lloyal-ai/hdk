@@ -16,7 +16,7 @@ function makeAgent(overrides?: { toolCallCount?: number; turns?: number; toolHis
   for (let i = 0; i < (overrides?.toolCallCount ?? 0); i++) a.incrementToolCalls();
   for (let i = 0; i < (overrides?.turns ?? 0); i++) a.incrementTurns();
   for (const h of overrides?.toolHistory ?? []) {
-    a.recordToolResult({ name: h.name, args: h.args, resultCells: 100, contextAfterPercent: 80, timestamp: 0 });
+    a.recordToolResult({ name: h.name, args: h.args, resultCells: 100, contextAfterPercent: 80, timestamp: 0, outcome: 'toolResult' });
   }
   return a;
 }

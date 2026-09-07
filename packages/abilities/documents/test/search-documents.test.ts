@@ -74,7 +74,7 @@ describe('search_documents', () => {
     };
     const r = await run(function* () {
       yield* Trace.set(new NullTraceWriter());
-      return (yield* tool.execute({ query: 'baseline cells' }, { agentId: 1, attachments: [doc], explore: false, scorer } as unknown as ToolContext)) as Envelope;
+      return (yield* tool.execute({ query: 'baseline cells' }, { attachments: [doc], explore: false, scorer } as unknown as ToolContext)) as Envelope;
     });
     expect(r.error).toBeUndefined();
     expect(r.hits.length).toBeGreaterThan(0);
