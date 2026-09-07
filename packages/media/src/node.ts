@@ -13,3 +13,11 @@ export { createImageIngress, DEFAULT_MAX_PIXELS, normalizeImage } from './image'
 export type { NormalizedImage, NormalizeImage, NormalizeOpts } from './image';
 
 export { FileAttachmentStore } from './file-store';
+
+// The document codec and the dispatching ingress. `@embedpdf/pdfium` is an
+// OPTIONAL peer like sharp: required at call time, never at import.
+export { createDocumentIngress, createCodec, openDocument, PdfError, MAX_DOCUMENT_BYTES, DOCUMENT_TIMEOUT_MS, MAX_RENDERED_PAGES, MAX_TEXT_PAGES, MAX_FIGURES, RENDER_PROFILE } from './pdf';
+export type { DocumentOpts } from './pdf';
+export { createContentIngress, DOCUMENT_UPLOAD_TIMEOUT_MS } from './content-ingress';
+export { gate, createGate, MAX_CONCURRENT_NORMALIZATIONS, MAX_QUEUED_NORMALIZATIONS, PERMIT_WAIT_TIMEOUT_MS } from './gate';
+export type { Gate } from './gate';

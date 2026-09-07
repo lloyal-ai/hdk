@@ -9,7 +9,8 @@
  * transitions, trace events, event emissions, ToolContext fields, recovery.
  */
 import { describe, it, expect } from 'vitest';
-import { MediaTool, PNG_BYTES, MEDIA_TEST_NCTX, mediaFailures } from './helpers/media';
+import { MediaTool, RootTool, imageRoot, documentRoot, PNG_BYTES, MEDIA_TEST_NCTX, mediaFailures } from './helpers/media';
+import type { Attachment } from '@lloyal-labs/media';
 import { run, createChannel, createSignal, spawn, each, scoped, call } from 'effection';
 import type { Operation, Channel } from 'effection';
 import { MockSessionContext, createMockSdk } from '../../sdk/src/testing.js';
@@ -58,11 +59,17 @@ async function runPool(opts: {
   mutateCtx?: (ctx: MockSessionContext) => void;
   /** Install an ingress that refuses everything, to exercise the barrier. */
   refusingIngress?: boolean;
+  /** Assets available to the run from the start — what a host stages the pool with. */
+  attachments?: readonly Attachment[];
+  /** A content store the test committed roots into beforehand. */
+  contentStore?: MemoryAttachmentStore;
 }): Promise<{
   result: AgentPoolResult;
   events: AgentEvent[];
   trace: CapturingTraceWriter;
   ctx: MockSessionContext;
+  /** How many times a tool result went through the ingress door. */
+  ingressCalls: number;
 }> {
   const { ctx, store, root } = createMockSdk({
     nCtx: opts.nCtx ?? 16384,
@@ -103,6 +110,7 @@ async function runPool(opts: {
 
   const traceWriter = new CapturingTraceWriter();
   const collectedEvents: AgentEvent[] = [];
+  let ingressCalls = 0;
 
   // Prefill root to simulate withSpine system prompt
   const rootTokens = ctx.tokenizeSync('system prompt');
@@ -117,15 +125,16 @@ async function runPool(opts: {
     // A real store: media paths now REFUSE to run without one, because
     // unaddressed media makes a run unreplayable. Tests that exercise them
     // must be configured the way a real harness is.
-    const contentStore = new MemoryAttachmentStore();
+    const contentStore = opts.contentStore ?? new MemoryAttachmentStore();
     yield* Attachments.set(contentStore);
     // Media now refuses to run without an ingress, because unnormalized,
     // unaddressed bytes make a run unreplayable. Tests use a raw one — they
     // exercise the rail, not the normalizer.
+    const raw = rawIngress(contentStore);
     yield* Ingress.set(
       opts.refusingIngress
         ? { ingest: () => Promise.reject(new Error('ingress refused')) }
-        : rawIngress(contentStore),
+        : { ingest: (bytes, signal) => { ingressCalls++; return raw.ingest(bytes, signal); } },
     );
 
     const windDownSignal = createSignal<void, void>();
@@ -152,6 +161,7 @@ async function runPool(opts: {
         terminalToolName: opts.terminalTool,
         trace: opts.trace ?? false,
         pruneOnReturn: opts.pruneOnReturn ?? false,
+        attachments: opts.attachments,
       });
       // Drain Subscription — collect events, return close value
       let windDownFired = false;
@@ -168,7 +178,7 @@ async function runPool(opts: {
     });
   });
 
-  return { result, events: collectedEvents, trace: traceWriter, ctx };
+  return { result, events: collectedEvents, trace: traceWriter, ctx, ingressCalls };
 }
 
 /** Minimal policy stub — every method overridable */
@@ -2359,7 +2369,7 @@ describe('tool results carrying images', () => {
     const shown = events.filter(e => e.type === 'agent:tool_result')
       .map(e => (e as { result: string }).result).join('');
     expect(shown).not.toContain('137,80,78,71');
-    expect(shown).not.toContain('_images');
+    expect(shown).not.toContain('_attachments');
     expect(shown).toContain('p1');
   });
 
@@ -2504,5 +2514,141 @@ describe('tool results carrying images', () => {
       .map(e => (e as { result: string }).result).join('');
     expect(shown).toContain('cannot see images');
     expect(shown).not.toContain('137,80,78,71');
+  });
+});
+
+// ── Assets available to the run ─────────────────────────────────
+// Availability is not projection. A root the host stages, or one a tool
+// admits through the key, is readable by every tool call in the run through
+// ToolContext.attachments and costs no KV. Only admission onto a branch
+// projects — and the rail follows what a root MATERIALIZES to, never the
+// fact that a root was there.
+describe('assets available to the run', () => {
+  const policy = () => stubPolicy({
+    shouldExit: () => false,
+    onProduced: (_a, parsed) => {
+      if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
+      if (parsed.content) return { type: 'free_text_return', content: parsed.content };
+      return { type: 'idle', reason: 'free_text_stop' };
+    },
+  });
+  /** A turn whose raw carries 't1' calls `first`; one carrying 't2' calls
+   *  `second`; any other finishes. Keyed off raw, as the ladder tests are. */
+  const calls = (first: string, second: string) => (raw: string) =>
+    raw.includes('t2')
+      ? { content: '', reasoningContent: '', toolCalls: [{ name: second, arguments: '{}', id: 'c2' }] }
+      : raw.includes('t1')
+        ? { content: '', reasoningContent: '', toolCalls: [{ name: first, arguments: '{}', id: 'c1' }] }
+        : { content: 'done', reasoningContent: '', toolCalls: [] };
+  const booked = (trace: CapturingTraceWriter) =>
+    trace.events.filter(e => e.type === 'branch:prefill' && (e as { role: string }).role === 'toolResult') as { attachments?: readonly Attachment[] }[];
+  const shownTo = (events: AgentEvent[]) =>
+    events.filter(e => e.type === 'agent:tool_result').map(e => (e as { result: string }).result).join('');
+  /** The roots each admission announced on the bus — the host's view, which
+   *  the run record books and the UI shows without reading the trace. */
+  const announced = (events: AgentEvent[]) =>
+    events.filter(e => e.type === 'agent:prefilled' && ((e as { attachments?: readonly Attachment[] }).attachments?.length ?? 0) > 0)
+      .map(e => (e as { attachments?: readonly Attachment[] }).attachments);
+
+  it('the first call reads the staged roots, and none of them is projected', async () => {
+    const store = new MemoryAttachmentStore();
+    const img = imageRoot(store);
+    const doc = documentRoot(store);
+    const spy = new SpyTool('look');
+    const { ctx, trace } = await runPool({
+      nCtx: MEDIA_TEST_NCTX, forkTokenQueues: [[1, STOP, STOP]],
+      parseChatOutputFn: calls('look', 'look'), policy: policy(),
+      tools: new Map<string, Tool>([['look', spy]]),
+      contentStore: store, attachments: [img, doc], trace: true,
+    });
+    expect(spy.capturedContexts).toHaveLength(1);
+    expect(spy.capturedContexts[0].attachments).toEqual([img, doc]);
+    // Zero projection from availability — even for the image.
+    expect(ctx.multimodalPrefills).toHaveLength(0);
+    expect(booked(trace).flatMap(p => p.attachments ?? [])).toEqual([]);
+  });
+
+  it('a result carrying a document root rides the token rail, is booked on branch:prefill, and the next call sees it', async () => {
+    const store = new MemoryAttachmentStore();
+    const doc = documentRoot(store);
+    const spy = new SpyTool('look');
+    const { ctx, trace, ingressCalls, events } = await runPool({
+      nCtx: MEDIA_TEST_NCTX, forkTokenQueues: [[1, STOP, 2, STOP, STOP]],
+      parseChatOutputFn: calls('open', 'look'), policy: policy(),
+      tools: new Map<string, Tool>([['open', new RootTool([doc], 'open')], ['look', spy]]),
+      contentStore: store, trace: true,
+    });
+    expect(ingressCalls).toBe(0);
+    expect(ctx.multimodalPrefills).toHaveLength(0);
+    expect(booked(trace)[0]?.attachments).toEqual([doc]);
+    // The same admission rides the bus: one event, the same roots, so a host
+    // books and shows it from the stream it already consumes.
+    expect(announced(events)).toEqual([[doc]]);
+    expect(spy.capturedContexts).toHaveLength(1);
+    expect(spy.capturedContexts[0].attachments).toEqual([doc]);
+    const cost = trace.events.find(e => e.type === 'tool:result') as { cells: number } | undefined;
+    expect(cost?.cells).toBeGreaterThan(0);
+  });
+
+  it('a result carrying a page root rides the media rail through the store — the ingress is never called', async () => {
+    const store = new MemoryAttachmentStore();
+    const page = imageRoot(store);
+    const { ctx, trace, ingressCalls, events } = await runPool({
+      nCtx: MEDIA_TEST_NCTX, forkTokenQueues: [[1, STOP, STOP]],
+      parseChatOutputFn: calls('view', 'view'), policy: policy(),
+      tools: new Map<string, Tool>([['view', new RootTool([page], 'view')]]),
+      contentStore: store, trace: true,
+    });
+    expect(ingressCalls).toBe(0);
+    expect(ctx.multimodalPrefills).toHaveLength(1);
+    expect(ctx.multimodalPrefills[0].bitmapCounts).toEqual([1]);
+    expect(booked(trace)[0]?.attachments).toEqual([page]);
+    expect(announced(events)).toEqual([[page]]);
+  });
+
+  it('a root one agent admits is available to its siblings, and stays so after the admitting agent returns and is pruned', async () => {
+    const store = new MemoryAttachmentStore();
+    const doc = documentRoot(store);
+    const spy = new SpyTool('look');
+    const { result } = await runPool({
+      nCtx: MEDIA_TEST_NCTX, taskCount: 2,
+      // A admits on its first turn and finishes. B generates for a while,
+      // then calls — well after A's result landed and A was pruned.
+      forkTokenQueues: [[1, STOP, STOP], [7, 7, 7, 7, 7, 7, 2, STOP, STOP]],
+      parseChatOutputFn: calls('open', 'look'), policy: policy(),
+      tools: new Map<string, Tool>([['open', new RootTool([doc], 'open')], ['look', spy]]),
+      contentStore: store, pruneOnReturn: true, trace: true,
+    });
+    expect(result.agents[0].result).toBe('done');
+    expect(spy.capturedContexts).toHaveLength(1);
+    expect(spy.capturedContexts[0].attachments).toEqual([doc]);
+  });
+
+  it('without a projector a document root is still admitted, while a page root is refused with the note', async () => {
+    const store = new MemoryAttachmentStore();
+    const doc = documentRoot(store);
+    const page = imageRoot(store);
+    const spy = new SpyTool('look');
+    const text = await runPool({
+      nCtx: MEDIA_TEST_NCTX, forkTokenQueues: [[1, STOP, 2, STOP, STOP]],
+      parseChatOutputFn: calls('open', 'look'), policy: policy(),
+      tools: new Map<string, Tool>([['open', new RootTool([doc], 'open')], ['look', spy]]),
+      contentStore: store, trace: true,
+      mutateCtx: (c) => { c.mockSupportsVision = false; },
+    });
+    expect(spy.capturedContexts[0]?.attachments).toEqual([doc]);
+    expect(shownTo(text.events)).not.toContain('cannot see images');
+    expect(booked(text.trace)[0]?.attachments).toEqual([doc]);
+
+    const picture = await runPool({
+      nCtx: MEDIA_TEST_NCTX, forkTokenQueues: [[1, STOP, STOP]],
+      parseChatOutputFn: calls('view', 'view'), policy: policy(),
+      tools: new Map<string, Tool>([['view', new RootTool([page], 'view')]]),
+      contentStore: store, trace: true,
+      mutateCtx: (c) => { c.mockSupportsVision = false; },
+    });
+    expect(shownTo(picture.events)).toContain('cannot see images');
+    expect(picture.ctx.multimodalPrefills).toHaveLength(0);
+    expect(booked(picture.trace)[0]?.attachments).toBeUndefined();
   });
 });

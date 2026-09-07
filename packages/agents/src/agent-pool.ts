@@ -1,6 +1,7 @@
 import { resource, ensure, createSignal, createChannel, createQueue, spawn, each, sleep, action, race } from 'effection';
 import type { Operation, Subscription, Task, Signal } from 'effection';
 import type { SessionContext, BranchStore } from '@lloyal-labs/sdk';
+import type { Attachment } from '@lloyal-labs/media';
 import { buildTurnDelta } from '@lloyal-labs/sdk';
 import { Ctx, Store, Trace, TraceParent, GrantStoreCtx, WindDown, CancelAgent, Pause, Attachments, Ingress } from './context';
 import { useTraceScope } from './trace-scope';
@@ -75,6 +76,10 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     const tw = yield* Trace.expect();
     const attachments = yield* Attachments.expect();
     const ingress = yield* Ingress.expect();
+    // Assets available to the run: staged by the host now, grown by every
+    // tool result that admits a root. One list, owned here — it outlives any
+    // agent, so a root agent A admitted stays available after A is pruned.
+    const available: Attachment[] = [...(opts.attachments ?? [])];
     const { spine, orchestrate, toolsJson, tools, maxTurns = 100, terminalToolName, trace = false, pruneOnReturn = false, enableThinking = true, eagerGrammar } = opts;
 
     const toolIndexMap = new Map([...tools.keys()].map((name, i) => [name, i]));
@@ -192,7 +197,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       permits: makePermits(opts.maxConcurrentTools ?? DEFAULT_MAX_CONCURRENT_TOOLS),
       completed, wake, progress, scorer: opts.scorer, toolIndexMap, toolkitSize: tools.size,
       terminalGrammar, eagerGrammar, enableThinking, spine, runNow, counters, totals, policy,
-      pressureOpts, ingress, attachments, ladder, trace,
+      pressureOpts, ingress, attachments, available, ladder, trace,
     });
 
     // ── PoolContext — the orchestrator's API ─────────────────────

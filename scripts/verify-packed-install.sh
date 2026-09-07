@@ -90,14 +90,25 @@ node -e "
   if (opt !== true) throw new Error('sharp peer is not marked optional');
   if ((p.devDependencies||{}).sharp && !peer) throw new Error('devDependency only: never installed for consumers');
   if (!(p.files||[]).includes('README.md')) throw new Error('README.md missing from files — the format spec never ships');
-  console.log('   ok — peer '+peer+', optional, README packaged');
+  // The PDF codec sits beside sharp on the same terms: a consumer that never
+  // admits a document installs nothing for it.
+  const pdf = (p.peerDependencies||{})['@embedpdf/pdfium'];
+  const pdfOpt = ((p.peerDependenciesMeta||{})['@embedpdf/pdfium']||{}).optional;
+  if (!pdf) throw new Error('@embedpdf/pdfium is not a peerDependency — a consumer cannot discover it');
+  if (pdfOpt !== true) throw new Error('@embedpdf/pdfium peer is not marked optional');
+  console.log('   ok — peers sharp '+peer+' and @embedpdf/pdfium '+pdf+', both optional, README packaged');
 "
 
 echo "3. './node' normalizes from the packed build once sharp is installed"
 npm install --silent --no-audit --no-fund sharp@^0.35.4
 node -e "
-  const { normalizeImage, FileAttachmentStore } = require('@lloyal-labs/media/node');
+  const { normalizeImage, FileAttachmentStore, createContentIngress, createDocumentIngress } = require('@lloyal-labs/media/node');
   if (typeof FileAttachmentStore !== 'function') throw new Error('the node entry is incomplete');
+  // The document ingress is exported, but loading the entry must not have
+  // loaded the codec: it is required at call time, like sharp, and it is not
+  // installed in this consumer.
+  if (typeof createContentIngress !== 'function' || typeof createDocumentIngress !== 'function') throw new Error('the content ingress is missing from the node entry');
+  if (Object.keys(require.cache).some(k => k.includes('@embedpdf'))) throw new Error('the node entry loaded @embedpdf/pdfium at module load');
   const fs = require('fs');
   const src = new Uint8Array(fs.readFileSync('$CAT'));
   normalizeImage(src, { maxPixels: 65536 }).then(o => {

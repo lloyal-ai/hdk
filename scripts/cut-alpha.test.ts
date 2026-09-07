@@ -166,12 +166,16 @@ describe('the abilities admit the set', () => {
     };
     const view = (name: string) => { if (name in registry) return registry[name]; throw e404; };
     const stamped = planAlphas({ cut: 99, packages: arcPackages(CUTS, EXTERNAL, manifestOf), view });
-    for (const dir of ['packages/abilities/web', 'packages/abilities/corpus', 'packages/abilities/wikipedia']) {
+    for (const dir of ['packages/abilities/web', 'packages/abilities/corpus', 'packages/abilities/wikipedia', 'packages/abilities/documents']) {
       const peers = manifestOf(dir).peerDependencies ?? {};
       for (const [name, range] of Object.entries(peers)) {
         if (!(name in stamped)) continue;
         expect(satisfies(stamped[name], range), `${dir}: ${name} ${range} admits ${stamped[name]}`).toBe(true);
-        expect(satisfies(registry[name], range), `${dir}: ${name} ${range} admits stable ${registry[name]}`).toBe(true);
+        // A member the registry has never seen stable (media, whose first
+        // publish was an alpha) has no stable to admit yet.
+        if (registry[name] !== undefined) {
+          expect(satisfies(registry[name], range), `${dir}: ${name} ${range} admits stable ${registry[name]}`).toBe(true);
+        }
       }
     }
   });

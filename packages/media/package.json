@@ -1,7 +1,7 @@
 {
   "name": "@lloyal-labs/media",
   "version": "0.2.0-alpha.3",
-  "description": "Content addressing for a harness — an OCI layout, and the image normalizer that feeds it",
+  "description": "Content addressing for a harness \u2014 an OCI layout, and the image and document ingresses that feed it",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "publishConfig": {
@@ -22,7 +22,10 @@
     "multimodal",
     "vision",
     "image",
-    "sharp"
+    "sharp",
+    "pdf",
+    "pdfium",
+    "document"
   ],
   "license": "SEE LICENSE IN LICENSE",
   "type": "commonjs",
@@ -46,13 +49,19 @@
     "LICENSE-FAQ.md"
   ],
   "devDependencies": {
+    "@embedpdf/pdfium": "^2.15.0",
+    "@types/emscripten": "^1.41.6",
     "sharp": "^0.35.4"
   },
   "peerDependencies": {
-    "sharp": "^0.35.4"
+    "sharp": "^0.35.4",
+    "@embedpdf/pdfium": "^2.15.0"
   },
   "peerDependenciesMeta": {
     "sharp": {
+      "optional": true
+    },
+    "@embedpdf/pdfium": {
       "optional": true
     }
   }

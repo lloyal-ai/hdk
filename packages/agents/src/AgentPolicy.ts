@@ -250,7 +250,7 @@ export interface AgentPolicy {
    * DISPATCH phase: should this tool call explore or exploit?
    *
    * When true (explore), content-boundary tools use agent-local scoring only.
-   * When false (exploit), tools apply dual scoring via scoreRelevanceBatch.
+   * When false (exploit), admission also scores against the original question and ranks by min().
    * Non-monotonic — flips with live pressure. Separate from lifecycle.
    * Optional — defaults to true (explore) when absent.
    */

@@ -1,4 +1,5 @@
 import type { Tool } from './Tool';
+import type { Attachment } from '@lloyal-labs/media';
 
 /**
  * Entailment scorer — scores texts against an original query to
@@ -11,12 +12,12 @@ import type { Tool } from './Tool';
  *
  * | Concept            | Scope                    | Field name in code                        |
  * |--------------------|--------------------------|-------------------------------------------|
- * | **Tool query**     | Per tool call            | `localQuery` param of scoreRelevanceBatch |
+ * | **Tool query**     | Per tool call            | scored by the tool's own reranker pass |
  * | **Agent task**     | Per agent lifetime       | `reference` param of scoreSimilarityBatch |
  * | **Original query** | Per research invocation  | Captured in closure by createScorer       |
  *
  * - `scoreEntailmentBatch` scores against the **original query** (steering boundaries)
- * - `scoreRelevanceBatch` combines **tool query** + **original query** via min() (exploit mode)
+ * - exploit mode (`admitChunks`) takes `min(tool-query score, scoreEntailmentBatch)` — one extra pass, never two
  * - `scoreSimilarityBatch` scores against an arbitrary **reference** (echo detection uses agent task)
  *
  * Conflating these produces wrong scores. When adding new scoring
@@ -33,7 +34,6 @@ export interface EntailmentScorer {
    * @param texts - Content chunks to score
    * @param localQuery - The tool call's query argument (NOT the agent task)
    */
-  scoreRelevanceBatch(texts: string[], localQuery: string): Promise<number[]>;
   /** Score texts against an arbitrary reference string. Returns 0–1 per text. */
   scoreSimilarityBatch(reference: string, texts: string[]): Promise<number[]>;
   /** Threshold gate — returns true if the score is high enough to proceed. */
@@ -43,7 +43,6 @@ export interface EntailmentScorer {
 /** No-op scorer — all scores 1.0, all proceed. Used when no reranker is available. */
 export const NULL_SCORER: EntailmentScorer = {
   scoreEntailmentBatch: async (texts) => texts.map(() => 1),
-  scoreRelevanceBatch: async (texts) => texts.map(() => 1),
   scoreSimilarityBatch: async (_ref, texts) => texts.map(() => 0),
   shouldProceed: () => true,
 };
@@ -109,17 +108,10 @@ export abstract class Source<TChunk = unknown> {
     if (!reranker || !originalQuery) return NULL_SCORER;
 
     const floor = this._entailmentFloor;
-    const combine = (local: number, orig: number) => Math.min(local, orig);
 
     return {
       async scoreEntailmentBatch(texts: string[]): Promise<number[]> {
         return reranker.scoreBatch(originalQuery, texts);
-      },
-      async scoreRelevanceBatch(texts: string[], localQuery: string): Promise<number[]> {
-        // SEQUENTIAL — single llama_context, no concurrent scoreBatch calls
-        const origScores = await reranker.scoreBatch(originalQuery, texts);
-        const localScores = await reranker.scoreBatch(localQuery, texts);
-        return texts.map((_, i) => combine(localScores[i], origScores[i]));
       },
       async scoreSimilarityBatch(reference: string, texts: string[]): Promise<number[]> {
         return reranker.scoreBatch(reference, texts);
@@ -147,6 +139,10 @@ export abstract class Source<TChunk = unknown> {
    * (first-party corpora); it must not blanket-append data from untrusted
    * third-party abilities — `renderSpine` itself stays prose-free for exactly
    * this reason.
+   *
+   * `attachments` are the assets available to the run being staged — roots,
+   * as the host holds them. A source keyed on attachments builds its data
+   * from them; a source that is not ignores the argument.
    */
-  promptData(): Record<string, unknown> { return {}; }
+  promptData(_attachments: readonly Attachment[] = []): Record<string, unknown> { return {}; }
 }

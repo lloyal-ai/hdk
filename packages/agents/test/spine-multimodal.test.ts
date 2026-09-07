@@ -25,7 +25,7 @@ import { CapturingTraceWriter } from './helpers/capturing-trace';
 
 const SYSTEM = 'You are a research assistant.';
 const img = (n: number): Uint8Array[] =>
-  Array.from({ length: n }, (_, i) => new Uint8Array([i, i + 1, i + 2]));
+  Array.from({ length: n }, (_, i) => new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, i]));
 
 const markerCount = (s: string): number => (s.match(/<__media__>/g) ?? []).length;
 

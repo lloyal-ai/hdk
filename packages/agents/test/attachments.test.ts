@@ -20,7 +20,7 @@ import { BranchStore } from '../../sdk/src/BranchStore';
 import { NullAttachmentStore } from '@lloyal-labs/media';
 import type { AttachmentStore } from '@lloyal-labs/media';
 import { MemoryAttachmentStore } from './helpers/memory-store';
-import { representationsOf, sourceOf, ATTACHMENT_ARTIFACT_TYPE, EMPTY_DESCRIPTOR, MANIFEST_TYPE } from '@lloyal-labs/media';
+import { representationsOf, sourceOf, ATTACHMENT_ARTIFACT_TYPE, EMPTY_DESCRIPTOR, MANIFEST_TYPE, DOCUMENT_CONFIG_TYPE } from '@lloyal-labs/media';
 import type { Attachment } from '@lloyal-labs/media';
 
 /** A manifest descriptor, shaped the way a store would have returned one.
@@ -183,6 +183,30 @@ describe('reconstructBranch', () => {
       // …and the media record went down the embedding rail with the stored bytes.
       expect(ctx.multimodalPrefills).toHaveLength(1);
       expect(ctx.multimodalPrefills[0].bitmapCounts).toEqual([1]);
+      return null;
+    }, store);
+  });
+
+  it('replayAgentTurns rails a record by what its roots MATERIALIZE to — a document root goes down the token rail', async () => {
+    // A root is not a picture. A document root (one text/markdown
+    // representation) expands to no bitmaps, so its record replays as the
+    // tool text it was — the same rule the live path applies at intake.
+    const store = new MemoryAttachmentStore();
+    const doc = store.putAttachment({
+      representations: [store.putBlob(new TextEncoder().encode('# Paper\n\nBody.\n'), 'text/markdown')],
+      config: { bytes: new TextEncoder().encode('{}'), mediaType: DOCUMENT_CONFIG_TYPE },
+    });
+    await withCtx(function*(ctx) {
+      const spine = yield* reconstructBranch(cp());
+      const fork = spine.forkSync();
+      let tokenPrefills = 0;
+      const orig = ctx._storePrefill.bind(ctx);
+      ctx._storePrefill = async (h, t) => { tokenPrefills++; return orig(h, t); };
+      yield* replayAgentTurns(fork, [
+        { kind: 'toolResult', resultStr: '{"page":"p1"}', callId: 'c1', attachments: [doc] },
+      ], { enableThinking: false });
+      expect(tokenPrefills).toBe(1);
+      expect(ctx.multimodalPrefills).toHaveLength(0);
       return null;
     }, store);
   });

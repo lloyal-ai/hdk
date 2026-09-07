@@ -23,7 +23,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Operation } from 'effection';
 import type { AgentPolicy } from '../../../src/AgentPolicy';
-import { Tool, TOOL_MEDIA_KEY } from '../../../src/Tool';
+import { Tool, TOOL_ATTACHMENTS_KEY } from '../../../src/Tool';
 import type { JsonSchema } from '../../../src/types';
 import { runPool, STOP } from '../harness';
 import { PNG_BYTES, mediaFailures } from '../../helpers/media';
@@ -38,7 +38,7 @@ class WideThenImage extends Tool<{ query: string }> {
   *execute(): Operation<unknown> {
     this.calls++;
     if (this.calls <= 4) return { results: ['x'.repeat(600)] };
-    return { page: 'p1', [TOOL_MEDIA_KEY]: [PNG_BYTES] };
+    return { page: 'p1', [TOOL_ATTACHMENTS_KEY]: [PNG_BYTES] };
   }
 }
 

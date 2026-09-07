@@ -37,7 +37,7 @@ import {
   AbilityRegistryCtx,
   AbilityConfigStoreCtx,
   GrantStoreCtx,
-  RerankerCtx,
+  RerankerCtx, Attachments,
 } from '@lloyal-labs/lloyal-agents';
 import type {
   Ability,
@@ -125,6 +125,10 @@ export function* createAbilityRegistry(
         reranker = undefined;
       }
 
+      // The content store the harness installed (the null store when none was):
+      // an ability that reads documents resolves them through it.
+      const attachments = yield* Attachments.expect();
+
       const [scope, destroy] = createScope();
       let added = false;
       return yield* scoped(function* () {
@@ -154,6 +158,7 @@ export function* createAbilityRegistry(
                     yield* AbilityConfigStoreCtx.set(configStore);
                     yield* AbilityRegistryCtx.set(registry);
                     if (reranker !== undefined) yield* RerankerCtx.set(reranker);
+                    yield* Attachments.set(attachments);
                     const constructed = yield* factory();
                     resolve(constructed);
                     yield* suspend();

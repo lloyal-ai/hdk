@@ -54,7 +54,7 @@ describe('scenario: a model with no projector is TOLD, not silently shorted', ()
     const body = (run.channelEvents.find(e => e.type === 'agent:tool_result') as
       { result: string }).result;
 
-    expect(body).not.toContain('_images');
+    expect(body).not.toContain('_attachments');
     expect(body.length).toBeLessThan(2_000);
   });
 

@@ -3,6 +3,7 @@ import * as path from "node:path";
 import ignoreFactory = require("ignore");
 import { loadBinary } from "@lloyal-labs/lloyal.node";
 import type { Resource, Chunk } from "./types";
+import { splitParagraphs } from "./fit";
 
 interface Section {
   heading: string;
@@ -126,26 +127,20 @@ export function loadResources(input: string): Resource[] {
 function chunkByParagraph(res: Resource): Chunk[] {
   const lines = res.content.split("\n");
   const chunks: Chunk[] = [];
-  let start = 0;
-  for (let i = 0; i <= lines.length; i++) {
-    const blank = i === lines.length || !lines[i].trim();
-    if (blank && i > start) {
-      const text = lines.slice(start, i).join("\n").trim();
-      if (text) {
-        chunks.push({
-          resource: res.name,
-          heading:
-            text.slice(0, 60).replace(/\n/g, " ") +
-            (text.length > 60 ? "\u2026" : ""),
-          section: '',
-          text,
-          tokens: [],
-          startLine: start + 1,
-          endLine: i,
-        });
-      }
-    }
-    if (blank) start = i + 1;
+  for (const [start, end] of splitParagraphs(lines)) {
+    const text = lines.slice(start, end).join("\n").trim();
+    if (!text) continue;
+    chunks.push({
+      resource: res.name,
+      heading:
+        text.slice(0, 60).replace(/\n/g, " ") +
+        (text.length > 60 ? "\u2026" : ""),
+      section: '',
+      text,
+      tokens: [],
+      startLine: start + 1,
+      endLine: end,
+    });
   }
   return chunks;
 }

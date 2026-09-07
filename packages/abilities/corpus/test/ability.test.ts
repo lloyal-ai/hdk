@@ -10,9 +10,12 @@ import { createInMemoryConfigStore } from '@lloyal-labs/rig';
 import { createCorpusAbility } from '../src/index';
 import { SearchTool } from '../src/tools/search';
 
-// The factory only calls reranker.tokenizeChunks at construction; search
-// scoring (which needs a real cross-encoder) isn't exercised here.
-const mockReranker = { tokenizeChunks() {} } as unknown as Reranker;
+// The factory fits the corpus into windows at construction, which needs only
+// the reranker's tokenizer; search scoring (a real cross-encoder) isn't
+// exercised here. Words stand in for tokens.
+const mockReranker = {
+  tokenize: async (text: string) => text.split(/\s+/).filter(Boolean).map((_, i) => i + 1),
+} as unknown as Reranker;
 
 let dir: string;
 beforeAll(() => {
@@ -45,6 +48,55 @@ describe('createCorpusAbility', () => {
         return yield* createCorpusAbility();
       }),
     ).rejects.toThrow(/requires a reranker/);
+  });
+
+  it('fits a long section into more than one window with real line ranges', async () => {
+    // One heading over 360 words on 60 lines: longer than DEFAULT_CHUNK_TOKENS
+    // under the word tokenizer, so the factory must cut it into windows the
+    // reranker can score whole. The source keeps its chunks private; the
+    // search envelope's `totalScored` is the chunk count, and each hit carries
+    // the window's real lines.
+    const longDir = mkdtempSync(join(tmpdir(), 'corpus-long-'));
+    const body = Array.from({ length: 60 }, (_, i) => `line ${i + 1} alpha beta gamma delta`).join('\n');
+    writeFileSync(join(longDir, 'long.md'), `# Long\n\n${body}\n`);
+    try {
+      const wordy: Reranker = {
+        ...mkScoringReranker(new Map()),
+        tokenize: async (text: string) => text.split(/\s+/).filter(Boolean).map((_, i) => i + 1),
+        score(_query: string, chunks: Chunk[]) {
+          return (async function* () {
+            yield {
+              filled: chunks.length, total: chunks.length,
+              results: chunks.map((c) => ({
+                file: c.resource, heading: c.heading, section: c.section, snippet: c.text,
+                score: 1, startLine: c.startLine, endLine: c.endLine,
+              })),
+            };
+          })();
+        },
+      };
+      const result = (await run(function* () {
+        yield* Trace.set(new NullTraceWriter());
+        const store = createInMemoryConfigStore();
+        yield* store.set('corpus', { corpusPath: longDir });
+        yield* AbilityConfigStoreCtx.set(store);
+        yield* RerankerCtx.set(wordy);
+        const ability = yield* createCorpusAbility();
+        const search = ability.tools.find((t) => t.name === 'search')!;
+        return yield* search.execute({ query: 'alpha' });
+      })) as { hits: ScoredChunk[]; totalScored: number };
+
+      expect(result.totalScored).toBeGreaterThan(1);
+      const starts = result.hits.map((h) => h.startLine);
+      expect(new Set(starts).size).toBe(starts.length);
+      for (const h of result.hits) {
+        expect(h.endLine).toBeGreaterThanOrEqual(h.startLine);
+        expect(h.startLine).toBeGreaterThanOrEqual(1);
+        expect(h.endLine).toBeLessThanOrEqual(62);
+      }
+    } finally {
+      rmSync(longDir, { recursive: true, force: true });
+    }
   });
 
   it('throws when corpusPath config is missing', async () => {

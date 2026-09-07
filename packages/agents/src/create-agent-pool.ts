@@ -10,6 +10,7 @@ import { Events } from './context';
 import { createToolkit } from './toolkit';
 import { withSpine } from './spine';
 import { useAgentPool } from './agent-pool';
+import type { Attachment } from '@lloyal-labs/media';
 
 // ── CreateAgentPool opts ────────────────────────────────────
 
@@ -56,6 +57,8 @@ export interface CreateAgentPoolOpts {
   session?: Session;
   /** Entailment scorer for semantic coherence across recursive depths. */
   scorer?: EntailmentScorer;
+  /** Assets available to the run — see {@link AgentPoolOptions.attachments}. */
+  attachments?: readonly Attachment[];
   /** Echo detection threshold. @default 0.8 */
   echoThreshold?: number;
   /** Check ancestor tasks for echo. @default false */
@@ -160,6 +163,7 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
         trace: opts.trace,
         policy: opts.policy,
         scorer: opts.scorer,
+        attachments: opts.attachments,
         enableThinking: opts.enableThinking,
       });
 

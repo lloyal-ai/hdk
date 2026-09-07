@@ -96,7 +96,7 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
     ) {
       return {
         error:
-          "PDF documents cannot be extracted. Try searching for an HTML version of this content.",
+          "This is a PDF, which fetch_page cannot read. Ask the user to attach the file to the conversation.",
         url,
       };
     }
@@ -135,7 +135,7 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
       if (contentType.includes("application/pdf")) {
         return {
           error:
-            "PDF documents cannot be extracted. Try searching for an HTML version of this content.",
+            "This is a PDF, which fetch_page cannot read. Ask the user to attach the file to the conversation.",
           url,
         } as const;
       }

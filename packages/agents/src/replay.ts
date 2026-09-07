@@ -273,8 +273,9 @@ export type AgentTurnRecord =
   | { kind: 'assistant'; text: string }
   | {
       kind: 'toolResult'; resultStr: string; callId: string;
-      /** Roots for a media-bearing result — resolved through the run's
-       *  attachment store at replay, exactly as the seed's are. */
+      /** Roots admitted with this result — resolved through the run's
+       *  attachment store at replay, exactly as the seed's are. The rail
+       *  follows what they materialize to, as it did live. */
       attachments?: readonly Attachment[];
     }
   | { kind: 'probe'; text: string };
@@ -313,7 +314,13 @@ export function* prepareReplay(
     } else if (r.kind === 'probe') {
       tokenStep(ctx.tokenizeSync(r.text, false));
     } else if (r.attachments && r.attachments.length > 0) {
+      // Rail by what the roots MATERIALIZE to: a document root expands to no
+      // bitmaps and replays as the tool text it was.
       const { bitmaps } = materialize(attachments, r.attachments);
+      if (bitmaps.length === 0) {
+        tokenStep(buildToolResultDelta(ctx, r.resultStr, r.callId, opts));
+        continue;
+      }
       const delta = buildToolResultDeltaMultimodal(ctx, r.resultStr, r.callId, [...bitmaps], opts);
       const priced = yield* measureCells(ctx, delta);
       steps.push({ kind: 'media', delta, cells: priced });

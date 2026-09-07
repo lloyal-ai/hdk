@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { representationsOf, DIGEST_PATTERN, type Attachment } from '@lloyal-labs/media';
+import { representationsOf, sourceOf, DIGEST_PATTERN, MANIFEST_TYPE, type Attachment } from '@lloyal-labs/media';
 import type { AttachmentStore, Descriptor } from '@lloyal-labs/media';
 
 /** Thrown when a body exceeds the cap, so the caller can answer 413 rather
@@ -48,7 +48,10 @@ export interface ContentRoutesOpts {
    * that question, and the ingress is where they are decoded.
    */
   ingest?: (bytes: Uint8Array, signal?: AbortSignal) => Promise<Attachment>;
-  /** Ceiling on a single upload body. @default 8 MiB */
+  /** Ceiling on a single upload body. @default 8 MiB — sized for an image. A
+   *  host that installs the content ingress passes `MAX_DOCUMENT_BYTES` from
+   *  `@lloyal-labs/media/node` beside `DOCUMENT_UPLOAD_TIMEOUT_MS`, so every
+   *  host that mounts the plane admits the same. */
   maxUploadBytes?: number;
   /**
    * Ceiling on how long one upload may take, end to end.
@@ -86,7 +89,10 @@ export interface ContentRoutesOpts {
  * else it serves.
  *
  * ```
- * POST /v1/media/ingress                       upload → normalize → root descriptor
+ * POST /v1/media/ingress                       upload → admit → root descriptor
+ * GET  /v1/media/<manifest>                     the manifest itself, by digest
+ * GET  /v1/media/<manifest>/config              its typed config blob (a document's sidecar; OCI's empty blob for an image)
+ * GET  /v1/media/<manifest>/source              the original as supplied, when the ingest retained it
  * GET  /v1/media/<manifest>/representations/<i> the bytes the model actually saw
  * HEAD /v1/content/<digest>                     existence, for pre-flight dedupe
  * ```
@@ -344,7 +350,12 @@ export function createContentRoutes(
             // A full normalization queue is overload: retryable, not a client
             // fault and not ours. `EBUSY` is the errno the ingress sets for it.
             const busy = typeof e === 'object' && e !== null && (e as { code?: unknown }).code === 'EBUSY';
-            const code = tooLarge ? 413 : tooSlow ? 408 : busy ? 503 : 400;
+            // The ingress's own time bound is the same class as a slow upload.
+            const timedOut = typeof e === 'object' && e !== null && (e as { code?: unknown }).code === 'ETIMEDOUT';
+            // An error carrying a syscall came from the filesystem under the
+            // store — disk full, read-only volume. That is ours, not the client's.
+            const ours = typeof e === 'object' && e !== null && typeof (e as { syscall?: unknown }).syscall === 'string';
+            const code = tooLarge ? 413 : (tooSlow || timedOut) ? 408 : busy ? 503 : ours ? 500 : 400;
             fail(res, code, e instanceof Error ? e.message : 'ingress failed');
             // Now that the status is on the wire, stop the upload. A stalled
             // client will not close on its own — that is the whole problem —
@@ -352,6 +363,48 @@ export function createContentRoutes(
             if (tooLarge || tooSlow) req.destroy();
           })
           .finally(() => clearTimeout(timer));
+        return true;
+      }
+
+      // GET /v1/media/<manifest> — the manifest itself, by digest. A manifest is
+      // a blob, and serving it by digest is what any OCI reader expects; it is
+      // how a UI learns what an attachment IS (its config media type) and what
+      // roots it names, without a "kind" field anywhere on the wire.
+      const man = /^\/v1\/media\/([^/]+)$/.exec(path);
+      if (man && (method === 'GET' || method === 'HEAD')) {
+        const digest = decodeSegment(man[1]);
+        if (digest === null || !DIGEST_PATTERN.test(digest)) { fail(res, 400, 'malformed digest'); return true; }
+        if (!opts.store.getManifest(digest)) { fail(res, 404, 'no such attachment manifest'); return true; }
+        serveBlob(req, res, { mediaType: MANIFEST_TYPE, digest, size: 0 }, method === 'HEAD');
+        return true;
+      }
+
+      // GET /v1/media/<manifest>/config — the typed config blob, resolved
+      // THROUGH the manifest the way representations are. A document's
+      // sidecar lives here; an image's config is OCI's canonical empty blob.
+      const cfg = /^\/v1\/media\/([^/]+)\/config$/.exec(path);
+      if (cfg && (method === 'GET' || method === 'HEAD')) {
+        const digest = decodeSegment(cfg[1]);
+        if (digest === null || !DIGEST_PATTERN.test(digest)) { fail(res, 400, 'malformed digest'); return true; }
+        const manifest = opts.store.getManifest(digest);
+        if (!manifest) { fail(res, 404, 'no such attachment manifest'); return true; }
+        serveBlob(req, res, manifest.config, method === 'HEAD');
+        return true;
+      }
+
+      // GET /v1/media/<manifest>/source — the original as supplied, when the
+      // ingest retained it: a document's PDF, an image before normalization.
+      // Resolved THROUGH the manifest by ROLE, never by a blob digest a
+      // client typed — raw blobs stay HEAD-only.
+      const src = /^\/v1\/media\/([^/]+)\/source$/.exec(path);
+      if (src && (method === 'GET' || method === 'HEAD')) {
+        const digest = decodeSegment(src[1]);
+        if (digest === null || !DIGEST_PATTERN.test(digest)) { fail(res, 400, 'malformed digest'); return true; }
+        const manifest = opts.store.getManifest(digest);
+        if (!manifest) { fail(res, 404, 'no such attachment manifest'); return true; }
+        const source = sourceOf(manifest);
+        if (!source) { fail(res, 404, 'no source retained for this attachment'); return true; }
+        serveBlob(req, res, source, method === 'HEAD');
         return true;
       }
 
