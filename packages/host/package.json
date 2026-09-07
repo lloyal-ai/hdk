@@ -39,7 +39,7 @@
     "effection": "^4.1.0"
   },
   "devDependencies": {
-    "@lloyal-labs/sdk": "4.0.0-alpha.3",
+    "@lloyal-labs/sdk": "4.0.0-alpha.4",
     "@lloyal-labs/lloyal.node": "3.2.0-alpha.3"
   },
   "files": [

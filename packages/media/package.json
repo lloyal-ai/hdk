@@ -1,7 +1,7 @@
 {
   "name": "@lloyal-labs/media",
-  "version": "0.2.0-alpha.3",
-  "description": "Content addressing for a harness \u2014 an OCI layout, and the image and document ingresses that feed it",
+  "version": "0.2.0-alpha.4",
+  "description": "Content addressing for a harness — an OCI layout, and the image and document ingresses that feed it",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "publishConfig": {
