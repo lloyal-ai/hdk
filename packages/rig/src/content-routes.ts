@@ -12,7 +12,7 @@ import type { AttachmentStore, Descriptor } from '@lloyal-labs/media';
 
 /** `decodeURIComponent` throws on a malformed escape; that is the client's
  *  input, not a server fault, so the caller answers 400 on `null`. */
-const decodeSegment = (s: string): string | null => {
+const decodeURISegment = (s: string): string | null => {
   try { return decodeURIComponent(s); } catch { return null; }
 };
 
@@ -173,7 +173,7 @@ export function resolveContent(req: ContentRequest, store: AttachmentStore): Con
     // manifest at all. Bytes have exactly one door, and it is that one.
     const exists = /^\/v1\/content\/([^/]+)$/.exec(path);
     if (exists && method === 'HEAD') {
-      const digest = decodeSegment(exists[1]);
+      const digest = decodeURISegment(exists[1]);
       if (digest === null || !DIGEST_PATTERN.test(digest)) return contentError(400, 'malformed digest');
       // Reads the WHOLE blob to answer a yes/no question, because
       // `AttachmentStore` offers no `size`/`has`. On the one route whose
@@ -190,7 +190,7 @@ export function resolveContent(req: ContentRequest, store: AttachmentStore): Con
     // representations, so a source layer can never be served by mistake.
     const rep = /^\/v1\/media\/([^/]+)\/representations\/(\d+)$/.exec(path);
     if (rep && (method === 'GET' || method === 'HEAD')) {
-      const digest = decodeSegment(rep[1]);
+      const digest = decodeURISegment(rep[1]);
       if (digest === null || !DIGEST_PATTERN.test(digest)) return contentError(400, 'malformed digest');
       const manifest = store.getManifest(digest);
       if (!manifest) return contentError(404, 'no such attachment manifest');
@@ -208,7 +208,7 @@ export function resolveContent(req: ContentRequest, store: AttachmentStore): Con
     // roots it names, without a "kind" field anywhere on the wire.
     const man = /^\/v1\/media\/([^/]+)$/.exec(path);
     if (man && (method === 'GET' || method === 'HEAD')) {
-      const digest = decodeSegment(man[1]);
+      const digest = decodeURISegment(man[1]);
       if (digest === null || !DIGEST_PATTERN.test(digest)) return contentError(400, 'malformed digest');
       if (!store.getManifest(digest)) return contentError(404, 'no such attachment manifest');
       return serveBlob(store, req, { mediaType: MANIFEST_TYPE, digest, size: 0 }, method === 'HEAD');
@@ -219,7 +219,7 @@ export function resolveContent(req: ContentRequest, store: AttachmentStore): Con
     // sidecar lives here; an image's config is OCI's canonical empty blob.
     const cfg = /^\/v1\/media\/([^/]+)\/config$/.exec(path);
     if (cfg && (method === 'GET' || method === 'HEAD')) {
-      const digest = decodeSegment(cfg[1]);
+      const digest = decodeURISegment(cfg[1]);
       if (digest === null || !DIGEST_PATTERN.test(digest)) return contentError(400, 'malformed digest');
       const manifest = store.getManifest(digest);
       if (!manifest) return contentError(404, 'no such attachment manifest');
@@ -232,7 +232,7 @@ export function resolveContent(req: ContentRequest, store: AttachmentStore): Con
     // client typed — raw blobs stay HEAD-only.
     const src = /^\/v1\/media\/([^/]+)\/source$/.exec(path);
     if (src && (method === 'GET' || method === 'HEAD')) {
-      const digest = decodeSegment(src[1]);
+      const digest = decodeURISegment(src[1]);
       if (digest === null || !DIGEST_PATTERN.test(digest)) return contentError(400, 'malformed digest');
       const manifest = store.getManifest(digest);
       if (!manifest) return contentError(404, 'no such attachment manifest');
