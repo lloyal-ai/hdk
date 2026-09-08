@@ -144,10 +144,12 @@ const serveBlob = (
  * hold, and never lists what the store contains.
  *
  * **The ingress is not here.** Every route above is a READ, fully answerable
- * from the store; an upload needs bytes that only the transport can obtain,
- * under a byte cap and a deadline that only the transport can enforce. It
- * stays with the adapter that carries bytes — and on desktop it is not an HTTP
- * route at all, but a path over IPC. A marked door, not an oversight.
+ * from the store. An upload is a WRITE, and both its bytes and its limits come
+ * from the transport: a byte cap and a deadline on an HTTP host, a hand-off to
+ * whichever process owns the store on a desktop scheme. So each adapter serves
+ * `POST /v1/media/ingress` itself, under that same path — which is what lets a
+ * client derive the ingress from its origin exactly as it derives the reads,
+ * and stay ignorant of which target it is on. A marked door, not an oversight.
  *
  * **Nothing thrown here may escape.** A handler that threw inside a server's
  * `request` emit would become an uncaught exception and take the whole process
