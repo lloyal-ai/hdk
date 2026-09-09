@@ -23,21 +23,39 @@
  */
 import { execSync } from 'node:child_process';
 import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
-import { CUTS, EXTERNAL, arcPackages, parseCut, planAlphas, rewriteManifest } from './cut-alpha.lib.mjs';
+import { CUTS, EXTERNAL, arcPackages, parseCut, planAlphas, rewriteManifest, include, unclosed } from './cut-alpha.lib.mjs';
 
 const cutIdx = process.argv.indexOf('--cut');
 const CUT = parseCut(cutIdx === -1 ? undefined : process.argv[cutIdx + 1]);
 const DRY = process.argv.includes('--dry-run');
+// `--include <name>`, repeatable and REQUIRED. Absence cuts nothing: the table
+// says what the arc touched, never what ships today, and defaulting to all of
+// it is what stamped a version for a member that shipped nothing.
+const INCLUDE = process.argv.flatMap((a, i) => (a === '--include' ? [process.argv[i + 1]] : []));
 
 const view = (name) =>
   execSync(`npm view ${name}@latest version`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
 
 const manifestOf = (dir) => JSON.parse(readFileSync(`${dir}/package.json`, 'utf8'));
 const arc = arcPackages(CUTS, EXTERNAL, manifestOf);
-const alphas = planAlphas({ cut: CUT, packages: arc, view });
+const planned = planAlphas({ cut: CUT, packages: arc, view });
+const alphas = include(planned, INCLUDE);
+
+// A member left out keeps the pin it already carries, so every manifest that
+// names it still resolves. A member left out that something IN the set depends
+// on is a different thing: it never republishes, so the registry would hold a
+// package whose manifest disagrees with git.
+const gaps = unclosed(alphas, arc, manifestOf);
+if (gaps.length > 0) {
+  const lines = gaps.map((g) => `  ${g.dependent} depends on ${g.dep}, which is in the cut`);
+  throw new Error(`--include is not dependency-closed:\n${lines.join('\n')}\nAdd them, or drop ${gaps[0].dep}.`);
+}
 
 console.log(`cut ${CUT}${DRY ? ' (dry run)' : ''}:`);
 for (const [n, v] of Object.entries(alphas)) console.log(`  ${n} -> ${v}`);
+for (const [n, v] of Object.entries(planned)) {
+  if (!alphas[n]) console.log(`  ${n} HELD at its published pin (would have been ${v})`);
+}
 
 // Every workspace manifest follows the set's exact pins; only a cut package's
 // version moves. The abilities are members too (their peers name the set) but

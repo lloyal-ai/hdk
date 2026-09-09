@@ -106,6 +106,72 @@ export function planAlphas({ cut, packages, view }) {
 /** An exact version, as a prior cut stamps it — as opposed to a RANGE. */
 const EXACT = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
 
+/**
+ * The members this cut actually ships.
+ *
+ * The tables say what the arc TOUCHED; they cannot say what moves on any given
+ * cut. Treating them as the set is what stamped `3.2.0-alpha.4` for a binding
+ * that was not shipping, and pinned three manifests to a version that would
+ * never exist.
+ *
+ * A whitelist rather than an exclusion, because the failure modes are not
+ * symmetric. Forget to exclude and you stamp a phantom version. Forget to
+ * include and the package keeps its published version, which every dependent
+ * then pins — an incomplete set where everything still resolves. Omission has
+ * to degrade, not break.
+ *
+ * Throws on a name the tables do not contain, and the caller must pass at
+ * least one: a cut is a decision, and there is no sensible default for it.
+ * Defaulting to the whole table is what stamped a version for a member that
+ * shipped nothing, so absence has to mean nothing, never everything.
+ */
+export function include(alphas, names) {
+  if (names.length === 0) {
+    throw new Error(`--include <name> is required (one or more of: ${Object.keys(alphas).join(', ')})`);
+  }
+  const kept = {};
+  for (const n of names) {
+    if (!(n in alphas)) {
+      throw new Error(`--include ${n}: not in the cut (${Object.keys(alphas).join(', ')})`);
+    }
+    kept[n] = alphas[n];
+  }
+  return kept;
+}
+
+/**
+ * Cuttable packages left OUT of the set that depend on something IN it.
+ *
+ * Such a package has its pins rewritten to the new set but keeps its own
+ * version, so the npm loop skips it as already-published and the registry ends
+ * up holding a package whose manifest disagrees with git. The cut ships a
+ * version nothing consumes.
+ *
+ * Only members of `CUTS` are considered. A workspace package outside the arc
+ * (host, binding, relay, channel-verify) was never going to move, and its pins
+ * following the set is the existing, intended behaviour.
+ *
+ * The predicate is {@link rewriteManifest}'s, deliberately: whatever that
+ * function would REWRITE is what this must check, so the two cannot drift.
+ * Peers count only when already exact, since a range peer is authored
+ * compatibility and no cut writes over it.
+ */
+export function unclosed(alphas, packages, manifestOf) {
+  const gaps = [];
+  for (const p of packages) {
+    if (!p.dir || alphas[p.name]) continue;
+    const pkg = manifestOf(p.dir);
+    for (const field of ['dependencies', 'devDependencies', 'peerDependencies']) {
+      for (const [dep, current] of Object.entries(pkg[field] ?? {})) {
+        if (!alphas[dep]) continue;
+        if (field === 'peerDependencies' && !EXACT.test(current)) continue;
+        gaps.push({ dependent: p.name, dep });
+      }
+    }
+  }
+  return gaps;
+}
+
 /** Rewrite one manifest object in place: its `version` when this package is
  *  in the cut (`version` given); every DEPENDENCY and DEVDEPENDENCY that names
  *  a cut package to the exact alpha, in EVERY workspace manifest, because the

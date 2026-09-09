@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { satisfies } from 'semver';
 import {
-  CUTS, EXTERNAL, arcPackages, parseCut, latestVersion, planAlphas, rewriteManifest,
+  CUTS, EXTERNAL, arcPackages, parseCut, latestVersion, planAlphas, rewriteManifest, include, unclosed,
 } from './cut-alpha.lib.mjs';
 
 const e404 = Object.assign(new Error('npm ERR! code E404'), { stderr: 'npm ERR! code E404\nnpm ERR! 404 Not Found' });
@@ -83,6 +83,65 @@ describe('planAlphas', () => {
       view: () => '0.2.0-alpha.0',
     });
     expect(alphas['@lloyal-labs/media']).toBe('0.2.0-alpha.3');
+  });
+});
+
+describe('include', () => {
+  const planned = {
+    '@lloyal-labs/media': '0.2.0-alpha.4',
+    '@lloyal-labs/sdk': '4.0.0-alpha.4',
+    '@lloyal-labs/lloyal.node': '3.2.0-alpha.4',
+  };
+
+  it('a member left OUT keeps the pin it already carries — the cut cannot invent a version for it', () => {
+    // The defect this exists for: the binding was in the table but shipped
+    // nothing, so the cut stamped 3.2.0-alpha.4 into three manifests and the
+    // lockfile refused to resolve it.
+    const set = include(planned, ['@lloyal-labs/media', '@lloyal-labs/sdk']);
+    expect(set).not.toHaveProperty('@lloyal-labs/lloyal.node');
+
+    const pkg = {
+      name: '@lloyal-labs/rig', version: '5.6.0-alpha.3',
+      dependencies: { '@lloyal-labs/sdk': '4.0.0-alpha.3' },
+      peerDependencies: { '@lloyal-labs/lloyal.node': '3.2.0-alpha.3' },
+    };
+    rewriteManifest(pkg, { alphas: set });
+    expect(pkg.dependencies['@lloyal-labs/sdk']).toBe('4.0.0-alpha.4');
+    expect(pkg.peerDependencies['@lloyal-labs/lloyal.node']).toBe('3.2.0-alpha.3');
+  });
+
+  it('no names at all is refused — absence must cut nothing, never everything', () => {
+    // The old behaviour was "empty means the whole table", which is precisely
+    // how a member that shipped nothing got a version stamped for it.
+    expect(() => include(planned, [])).toThrow(/--include <name> is required/);
+  });
+
+  it('an unknown name throws — a typo must not silently shrink the cut', () => {
+    expect(() => include(planned, ['@lloyal-labs/medai'])).toThrow(/not in the cut/);
+  });
+});
+
+describe('unclosed', () => {
+  const manifests: Record<string, any> = {
+    'packages/media': { name: '@lloyal-labs/media', version: '0.2.0-alpha.3' },
+    'packages/rig': {
+      name: '@lloyal-labs/rig', version: '5.6.0-alpha.3',
+      dependencies: { '@lloyal-labs/media': '0.2.0-alpha.3' },
+    },
+    'packages/dev-tools': { name: '@lloyal-labs/dev-tools', version: '0.5.0-alpha.3' },
+  };
+  const packages = Object.entries(manifests).map(([dir, m]) => ({ dir, name: m.name, level: 'minor' as const, fallback: m.version }));
+
+  it('names a cuttable dependent left out of a set that includes what it pins', () => {
+    // rig would have its media pin rewritten but never republish, so the
+    // registry would hold a rig whose manifest disagrees with git.
+    const gaps = unclosed({ '@lloyal-labs/media': '0.2.0-alpha.4' }, packages, (d: string) => manifests[d]);
+    expect(gaps).toEqual([{ dependent: '@lloyal-labs/rig', dep: '@lloyal-labs/media' }]);
+  });
+
+  it('is silent once the dependent joins the set, and for members that pin nothing in it', () => {
+    const set = { '@lloyal-labs/media': '0.2.0-alpha.4', '@lloyal-labs/rig': '5.6.0-alpha.4' };
+    expect(unclosed(set, packages, (d: string) => manifests[d])).toEqual([]);
   });
 });
 
