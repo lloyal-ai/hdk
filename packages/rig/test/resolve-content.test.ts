@@ -77,11 +77,28 @@ describe('resolveContent — the route table alone', () => {
 
   it('carries its errors as a readable JSON body, not a bare status', () => {
     const { store } = fixture();
-    const bad = resolveContent({ method: 'HEAD', path: '/v1/content/notadigest' }, store)!;
+    const bad = resolveContent({ method: 'GET', path: '/v1/media/notadigest' }, store)!;
     expect(bad.status).toBe(400);
     expect(json(bad.body)).toEqual({ error: 'malformed digest' });
     expect(bad.headers['Content-Type']).toBe('application/json');
     expect(bad.headers['Content-Length']).toBe(String(bad.body!.byteLength));
+  });
+
+  it('never puts a body on a HEAD — not even an error\'s — and keeps the headers', () => {
+    const { store } = fixture();
+    // An HTTP server strips a HEAD body on the way out, which is why this went
+    // unnoticed: a desktop adapter builds a real `Response` and would hand the
+    // bytes over. The table has to be right rather than lucky.
+    const expected = new TextEncoder().encode(JSON.stringify({ error: 'malformed digest' })).byteLength;
+    const bad = resolveContent({ method: 'HEAD', path: '/v1/content/notadigest' }, store)!;
+    expect(bad.status).toBe(400);
+    expect(bad.body).toBeUndefined();
+    // The length still describes the body a GET would have returned.
+    expect(bad.headers['Content-Length']).toBe(String(expected));
+
+    const missing = resolveContent({ method: 'HEAD', path: `/v1/media/sha256:${'0'.repeat(64)}` }, store)!;
+    expect(missing.status).toBe(404);
+    expect(missing.body).toBeUndefined();
   });
 
   it('emits no CORS header — that is the adapter\'s policy, not the content\'s', () => {
@@ -102,7 +119,7 @@ describe('resolveContent — the route table alone', () => {
       getManifest: () => { throw new Error('EIO: disk read failed'); },
     } as unknown as AttachmentStore;
     const reply = resolveContent({
-      method: 'HEAD', path: `/v1/content/sha256:${'a'.repeat(64)}`,
+      method: 'GET', path: `/v1/media/sha256:${'a'.repeat(64)}`,
     }, exploding)!;
     expect(reply.status).toBe(500);
     expect(json(reply.body)).toEqual({ error: 'EIO: disk read failed' });

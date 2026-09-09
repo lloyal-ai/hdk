@@ -102,10 +102,9 @@ const contentError = (status: number, message: string): ContentReply => {
   };
 };
 
-/** Resolve one descriptor to its bytes, honouring the conditional request.
- *  `bodyless` is HEAD: same status, same headers, no body. */
+/** Resolve one descriptor to its bytes, honouring the conditional request. */
 const serveBlob = (
-  store: AttachmentStore, req: ContentRequest, d: Descriptor, bodyless: boolean,
+  store: AttachmentStore, req: ContentRequest, d: Descriptor,
 ): ContentReply => {
   // A client holding this exact digest already has the only body it can be.
   if (req.ifNoneMatch === `"${d.digest}"`) return { status: 304, headers: contentHeaders(d.digest) };
@@ -117,7 +116,7 @@ const serveBlob = (
       'Content-Type': d.mediaType,
       'Content-Length': String(bytes.byteLength),
     }),
-    body: bodyless ? undefined : bytes,
+    body: bytes,
   };
 };
 
@@ -159,94 +158,108 @@ const serveBlob = (
  * @category Runtime
  */
 export function resolveContent(req: ContentRequest, store: AttachmentStore): ContentReply | null {
-  const { path, method } = req;
-  if (!isContentPath(path)) return null;
-
+  if (!isContentPath(req.path)) return null;
+  let reply: ContentReply;
   try {
-    // HEAD /v1/content/<digest> — existence only. Answers about a digest the
-    // caller already holds; it never reveals what else is stored.
-    //
-    // HEAD-ONLY, deliberately. GET was accepted here and answered 200 with a
-    // `Content-Length` and an empty body — a protocol violation. The fix is
-    // to refuse GET rather than to serve the bytes: this route addresses raw
-    // blobs by digest, so serving them would hand out any blob including a
-    // retained SOURCE layer, defeating the reason
-    // `/v1/media/<manifest>/representations/<i>` resolves through the
-    // manifest at all. Bytes have exactly one door, and it is that one.
-    const exists = /^\/v1\/content\/([^/]+)$/.exec(path);
-    if (exists && method === 'HEAD') {
-      const digest = decodeURISegment(exists[1]);
-      if (digest === null || !DIGEST_PATTERN.test(digest)) return contentError(400, 'malformed digest');
-      // Reads the WHOLE blob to answer a yes/no question, because
-      // `AttachmentStore` offers no `size`/`has`. On the one route whose
-      // purpose is to AVOID moving bytes, a dedupe pre-flight against an
-      // 8 MiB image costs 8 MiB resident. Adding `size(digest)` beside `get`
-      // belongs with the store-contract phase, not here.
-      const bytes = store.get(digest);
-      if (!bytes) return contentError(404, 'not found');
-      return { status: 200, headers: contentHeaders(digest, { 'Content-Length': String(bytes.byteLength) }) };
-    }
-
-    // GET /v1/media/<manifest>/representations/<index> — the bytes the model
-    // actually saw. Resolves THROUGH the manifest and only over its
-    // representations, so a source layer can never be served by mistake.
-    const rep = /^\/v1\/media\/([^/]+)\/representations\/(\d+)$/.exec(path);
-    if (rep && (method === 'GET' || method === 'HEAD')) {
-      const digest = decodeURISegment(rep[1]);
-      if (digest === null || !DIGEST_PATTERN.test(digest)) return contentError(400, 'malformed digest');
-      const manifest = store.getManifest(digest);
-      if (!manifest) return contentError(404, 'no such attachment manifest');
-      const reps = representationsOf(manifest);
-      const i = Number(rep[2]);
-      if (!Number.isInteger(i) || i < 0 || i >= reps.length) {
-        return contentError(404, `representation ${i} of ${reps.length}`);
-      }
-      return serveBlob(store, req, reps[i], method === 'HEAD');
-    }
-
-    // GET /v1/media/<manifest> — the manifest itself, by digest. A manifest is
-    // a blob, and serving it by digest is what any OCI reader expects; it is
-    // how a UI learns what an attachment IS (its config media type) and what
-    // roots it names, without a "kind" field anywhere on the wire.
-    const man = /^\/v1\/media\/([^/]+)$/.exec(path);
-    if (man && (method === 'GET' || method === 'HEAD')) {
-      const digest = decodeURISegment(man[1]);
-      if (digest === null || !DIGEST_PATTERN.test(digest)) return contentError(400, 'malformed digest');
-      if (!store.getManifest(digest)) return contentError(404, 'no such attachment manifest');
-      return serveBlob(store, req, { mediaType: MANIFEST_TYPE, digest, size: 0 }, method === 'HEAD');
-    }
-
-    // GET /v1/media/<manifest>/config — the typed config blob, resolved
-    // THROUGH the manifest the way representations are. A document's
-    // sidecar lives here; an image's config is OCI's canonical empty blob.
-    const cfg = /^\/v1\/media\/([^/]+)\/config$/.exec(path);
-    if (cfg && (method === 'GET' || method === 'HEAD')) {
-      const digest = decodeURISegment(cfg[1]);
-      if (digest === null || !DIGEST_PATTERN.test(digest)) return contentError(400, 'malformed digest');
-      const manifest = store.getManifest(digest);
-      if (!manifest) return contentError(404, 'no such attachment manifest');
-      return serveBlob(store, req, manifest.config, method === 'HEAD');
-    }
-
-    // GET /v1/media/<manifest>/source — the original as supplied, when the
-    // ingest retained it: a document's PDF, an image before normalization.
-    // Resolved THROUGH the manifest by ROLE, never by a blob digest a
-    // client typed — raw blobs stay HEAD-only.
-    const src = /^\/v1\/media\/([^/]+)\/source$/.exec(path);
-    if (src && (method === 'GET' || method === 'HEAD')) {
-      const digest = decodeURISegment(src[1]);
-      if (digest === null || !DIGEST_PATTERN.test(digest)) return contentError(400, 'malformed digest');
-      const manifest = store.getManifest(digest);
-      if (!manifest) return contentError(404, 'no such attachment manifest');
-      const source = sourceOf(manifest);
-      if (!source) return contentError(404, 'no source retained for this attachment');
-      return serveBlob(store, req, source, method === 'HEAD');
-    }
-
-    return contentError(405, 'unsupported method or path');
+    reply = route(req, store);
   } catch (e) {
-    return contentError(500, e instanceof Error ? e.message : 'content route failed');
+    reply = contentError(500, e instanceof Error ? e.message : 'content route failed');
   }
+  // A HEAD answer carries no body — not even an error's. The headers are left
+  // exactly as they are, `Content-Length` included, because they describe the
+  // body a GET would return. Enforced HERE rather than at each route so no
+  // branch can forget, and so an adapter that builds a real response object
+  // (a desktop `Response`) cannot expose what an HTTP server would have
+  // silently dropped for it.
+  return req.method === 'HEAD' && reply.body ? { ...reply, body: undefined } : reply;
+}
+
+/** The routes themselves. Throwing is allowed — {@link resolveContent} contains
+ *  it — and every answer here is unconditional about the body; HEAD is applied
+ *  once, above. */
+function route(req: ContentRequest, store: AttachmentStore): ContentReply {
+  const { path, method } = req;
+  // HEAD /v1/content/<digest> — existence only. Answers about a digest the
+  // caller already holds; it never reveals what else is stored.
+  //
+  // HEAD-ONLY, deliberately. GET was accepted here and answered 200 with a
+  // `Content-Length` and an empty body — a protocol violation. The fix is
+  // to refuse GET rather than to serve the bytes: this route addresses raw
+  // blobs by digest, so serving them would hand out any blob including a
+  // retained SOURCE layer, defeating the reason
+  // `/v1/media/<manifest>/representations/<i>` resolves through the
+  // manifest at all. Bytes have exactly one door, and it is that one.
+  const exists = /^\/v1\/content\/([^/]+)$/.exec(path);
+  if (exists && method === 'HEAD') {
+    const digest = decodeURISegment(exists[1]);
+    if (digest === null || !DIGEST_PATTERN.test(digest)) return contentError(400, 'malformed digest');
+    // Reads the WHOLE blob to answer a yes/no question, because
+    // `AttachmentStore` offers no `size`/`has`. On the one route whose
+    // purpose is to AVOID moving bytes, a dedupe pre-flight against an
+    // 8 MiB image costs 8 MiB resident. Adding `size(digest)` beside `get`
+    // belongs with the store-contract phase, not here.
+    const bytes = store.get(digest);
+    if (!bytes) return contentError(404, 'not found');
+    return { status: 200, headers: contentHeaders(digest, { 'Content-Length': String(bytes.byteLength) }) };
+  }
+
+  // GET /v1/media/<manifest>/representations/<index> — the bytes the model
+  // actually saw. Resolves THROUGH the manifest and only over its
+  // representations, so a source layer can never be served by mistake.
+  const rep = /^\/v1\/media\/([^/]+)\/representations\/(\d+)$/.exec(path);
+  if (rep && (method === 'GET' || method === 'HEAD')) {
+    const digest = decodeURISegment(rep[1]);
+    if (digest === null || !DIGEST_PATTERN.test(digest)) return contentError(400, 'malformed digest');
+    const manifest = store.getManifest(digest);
+    if (!manifest) return contentError(404, 'no such attachment manifest');
+    const reps = representationsOf(manifest);
+    const i = Number(rep[2]);
+    if (!Number.isInteger(i) || i < 0 || i >= reps.length) {
+      return contentError(404, `representation ${i} of ${reps.length}`);
+    }
+    return serveBlob(store, req, reps[i]);
+  }
+
+  // GET /v1/media/<manifest> — the manifest itself, by digest. A manifest is
+  // a blob, and serving it by digest is what any OCI reader expects; it is
+  // how a UI learns what an attachment IS (its config media type) and what
+  // roots it names, without a "kind" field anywhere on the wire.
+  const man = /^\/v1\/media\/([^/]+)$/.exec(path);
+  if (man && (method === 'GET' || method === 'HEAD')) {
+    const digest = decodeURISegment(man[1]);
+    if (digest === null || !DIGEST_PATTERN.test(digest)) return contentError(400, 'malformed digest');
+    if (!store.getManifest(digest)) return contentError(404, 'no such attachment manifest');
+    return serveBlob(store, req, { mediaType: MANIFEST_TYPE, digest, size: 0 });
+  }
+
+  // GET /v1/media/<manifest>/config — the typed config blob, resolved
+  // THROUGH the manifest the way representations are. A document's
+  // sidecar lives here; an image's config is OCI's canonical empty blob.
+  const cfg = /^\/v1\/media\/([^/]+)\/config$/.exec(path);
+  if (cfg && (method === 'GET' || method === 'HEAD')) {
+    const digest = decodeURISegment(cfg[1]);
+    if (digest === null || !DIGEST_PATTERN.test(digest)) return contentError(400, 'malformed digest');
+    const manifest = store.getManifest(digest);
+    if (!manifest) return contentError(404, 'no such attachment manifest');
+    return serveBlob(store, req, manifest.config);
+  }
+
+  // GET /v1/media/<manifest>/source — the original as supplied, when the
+  // ingest retained it: a document's PDF, an image before normalization.
+  // Resolved THROUGH the manifest by ROLE, never by a blob digest a
+  // client typed — raw blobs stay HEAD-only.
+  const src = /^\/v1\/media\/([^/]+)\/source$/.exec(path);
+  if (src && (method === 'GET' || method === 'HEAD')) {
+    const digest = decodeURISegment(src[1]);
+    if (digest === null || !DIGEST_PATTERN.test(digest)) return contentError(400, 'malformed digest');
+    const manifest = store.getManifest(digest);
+    if (!manifest) return contentError(404, 'no such attachment manifest');
+    const source = sourceOf(manifest);
+    if (!source) return contentError(404, 'no source retained for this attachment');
+    return serveBlob(store, req, source);
+  }
+
+  return contentError(405, 'unsupported method or path');
 }
 
 // ─────────────────────────────────────────────────────────────────
