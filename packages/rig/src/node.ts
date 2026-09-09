@@ -38,9 +38,12 @@ export type { RuntimeModels } from './models';
 export { useTraceWriter } from './trace-sink';
 export { createProjectMediaStore, MEDIA_DIR } from './media-store';
 // Node-only: the content plane — HTTP carries bytes, the WebSocket carries
-// references. Mount beside a `WebSocketServer` on one `http.Server`.
-export { createContentRoutes } from './content-routes';
-export type { ContentRoutesOpts } from './content-routes';
+// references. `resolveContent` is the route table itself, so a target that is
+// not an HTTP server — a desktop `protocol.handle` — answers the same routes
+// without opening a socket; `createContentRoutes` is that table mounted beside
+// a `WebSocketServer` on one `http.Server`.
+export { createContentRoutes, resolveContent, isContentPath } from './content-routes';
+export type { ContentRoutesOpts, ContentRequest, ContentReply } from './content-routes';
 export type {
   ModelRole,
   ModelCatalogEntry,
