@@ -105,12 +105,6 @@ function toError(err: unknown): Error {
  */
 export function* setupAgent(
   parent: Branch, task: AgentTaskSpec, ctx: SessionContext, enableThinking: boolean, clock?: () => number,
-  /** Lineage parent for `walkAncestors` — omitted uses the ambient
-   *  {@link CallingAgent} (a delegate child's caller). A heal passes `null`
-   *  explicitly: the replacement forks the spine replaying the ORIGINAL, so it
-   *  is nobody's live child, and inheriting whoever was last dispatched would
-   *  make its receipt ledger read a sibling's history. */
-  lineageParent?: Agent | null,
 ): Operation<{ agent: Agent; suffixTokens: number[]; formattedPrompt: string }> {
   // Shared mode: the spine already carries the [system + tools] header; the
   // agent inherits parser/grammar/format/triggers and contributes a user turn.
@@ -148,8 +142,7 @@ export function* setupAgent(
     try { branch.reseedSampler(task.seed); } catch (e) { branch.pruneSync(); throw e; }
   }
   const agent = new Agent({
-    id: branch.handle, parentId: parent.handle, branch,
-    parent: lineageParent !== undefined ? lineageParent : callingAgent,
+    id: branch.handle, parentId: parent.handle, branch, parent: callingAgent,
     task: task.content, fmt: fmtConfig, assignedAbility: task.assignedAbility ?? null, clock,
   });
   return { agent, suffixTokens, formattedPrompt: fmt.prompt };
@@ -570,9 +563,12 @@ export class Executor {
     let completion: ToolCompletion;
     try {
       yield* TraceParent.set(dispatchTraceId);
-      yield* CallingAgent.set(agent);
       yield* Trace.set(tee(agent.id, callId, dispatchTraceId));
       const result: unknown = yield* scoped(function*() {
+        // Scoped to the call: CallingAgent is "who is calling THIS tool", so it
+        // must revert when the call ends. Left set on the loop fiber it lingers,
+        // and a later spawn off the loop (a heal's forge) reads a stale agent.
+        yield* CallingAgent.set(agent);
         return yield* call(() =>
           tool ? tool.execute(toolArgs, toolContext) : Promise.resolve({
             error: d.tools.size === 0

@@ -189,9 +189,10 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     function* forge(task: AgentTaskSpec, lineage?: Lineage): Operation<Omit<SpawnRequest, 'resolve' | 'reject' | 'discarded'>> {
       const replay = lineage ? yield* prepareReplay(lineage.records, { enableThinking }) : null;
       const parent = lineage ? spine : (task.parent ?? spine);
-      // A heal forks the spine replaying the ORIGINAL — its lineage parent is
-      // nobody live (null), not the ambient caller; a normal spawn keeps the caller.
-      const { agent, suffixTokens, formattedPrompt } = yield* setupAgent(parent, task, ctx, enableThinking, runNow, lineage ? null : undefined);
+      // A heal forges off the loop fiber, where no tool call is active, so
+      // setupAgent reads CallingAgent as null — the replacement is nobody's
+      // live child. A delegate's forge runs inside its call, so it reads the caller.
+      const { agent, suffixTokens, formattedPrompt } = yield* setupAgent(parent, task, ctx, enableThinking, runNow);
       if (!lineage || !replay) return { agent, suffixTokens, formattedPrompt, task };
       return { agent, suffixTokens, formattedPrompt, task, replay: { ...replay, of: lineage.of, rc: lineage.rc, attempt: lineage.attempt, history: lineage.history } };
     }
