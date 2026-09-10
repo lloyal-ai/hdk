@@ -239,36 +239,6 @@ describe('RecursiveOpts', () => {
   });
 });
 
-// ── Local-history recursion guard (regression test) ──────────
-
-describe('Local-history recursion guard', () => {
-  // This is the hypothesis grep regression fix. The guard must check
-  // AGENT-LOCAL history, not lineage. Without this, children inherit
-  // parent's search+fetch and skip their own research, producing
-  // blind relay chains.
-
-  it('guard checks agent.toolHistory, not walkAncestors', () => {
-    // The guard implementation in AgentPolicy.ts lines 42-52:
-    // reject: (_args, _lineage, agent) => {
-    //   const local = agent.toolHistory;
-    //   const hasSearch = local.some(h => h.name === 'web_search' || h.name === 'search');
-    //   const hasFetch = local.some(h => h.name === 'fetch_page' || h.name === 'read_file');
-    //   return !hasSearch || !hasFetch;
-    // },
-
-    // This is already tested in AgentPolicy.test.ts "rejects web_research
-    // even when PARENT has search+fetch". This test is a design marker
-    // documenting WHY it matters.
-
-    // The guard receives (args, lineageHistory, agent).
-    // lineageHistory includes parent's tools — the guard IGNORES it.
-    // agent.toolHistory is local only — the guard USES it.
-    // This prevents the blind relay chains seen in trace-1774628104830.
-
-    expect(true).toBe(true); // tested in AgentPolicy.test.ts
-  });
-});
-
 // ── Echo detection guard ────────────────────────────────────
 
 describe('Echo detection guard', () => {

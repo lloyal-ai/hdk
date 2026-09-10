@@ -442,10 +442,13 @@ export class Agent {
    * Self is visited first, then the calling agent, then its caller, etc.
    * Iterative — no stack overflow on deep recursion chains.
    *
-   * @example Check if any ancestor fetched a URL
+   * For "has this agent already RECEIVED X" prefer {@link attendedResults},
+   * which folds this walk and keeps only what LANDED — a raw history read here
+   * counts a settle-reject nudge (which carries the original args) as a receipt:
+   *
+   * @example Whether this agent has already fetched a URL
    * ```typescript
-   * const fetched = agent.walkAncestors(a => a.toolHistory)
-   *   .some(h => h.name === 'fetch_page' && parseHistoryArgs(h.args).url === url);
+   * const fetched = agent.attendedResults('fetch_page').some(a => a.url === url);
    * ```
    */
   walkAncestors<T>(fn: (agent: Agent) => readonly T[]): T[] {

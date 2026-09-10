@@ -1,3 +1,4 @@
+import { parseHistoryArgs } from '../../src/Agent';
 import type { AgentExitReason } from '../../src/types';
 import type { PoolRun, NativeCall } from './harness';
 import type { AgentEvent } from '../../src/types';
@@ -446,15 +447,21 @@ export function I42_noLeakedBranches(run: PoolRun): PredicateResult {
  */
 export function I43_receivedIsLanded(run: PoolRun): PredicateResult {
   for (const { agent, agentId } of run.result.agents) {
-    const landed = new Map<string, number>();
-    for (const h of agent.toolHistory) {
-      if (h.outcome === 'toolResult') landed.set(h.name, (landed.get(h.name) ?? 0) + 1);
-    }
-    for (const tool of new Set(agent.toolHistory.map((h) => h.name))) {
-      const attended = agent.attendedResults(tool).length;
-      const want = landed.get(tool) ?? 0;
-      if (attended !== want) {
-        return fail('I43', `agent ${agentId}: attendedResults(${tool})=${attended} but ${want} call(s) landed`);
+    // `attendedResults` is lineage-aware (self + ancestors), so the expectation
+    // must be built the same way: from `walkAncestors`, filtered to what
+    // actually LANDED. Comparing the entries — not just a count — is what
+    // enforces "exactly what landed": a nudge or recovery carries the ORIGINAL
+    // args but delivered no result, so it must never appear in what the agent
+    // attends over.
+    const lineage = agent.walkAncestors((a) => a.toolHistory);
+    for (const tool of new Set(lineage.map((h) => h.name))) {
+      const attended = agent.attendedResults(tool).map((a) => JSON.stringify(a)).sort();
+      const landed = lineage
+        .filter((h) => h.name === tool && h.outcome === 'toolResult')
+        .map((h) => JSON.stringify(parseHistoryArgs(h.args)))
+        .sort();
+      if (attended.length !== landed.length || attended.some((a, i) => a !== landed[i])) {
+        return fail('I43', `agent ${agentId}: attendedResults(${tool})=[${attended.join(', ')}] but landed lineage calls=[${landed.join(', ')}]`);
       }
     }
   }
