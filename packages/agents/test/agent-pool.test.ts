@@ -2664,6 +2664,77 @@ describe('assets available to the run', () => {
     expect(agent.attendedResults('view')).toHaveLength(1);
   });
 
+  it('a heal preserves the receipt ledger: a read landed before the poison is not re-delivered after the respawn', async () => {
+    // The original LANDS a `look`, then a poisoned media call (rc −3) heals it.
+    // The replay restores the read into the replacement's KV; the receipt ledger
+    // must ride with it, or the read tools re-deliver what the branch holds.
+    const store = new MemoryAttachmentStore();
+    const doc = documentRoot(store);
+    const { result, trace } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      // original: look (t1, lands), rasterize (t2, poisons); replacement: done.
+      forkTokenQueues: [[1, STOP, 2, STOP, STOP], [STOP]],
+      parseChatOutputFn: calls('look', 'rasterize'),
+      policy: policy(),
+      tools: new Map<string, Tool>([['look', new RootTool([doc], 'look')], ['rasterize', new MediaTool([PNG_BYTES])]]),
+      contentStore: store, trace: true,
+      mutateCtx: (c) => {
+        let seen = 0;
+        c.mockMultimodalError = () => (seen++ === 0 ? { message: 'compute failed', rc: -3 } : null);
+      },
+    });
+    const heal = trace.events.find((e) => e.type === 'pool:agentHeal') as { of: number; agentId: number } | undefined;
+    expect(heal).toBeDefined();
+    const replacement = result.agents.find((a) => a.agentId === heal!.agentId);
+    expect(replacement).toBeDefined();
+    // The ledger rides on the replacement's OWN history (matching its replayed
+    // KV), and it does not inherit an ambient agent as its lineage parent.
+    expect(replacement!.agent.parent).toBeNull();
+    expect(replacement!.agent.toolHistory.filter((h) => h.name === 'look' && (h as { outcome?: string }).outcome === 'toolResult')).toHaveLength(1);
+    // So it attends over the `look` the original landed, and does not re-deliver.
+    expect(replacement!.agent.attendedResults('look')).toHaveLength(1);
+  });
+
+  it('a heal takes the ORIGINAL\'s ledger, not a sibling\'s: the replacement attends over what its KV holds', async () => {
+    // Two agents run: the one that will heal LANDS `look`; a sibling LANDS a
+    // DIFFERENT read, `peek`. The healer is poisoned and respawned. Its KV was
+    // replayed from ITS OWN records (the `look`), not the sibling's — so the
+    // replacement must attend over `look` and NOT `peek`. If the replacement
+    // inherits the ambient sibling as its lineage parent, it reads `peek`
+    // (which is not in its KV → blinding) and misses `look`.
+    const store = new MemoryAttachmentStore();
+    const look = documentRoot(store, 'Look Paper');
+    const peek = documentRoot(store, 'Peek Paper');
+    const byToken = (raw: string) =>
+      raw.includes('t2') ? { content: '', reasoningContent: '', toolCalls: [{ name: 'rasterize', arguments: '{}', id: 'c2' }] }
+      : raw.includes('t3') ? { content: '', reasoningContent: '', toolCalls: [{ name: 'peek', arguments: '{}', id: 'c3' }] }
+      : raw.includes('t1') ? { content: '', reasoningContent: '', toolCalls: [{ name: 'look', arguments: '{}', id: 'c1' }] }
+      : { content: 'done', reasoningContent: '', toolCalls: [] };
+    const { result, trace } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      taskCount: 2,
+      // agent 0: look, rasterize(poison); agent 1 (sibling): peek; replacement: done.
+      forkTokenQueues: [[1, STOP, 2, STOP, STOP], [3, STOP, STOP], [STOP]],
+      parseChatOutputFn: byToken,
+      policy: policy(),
+      tools: new Map<string, Tool>([
+        ['look', new RootTool([look], 'look')],
+        ['peek', new RootTool([peek], 'peek')],
+        ['rasterize', new MediaTool([PNG_BYTES])],
+      ]),
+      contentStore: store, trace: true,
+      mutateCtx: (c) => { let seen = 0; c.mockMultimodalError = () => (seen++ === 0 ? { message: 'compute failed', rc: -3 } : null); },
+    });
+    const heal = trace.events.find((e) => e.type === 'pool:agentHeal') as { of: number; agentId: number } | undefined;
+    expect(heal).toBeDefined();
+    const replacement = result.agents.find((a) => a.agentId === heal!.agentId);
+    expect(replacement).toBeDefined();
+    // The healer landed `look`; the replacement's KV holds it, so it attends over it.
+    expect(replacement!.agent.attendedResults('look')).toHaveLength(1);
+    // The sibling's `peek` is NOT in the replacement's KV — it must not be attended over.
+    expect(replacement!.agent.attendedResults('peek')).toHaveLength(0);
+  });
+
   // Phase 2's red test, on the record now. Each pool copies its own `available`,
   // so a child's admissions never reach the run that spawned it. `it.fails`
   // keeps it in the suite and announces itself when the scorer and the asset

@@ -348,7 +348,10 @@ export class Applier {
       // lease this agent is about to give back. From there it is a spawn
       // wearing a lineage: priced whole, admitted by fit, replayed once its
       // suffix has landed. Nobody awaits it.
-      a.heal = { records, of: a.id, ...(o.rc !== undefined ? { rc: o.rc } : {}), attempt };
+      // Carry the landed receipts (toolResult only) so the replacement's ledger
+      // matches the KV its records replay — nudges/recoveries delivered nothing.
+      const history = a.toolHistory.filter((h) => h.outcome === 'toolResult');
+      a.heal = { records, history, of: a.id, ...(o.rc !== undefined ? { rc: o.rc } : {}), attempt };
     }
   }
 

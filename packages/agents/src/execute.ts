@@ -105,6 +105,12 @@ function toError(err: unknown): Error {
  */
 export function* setupAgent(
   parent: Branch, task: AgentTaskSpec, ctx: SessionContext, enableThinking: boolean, clock?: () => number,
+  /** Lineage parent for `walkAncestors` — omitted uses the ambient
+   *  {@link CallingAgent} (a delegate child's caller). A heal passes `null`
+   *  explicitly: the replacement forks the spine replaying the ORIGINAL, so it
+   *  is nobody's live child, and inheriting whoever was last dispatched would
+   *  make its receipt ledger read a sibling's history. */
+  lineageParent?: Agent | null,
 ): Operation<{ agent: Agent; suffixTokens: number[]; formattedPrompt: string }> {
   // Shared mode: the spine already carries the [system + tools] header; the
   // agent inherits parser/grammar/format/triggers and contributes a user turn.
@@ -142,7 +148,8 @@ export function* setupAgent(
     try { branch.reseedSampler(task.seed); } catch (e) { branch.pruneSync(); throw e; }
   }
   const agent = new Agent({
-    id: branch.handle, parentId: parent.handle, branch, parent: callingAgent,
+    id: branch.handle, parentId: parent.handle, branch,
+    parent: lineageParent !== undefined ? lineageParent : callingAgent,
     task: task.content, fmt: fmtConfig, assignedAbility: task.assignedAbility ?? null, clock,
   });
   return { agent, suffixTokens, formattedPrompt: fmt.prompt };
@@ -444,6 +451,9 @@ export class Executor {
         a.pruneRequested = true;
         return false;
       }
+      // The replay restored the KV; restore the receipt ledger to match, so the
+      // read tools see what the branch now holds instead of re-delivering it.
+      for (const h of s.replay.history) a.recordToolResult(h);
       d.emit.trace({ kind: 'healed', of: s.replay.of, agent: a, rc: s.replay.rc, attempt: s.replay.attempt,
         pressure: new ContextPressure(d.ctx, d.pressureOpts) });
     }

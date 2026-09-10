@@ -1,6 +1,6 @@
 import type { ParsedToolCall, MultimodalDelta } from '@lloyal-labs/sdk';
 import type { Attachment } from '@lloyal-labs/media';
-import type { Agent } from './Agent';
+import type { Agent, ToolHistoryEntry } from './Agent';
 import type { ContextPressure } from './pressure';
 import type { RecoveryAction } from './AgentPolicy';
 import type { AgentTaskSpec, AgentExitReason } from './types';
@@ -80,10 +80,19 @@ export interface SpawnReplay {
   /** The lineage, built once and priced — what the replacement will prefill after its suffix. */
   steps: ReplayStep[]; cells: number;
   of: number; rc?: number; attempt: number;
+  /** The original's LANDED tool history — re-booked onto the replacement so its
+   *  receipt ledger matches the KV the steps replay. The replay restores content,
+   *  not history; without this a healed read tool re-delivers what its branch holds. */
+  history: readonly ToolHistoryEntry[];
 }
 
 /** What a heal hands to the pool to forge its replacement from. */
-export interface Lineage { records: readonly AgentTurnRecord[]; of: number; rc?: number; attempt: number }
+export interface Lineage {
+  records: readonly AgentTurnRecord[];
+  /** The original's landed tool history — carried onto the replacement (see {@link SpawnReplay.history}). */
+  history: readonly ToolHistoryEntry[];
+  of: number; rc?: number; attempt: number;
+}
 
 /** What admission spends on a spawn — the suffix, and the lineage a heal
  *  replays. The ONE place that answers it, like {@link itemCells}. */

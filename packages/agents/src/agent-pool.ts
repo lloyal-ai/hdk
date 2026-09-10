@@ -189,9 +189,11 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     function* forge(task: AgentTaskSpec, lineage?: Lineage): Operation<Omit<SpawnRequest, 'resolve' | 'reject' | 'discarded'>> {
       const replay = lineage ? yield* prepareReplay(lineage.records, { enableThinking }) : null;
       const parent = lineage ? spine : (task.parent ?? spine);
-      const { agent, suffixTokens, formattedPrompt } = yield* setupAgent(parent, task, ctx, enableThinking, runNow);
+      // A heal forks the spine replaying the ORIGINAL — its lineage parent is
+      // nobody live (null), not the ambient caller; a normal spawn keeps the caller.
+      const { agent, suffixTokens, formattedPrompt } = yield* setupAgent(parent, task, ctx, enableThinking, runNow, lineage ? null : undefined);
       if (!lineage || !replay) return { agent, suffixTokens, formattedPrompt, task };
-      return { agent, suffixTokens, formattedPrompt, task, replay: { ...replay, of: lineage.of, rc: lineage.rc, attempt: lineage.attempt } };
+      return { agent, suffixTokens, formattedPrompt, task, replay: { ...replay, of: lineage.of, rc: lineage.rc, attempt: lineage.attempt, history: lineage.history } };
     }
 
     const applier = new Applier({
