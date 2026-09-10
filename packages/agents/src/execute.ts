@@ -126,8 +126,8 @@ export function* setupAgent(
   }
   const suffixTokens = [...ctx.getTurnSeparator(), ...ctx.tokenizeSync(fmt.prompt, false)];
 
-  let callingAgent: Agent | null = null;
-  try { const a = yield* CallingAgent.get(); if (a) callingAgent = a; } catch { /* top-level — no caller */ }
+  // undefined at the top level (no caller); CallingAgent.get() never throws.
+  const callingAgent = (yield* CallingAgent.get()) ?? null;
 
   const src = sharedFmt ?? fmt;
   const fmtConfig: FormatConfig = {

@@ -61,7 +61,8 @@ export interface CreateAgentPoolOpts {
   attachments?: readonly Attachment[];
   /** Echo detection threshold in LOGITS — the unit `scoreSimilarityBatch`
    *  returns (a reranker log-odds difference, unbounded, centred on zero),
-   *  NOT a 0–1 similarity. @default 7 */
+   *  NOT a 0–1 similarity. Default applied by `DelegateTool`
+   *  (`DEFAULT_ECHO_THRESHOLD_LOGITS`), the one place that holds the number. */
   echoThreshold?: number;
   /** Check ancestor tasks for echo. @default false */
   checkAncestorEcho?: boolean;

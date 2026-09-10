@@ -103,19 +103,18 @@ export function parseHistoryArgs(argsStr: string): Record<string, unknown> {
 }
 
 /**
- * The parsed args of a tool's calls whose RESULTS actually LANDED — the one
- * rule for "already received," applied at whatever scope the caller walked.
- * A nudge or a recovery turn is booked on the branch but delivered no result,
- * so `outcome === 'toolResult'` is what separates a receipt from a turn.
+ * The history entries whose results actually LANDED — the ONE definition of
+ * "received". A nudge or a recovery turn is booked on the branch but delivered
+ * no result, so `outcome === 'toolResult'` is what separates a receipt from a
+ * turn. Everything that asks "what did this agent receive" reads through here
+ * (dedup, the heal's ledger carry) so the answer cannot drift.
  */
-/** The history entries whose results actually LANDED — the ONE definition of
- *  "received". A nudge or recovery turn is booked but delivered nothing, so it
- *  is not one. Everything that asks "what did this agent receive" reads through
- *  here (dedup, the heal's ledger carry) so the answer cannot drift. */
 export function landedEntries(histories: readonly ToolHistoryEntry[]): ToolHistoryEntry[] {
   return histories.filter((h) => h.outcome === 'toolResult');
 }
 
+/** The parsed args of a tool's LANDED calls — {@link landedEntries} narrowed to
+ *  `tool` and read as args (the shape a dedup or read tool matches on). */
 export function landedArgs(histories: readonly ToolHistoryEntry[], tool: string): Record<string, unknown>[] {
   return landedEntries(histories)
     .filter((h) => h.name === tool)

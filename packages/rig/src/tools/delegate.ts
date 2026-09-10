@@ -122,8 +122,8 @@ export class DelegateTool extends Tool<Record<string, unknown>> {
     // WHO is calling — its branch to fork from, its task for the echo guard,
     // its lineage for the ancestor check. One read; the tool port carries the
     // call's own values, never the caller's identity.
-    let caller: Agent | undefined;
-    try { caller = yield* CallingAgent.get(); } catch { /* top-level — no caller */ }
+    // undefined at the top level (no caller); CallingAgent.get() never throws.
+    const caller = yield* CallingAgent.get();
 
     // Entailment gate: filter drifted/echoed tasks before spawning
     const scorer = context?.scorer;

@@ -45,8 +45,8 @@ export function tokenBudgetAsWords(budgetTokens: number): number {
  * `agent.attendedResults(tool)` — when a guard needs "already in my context"),
  * `toolName` (so `tools: '*'` guards know which tool they're gating), and the
  * pool-level `config`, which carries pool-resolved state: the protected-tool
- * set, the session's grants, and `cohortLanded` (the run's retrievals, for
- * coordination dedup). Guards that don't need a parameter simply omit it.
+ * set, the session's grants, and `cohortLanded` (this pool cohort's landed
+ * retrievals, for coordination dedup). Guards that don't need a parameter omit it.
  *
  * `name` is the optional guard identifier surfaced via
  * `ProduceAction.nudge.guard` so the pool can emit per-guard trace
@@ -94,11 +94,11 @@ export const defaultToolGuards: ToolGuard[] = [
       'granted for this session. Use the available read tools to gather what ' +
       'you can, and report what blocks completion.',
   },
-  // Retrieval dedup is a COORDINATION fact, not KV-truth: it reads the run's
-  // landed retrievals (`config.cohortLanded`), so a URL/query any agent already
-  // fetched is refused once — whoever paid — and a call that was only NUDGED
-  // (its result never landed) is not counted, so a retry after a settle reject
-  // is not blinded.
+  // Retrieval dedup is a COORDINATION fact, not KV-truth: it reads this pool
+  // cohort's landed retrievals (`config.cohortLanded`), so a URL/query any agent
+  // in the pool already fetched is refused once — whichever paid — and a call
+  // that was only NUDGED (its result never landed) is not counted, so a retry
+  // after a settle reject is not blinded.
   {
     name: 'url_dedup',
     tools: ['fetch_page'],
@@ -381,11 +381,15 @@ export interface PolicyConfig {
    */
   grants?: ReadonlySet<string>;
   /**
-   * The RUN's landed retrievals of a tool, cohort-wide: the parsed args of
-   * every agent's `outcome === 'toolResult'` calls of `tool`. The
-   * coordination-dedup guards read it so a retrieval the run already paid for is
-   * refused once — whoever paid — while a call that was only nudged (its result
-   * never landed) is never counted.
+   * This pool cohort's landed retrievals of a tool: the parsed args of every
+   * agent IN THIS POOL whose `outcome === 'toolResult'` call named `tool`. The
+   * coordination-dedup guards read it so a retrieval an agent in the pool
+   * already paid for is refused once — whichever paid — while a call that was
+   * only nudged (its result never landed) is never counted.
+   *
+   * Scope is the pool, NOT the whole run: it closes over this pool's `agents`
+   * and does not reach a parent pool's agents, so cross-pool dedup under nested
+   * delegation is not covered here (no nesting is constructed today).
    *
    * Unlike the fields above, this is NOT resolved once: it is a live SERVICE the
    * pool injects (a closure over the agent cohort, see `agent-pool.ts`), read
