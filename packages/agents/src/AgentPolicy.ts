@@ -103,8 +103,12 @@ export const defaultToolGuards: ToolGuard[] = [
     name: 'url_dedup',
     tools: ['fetch_page'],
     reject: (args, _agent, _toolName, config) => {
-      const url = args.url as string | undefined;
-      return !!url && (config.cohortLanded?.('fetch_page') ?? []).some((a) => a.url === url);
+      // Normalize BOTH sides the way the tool does before it fetches
+      // (fetch-page.ts trims), or a whitespace-only variant of a landed URL
+      // slips the guard and fetches the same resource twice. The guard must
+      // normalize at least as aggressively as the tool.
+      const url = trimmed(args.url);
+      return !!url && (config.cohortLanded?.('fetch_page') ?? []).some((a) => trimmed(a.url) === url);
     },
     message: 'This URL was already fetched. Try a different source.',
   },
@@ -112,14 +116,23 @@ export const defaultToolGuards: ToolGuard[] = [
     name: 'query_dedup',
     tools: ['web_search'],
     reject: (args, _agent, _toolName, config) => {
-      const query = (args.query as string | undefined)?.toLowerCase();
+      // web-search.ts trims before searching; the guard also folds case so a
+      // capitalization-only variant is one query. Normalize both sides alike.
+      const query = trimmed(args.query)?.toLowerCase();
       return !!query && (config.cohortLanded?.('web_search') ?? []).some(
-        (a) => (a.query as string | undefined)?.toLowerCase() === query,
+        (a) => trimmed(a.query)?.toLowerCase() === query,
       );
     },
     message: 'This query was already searched. Refine your search or report findings.',
   },
 ];
+
+/** A string arg trimmed as the web tools trim it, or undefined when absent or
+ *  not a string. The dedup guards normalize both the current and landed args
+ *  through here so a whitespace-only variant is not treated as a new resource. */
+function trimmed(v: unknown): string | undefined {
+  return typeof v === 'string' ? v.trim() : undefined;
+}
 
 // ── Action types ────────────────────────────────────────────
 

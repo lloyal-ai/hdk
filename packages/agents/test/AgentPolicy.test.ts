@@ -164,6 +164,25 @@ describe('DefaultAgentPolicy', () => {
       expect(action.type).toBe('nudge');
     });
 
+    // The tool TRIMS its arg before it fetches/searches (fetch-page.ts,
+    // web-search.ts), so a whitespace-only variant hits the same resource. The
+    // guard must normalize the same way, or the same URL/query is fetched twice.
+    it('dedups a URL that differs only by surrounding whitespace', () => {
+      const a = makeAgent({ toolCallCount: 2 });
+      const cohort = [cohortEntry('fetch_page', { url: 'https://example.com' })];
+      const tc = { name: 'fetch_page', arguments: JSON.stringify({ url: '  https://example.com  ' }), id: 'c1' };
+      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), cohortConfig(cohort));
+      expect(action.type).toBe('nudge');
+    });
+
+    it('dedups a query that differs only by surrounding whitespace', () => {
+      const a = makeAgent({ toolCallCount: 2 });
+      const cohort = [cohortEntry('web_search', { query: 'same query' })];
+      const tc = { name: 'web_search', arguments: JSON.stringify({ query: '  same query  ' }), id: 'c1' };
+      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), cohortConfig(cohort));
+      expect(action.type).toBe('nudge');
+    });
+
     it('allows web_research without prior tool calls', () => {
       const a = makeAgent({ toolCallCount: 0 });
       const tc = { name: 'web_research', arguments: '{"questions":["q"]}', id: 'c1' };
