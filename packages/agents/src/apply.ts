@@ -1,6 +1,7 @@
 import type { Operation } from 'effection';
 import type { SessionContext, ParsedToolCall, ParseChatOutputResult } from '@lloyal-labs/sdk';
 import { buildToolResultDelta, buildUserDelta, decodeErrorOf } from '@lloyal-labs/sdk';
+import { landedEntries } from './Agent';
 import type { Agent } from './Agent';
 import type { AgentPolicy, PolicyConfig } from './AgentPolicy';
 import type { Tool } from './Tool';
@@ -348,9 +349,9 @@ export class Applier {
       // lease this agent is about to give back. From there it is a spawn
       // wearing a lineage: priced whole, admitted by fit, replayed once its
       // suffix has landed. Nobody awaits it.
-      // Carry the landed receipts (toolResult only) so the replacement's ledger
-      // matches the KV its records replay — nudges/recoveries delivered nothing.
-      const history = a.toolHistory.filter((h) => h.outcome === 'toolResult');
+      // Carry the landed receipts so the replacement's ledger matches the KV its
+      // records replay — nudges/recoveries delivered nothing.
+      const history = landedEntries(a.toolHistory);
       a.heal = { records, history, of: a.id, ...(o.rc !== undefined ? { rc: o.rc } : {}), attempt };
     }
   }

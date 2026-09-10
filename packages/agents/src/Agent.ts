@@ -108,9 +108,17 @@ export function parseHistoryArgs(argsStr: string): Record<string, unknown> {
  * A nudge or a recovery turn is booked on the branch but delivered no result,
  * so `outcome === 'toolResult'` is what separates a receipt from a turn.
  */
+/** The history entries whose results actually LANDED — the ONE definition of
+ *  "received". A nudge or recovery turn is booked but delivered nothing, so it
+ *  is not one. Everything that asks "what did this agent receive" reads through
+ *  here (dedup, the heal's ledger carry) so the answer cannot drift. */
+export function landedEntries(histories: readonly ToolHistoryEntry[]): ToolHistoryEntry[] {
+  return histories.filter((h) => h.outcome === 'toolResult');
+}
+
 export function landedArgs(histories: readonly ToolHistoryEntry[], tool: string): Record<string, unknown>[] {
-  return histories
-    .filter((h) => h.name === tool && h.outcome === 'toolResult')
+  return landedEntries(histories)
+    .filter((h) => h.name === tool)
     .map((h) => parseHistoryArgs(h.args));
 }
 

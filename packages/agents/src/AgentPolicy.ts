@@ -382,11 +382,14 @@ export interface PolicyConfig {
   grants?: ReadonlySet<string>;
   /**
    * The RUN's landed retrievals of a tool, cohort-wide: the parsed args of
-   * every agent's `outcome === 'toolResult'` calls of `tool`. The pool injects
-   * a live view (see `agent-pool.ts`); coordination-dedup guards read it so a
-   * retrieval the run already paid for is refused once — whoever paid — while a
-   * call that was only nudged (its result never landed) is never counted.
-   * Absent outside a pool.
+   * every agent's `outcome === 'toolResult'` calls of `tool`. The
+   * coordination-dedup guards read it so a retrieval the run already paid for is
+   * refused once — whoever paid — while a call that was only nudged (its result
+   * never landed) is never counted.
+   *
+   * Unlike the fields above, this is NOT resolved once: it is a live SERVICE the
+   * pool injects (a closure over the agent cohort, see `agent-pool.ts`), read
+   * afresh on every guard check. Absent outside a pool.
    */
   cohortLanded?: (tool: string) => Record<string, unknown>[];
 }
