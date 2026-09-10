@@ -284,7 +284,7 @@ export class Executor {
       a.deferAttempts = 0;
       const after = new ContextPressure(d.ctx, d.pressureOpts);
       a.recordToolResult({ name: it.toolName, args: it.args, resultCells: cells,
-        contextAfterPercent: after.percentAvailable, timestamp: performance.now() });
+        contextAfterPercent: after.percentAvailable, timestamp: performance.now(), outcome: it.kind });
       admissions.push({ kind: 'prefilled', agent: a, cells,
         role: it.kind === 'recovery' ? 'recovery' : 'toolResult', attachments: refs });
     };
@@ -515,15 +515,12 @@ export class Executor {
     d.emit.trace({ kind: 'dispatched', traceId: dispatchTraceId, ts: toolT0, agent, tool: tc.name,
       toolIndex: d.toolIndexMap.get(tc.name) ?? -1, toolkitSize: d.toolkitSize, args: toolArgs, callId,
       explore, percentAvailable: reading.percentAvailable });
-    const peerHistory = d.agents.filter(a => a.id !== agent.id).flatMap(a => a.toolHistory);
     const toolContext: ToolContext = {
-      agentId: agent.id, branch: agent.branch,
       onProgress: (p: { filled: number; total: number }) => {
         d.progress.send({ type: 'agent:tool_progress', agentId: agent.id, tool: tc.name, filled: p.filled, total: p.total });
       },
       scorer: d.scorer, explore,
       pressurePercentAvailable: reading.percentAvailable,
-      peerHistory,
       attachments: [...d.available],
     };
 

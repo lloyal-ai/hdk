@@ -433,3 +433,30 @@ export function I42_noLeakedBranches(run: PoolRun): PredicateResult {
   }
   return ok();
 }
+
+/**
+ * I43 received-is-landed: what an agent attends over is exactly what LANDED.
+ *
+ * `attendedResults(tool)` must report one entry per `outcome:'toolResult'`
+ * booking of that tool and no more. A settle-reject nudge (or a recovery turn)
+ * is booked on the branch but delivered no result — it carries the ORIGINAL
+ * call's name and args, so anything reading history by name alone would mistake
+ * it for a receipt. This invariant pins that a nudge is never counted as
+ * received, across any run, whatever produced it.
+ */
+export function I43_receivedIsLanded(run: PoolRun): PredicateResult {
+  for (const { agent, agentId } of run.result.agents) {
+    const landed = new Map<string, number>();
+    for (const h of agent.toolHistory) {
+      if (h.outcome === 'toolResult') landed.set(h.name, (landed.get(h.name) ?? 0) + 1);
+    }
+    for (const tool of new Set(agent.toolHistory.map((h) => h.name))) {
+      const attended = agent.attendedResults(tool).length;
+      const want = landed.get(tool) ?? 0;
+      if (attended !== want) {
+        return fail('I43', `agent ${agentId}: attendedResults(${tool})=${attended} but ${want} call(s) landed`);
+      }
+    }
+  }
+  return ok();
+}

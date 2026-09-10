@@ -86,6 +86,32 @@ export interface ToolHistoryEntry {
   contextAfterPercent: number;
   /** Timestamp (performance.now) when result was recorded */
   timestamp: number;
+  /**
+   * WHAT landed on the branch, which is not always what was called. A settle
+   * rejection replaces an oversized tool result with a nudge that carries the
+   * ORIGINAL call's name and args, so without this an entry claims a call
+   * succeeded when the model never saw its result. Taken from the prefill
+   * item's own `kind`, so the two cannot drift.
+   */
+  outcome: 'toolResult' | 'nudge' | 'recovery';
+}
+
+/** A history entry's `args` as an object — `{}` when the model emitted
+ *  something unparseable. The one reader of that field's encoding. */
+export function parseHistoryArgs(argsStr: string): Record<string, unknown> {
+  try { return JSON.parse(argsStr) as Record<string, unknown>; } catch { return {}; }
+}
+
+/**
+ * The parsed args of a tool's calls whose RESULTS actually LANDED — the one
+ * rule for "already received," applied at whatever scope the caller walked.
+ * A nudge or a recovery turn is booked on the branch but delivered no result,
+ * so `outcome === 'toolResult'` is what separates a receipt from a turn.
+ */
+export function landedArgs(histories: readonly ToolHistoryEntry[], tool: string): Record<string, unknown>[] {
+  return histories
+    .filter((h) => h.name === tool && h.outcome === 'toolResult')
+    .map((h) => parseHistoryArgs(h.args));
 }
 
 // ── Agent ───────────────────────────────────────────────────
@@ -385,6 +411,20 @@ export class Agent {
     this._toolHistory.push(entry);
   }
 
+  /**
+   * The calls of one tool whose RESULTS this agent attends over — its own and
+   * its callers' — as parsed args.
+   *
+   * Attention in the literal sense: those tokens are in the KV this branch
+   * reads across. A forked child attends over its parent's prefix, so the scope
+   * is the caller chain {@link walkAncestors} walks. `outcome === 'toolResult'`
+   * (via {@link landedArgs}) is what separates a receipt from a settle-reject
+   * nudge, which sits on the branch carrying the ORIGINAL call's name and args.
+   */
+  attendedResults(tool: string): Record<string, unknown>[] {
+    return landedArgs(this.walkAncestors((a) => a.toolHistory), tool);
+  }
+
   // ── Child findings ─────────────────────────────────────────
 
   /** Findings collected from recursive tool results (inner sub-agent findings) */
@@ -405,7 +445,7 @@ export class Agent {
    * @example Check if any ancestor fetched a URL
    * ```typescript
    * const fetched = agent.walkAncestors(a => a.toolHistory)
-   *   .some(h => h.name === 'fetch_page' && h.args === url);
+   *   .some(h => h.name === 'fetch_page' && parseHistoryArgs(h.args).url === url);
    * ```
    */
   walkAncestors<T>(fn: (agent: Agent) => readonly T[]): T[] {

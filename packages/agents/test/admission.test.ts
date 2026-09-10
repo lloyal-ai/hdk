@@ -108,7 +108,6 @@ describe('admitChunks — exploit re-rank', () => {
       { tool: 'fetch_page', select: { mode: 'budget', topK: 3, tokenBudget: 10_000 } },
       chunks,
       {
-        agentId: 1,
         explore: false,
         pressurePercentAvailable: 33,
         // Original-question scores reverse the tool-query order: chunk 2's text entails the question best.
@@ -132,7 +131,7 @@ describe('admitChunks — exploit re-rank', () => {
     const { result, tw } = await admit(
       { tool: 'fetch_page', select: { mode: 'budget', topK: 3, tokenBudget: 10_000 } },
       mkChunks(3),
-      { agentId: 1, explore: false, scorer } as any,
+      { explore: false, scorer } as any,
     );
     expect(calls).toHaveLength(1);
     expect(calls[0]).toHaveLength(3);
@@ -145,7 +144,7 @@ describe('admitChunks — exploit re-rank', () => {
     const { result, tw } = await admit(
       { tool: 'fetch_page', select: { mode: 'budget', topK: 3, tokenBudget: 10_000 } },
       mkChunks(3),
-      { agentId: 1, scorer: { scoreEntailmentBatch: async () => [9, 9, 9] } as any },
+      { scorer: { scoreEntailmentBatch: async () => [9, 9, 9] } as any },
     );
     expect(result.scored.map(s => s.heading)).toEqual(['H0', 'H1', 'H2']);
     expect(tw.ofType('entailment:content:exploit')).toHaveLength(0);
@@ -155,7 +154,7 @@ describe('admitChunks — exploit re-rank', () => {
     const { result, tw } = await admit(
       { tool: 'fetch_page', select: { mode: 'budget', topK: 3, tokenBudget: 10_000 } },
       mkChunks(3),
-      { agentId: 1, explore: true, scorer: { scoreEntailmentBatch: async () => [9, 9, 9] } as any },
+      { explore: true, scorer: { scoreEntailmentBatch: async () => [9, 9, 9] } as any },
     );
     expect(result.scored.map(s => s.heading)).toEqual(['H0', 'H1', 'H2']);
     expect(tw.ofType('entailment:content:exploit')).toHaveLength(0);

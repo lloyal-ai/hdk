@@ -88,7 +88,7 @@ export abstract class Tool<TArgs = any> {
    * the loop fiber. Safe for ANY tool, and REQUIRED for any tool that issues
    * a native op on the **main** `llama_context` — anything that nests
    * `agentPool` / `withSpine` / `useAgent` (e.g. `delegate`, `plan`) or
-   * decodes on `context.branch`. Two concurrent decodes on one context
+   * decodes on the calling agent's branch. Two concurrent decodes on one context
    * segfault, so the single-fiber discipline must hold for these.
    *
    * **Fan-out** (`true`): `execute()` issues NO native op on the main context

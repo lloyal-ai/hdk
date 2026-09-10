@@ -1,4 +1,4 @@
-import type { Agent, ToolHistoryEntry } from './Agent';
+import type { Agent } from './Agent';
 import type { ToolRetryError } from './Tool';
 import { ContextPressure } from './pressure';
 import type { ParsedToolCall } from '@lloyal-labs/sdk';
@@ -41,12 +41,12 @@ export function tokenBudgetAsWords(budgetTokens: number): number {
  * inspect *every* call regardless of tool name).
  *
  * `reject` returns `true` to reject the call with `message`. It receives
- * the parsed args, the full agent lineage's tool history, the agent
- * itself, `toolName` (so `tools: '*'` guards know which tool they're
- * gating), and the pool-level `config` (so guards can consult
- * pool-resolved state such as the protected-tool set and the session's
- * grants — see {@link PolicyConfig}). Guards that don't need `config`
- * simply omit the parameter.
+ * the parsed args, the calling `agent` (walk its lineage for KV-truth —
+ * `agent.attendedResults(tool)` — when a guard needs "already in my context"),
+ * `toolName` (so `tools: '*'` guards know which tool they're gating), and the
+ * pool-level `config`, which carries pool-resolved state: the protected-tool
+ * set, the session's grants, and `cohortLanded` (the run's retrievals, for
+ * coordination dedup). Guards that don't need a parameter simply omit it.
  *
  * `name` is the optional guard identifier surfaced via
  * `ProduceAction.nudge.guard` so the pool can emit per-guard trace
@@ -62,7 +62,6 @@ export interface ToolGuard {
   /** Return true to reject the call. */
   reject: (
     args: Record<string, unknown>,
-    lineageHistory: ToolHistoryEntry[],
     agent: Agent,
     toolName: string,
     config: PolicyConfig,
@@ -74,10 +73,6 @@ export interface ToolGuard {
 }
 
 /** Default guards for deduplication and recursion discipline */
-function parseHistoryArgs(argsStr: string): Record<string, unknown> {
-  try { return JSON.parse(argsStr); } catch { return {}; }
-}
-
 export const defaultToolGuards: ToolGuard[] = [
   // Framework-injected authGuard. Runs FIRST so a
   // protected-tool rejection fires before any dedup guard — the pool
@@ -90,7 +85,7 @@ export const defaultToolGuards: ToolGuard[] = [
   {
     name: 'auth_reject',
     tools: '*',
-    reject: (_args, _history, _agent, toolName, config) => {
+    reject: (_args, _agent, toolName, config) => {
       if (!config.protectedTools?.has(toolName)) return false; // open by default
       return !config.grants?.has(toolName); // protected → deny unless granted
     },
@@ -99,26 +94,28 @@ export const defaultToolGuards: ToolGuard[] = [
       'granted for this session. Use the available read tools to gather what ' +
       'you can, and report what blocks completion.',
   },
+  // Retrieval dedup is a COORDINATION fact, not KV-truth: it reads the run's
+  // landed retrievals (`config.cohortLanded`), so a URL/query any agent already
+  // fetched is refused once — whoever paid — and a call that was only NUDGED
+  // (its result never landed) is not counted, so a retry after a settle reject
+  // is not blinded.
   {
     name: 'url_dedup',
     tools: ['fetch_page'],
-    reject: (args, history) => {
+    reject: (args, _agent, _toolName, config) => {
       const url = args.url as string | undefined;
-      return !!url && history.some(h =>
-        h.name === 'fetch_page' && parseHistoryArgs(h.args).url === url,
-      );
+      return !!url && (config.cohortLanded?.('fetch_page') ?? []).some((a) => a.url === url);
     },
     message: 'This URL was already fetched. Try a different source.',
   },
   {
     name: 'query_dedup',
     tools: ['web_search'],
-    reject: (args, history) => {
+    reject: (args, _agent, _toolName, config) => {
       const query = (args.query as string | undefined)?.toLowerCase();
-      return !!query && history.some(h => {
-        const prev = (parseHistoryArgs(h.args).query as string | undefined)?.toLowerCase();
-        return h.name === 'web_search' && prev === query;
-      });
+      return !!query && (config.cohortLanded?.('web_search') ?? []).some(
+        (a) => (a.query as string | undefined)?.toLowerCase() === query,
+      );
     },
     message: 'This query was already searched. Refine your search or report findings.',
   },
@@ -383,6 +380,15 @@ export interface PolicyConfig {
    * grants (fail-closed: every protected tool denied).
    */
   grants?: ReadonlySet<string>;
+  /**
+   * The RUN's landed retrievals of a tool, cohort-wide: the parsed args of
+   * every agent's `outcome === 'toolResult'` calls of `tool`. The pool injects
+   * a live view (see `agent-pool.ts`); coordination-dedup guards read it so a
+   * retrieval the run already paid for is refused once — whoever paid — while a
+   * call that was only nudged (its result never landed) is never counted.
+   * Absent outside a pool.
+   */
+  cohortLanded?: (tool: string) => Record<string, unknown>[];
 }
 
 // ── Default policy ──────────────────────────────────────────
@@ -634,13 +640,12 @@ export class DefaultAgentPolicy implements AgentPolicy {
   }
 
   private _checkGuards(tc: ParsedToolCall, agent: Agent, config: PolicyConfig): ProduceAction | null {
-    const lineageHistory = agent.walkAncestors(a => a.toolHistory);
     let toolArgs: Record<string, unknown>;
     try { toolArgs = JSON.parse(tc.arguments); } catch { toolArgs = {}; }
     for (const guard of this._guards) {
       const applies = guard.tools === '*' || guard.tools.includes(tc.name);
       if (!applies) continue;
-      if (guard.reject(toolArgs, lineageHistory, agent, tc.name, config)) {
+      if (guard.reject(toolArgs, agent, tc.name, config)) {
         return { type: 'nudge', message: guard.message, guard: guard.name };
       }
     }

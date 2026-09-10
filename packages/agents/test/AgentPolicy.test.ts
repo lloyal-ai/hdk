@@ -2,12 +2,23 @@ import { describe, it, expect } from 'vitest';
 import { DefaultAgentPolicy, defaultToolGuards } from '../src/AgentPolicy';
 import { ContextPressure } from '../src/pressure';
 import type { PolicyConfig } from '../src/AgentPolicy';
-import { Agent } from '../src/Agent';
+import { Agent, landedArgs } from '../src/Agent';
+import type { ToolHistoryEntry } from '../src/Agent';
 import { createMockBranch } from './helpers/mock-branch';
 
 import { FMT } from './helpers/format-config';
 
 const BASE_CONFIG: PolicyConfig = { maxTurns: 20, terminalToolName: 'report', hasNonTerminalTools: true };
+
+/** A cohort history entry as the POOL books it once a result lands (or is
+ *  nudged). Retrieval dedup reads the RUN's retrievals, not one agent's KV. */
+const cohortEntry = (name: string, args: object, outcome: 'toolResult' | 'nudge' | 'recovery' = 'toolResult'): ToolHistoryEntry =>
+  ({ name, args: JSON.stringify(args), resultCells: 0, contextAfterPercent: 100, timestamp: 0, outcome });
+
+/** BASE_CONFIG plus the cohort-retrieval service the pool injects — a live
+ *  `landedArgs` view over the cohort, exactly as `agent-pool.ts` builds it. */
+const cohortConfig = (cohort: ToolHistoryEntry[]): PolicyConfig =>
+  ({ ...BASE_CONFIG, cohortLanded: (tool) => landedArgs(cohort, tool) });
 
 function makeAgent(overrides?: { toolCallCount?: number; turns?: number; toolHistory?: Array<{ name: string; args: string }> }) {
   const branch = createMockBranch();
@@ -16,7 +27,7 @@ function makeAgent(overrides?: { toolCallCount?: number; turns?: number; toolHis
   for (let i = 0; i < (overrides?.toolCallCount ?? 0); i++) a.incrementToolCalls();
   for (let i = 0; i < (overrides?.turns ?? 0); i++) a.incrementTurns();
   for (const h of overrides?.toolHistory ?? []) {
-    a.recordToolResult({ name: h.name, args: h.args, resultCells: 100, contextAfterPercent: 80, timestamp: 0 });
+    a.recordToolResult({ name: h.name, args: h.args, resultCells: 100, contextAfterPercent: 80, timestamp: 0, outcome: 'toolResult' });
   }
   return a;
 }
@@ -109,24 +120,48 @@ describe('DefaultAgentPolicy', () => {
   });
 
   describe('tool guards', () => {
-    it('rejects fetch_page with duplicate URL in lineage', () => {
-      const a = makeAgent({
-        toolCallCount: 2,
-        toolHistory: [{ name: 'fetch_page', args: JSON.stringify({ url: 'https://example.com' }) }],
-      });
+    it('rejects fetch_page the cohort already landed', () => {
+      const a = makeAgent({ toolCallCount: 2 });
+      const cohort = [cohortEntry('fetch_page', { url: 'https://example.com' })];
       const tc = { name: 'fetch_page', arguments: JSON.stringify({ url: 'https://example.com' }), id: 'c1' };
-      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), cohortConfig(cohort));
       expect(action.type).toBe('nudge');
     });
 
     it('allows fetch_page with new URL', () => {
-      const a = makeAgent({
-        toolCallCount: 2,
-        toolHistory: [{ name: 'fetch_page', args: JSON.stringify({ url: 'https://other.com' }) }],
-      });
+      const a = makeAgent({ toolCallCount: 2 });
+      const cohort = [cohortEntry('fetch_page', { url: 'https://other.com' })];
       const tc = { name: 'fetch_page', arguments: JSON.stringify({ url: 'https://example.com' }), id: 'c1' };
-      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), cohortConfig(cohort));
       expect(action.type).toBe('tool_call');
+    });
+
+    // The dedup fact is the RUN's, not one branch's KV: a URL a SIBLING landed
+    // must dedup even though THIS agent never fetched it, and a call that was
+    // only NUDGED (its result never landed) is not a receipt.
+    it('rejects a fetch a SIBLING landed, though this agent never fetched it', () => {
+      const a = makeAgent({ toolCallCount: 2 }); // empty own history
+      const cohort = [cohortEntry('fetch_page', { url: 'https://sib.com' })];
+      const tc = { name: 'fetch_page', arguments: JSON.stringify({ url: 'https://sib.com' }), id: 'c1' };
+      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), cohortConfig(cohort));
+      expect(action.type).toBe('nudge');
+    });
+
+    it('does NOT reject a retrieval the cohort only NUDGED — a nudge is not a receipt', () => {
+      const a = makeAgent({ toolCallCount: 2 });
+      a.recordToolResult(cohortEntry('fetch_page', { url: 'https://x.com' }, 'nudge'));
+      const cohort = [...a.toolHistory]; // the pool's cohort includes self
+      const tc = { name: 'fetch_page', arguments: JSON.stringify({ url: 'https://x.com' }), id: 'c1' };
+      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), cohortConfig(cohort));
+      expect(action.type).toBe('tool_call');
+    });
+
+    it('rejects a web_search query the cohort already landed', () => {
+      const a = makeAgent({ toolCallCount: 2 });
+      const cohort = [cohortEntry('web_search', { query: 'Same Query' })];
+      const tc = { name: 'web_search', arguments: JSON.stringify({ query: 'same query' }), id: 'c1' };
+      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), cohortConfig(cohort));
+      expect(action.type).toBe('nudge');
     });
 
     it('allows web_research without prior tool calls', () => {

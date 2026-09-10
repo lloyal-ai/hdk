@@ -36,7 +36,7 @@ describe('fetch_page on a PDF', () => {
     const fetchPage = ability.tools.find((t) => t.name === 'fetch_page')!;
     const r = (await run(function* () {
       yield* Trace.set(new NullTraceWriter());
-      return yield* fetchPage.execute({ url: 'https://example.com/paper.pdf' }, { agentId: 1 } as ToolContext);
+      return yield* fetchPage.execute({ url: 'https://example.com/paper.pdf' }, {} as ToolContext);
     })) as { error?: string };
     expect(r.error).toBe('This is a PDF, which fetch_page cannot read. Ask the user to attach the file to the conversation.');
   });

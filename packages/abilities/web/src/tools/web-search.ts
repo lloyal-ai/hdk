@@ -92,17 +92,9 @@ export class WebSearchTool extends Tool<{ query: string }> {
     const query = args.query?.trim();
     if (!query) return { error: "query must not be empty" };
 
-    // Cross-agent dedup: another worker in this pool already issued this query
-    const queryLower = query.toLowerCase();
-    if (context?.peerHistory?.some(h => {
-      if (h.name !== 'web_search') return false;
-      try {
-        const prev = (JSON.parse(h.args) as { query?: string }).query?.toLowerCase();
-        return prev === queryLower;
-      } catch { return false; }
-    })) {
-      return { error: 'Resource unavailable. Try a different query.' };
-    }
+    // Cross-agent dedup is the run's concern, not this tool's: the `query_dedup`
+    // guard refuses a query the cohort already LANDED (never one merely nudged),
+    // before this tool is ever dispatched.
 
     const provider = this._provider;
     const topN = this._topN;

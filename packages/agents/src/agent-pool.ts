@@ -5,6 +5,7 @@ import type { Attachment } from '@lloyal-labs/media';
 import { buildTurnDelta } from '@lloyal-labs/sdk';
 import { Ctx, Store, Trace, TraceParent, GrantStoreCtx, WindDown, CancelAgent, Pause, Attachments, Ingress } from './context';
 import { useTraceScope } from './trace-scope';
+import { landedArgs } from './Agent';
 import type { Agent } from './Agent';
 import { DefaultAgentPolicy } from './AgentPolicy';
 import type { PolicyConfig } from './AgentPolicy';
@@ -140,10 +141,15 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     if (policy.recoveryBudget !== undefined) requireInteger('policy.recoveryBudget', policy.recoveryBudget, 1);
     if (opts.maxConcurrentTools !== undefined) requireInteger('maxConcurrentTools', opts.maxConcurrentTools, 1);
 
-    const config: PolicyConfig = { maxTurns, terminalToolName, hasNonTerminalTools, protectedTools, grants };
-
     // ── The pool's state ─────────────────────────────────────────
+    // `agents` is declared before `config` so the retrieval ledger can close
+    // over the live array: a coordination fact is the RUN's, read fresh each
+    // guard check across every agent's landed history (self included).
     const agents: Agent[] = [];
+    const config: PolicyConfig = {
+      maxTurns, terminalToolName, hasNonTerminalTools, protectedTools, grants,
+      cohortLanded: (tool) => landedArgs(agents.flatMap((a) => a.toolHistory), tool),
+    };
     const pending: Pending = emptyPending();
     const ladder: Ladder = { consecutiveFatalRc: 0, backendSuspect: false };
     const counters = { warmPrefillCalls: 0, warmPrefillBranches: 0 };

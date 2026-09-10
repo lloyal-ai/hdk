@@ -17,7 +17,8 @@ import { MockSessionContext, createMockSdk } from '../../sdk/src/testing.js';
 import type { ChatFormat, ParseChatOutputOptions, ParseChatOutputResult } from '@lloyal-labs/sdk';
 import { useAgentPool } from '../src/agent-pool';
 import { parallel } from '../src/orchestrators';
-import { Ctx, Store, Events, Trace, WindDown, Attachments, Ingress } from '../src/context';
+import { agentPool } from '../src/create-agent-pool';
+import { Ctx, Store, Events, Trace, WindDown, Attachments, Ingress, CallingAgent } from '../src/context';
 import { MemoryAttachmentStore } from './helpers/memory-store';
 import { rawIngress } from './helpers/raw-ingress';
 import { mkdtempSync } from 'node:fs';
@@ -25,7 +26,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Tool, TOOL_IMAGE_ERROR_KEY } from '../src/Tool';
 import type { AgentPolicy } from '../src/AgentPolicy';
-import type { AgentPoolResult, AgentEvent, ToolContext } from '../src/types';
+import type { AgentPoolResult, AgentEvent, ToolContext, JsonSchema } from '../src/types';
 import type { Agent } from '../src/Agent';
 import { CapturingTraceWriter } from './helpers/capturing-trace';
 import { MockTool } from './helpers/mock-tool';
@@ -2620,6 +2621,89 @@ describe('assets available to the run', () => {
       contentStore: store, pruneOnReturn: true, trace: true,
     });
     expect(result.agents[0].result).toBe('done');
+    expect(spy.capturedContexts).toHaveLength(1);
+    expect(spy.capturedContexts[0].attachments).toEqual([doc]);
+  });
+
+  it('a settle rejection books the nudge, not the call: the retry lands, and the agent attends over exactly one result', async () => {
+    // The page is priced over a tiny headroom on the first call; the policy
+    // nudges and frees capacity; the agent asks for the same page again.
+    const store = new MemoryAttachmentStore();
+    const page = imageRoot(store);
+    let ctxRef: MockSessionContext | undefined;
+    const pol = stubPolicy({
+      shouldExit: () => false,
+      onProduced: (_a, parsed) => {
+        if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
+        if (parsed.content) return { type: 'free_text_return', content: parsed.content };
+        return { type: 'idle', reason: 'free_text_stop' };
+      },
+      // Capacity made available: the same page now prices within headroom.
+      onSettleReject: () => { if (ctxRef) ctxRef.mockImageCells = 16; return { type: 'nudge', message: 'Too large now; try again.' }; },
+    });
+    const { ctx, result, events } = await runPool({
+      // Headroom (nCtx − cellsUsed − the 1024 soft limit) is ~2000: far above
+      // the nudge, far below the page. The PAGE is what does not fit, priced by
+      // the projector's geometry. Starving the context instead would leave the
+      // nudge unaffordable too — the pool spends the difference on its own spine
+      // and decodes before the stall, and `scheduler.ts` samples headroom ONCE
+      // per tick — so the agent would be dropped rather than nudged.
+      nCtx: MEDIA_TEST_NCTX, cellsUsed: MEDIA_TEST_NCTX - 1024 - 2000,
+      mutateCtx: (c) => { ctxRef = c; c.mockImageCells = 4000; },
+      forkTokenQueues: [[1, STOP, 2, STOP, STOP]],
+      parseChatOutputFn: calls('view', 'view'), policy: pol,
+      tools: new Map<string, Tool>([['view', new RootTool([page], 'view')]]),
+      contentStore: store, trace: true,
+    });
+    expect(ctx.multimodalPrefills).toHaveLength(1);
+    expect(announced(events)).toEqual([[page]]);
+    // The nudge is booked as a nudge; only the retry is a landed call.
+    const agent = result.agents[0].agent;
+    expect(agent.toolHistory.filter((h) => h.name === 'view')
+      .map((h) => (h as { outcome?: string }).outcome)).toEqual(['nudge', 'toolResult']);
+    expect(agent.attendedResults('view')).toHaveLength(1);
+  });
+
+  // Phase 2's red test, on the record now. Each pool copies its own `available`,
+  // so a child's admissions never reach the run that spawned it. `it.fails`
+  // keeps it in the suite and announces itself when the scorer and the asset
+  // list go ambient and a child inherits both by scope.
+  it.fails('a root admitted inside a nested pool is available to the run that spawned it', async () => {
+    // A tool that delegates: it opens a child pool from the calling agent's
+    // branch with the assets it can see. The child admits a document root.
+    // The parent's next call must see that root — assets belong to the run.
+    const store = new MemoryAttachmentStore();
+    const doc = documentRoot(store);
+    const spy = new SpyTool('look');
+    class NestTool extends Tool<Record<string, never>> {
+      readonly name = 'nest';
+      readonly description = 'delegate once';
+      readonly parameters: JsonSchema = { type: 'object', properties: {} };
+      *execute(_args: Record<string, never>, context?: ToolContext): Operation<unknown> {
+        const caller = yield* CallingAgent.get();
+        const child = yield* agentPool({
+          orchestrate: parallel([{ systemPrompt: 'sys', content: 'child task' }]),
+          tools: [new RootTool([doc], 'open')],
+          policy: policy(),
+          parent: caller?.branch,
+          attachments: context?.attachments,
+        });
+        return { agents: child.agents.length };
+      }
+    }
+    const byToken = (raw: string) =>
+      raw.includes('t3') ? { content: '', reasoningContent: '', toolCalls: [{ name: 'open', arguments: '{}', id: 'c3' }] }
+      : raw.includes('t2') ? { content: '', reasoningContent: '', toolCalls: [{ name: 'look', arguments: '{}', id: 'c2' }] }
+      : raw.includes('t1') ? { content: '', reasoningContent: '', toolCalls: [{ name: 'nest', arguments: '{}', id: 'c1' }] }
+      : { content: 'done', reasoningContent: '', toolCalls: [] };
+    await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      // parent: nest (t1), then look (t2), then done; child: open (t3), then done.
+      forkTokenQueues: [[1, STOP, 2, STOP, STOP], [STOP], [3, STOP, STOP]],
+      parseChatOutputFn: byToken, policy: policy(),
+      tools: new Map<string, Tool>([['nest', new NestTool()], ['look', spy]]),
+      contentStore: store, trace: true,
+    });
     expect(spy.capturedContexts).toHaveLength(1);
     expect(spy.capturedContexts[0].attachments).toEqual([doc]);
   });
