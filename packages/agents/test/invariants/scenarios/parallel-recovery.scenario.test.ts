@@ -27,7 +27,7 @@ function idleNoResultPolicy(
 ): AgentPolicy {
   return {
     onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-    onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+    hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
     onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),
     shouldExit: () => false,
     recoveryShape: shape,
@@ -44,7 +44,7 @@ const recoveryPrefills = (r: PoolRun) =>
 const recoveryBatches = (r: PoolRun): number[] =>
   r.traceEvents
     .filter((e): e is Extract<typeof e, { type: 'tool:settle_order' }> => e.type === 'tool:settle_order')
-    .map(e => e.batch.filter(b => b.callId.startsWith('recovery:')).length)
+    .map(e => e.batch.filter(b => b.kind === 'recovery').length)
     .filter(n => n > 0);
 const recoveryProduce = (r: PoolRun) =>
   r.traceEvents.filter(e => e.type === 'pool:recoveryProduce');
@@ -235,7 +235,7 @@ describe('scenario: parallel recovery (in-loop via SETTLE)', () => {
     // then keeps voting kill every tick; the extracting agent must ride through.
     const alwaysExit: AgentPolicy = {
       onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-      onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),
       shouldExit: () => true,
       recoveryShape: 'parallel',

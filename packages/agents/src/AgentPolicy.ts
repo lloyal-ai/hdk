@@ -1,15 +1,16 @@
 import type { Agent } from './Agent';
-import type { ToolRetryError } from './Tool';
+import type { ToolLifecycleHooks } from './Tool';
 import { ContextPressure } from './pressure';
 import type { ParsedToolCall } from '@lloyal-labs/sdk';
 import type { PressureThresholds } from './types';
 import { renderTemplate } from './prompt';
+import { retryUpTo } from './hooks';
 
-// Recovery-phase KV accounting constants. These size the hardLimit reserve
-// allocation for a recovery turn: the prefill cost of the recovery prompt +
-// room for llama.cpp's batch workspace. Used to compute the budget
-// communicated to the model in its recovery prompt.
-export const RECOVERY_PREFILL_OVERHEAD = 150;
+// Recovery-phase accounting constants. These size the reserve a recovery turn
+// needs out of the hard limit: the recovery prompt's own cost, plus room for
+// the decoder's batch workspace. Used to compute the budget communicated to
+// the model in its recovery prompt.
+export const RECOVERY_PROMPT_OVERHEAD = 150;
 export const BATCH_BUFFER = 512;
 
 
@@ -29,111 +30,6 @@ export function tokenBudgetAsWords(budgetTokens: number): number {
   return Math.min(1200, Math.max(10, Math.floor(budgetTokens * 0.7 / 10) * 10));
 }
 
-// ── Declarative tool guards ─────────────────────────────
-
-/**
- * A declarative guard that rejects tool calls based on agent state.
- * Guards are checked in order before any tool is dispatched.
- *
- * `tools` selects which tool calls this guard sees: a `string[]` matches
- * by exact name; the literal `'*'` matches every call (used by the
- * framework-injected authGuard — guards that need to
- * inspect *every* call regardless of tool name).
- *
- * `reject` returns `true` to reject the call with `message`. It receives
- * the parsed args, the calling `agent` (walk its lineage for KV-truth —
- * `agent.attendedResults(tool)` — when a guard needs "already in my context"),
- * `toolName` (so `tools: '*'` guards know which tool they're gating), and the
- * pool-level `config`, which carries pool-resolved state: the protected-tool
- * set, the session's grants, and `cohortAttended` (this pool cohort's attended
- * retrievals, for coordination dedup). Guards that don't need a parameter omit it.
- *
- * `name` is the optional guard identifier surfaced via
- * `ProduceAction.nudge.guard` so the pool can emit per-guard trace
- * events (e.g., `tool:authReject` for `name: 'auth_reject'`). Omit it
- * for guards whose only observable footprint is the resulting
- * `pool:agentNudge` event.
- *
- * @category Agents
- */
-export interface ToolGuard {
-  /** Tool names this guard applies to; `'*'` matches every call. */
-  tools: string[] | '*';
-  /** Return true to reject the call. */
-  reject: (
-    args: Record<string, unknown>,
-    agent: Agent,
-    toolName: string,
-    config: PolicyConfig,
-  ) => boolean;
-  /** Error message sent back to the agent as a tool result. */
-  message: string;
-  /** Optional identifier surfaced via `ProduceAction.nudge.guard`. */
-  name?: string;
-}
-
-/** Default guards for deduplication and recursion discipline */
-export const defaultToolGuards: ToolGuard[] = [
-  // Framework-injected authGuard. Runs FIRST so a
-  // protected-tool rejection fires before any dedup guard — the pool
-  // emits a structured `tool:authReject` event keyed off
-  // `ProduceAction.nudge.guard === 'auth_reject'` for security
-  // observability. Reads/gather tools are OPEN: the guard only fires for
-  // a `protected` tool (in `config.protectedTools`) the session has not
-  // been granted (`config.grants`). When no tools are protected — the
-  // common case — this is a no-op.
-  {
-    name: 'auth_reject',
-    tools: '*',
-    reject: (_args, _agent, toolName, config) => {
-      if (!config.protectedTools?.has(toolName)) return false; // open by default
-      return !config.grants?.has(toolName); // protected → deny unless granted
-    },
-    message:
-      'This action is protected and requires authorization that has not been ' +
-      'granted for this session. Use the available read tools to gather what ' +
-      'you can, and report what blocks completion.',
-  },
-  // Retrieval dedup is a COORDINATION fact, not KV-truth: it reads this pool
-  // cohort's attended retrievals (`config.cohortAttended`). An attempt any agent
-  // in the pool already made — content or error alike — is refused once, and a
-  // call that was only NUDGED (its result never reached the KV) is not counted,
-  // so a retry after a settle reject is not blinded.
-  {
-    name: 'url_dedup',
-    tools: ['fetch_page'],
-    reject: (args, _agent, _toolName, config) => {
-      // Normalize BOTH sides the way the tool does before it fetches
-      // (fetch-page.ts trims), or a whitespace-only variant of an attended URL
-      // slips the guard and fetches the same resource twice. The guard must
-      // normalize at least as aggressively as the tool.
-      const url = trimmed(args.url);
-      return !!url && (config.cohortAttended?.('fetch_page') ?? []).some((a) => trimmed(a.url) === url);
-    },
-    message: 'This URL was already attempted in this run. Try a different source.',
-  },
-  {
-    name: 'query_dedup',
-    tools: ['web_search'],
-    reject: (args, _agent, _toolName, config) => {
-      // web-search.ts trims before searching; the guard also folds case so a
-      // capitalization-only variant is one query. Normalize both sides alike.
-      const query = trimmed(args.query)?.toLowerCase();
-      return !!query && (config.cohortAttended?.('web_search') ?? []).some(
-        (a) => trimmed(a.query)?.toLowerCase() === query,
-      );
-    },
-    message: 'This search was already attempted in this run. Refine the query or report your findings.',
-  },
-];
-
-/** A string arg trimmed as the web tools trim it, or undefined when absent or
- *  not a string. The dedup guards normalize both the current and attended args
- *  through here so a whitespace-only variant is not treated as a new resource. */
-function trimmed(v: unknown): string | undefined {
-  return typeof v === 'string' ? v.trim() : undefined;
-}
-
 // ── Action types ────────────────────────────────────────────
 
 /**
@@ -141,14 +37,9 @@ function trimmed(v: unknown): string | undefined {
  * @category Agents
  */
 export type IdleReason =
-  | 'returned'
-  | 'pressure_critical'
   | 'pressure_softcut'
-  | 'pressure_settle_reject'
-  | 'settle_stall_break'
   | 'max_turns'
-  | 'free_text_stop'
-  | 'tool_error';
+  | 'free_text_stop';
 
 /**
  * Action returned by policy.onProduced — tells the pool what to do.
@@ -157,20 +48,10 @@ export type IdleReason =
 export type ProduceAction =
   | { type: 'tool_call'; tc: ParsedToolCall }
   | { type: 'return'; result: string }
-  /** `guard` carries the identifier of the rejecting `ToolGuard` — used to
-   *  route `auth_reject` rejections to the `tool:authReject` trace event.
-   *  Absent for nudges not produced by a guard. */
-  | { type: 'nudge'; message: string; guard?: string }
+  /** Replace the call with `message`, which the model reads in the result's place. */
+  | { type: 'nudge'; message: string }
   | { type: 'idle'; reason: IdleReason }
   | { type: 'free_text_return'; content: string };
-
-/**
- * Action returned by policy.onSettleReject.
- * @category Agents
- */
-export type SettleAction =
-  | { type: 'nudge'; message: string }
-  | { type: 'idle'; reason: IdleReason };
 
 /**
  * Action returned by policy.onRecovery — what to do with an agent
@@ -181,31 +62,52 @@ export type RecoveryAction =
   | { type: 'extract'; prompt: { system: string; user: string } }
   | { type: 'skip' };
 
+// ── The harness's part of the tool lifecycle: data ─────────
+
 /**
- * Action returned by policy.onToolRetry — what to do when a tool throws
- * {@link ToolRetryError} (transient failure, e.g. provider rate-limited).
- *
- * `retry` parks the agent (`awaiting_tool`, skipped by PRODUCE at zero
- * cost — no turns, no tokens, no KV) and re-executes the same call after
- * `afterMs` (defaults to the error's own `retryAfterMs` estimate).
- * `fail` settles `message` (or the pool's directive default) as the tool
- * result so the model can pivot.
+ * Whose attended calls a gate counts: the agent's own lineage (itself and, by
+ * the fork, its ancestors) or the whole pool cohort.
  *
  * @category Agents
  */
-export type ToolRetryAction =
-  | { type: 'retry'; afterMs?: number }
-  | { type: 'fail'; message?: string };
+export type GuardScope = 'lineage' | 'cohort';
+
+/**
+ * A harness's overrides of declared gates, by gate name: `false` skips the
+ * gate, `{ scope }` re-scopes it. JSON-shaped, so it lives in harness config
+ * and rides into the policy as a value. The framework's own gates are never
+ * subject to it.
+ *
+ * @category Agents
+ */
+export type GuardOverrides = Readonly<Record<string, false | { scope: GuardScope }>>;
+
+/**
+ * The one runtime check of a {@link GuardOverrides} value, for the config rung
+ * that reads it from YAML or JSON.
+ *
+ * @category Agents
+ */
+export function isGuardOverrides(v: unknown): v is GuardOverrides {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
+  return Object.values(v as Record<string, unknown>).every((o) =>
+    o === false ||
+    (typeof o === 'object' && o !== null && !Array.isArray(o) &&
+      ((o as { scope?: unknown }).scope === 'lineage' || (o as { scope?: unknown }).scope === 'cohort')),
+  );
+}
 
 // ── Policy interface ────────────────────────────────────────
 
 /**
- * Agent lifecycle policy — injected strategy for pressure, nudge,
- * recursion, report timing, and result quality decisions.
+ * Agent lifecycle policy — the harness's per-agent decisions: what a
+ * finished turn becomes, when an agent exits, how a reaped agent recovers,
+ * the pressure thresholds, and its part of the tool lifecycle (as data).
  *
- * The pool consults the policy at PRODUCE and SETTLE boundaries.
- * Policy sees the agent's full state (status, tool history, pressure,
- * grammar config) and returns an action. Pool executes the action.
+ * The pool consults the policy about ONE agent at a time, given a pressure
+ * value; it never sees the cohort. Gates are not the policy's to run: the
+ * pool runs every gate — the framework's, the called tool's, the policy's —
+ * before `onProduced` is asked, so a refused call never reaches it.
  *
  * @category Agents
  */
@@ -213,9 +115,9 @@ export interface AgentPolicy {
   /**
    * PRODUCE phase: agent hit stop token — what should happen?
    *
-   * Called after parseChatOutput extracts content and/or tool calls.
-   * Policy decides based on: parsed output, pressure, agent history,
-   * terminal tool config, grammar constraints.
+   * Called after parseChatOutput extracts content and/or tool calls, and after
+   * the gates admitted the call (if any). Policy decides based on: parsed
+   * output, pressure, agent history, terminal tool config, grammar constraints.
    */
   onProduced(
     agent: Agent,
@@ -223,38 +125,6 @@ export interface AgentPolicy {
     pressure: ContextPressure,
     config: PolicyConfig,
   ): ProduceAction;
-
-  /**
-   * SETTLE stall-break: consulted when deferred tool results have no
-   * active siblings to free KV — the last-resort moment where a policy
-   * decides whether to nudge the agent (replacing the oversized result
-   * with a compact error payload) or drop it and let recovery extract.
-   *
-   * In normal operation, SETTLE defers oversized items across ticks.
-   * Siblings completing (parallel) or the spine growing (chain) restores
-   * headroom on subsequent ticks — this hook fires only when all agents
-   * are `awaiting_tool`/idle and deferral can't resolve on its own.
-   *
-   * Return `{type: 'nudge'}` to replace the oversized item with a compact
-   * error payload (carries the budget in its message). Return
-   * `{type: 'idle', reason: 'pressure_settle_reject'}` to drop the agent.
-   * If the hook is absent, the pool falls back to `settle_stall_break`.
-   *
-   * OPTIONAL, and that is the contract the pool actually implements:
-   * `agent-pool.ts:2184` calls it as `policy.onSettleReject?.(…)`. Declaring it
-   * required contradicted both that call site and the sentence above, and made
-   * every policy double that legitimately omits it fail to typecheck.
-   */
-  onSettleReject?(
-    agent: Agent,
-    /** KV CELLS the pending result will cost — not tokens. A media result's
-     *  cost is measured, never a token length; this used to be handed
-     *  `prefillTokens.length`, which for that rail is `[]` and reported a
-     *  confident zero. */
-    resultCells: number,
-    pressure: ContextPressure,
-    config: PolicyConfig,
-  ): SettleAction;
 
   /**
    * DISPATCH phase: should this tool call explore or exploit?
@@ -282,11 +152,28 @@ export interface AgentPolicy {
   shouldExit?(agent: Agent, pressure: ContextPressure): boolean;
 
   /**
-   * KV pressure thresholds for ContextPressure construction.
-   * Pool reads this once at setup. Optional — defaults to
-   * ContextPressure.DEFAULT_SOFT_LIMIT / DEFAULT_HARD_LIMIT.
+   * Pressure thresholds for `ContextPressure`. The pool reads this once at
+   * setup. Optional — defaults to ContextPressure.DEFAULT_SOFT_LIMIT /
+   * DEFAULT_HARD_LIMIT.
    */
   readonly pressureThresholds?: PressureThresholds;
+
+  /**
+   * The harness's contribution to the tool lifecycle, as data: values of the
+   * one contract every tool declares its own in ({@link ToolLifecycleHooks}).
+   * At each position the pool walks the called tool's hooks, then these in
+   * order, then the framework's defaults; the first concrete decision wins.
+   * Optional — a policy with no opinion about tool calls contributes nothing,
+   * and still gets authorization and every tool's own gates.
+   */
+  readonly hooks?: readonly ToolLifecycleHooks[];
+
+  /**
+   * The harness's overrides of declared gates, by name ({@link GuardOverrides}).
+   * Applied to the tool's gates and to this policy's; never to the framework's.
+   * Optional.
+   */
+  readonly guardOverrides?: GuardOverrides;
 
   /**
    * Reset per-tick state (e.g. trailing stop flags).
@@ -327,29 +214,16 @@ export interface AgentPolicy {
   onRecovery?(agent: Agent, pressure: ContextPressure, budgetTokens?: number): RecoveryAction;
 
   /**
-   * Transient tool failure (the tool threw {@link ToolRetryError}).
-   * Decide whether to park-and-retry or settle a failure result. The tool
-   * supplies a `retryAfterMs` estimate on the error; the policy may override
-   * it (`afterMs`) or refuse to wait at all — e.g. when the time budget
-   * can't afford a park.
-   *
-   * Absent → pool default: one retry at the error's own delay, then fail.
-   *
-   * @param attempt - 1 on the first failure of a call, 2 after one retry, …
-   */
-  onToolRetry?(agent: Agent, tool: string, error: ToolRetryError, attempt: number): ToolRetryAction;
-
-  /**
    * Recovery reap shape.
    * `'staggered'` (default) — recover one agent at a time (serial recovery),
    * pruning each before the next so every report gets the full freed headroom
    * (uncapped, lossless; the high-effort path).
    * `'parallel'` — recover killed-without-result agents IN-LOOP: the recovery turn
    * is bin-packed into the tick loop alongside live siblings, capped at a per-recovery
-   * budget `b` (the prompt's word advisory + the pool's token-stop), and SETTLE
-   * admits only as many reports as fit `(prompt + b)` in current KV — the rest wave
-   * to the next tick once the admitted ones prune. Wind-down always uses this shape
-   * regardless of the setting. Absent → `'staggered'`.
+   * budget `b` (the prompt's word advisory + the pool's token-stop), and only as many
+   * reports are admitted as fit `(prompt + b)` in the current headroom — the rest wait
+   * for the next tick, once the admitted ones are pruned. Wind-down always uses this
+   * shape regardless of the setting. Absent → `'staggered'`.
    */
   recoveryShape?: 'staggered' | 'parallel';
 
@@ -365,56 +239,25 @@ export interface AgentPolicy {
    * stop token or when the pressure turns critical.
    *
    * Absent → adaptive for cohort turns (a fair share of current headroom across
-   * the agents that will still hold KV, clamped to a [min, max]) and 2048 for a
-   * voluntary report.
+   * the agents that will still hold context, clamped to a [min, max]) and 2048
+   * for a voluntary report.
    */
   readonly recoveryBudget?: number;
 }
 
 /**
- * Pool-level configuration passed to policy methods.
+ * Pool-level facts handed to `onProduced`: the turn cap, the terminal tool
+ * (if any), and whether the pool has tools besides it.
  * @category Agents
  */
 export interface PolicyConfig {
   maxTurns: number;
   terminalToolName?: string;
   hasNonTerminalTools: boolean;
-  /**
-   * Tool names this pool declares `protected` (gathered from each
-   * {@link Tool.protected} flag). The authGuard gates only these; every
-   * other tool is open. Resolved once at pool setup. Undefined/empty when
-   * no tool in the pool is protected (the common case).
-   */
-  protectedTools?: ReadonlySet<string>;
-  /**
-   * Protected tool names the session currently holds a grant for — read
-   * from {@link GrantStoreCtx} at pool setup. The authGuard allows a
-   * protected tool iff its name is in this set. Undefined/empty = no
-   * grants (fail-closed: every protected tool denied).
-   */
-  grants?: ReadonlySet<string>;
-  /**
-   * This pool cohort's attended retrievals of a tool: the parsed args of every
-   * agent's calls of `tool` whose result reached the KV, content and error
-   * results alike, never a nudge. Read from this pool's roster at each check;
-   * pool-scoped, not run-scoped. A live read on an otherwise resolved-once
-   * record — the tool-lifecycle contract replaces it with an argument at the
-   * check. Absent outside a pool.
-   */
-  cohortAttended?: (tool: string) => Record<string, unknown>[];
 }
 
 // ── Default policy ──────────────────────────────────────────
 
-/**
- * Default policy replicating the current inline if-logic from agent-pool.ts.
- *
- * This is a 1:1 behavioral match — same pressure thresholds, same nudge
- * logic, same terminal tool interception. Extracted for testability and
- * future customization.
- *
- * @category Agents
- */
 /**
  * Configuration for {@link DefaultAgentPolicy}.
  * @category Agents
@@ -422,10 +265,6 @@ export interface PolicyConfig {
 export interface DefaultAgentPolicyOpts {
   /** Min non-terminal tool calls before a return is accepted without nudge. @default 2 */
   minToolCallsBeforeReturn?: number;
-  /** Replace default tool guards entirely. */
-  guards?: ToolGuard[];
-  /** Append additional guards to the defaults. */
-  extraGuards?: ToolGuard[];
   /**
    * Explore/exploit thresholds — both axes checked independently.
    * Either falling below its threshold flips the policy into exploit mode
@@ -433,13 +272,13 @@ export interface DefaultAgentPolicyOpts {
    * scorer). Explore mode preserves the agent's local-query ordering.
    */
   shouldExplore?: {
-    /** Minimum fraction of KV capacity (0–1) that must remain free for
+    /** Minimum fraction of context capacity (0–1) that must remain free for
      *  explore mode. Checks `pressure.percentAvailable / 100`. Below this
      *  fraction, exploit mode kicks in. @default 0.4 */
     context?: number;
     /** Maximum fraction of the time soft limit (0–1) that can be consumed
      *  before exploit mode kicks in. When `elapsed / timeSoftLimit >= time`,
-     *  `shouldExplore` returns false regardless of KV headroom. Only
+     *  `shouldExplore` returns false regardless of context headroom. Only
      *  applies when `budget.time.softLimit` is set. @default 0.5 */
     time?: number;
   };
@@ -461,30 +300,44 @@ export interface DefaultAgentPolicyOpts {
    *  Same naming pattern for both resource types.
    *  time budget is global across nesting levels (ms since policy creation). */
   budget?: {
-    /** KV context budget (tokens remaining). softLimit = nudge floor, hardLimit = kill floor.
+    /** Context budget (tokens remaining). softLimit = nudge floor, hardLimit = kill floor.
      *  COUPLING (non-obvious): RECOVERY budgets from the `hardLimit` RESERVE, not `softLimit`.
-     *  The recovery budget `b` and the SETTLE admission for an extracting agent draw from
-     *  `remaining − hardLimit` (see {@link AgentPolicy.onRecovery} + the scheduler's `recoveryFor`),
-     *  so recovery may decode the soft reserve down to `hardLimit`. `softLimit` is the model
-     *  NUDGE floor, reserved for downstream work (synth) — raising it nudges EARLIER but does
-     *  NOT shorten recovery reports. (`softLimit` is advisory: it gates the wrap-up nudge +
-     *  tool-result deferral, never a kill; `hardLimit` is the only mechanical floor.) */
+     *  The recovery budget `b` and the admission of an extracting agent's recovery turn draw
+     *  from `remaining − hardLimit` (see {@link AgentPolicy.onRecovery} + the scheduler's
+     *  `recoveryFor`), so recovery may decode the soft reserve down to `hardLimit`. `softLimit`
+     *  is the model NUDGE floor, reserved for downstream work (synth) — raising it nudges
+     *  EARLIER but does NOT shorten recovery reports. (`softLimit` is advisory: it gates the
+     *  wrap-up nudge + tool-result deferral, never a kill; `hardLimit` is the only mechanical
+     *  floor.) */
     context?: { softLimit?: number; hardLimit?: number };
     /** Wall-time budget (ms since policy creation). */
     time?: { softLimit?: number; hardLimit?: number };
   };
   /** Terminal tool name. When set, agents mid-generation of this tool are
    *  protected from shouldExit — the hard limit is deferred until the tool
-   *  call completes naturally or KV pressure forces a kill. */
+   *  call completes naturally or pressure forces a kill. */
   terminalToolName?: string;
-  /** Max park-and-retry attempts per tool call on {@link ToolRetryError}
-   *  before failing the call with a directive result. @default 1 */
+  /** How many times a transient tool failure is retried before the call fails
+   *  with a directive result — this policy's `afterExecute` entry. @default 1 */
   maxToolRetries?: number;
+  /** The harness's tool-lifecycle contributions — see {@link AgentPolicy.hooks}.
+   *  Walked in order, before this policy's own opinions. */
+  hooks?: readonly ToolLifecycleHooks[];
+  /** The harness's gate overrides — see {@link AgentPolicy.guardOverrides}. */
+  guardOverrides?: GuardOverrides;
 }
 
+/**
+ * The default policy: routes a finished turn (no call → free text or idle;
+ * the terminal tool → return, or a nudge to use tools first; over budget → a
+ * report-now nudge, once per tick; else dispatch), exits on critical pressure
+ * or a time hard limit, recovers by extraction, and contributes one entry to
+ * the tool lifecycle: its retry budget and its settle nudge.
+ *
+ * @category Agents
+ */
 export class DefaultAgentPolicy implements AgentPolicy {
   private _minToolCalls: number;
-  private _guards: ToolGuard[];
   private _exploreContext: number;
   private _exploreTime: number;
   private _forceExploit = false;
@@ -497,14 +350,20 @@ export class DefaultAgentPolicy implements AgentPolicy {
   private _startTime: number;
   private _clock: () => number = () => performance.now();
 
+  /**
+   * The harness's hooks in order, then this policy's own opinions as one more
+   * value of the same type: its retry budget (`maxToolRetries`) and its settle
+   * nudge (report now, when the pool has a terminal and the agent has used a
+   * tool). A harness entry therefore beats the class opinion, and the class
+   * opinion beats the framework default.
+   */
+  readonly hooks: readonly ToolLifecycleHooks[];
+  readonly guardOverrides: GuardOverrides | undefined;
+
   constructor(opts?: DefaultAgentPolicyOpts) {
     this._minToolCalls = opts?.minToolCallsBeforeReturn ?? 2;
     this._exploreContext = opts?.shouldExplore?.context ?? 0.4;
     this._exploreTime = opts?.shouldExplore?.time ?? 0.5;
-    this._guards = opts?.guards ?? [
-      ...defaultToolGuards,
-      ...(opts?.extraGuards ?? []),
-    ];
     this._recovery = opts?.recovery ?? null;
     this._recoveryShape = opts?.recoveryShape ?? 'staggered';
     this._recoveryBudget = opts?.recoveryBudget ?? null;
@@ -512,10 +371,24 @@ export class DefaultAgentPolicy implements AgentPolicy {
     this._terminalToolName = opts?.terminalToolName ?? null;
     this._maxToolRetries = opts?.maxToolRetries ?? 1;
     this._startTime = performance.now();
+    this.guardOverrides = opts?.guardOverrides;
+    this.hooks = [...(opts?.hooks ?? []), this._ownHooks()];
   }
 
-  onToolRetry(_agent: Agent, _tool: string, _error: ToolRetryError, attempt: number): ToolRetryAction {
-    return attempt <= this._maxToolRetries ? { type: 'retry' } : { type: 'fail' };
+  /** This policy's opinions about a tool call's life, as data. */
+  private _ownHooks(): ToolLifecycleHooks {
+    return {
+      afterExecute: retryUpTo(this._maxToolRetries),
+      beforeAdmit: ({ agent, pressure, terminal }) => {
+        // Nudge if possible — stateless, no escalation tracking.
+        if (terminal && agent.toolCallCount > 0) {
+          const words = tokenBudgetAsWords(pressure.remaining - pressure.hardLimit);
+          return { type: 'nudge', message: `Tool result too large for the remaining context. Report your findings now within ${words} words.` };
+        }
+        // No terminal tool: the agent cannot be told to report; drop it.
+        return { type: 'drop' };
+      },
+    };
   }
 
   /**
@@ -539,8 +412,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
     this._clock = clock;
   }
 
-  /** KV pressure thresholds for ContextPressure construction.
-   *  Pool reads this once at setup. */
+  /** Pressure thresholds for `ContextPressure`. The pool reads this once at setup. */
   get pressureThresholds(): PressureThresholds {
     return {
       softLimit: this._budget?.context?.softLimit
@@ -572,16 +444,9 @@ export class DefaultAgentPolicy implements AgentPolicy {
     const tc = parsed.toolCalls[0];
     if (!tc) return this._handleNoToolCall(agent, parsed);
     if (this._isTerminalTool(tc, config)) return this._handleTerminalTool(tc, agent, config, pressure);
-    // Guards before budget: when an agent is over budget AND emitting
-    // a tool call the guards already want to reject (duplicate query,
-    // duplicate fetch, delegation-before-research), the guard's specific
-    // message is more actionable than a generic "report now within N
-    // words" turn-limit nudge. Previously, `_isOverBudget` preempted the
-    // guard — stuck agents (same query repeated past maxTurns) saw only
-    // turn-limit nudges instead of the dedup message that named the
-    // actual problem (see trace-1776819196054 agent 65539).
-    const guardRejection = this._checkGuards(tc, agent, config);
-    if (guardRejection) return guardRejection;
+    // Gates ran before this was called (the pool's applier, `hooks.ts`), so a
+    // refused call never reaches the budget: its specific message beats a
+    // generic "report now within N words" nudge (trace-1776819196054 agent 65539).
     if (this._isOverBudget(agent, tc, pressure, config)) return this._handleOverBudget(agent, tc, pressure, config);
     // Normal tool call
     return { type: 'tool_call', tc };
@@ -644,40 +509,12 @@ export class DefaultAgentPolicy implements AgentPolicy {
           ? `Time limit reached — report your findings now within ${words} words.`
           : agent.turns >= config.maxTurns
             ? `Turn limit reached — report your findings now within ${words} words.`
-            : `KV memory pressure — report your findings now within ${words} words.`;
+            : `Context nearly full — report your findings now within ${words} words.`;
         return { type: 'nudge', message: msg };
       }
       return { type: 'tool_call', tc };
     }
     return { type: 'idle', reason: agent.turns >= config.maxTurns ? 'max_turns' : 'pressure_softcut' };
-  }
-
-  private _checkGuards(tc: ParsedToolCall, agent: Agent, config: PolicyConfig): ProduceAction | null {
-    let toolArgs: Record<string, unknown>;
-    try { toolArgs = JSON.parse(tc.arguments); } catch { toolArgs = {}; }
-    for (const guard of this._guards) {
-      const applies = guard.tools === '*' || guard.tools.includes(tc.name);
-      if (!applies) continue;
-      if (guard.reject(toolArgs, agent, tc.name, config)) {
-        return { type: 'nudge', message: guard.message, guard: guard.name };
-      }
-    }
-    return null;
-  }
-
-  onSettleReject(
-    agent: Agent,
-    _resultTokens: number,
-    pressure: ContextPressure,
-    config: PolicyConfig,
-  ): SettleAction {
-    // Nudge if possible — stateless, no escalation tracking
-    if (config.terminalToolName && agent.toolCallCount > 0) {
-      const words = tokenBudgetAsWords(pressure.remaining - pressure.hardLimit);
-      return { type: 'nudge', message: `Tool result too large for remaining KV. Report your findings now within ${words} words.` };
-    }
-    // No terminal tool: kill
-    return { type: 'idle', reason: 'pressure_settle_reject' as IdleReason };
   }
 
   /**
@@ -717,7 +554,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
 
   /**
    * Trailing stop: at most one agent nudged or killed per tick.
-   * The sacrificed agent's findings are extracted and its KV freed,
+   * The sacrificed agent's findings are extracted and its context freed,
    * giving the remaining agents headroom to continue researching.
    * Both flags reset per tick via resetTick(), called by the pool.
    */
@@ -737,15 +574,15 @@ export class DefaultAgentPolicy implements AgentPolicy {
       return { type: 'skip' };
     }
     // Budget recovery's generation can consume: hardLimit reserve minus the
-    // prefill overhead and llama.cpp's batch workspace. Expressed as words
-    // (not tokens) and under-advertised so the model has slack — tokenizers
-    // vary across models but words are universal. Rendered into the prompt
-    // as `it.budget` so authors can reference it via `<%= it.budget %>`.
+    // recovery prompt's own cost and the decoder's batch workspace. Expressed
+    // as words (not tokens) and under-advertised so the model has slack —
+    // tokenizers vary across models but words are universal. Rendered into
+    // the prompt as `it.budget` so authors can reference it via `<%= it.budget %>`.
     // In-loop recovery overrides this with its per-recovery budget `b` (a headroom
     // share across live agents) so the advisory matches the pool's token-stop
     // (graceful self-conclusion, not a guillotine).
     const budgetTokens = budgetTokensOverride
-      ?? Math.max(50, pressure.remaining - RECOVERY_PREFILL_OVERHEAD - BATCH_BUFFER);
+      ?? Math.max(50, pressure.remaining - RECOVERY_PROMPT_OVERHEAD - BATCH_BUFFER);
     const budget = tokenBudgetAsWords(budgetTokens);
     const tctx = { budget };
     return {

@@ -37,7 +37,7 @@ const policy: AgentPolicy = {
   onProduced: (_a, parsed) => parsed.toolCalls.length > 0
     ? { type: 'tool_call', tc: parsed.toolCalls[0] }
     : { type: 'idle', reason: 'free_text_stop' },
-  onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+  hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
   shouldExit: () => false,
   onRecovery: () => ({ type: 'skip' }),
 };

@@ -8,10 +8,12 @@ import {
 import type { Attachment, AttachmentStore, ContentIngress, PreparedContent } from '@lloyal-labs/media';
 import { waitUntilSettled } from './combinators';
 import { Trace, TraceParent, CallingAgent, SpineFmt } from './context';
-import { Agent, type FormatConfig } from './Agent';
-import type { AgentPolicy, ToolRetryAction } from './AgentPolicy';
-import { Tool, ToolRetryError, takeToolMedia, TOOL_CONTEXT_KEY, TOOL_IMAGE_ERROR_KEY } from './Tool';
-import type { Emitter, Transition } from './emit';
+import { Agent, parseHistoryArgs, type FormatConfig } from './Agent';
+import type { AgentPolicy } from './AgentPolicy';
+import { Tool, takeToolMedia, TOOL_CONTEXT_KEY, TOOL_IMAGE_ERROR_KEY } from './Tool';
+import type { Completion } from './Tool';
+import { decideAfterExecute, decideAfterAdmit, type Frame } from './hooks';
+import type { Emitter, Transition, SettleBatch } from './emit';
 import { ContextPressure } from './pressure';
 import { prepareBatch } from './prepare-content';
 import { runReplay } from './replay';
@@ -174,6 +176,9 @@ export interface ExecDeps {
   counters: { warmPrefillCalls: number; warmPrefillBranches: number };
   totals: { toolCalls: number; steps: number };
   policy: AgentPolicy;
+  /** The framework's contributor to a call's lifecycle. With the called tool
+   *  and the policy, what the intake and the booking consult. */
+  frame: Frame;
   pressureOpts: PressureThresholds;
   ingress: ContentIngress;
   attachments: AttachmentStore;
@@ -199,7 +204,7 @@ export class Executor {
     }
     if (S.hold) return out;
 
-    // 1. Admitted prefills: the token rail, the media rail, probes, re-activation.
+    // 1. Admitted prefills: the token rail, the media rail, follow-ups, re-activation.
     const admitted = yield* this.settle(S.prefills, out);
     if (out.fatal) return out;
 
@@ -257,8 +262,10 @@ export class Executor {
   private *settle(items: PrefillItem[], out: Outputs): Operation<Agent[]> {
     const d = this.d;
     const admitted: Agent[] = [];
-    const order: { agentId: number; callId: string; cells: number }[] = [];
-    const probes = new Map<number, string>();
+    const order: SettleBatch = [];
+    // Follow-ups decided at booking, prefilled after the rails (the wire's word
+    // for the placement is `probe`).
+    const followUps = new Map<number, string>();
     // Admissions to announce once the rails are done: `prefilled` rides the
     // bus as well as the trace, and a bus send may suspend, so it leaves the
     // synchronous bookkeeping below and is emitted from this generator.
@@ -279,14 +286,27 @@ export class Executor {
         if (!d.available.some((x) => x.digest === r.digest)) d.available.push(r);
       }
       admitted.push(a);
-      order.push({ agentId: a.id, callId: it.callId, cells });
-      if (it.probe) probes.set(a.id, it.probe);
+      order.push({ agentId: a.id, callId: it.callId, cells, kind: it.kind });
       a.deferAttempts = 0;
       const after = new ContextPressure(d.ctx, d.pressureOpts);
       a.recordToolResult({ name: it.toolName, args: it.args, resultCells: cells,
         contextAfterPercent: after.percentAvailable, timestamp: performance.now(), outcome: it.kind });
-      admissions.push({ kind: 'prefilled', agent: a, cells,
-        role: it.kind === 'recovery' ? 'recovery' : 'toolResult', attachments: refs });
+      admissions.push({ kind: 'prefilled', agent: a, cells, role: it.kind, attachments: refs });
+      // The item is on the ledger: the one moment `afterAdmit` is asked, once
+      // per admitted item (a deferred item asks when it finally books, a
+      // dropped one never). A recovery prompt is the pool's own turn, not a
+      // tool's outcome, and asks nothing. A hook that throws yields no
+      // follow-up and cannot touch the admission above.
+      if (it.kind === 'recovery') return;
+      try {
+        const { decision } = decideAfterAdmit(
+          { agent: a, tool: it.toolName, args: parseHistoryArgs(it.args), outcome: it.kind, result: it.result },
+          { frame: d.frame, tool: d.tools.get(it.toolName), policy: d.policy },
+        );
+        if (decision.type === 'followUp') followUps.set(a.id, decision.message);
+      } catch (err) {
+        d.emit.trace({ kind: 'toolError', agent: a, tool: it.toolName, error: `afterAdmit: ${toError(err).message}` });
+      }
     };
 
     if (tokenItems.length > 0) {
@@ -329,18 +349,18 @@ export class Executor {
 
     if (admitted.length > 0) {
       d.emit.trace({ kind: 'settleOrder', batch: order });
-      const probePairs: [Branch, number[]][] = [];
-      const probeMeta: { agent: Agent; cells: number; text: string }[] = [];
+      const followUpPairs: [Branch, number[]][] = [];
+      const followUpMeta: { agent: Agent; cells: number; text: string }[] = [];
       for (const a of admitted) {
-        const text = probes.get(a.id);
+        const text = followUps.get(a.id);
         if (!text) continue;
         const tokens = d.ctx.tokenizeSync(text, false);
-        probePairs.push([a.branch, tokens]);
-        probeMeta.push({ agent: a, cells: tokens.length, text });
+        followUpPairs.push([a.branch, tokens]);
+        followUpMeta.push({ agent: a, cells: tokens.length, text });
       }
-      if (probePairs.length > 0) {
-        yield* prefill(d.store, probePairs);
-        for (const m of probeMeta) {
+      if (followUpPairs.length > 0) {
+        yield* prefill(d.store, followUpPairs);
+        for (const m of followUpMeta) {
           yield* d.emit.emit({ kind: 'prefilled', agent: m.agent, cells: m.cells, role: 'probe', probeText: m.text });
           m.agent.records.push({ kind: 'probe', text: m.text });
         }
@@ -527,6 +547,12 @@ export class Executor {
       attachments: [...d.available],
     };
 
+    // How the call ended, and which attempt this was — what the intake hands
+    // the frame. The runner records; it does not interpret.
+    const attempt = (retryAttempt ?? 0) + 1;
+    const completed = (completion: Completion): ToolCompletion =>
+      ({ agent, tc, callId, dispatchTraceId, toolT0, attempt, completion });
+
     if (tool?.fanout) {
       // Off the loop fiber. The child runs ONLY execute(); its completion is
       // interpreted on this fiber when the loop next observes.
@@ -543,14 +569,10 @@ export class Executor {
           const result: unknown = yield* scoped(function*() {
             return yield* call(() => fanoutTool.execute(toolArgs, toolContext));
           });
-          d.completed.push({ kind: 'result', agent, tc, callId, dispatchTraceId, toolT0, result });
+          d.completed.push(completed({ kind: 'returned', value: result }));
         } catch (err) {
           // A halt unwinds via ensure, not catch: a halted child pushes nothing.
-          if (err instanceof ToolRetryError) {
-            d.completed.push({ kind: 'retry', agent, tc, callId, dispatchTraceId, toolT0, retryAttempt: (retryAttempt ?? 0) + 1, err });
-          } else {
-            d.completed.push({ kind: 'error', agent, tc, callId, dispatchTraceId, err: toError(err) });
-          }
+          d.completed.push(completed({ kind: 'threw', error: toError(err) }));
         } finally {
           d.wake.add();
         }
@@ -560,7 +582,7 @@ export class Executor {
 
     // Inline: run and interpret now, on this fiber. Required for any tool
     // that decodes on the main context (delegate, plan).
-    let completion: ToolCompletion;
+    let c: ToolCompletion;
     try {
       yield* TraceParent.set(dispatchTraceId);
       yield* Trace.set(tee(agent.id, callId, dispatchTraceId));
@@ -577,20 +599,19 @@ export class Executor {
           }),
         );
       });
-      completion = { kind: 'result', agent, tc, callId, dispatchTraceId, toolT0, result };
+      c = completed({ kind: 'returned', value: result });
     } catch (err) {
-      completion = err instanceof ToolRetryError
-        ? { kind: 'retry', agent, tc, callId, dispatchTraceId, toolT0, retryAttempt: (retryAttempt ?? 0) + 1, err }
-        : { kind: 'error', agent, tc, callId, dispatchTraceId, err: toError(err) };
+      c = completed({ kind: 'threw', error: toError(err) });
     }
-    yield* this.intake(completion);
+    yield* this.intake(c);
   }
 
   /**
-   * Interpret one tool completion ON THE LOOP FIBER: the result becomes a
-   * pending item (tokenized here, or measured on the embedding rail), a
-   * transient failure parks a retry, a hard error ends the agent. Shared by
-   * the inline path and the fan-out drain.
+   * Interpret one tool completion ON THE LOOP FIBER. The frame says what it
+   * was: an attempt whose result becomes a pending item (tokenized here, or
+   * measured on the embedding rail) or, having thrown, ends the agent; a
+   * retry, parked; a failure, settled in the tool's place. Shared by the
+   * inline path and the fan-out drain.
    */
   *intake(c: ToolCompletion): Operation<void> {
     try {
@@ -604,43 +625,45 @@ export class Executor {
 
   private *intakeInner(c: ToolCompletion): Operation<void> {
     const d = this.d;
-    const { agent, tc, callId, dispatchTraceId } = c;
+    const { agent, tc, callId, dispatchTraceId, completion } = c;
     // Discarded while the tool ran: a late event would contradict its terminal one.
     if (agent.failed !== null) return;
 
-    if (c.kind === 'error') {
-      agent.transition('idle');
-      agent.setResult(`Tool error: ${c.err.message}`, 'tool_error');
-      d.emit.trace({ kind: 'toolError', agent, tool: tc.name, error: c.err.message, parentTraceId: dispatchTraceId });
+    const tool = d.tools.get(tc.name);
+    const { decision } = decideAfterExecute(
+      { agent, tool: tc.name, args: parseHistoryArgs(tc.arguments), attempt: c.attempt, completion },
+      { frame: d.frame, tool, policy: d.policy },
+    );
+    if (decision.type === 'retry') {
+      d.pending.retries.push({ agent, tc, callId, notBefore: performance.now() + decision.afterMs, attempt: c.attempt });
+      yield* d.emit.emit({ kind: 'toolRetry', agent, tool: tc.name, callId, retryAfterMs: decision.afterMs, attempt: c.attempt, parentTraceId: dispatchTraceId });
       return;
     }
-    if (c.kind === 'retry') {
-      const attempt = c.retryAttempt;
-      const retryAction: ToolRetryAction =
-        d.policy.onToolRetry?.(agent, tc.name, c.err, attempt)
-          ?? (attempt <= 1 ? { type: 'retry' } : { type: 'fail' });
-      if (retryAction.type === 'retry') {
-        const afterMs = retryAction.afterMs ?? c.err.retryAfterMs;
-        d.pending.retries.push({ agent, tc, callId, notBefore: performance.now() + afterMs, attempt });
-        yield* d.emit.emit({ kind: 'toolRetry', agent, tool: tc.name, callId, retryAfterMs: afterMs, attempt, parentTraceId: dispatchTraceId });
-        return;
-      }
+    if (decision.type === 'fail') {
+      // A contributor that knows why says so (`retryUpTo` names the rate
+      // limit); the fallback diagnoses nothing.
       const exhausted = {
-        error: retryAction.message
-          ?? `${tc.name} is currently unavailable (rate-limited; retry failed). ` +
-            `Do not call ${tc.name} again — use other sources or proceed with your current findings.`,
+        error: decision.message
+          ?? `${tc.name} failed and will not be retried. ` +
+            `Do not call ${tc.name} again with these arguments — use other sources or proceed with your current findings.`,
       };
       const resultStr = JSON.stringify(exhausted);
       yield* d.emit.emit({ kind: 'toolTold', agent, tool: tc.name, resultStr });
       const tokens = buildToolResultDelta(d.ctx, resultStr, callId, { enableThinking: agent.fmt.enableThinking });
       d.emit.trace({ kind: 'toolResult', agent, tool: tc.name, result: exhausted, cells: tokens.length,
         durationMs: performance.now() - c.toolT0, parentTraceId: dispatchTraceId });
-      d.pending.items.push({ kind: 'toolResult', rail: 'token', agent, tokens, toolName: tc.name, callId, args: tc.arguments, resultStr });
+      d.pending.items.push({ kind: 'toolResult', rail: 'token', agent, tokens, toolName: tc.name, callId, args: tc.arguments, resultStr, result: exhausted });
+      return;
+    }
+    // An attempt: one that threw ends the agent; one that returned is admitted.
+    if (completion.kind === 'threw') {
+      agent.transition('idle');
+      agent.setResult(`Tool error: ${completion.error.message}`, 'tool_error');
+      d.emit.trace({ kind: 'toolError', agent, tool: tc.name, error: completion.error.message, parentTraceId: dispatchTraceId });
       return;
     }
 
-    const result = c.result;
-    const tool = d.tools.get(tc.name);
+    const result = completion.value;
     const contextAvailablePercent = new ContextPressure(d.ctx, d.pressureOpts).percentAvailable;
     if (result && typeof result === 'object' && !Array.isArray(result)) {
       const obj = result as Record<string, unknown>;
@@ -671,7 +694,11 @@ export class Executor {
     }
     const resultStr = JSON.stringify(told);
     yield* d.emit.emit({ kind: 'toolTold', agent, tool: tc.name, resultStr, contextAvailablePercent });
-    const common = { agent, toolName: tc.name, callId, args: tc.arguments, resultStr, probe: tool?.probe(told) ?? undefined };
+    // The item carries what the agent was shown: the serialized text, read
+    // back. Not `told` itself — a tool may return one mutable object for every
+    // call (a cache), and the hook runs a tick later, after that object may
+    // have changed under it.
+    const common = { agent, toolName: tc.name, callId, args: tc.arguments, resultStr, result: JSON.parse(resultStr) as unknown };
     let item: PrefillItem;
     if (prepared && prepared.bitmaps.length > 0) {
       const delta = buildToolResultDeltaMultimodal(d.ctx, resultStr, callId, prepared.bitmaps as Uint8Array[], { enableThinking: agent.fmt.enableThinking });

@@ -5,6 +5,7 @@ import type { AgentPolicy } from './AgentPolicy';
 import type { EntailmentScorer } from './source';
 import type { TraceEvent } from './trace-types';
 import type { Attachment } from '@lloyal-labs/media';
+import type { Outcome } from './Tool';
 
 // ── Tool base class types ──────────────────────────────────────
 
@@ -409,7 +410,7 @@ export type AgentEvent =
    *  when the result carried any). Admission is a run-record fact the host
    *  books and shows, so it rides the bus like every other one; the trace's
    *  `branch:prefill` is the same moment written for replay. */
-  | { type: 'agent:prefilled'; agentId: number; cells: number; role: 'toolResult' | 'recovery' | 'probe'; attachments?: readonly Attachment[] }
+  | { type: 'agent:prefilled'; agentId: number; cells: number; role: Outcome | 'probe'; attachments?: readonly Attachment[] }
   | { type: 'agent:return'; agentId: number; result: string }
   | { type: 'agent:recovered'; agentId: number; result: string }
   | { type: 'agent:failed'; agentId: number; reason: string }

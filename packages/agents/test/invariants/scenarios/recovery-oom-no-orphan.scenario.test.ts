@@ -18,7 +18,7 @@ describe('scenario: in-loop recovery decode OOM emits agent:failed (no orphan)',
       recoveryShape: 'parallel',
       pressureThresholds: { softLimit: 20, hardLimit: 512 },
       onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-      onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),
     };
 

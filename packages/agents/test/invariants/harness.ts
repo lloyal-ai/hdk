@@ -7,7 +7,8 @@ import type { ChatFormat, ParseChatOutputOptions, ParseChatOutputResult, Multimo
 import { useAgentPool } from '../../src/agent-pool';
 import type { Orchestrator } from '../../src/orchestrators';
 import { parallel, chain } from '../../src/orchestrators';
-import { Ctx, Store, Events, Trace, WindDown, CancelAgent, Pause, Attachments, Ingress } from '../../src/context';
+import { Ctx, Store, Events, Trace, WindDown, CancelAgent, Pause, Attachments, Ingress, GrantStoreCtx } from '../../src/context';
+import type { GrantStore } from '../../src/grant-store';
 import type { AttachmentStore } from '@lloyal-labs/media';
 import type { ContentIngress } from '@lloyal-labs/media';
 import { MemoryAttachmentStore } from '../helpers/memory-store';
@@ -220,6 +221,12 @@ export interface PoolSpec {
    *  that expect a throw AND need the events emitted before it. Default: re-throw (fail-loud). */
   captureError?: boolean;
   /**
+   * Install a `GrantStoreCtx` holding exactly these tool names, so a `protected`
+   * tool can be exercised on its GRANTED branch. Absent = no store, which is the
+   * pool's fail-closed default (every protected tool denied).
+   */
+  grants?: readonly string[];
+  /**
    * Hands the scenario the signal senders themselves, so a signal can be fired
    * from INSIDE an instrumented native call — the one place the event-driven
    * `windDownAfter` cannot reach, since no event flows while a prefill is
@@ -330,6 +337,7 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
     const contentStore = spec.attachments ?? new MemoryAttachmentStore();
     yield* Attachments.set(contentStore);
     yield* Ingress.set(spec.ingress ?? rawIngress(contentStore));
+    if (spec.grants) yield* GrantStoreCtx.set(grantStoreOf(spec.grants));
     const windDownSignal = createSignal<void, void>();
     if (spec.windDownAfter || spec.signals) yield* WindDown.set(windDownSignal);
     spec.signals?.({ windDown: () => windDownSignal.send() });
@@ -424,6 +432,17 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
     nativeCalls: ctx.nativeCalls,
     ctx,
     rootHandle: root.handle,
+  };
+}
+
+/** An in-memory `GrantStore` holding a fixed set of grants — the literal a harness would install. */
+function grantStoreOf(names: readonly string[]): GrantStore {
+  const held = new Set(names);
+  return {
+    *has(toolName) { return held.has(toolName); },
+    *grant(toolName) { held.add(toolName); },
+    *revoke(toolName) { held.delete(toolName); },
+    *granted() { return [...held]; },
   };
 }
 

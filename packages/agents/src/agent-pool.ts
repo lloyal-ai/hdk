@@ -5,7 +5,6 @@ import type { Attachment } from '@lloyal-labs/media';
 import { buildTurnDelta } from '@lloyal-labs/sdk';
 import { Ctx, Store, Trace, TraceParent, GrantStoreCtx, WindDown, CancelAgent, Pause, Attachments, Ingress } from './context';
 import { useTraceScope } from './trace-scope';
-import { argsOf, isAttended } from './Agent';
 import type { Agent } from './Agent';
 import { DefaultAgentPolicy } from './AgentPolicy';
 import type { PolicyConfig } from './AgentPolicy';
@@ -14,6 +13,7 @@ import { Emitter } from './emit';
 import { DefaultScheduler } from './scheduler';
 import { Applier } from './apply';
 import { Executor, setupAgent, makePermits, pruneAll, DEFAULT_MAX_CONCURRENT_TOOLS } from './execute';
+import { makeFrame } from './hooks';
 import { prepareReplay } from './replay';
 import type { Tool } from './Tool';
 import {
@@ -129,7 +129,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         ContextPressure.ASSUMED_N_BATCH, ' (nBatch: recovery reserves hardLimit cells for its own decode, and a smaller reserve OOMs the next batch)'),
     };
 
-    // authGuard inputs, resolved once: protected names and the session's grants.
+    // The authorization gate's inputs, resolved once: protected names and the session's grants.
     const protectedTools = new Set([...tools].filter(([, t]) => t.protected).map(([name]) => name));
     let grants: ReadonlySet<string> = new Set();
     if (protectedTools.size > 0) {
@@ -138,19 +138,15 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         grants = new Set(yield* grantStore.granted());
       } catch { /* no grant store — fail-closed */ }
     }
+    // The framework's contributor to every call's lifecycle: the auth gate
+    // first, the defaults last. One value per pool.
+    const frame = makeFrame({ protectedTools, grants });
     if (policy.recoveryBudget !== undefined) requireInteger('policy.recoveryBudget', policy.recoveryBudget, 1);
     if (opts.maxConcurrentTools !== undefined) requireInteger('maxConcurrentTools', opts.maxConcurrentTools, 1);
 
     // ── The pool's state ─────────────────────────────────────────
-    // `agents` is declared before `config` so the cohort view can close over
-    // the live array: the dedup guards read every agent's attended entries
-    // (self included) at each check. The tool-lifecycle contract replaces this
-    // closure with an argument at the check.
     const agents: Agent[] = [];
-    const config: PolicyConfig = {
-      maxTurns, terminalToolName, hasNonTerminalTools, protectedTools, grants,
-      cohortAttended: (tool) => argsOf(agents.flatMap((a) => a.toolHistory).filter(isAttended), tool),
-    };
+    const config: PolicyConfig = { maxTurns, terminalToolName, hasNonTerminalTools };
     const pending: Pending = emptyPending();
     const ladder: Ladder = { consecutiveFatalRc: 0, backendSuspect: false };
     const counters = { warmPrefillCalls: 0, warmPrefillBranches: 0 };
@@ -177,8 +173,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     const scheduler = new DefaultScheduler({
       recovery: policy.recoveryShape === 'parallel' ? 'cohort' : 'serial',
       recoveryBudget: policy.recoveryBudget,
-      terminalToolName, config,
-    }, ctx, tools);
+      terminalToolName,
+    }, ctx, tools, frame);
     /**
      * The one way a spawn request is made: price, then fork. For a heal the
      * lineage the replacement will replay is built and priced FIRST, so
@@ -199,14 +195,14 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     }
 
     const applier = new Applier({
-      ctx, policy, config, tools, emit, pending, ladder,
+      ctx, policy, config, tools, frame, emit, pending, ladder,
       recoveryBudget: policy.recoveryBudget, terminalToolName, pruneOnReturn, pressureOpts, totals,
     });
     const executor = new Executor({
       ctx, store, tools, emit, tw, pending, agents, inflight,
       permits: makePermits(opts.maxConcurrentTools ?? DEFAULT_MAX_CONCURRENT_TOOLS),
       completed, wake, progress, scorer: opts.scorer, toolIndexMap, toolkitSize: tools.size,
-      terminalGrammar, eagerGrammar, enableThinking, spine, runNow, counters, totals, policy,
+      terminalGrammar, eagerGrammar, enableThinking, spine, runNow, counters, totals, policy, frame,
       pressureOpts, ingress, attachments, available, ladder, trace,
     });
 

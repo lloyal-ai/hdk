@@ -3,7 +3,7 @@
  * as a received result (invariant I43).
  *
  * Shape: single agent, one tool call, an oversized tool result that cannot
- * fit. The policy's `onSettleReject` returns a nudge, so the pool replaces the
+ * fit. The policy's `beforeAdmit` returns a nudge, so the pool replaces the
  * oversized result with a compact nudge payload and books it with
  * `outcome:'nudge'`. The nudge carries the ORIGINAL call's name and args, so a
  * tool (or guard) reading history by name alone would mistake it for a receipt.
@@ -20,7 +20,7 @@ import type { Operation } from 'effection';
 import type { JsonSchema } from '../../../src/types';
 import type { AgentPolicy } from '../../../src/AgentPolicy';
 import { runPool, STOP } from '../harness';
-import { I43_attendedIsBooked, formatResult } from '../predicates';
+import { I43_attendedIsAdmitted, formatResult } from '../predicates';
 
 class BigResultTool extends Tool<{ query: string }> {
   readonly name = 'web_search';
@@ -39,7 +39,7 @@ describe('scenario: a nudge is booked but never counted as received (I43)', () =
           : { type: 'idle', reason: 'free_text_stop' },
       // Short so the nudge payload fits the stall headroom and actually LANDS
       // (a nudge too big to fit would drop the agent, booking nothing).
-      onSettleReject: () => ({ type: 'nudge', message: 'retry' }),
+      hooks: [{ beforeAdmit: () => ({ type: 'nudge', message: 'retry' }) }],
       shouldExit: () => false,
       onRecovery: () => ({ type: 'skip' }),
     } as unknown as AgentPolicy;
@@ -65,6 +65,6 @@ describe('scenario: a nudge is booked but never counted as received (I43)', () =
     // And so it is NOT counted as something the agent received.
     expect(agent.attendedResults('web_search')).toEqual([]);
     // The structural invariant holds for the whole run.
-    expect(formatResult('I43', I43_attendedIsBooked(run))).toBe('I43: ok');
+    expect(formatResult('I43', I43_attendedIsAdmitted(run))).toBe('I43: ok');
   });
 });

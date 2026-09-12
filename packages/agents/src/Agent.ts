@@ -5,6 +5,7 @@ import type { Operation } from 'effection';
 import type { TraceToken, AgentExitReason, AgentTaskSpec } from './types';
 import type { AgentTurnRecord } from './replay';
 import type { Lineage } from './state';
+import type { Outcome } from './Tool';
 
 // ── Status ──────────────────────────────────────────────────
 
@@ -34,7 +35,6 @@ export type ResultSource =
   | 'voluntary_return' // agent voluntarily returned via the terminal tool
   | 'free_text'        // agent emitted prose without tool call
   | 'recovery'         // extracted by a forced recovery turn after a drop
-  | 'nudge'            // agent returned after nudge injection
   | 'tool_error';      // tool threw, error captured as findings
 
 // ── Format config ───────────────────────────────────────────
@@ -74,7 +74,7 @@ export interface FormatConfig {
  * @category Agents
  */
 export interface ToolHistoryEntry {
-  /** Tool name (e.g. 'web_search', 'fetch_page') */
+  /** The tool's name. */
   name: string;
   /** Summarized arguments (e.g. query string, URL) */
   args: string;
@@ -87,18 +87,23 @@ export interface ToolHistoryEntry {
   /** Timestamp (performance.now) when result was recorded */
   timestamp: number;
   /**
-   * What the pool admitted for this call: the tool's result, or a nudge or
-   * recovery turn in its place. A settle rejection replaces an oversized
-   * result with a nudge that carries the ORIGINAL call's name and args, so
-   * without this an entry would read as a result the model never attended.
+   * What the agent received in answer to this call: the tool's result, or a
+   * nudge or recovery prompt in its place. A settle rejection replaces an
+   * oversized result with a nudge that carries the ORIGINAL call's name and
+   * args, so without this an entry would read as a result the model never
+   * attended.
    */
-  outcome: 'toolResult' | 'nudge' | 'recovery';
+  outcome: Outcome;
 }
 
 /** A history entry's `args` as an object — `{}` when the model emitted
- *  something unparseable. The one reader of that field's encoding. */
+ *  something unparseable, or valid JSON that is not an object (`null`, an
+ *  array, a scalar), so a reader of `args.url` never throws. The one reader
+ *  of that field's encoding. */
 export function parseHistoryArgs(argsStr: string): Record<string, unknown> {
-  try { return JSON.parse(argsStr) as Record<string, unknown>; } catch { return {}; }
+  let v: unknown;
+  try { v = JSON.parse(argsStr); } catch { return {}; }
+  return v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 }
 
 /** Whether the entry's result is attended: the tool's result was prefilled

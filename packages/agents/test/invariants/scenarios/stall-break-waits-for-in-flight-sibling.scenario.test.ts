@@ -48,7 +48,7 @@ const policy: AgentPolicy = {
   onProduced: (agent, parsed) => parsed.toolCalls.length > 0 && agent.toolCallCount === 0
     ? { type: 'tool_call', tc: parsed.toolCalls[0] }
     : { type: 'idle', reason: 'free_text_stop' },
-  onSettleReject: () => ({ type: 'nudge', message: 'Tool result too large. Report now.' }),
+  hooks: [{ beforeAdmit: () => ({ type: 'nudge', message: 'Tool result too large. Report now.' }) }],
   shouldExit: () => false,
   onRecovery: () => ({ type: 'skip' }),
 };

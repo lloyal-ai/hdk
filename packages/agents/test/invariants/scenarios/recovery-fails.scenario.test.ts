@@ -25,7 +25,7 @@ describe('scenario: recovery generates no terminal call', () => {
     const policy: AgentPolicy = {
       // Free-text every turn → idle drop → serial recovery runs (default staggered).
       onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-      onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),
       shouldExit: () => false,
     };
@@ -76,7 +76,7 @@ describe('scenario: recovery generates no terminal call', () => {
     // Pre-Fix-A: `?? toolCalls[0]` set the result from web_search's args → pool:recoveryReturn.
     const policy: AgentPolicy = {
       onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-      onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),
       shouldExit: () => true,
     };

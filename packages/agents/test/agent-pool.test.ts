@@ -25,9 +25,12 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Tool, TOOL_IMAGE_ERROR_KEY } from '../src/Tool';
+import type { ToolLifecycleHooks } from '../src/Tool';
 import type { AgentPolicy } from '../src/AgentPolicy';
 import type { AgentPoolResult, AgentEvent, ToolContext, JsonSchema } from '../src/types';
-import type { Agent } from '../src/Agent';
+import { Agent } from '../src/Agent';
+import { createMockBranch } from './helpers/mock-branch';
+import { FMT } from './helpers/format-config';
 import { CapturingTraceWriter } from './helpers/capturing-trace';
 import { MockTool } from './helpers/mock-tool';
 
@@ -182,21 +185,20 @@ async function runPool(opts: {
   return { result, events: collectedEvents, trace: traceWriter, ctx, ingressCalls };
 }
 
-/** Minimal policy stub — every method overridable */
-// `onProduced` stays required — it is the reason to build a stub at all.
-// `onSettleReject` does not: the interface makes it optional and the pool calls
-// it with `?.`, so demanding it here forced every caller to supply a hook the
-// runtime never needs.
+/** Minimal policy stub — every member overridable */
+// `onProduced` stays required — it is the reason to build a stub at all. The
+// rest are optional on the interface: a stub with no `hooks` gets the frame's
+// defaults (drop, one retry, no follow-up), exactly as a harness would.
 function stubPolicy(overrides: Partial<AgentPolicy> & {
   onProduced: AgentPolicy['onProduced'];
 }): AgentPolicy {
   return {
     onProduced: overrides.onProduced,
-    onSettleReject: overrides.onSettleReject,
+    hooks: overrides.hooks,
+    guardOverrides: overrides.guardOverrides,
     shouldExplore: overrides.shouldExplore,
     shouldExit: overrides.shouldExit,
     onRecovery: overrides.onRecovery,
-    onToolRetry: overrides.onToolRetry,
     pressureThresholds: overrides.pressureThresholds,
     resetTick: overrides.resetTick,
   };
@@ -228,8 +230,8 @@ describe('shouldExit execution', () => {
       forkTokenQueues: [[1, STOP]], // never reached — shouldExit fires first
       policy: stubPolicy({
         shouldExit: () => true,
-        onProduced: () => ({ type: 'idle', reason: 'pressure_critical' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -247,7 +249,7 @@ describe('shouldExit execution', () => {
       policy: stubPolicy({
         shouldExit: () => false,
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -264,8 +266,8 @@ describe('shouldExit execution', () => {
       cellsUsed: 16300, // remaining = 84 < hardLimit 128 → critical
       forkTokenQueues: [[1, STOP]],
       policy: stubPolicy({
-        onProduced: () => ({ type: 'idle', reason: 'pressure_critical' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -291,7 +293,7 @@ describe('nudge execution', () => {
         }
         return { type: 'idle', reason: 'free_text_stop' };
       },
-      onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
     });
   }
 
@@ -354,7 +356,7 @@ describe('nudge execution', () => {
           }
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -403,7 +405,7 @@ describe('settle reject execution', () => {
           if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'nudge', message: 'Too large, report now.' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'nudge', message: 'Too large, report now.' }) }],
       }),
     });
 
@@ -433,7 +435,7 @@ describe('settle reject execution', () => {
           if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'nudge', message: 'Report now.' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'nudge', message: 'Report now.' }) }],
       }),
     });
 
@@ -468,7 +470,7 @@ describe('settle reject execution', () => {
           if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -509,7 +511,7 @@ describe('dispatch context assembly', () => {
             if (parsed.toolCalls.length > 0) return { type: 'tool_call' as const, tc: parsed.toolCalls[0] };
             return { type: 'idle' as const, reason: 'free_text_stop' as const };
           },
-          onSettleReject: () => ({ type: 'idle' as const, reason: 'pressure_settle_reject' as const }),
+          hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         }),
       },
     };
@@ -561,7 +563,7 @@ describe('recovery loop', () => {
       policy: stubPolicy({
         shouldExit: () => false,
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         onRecovery: () => ({
           type: 'extract',
           prompt: { system: 'Extract findings from above.', user: 'Report.' },
@@ -584,7 +586,7 @@ describe('recovery loop', () => {
       policy: stubPolicy({
         shouldExit: () => false,
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         onRecovery: () => ({ type: 'skip' }),
       }),
     });
@@ -607,7 +609,7 @@ describe('recovery loop', () => {
           if (parsed.content) return { type: 'free_text_return', content: parsed.content };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         onRecovery: () => ({
           type: 'extract',
           prompt: { system: 'x', user: 'y' },
@@ -636,7 +638,7 @@ describe('recovery loop', () => {
           if (parsed.content) return { type: 'free_text_return', content: parsed.content };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         onRecovery: () => {
           recoveryCount++;
           if (recoveryCount <= 1) {
@@ -665,7 +667,7 @@ describe('pressure thresholds propagation', () => {
       policy: stubPolicy({
         shouldExit: () => false,
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         pressureThresholds: { softLimit: 256, hardLimit: 512 },
       }),
     });
@@ -684,7 +686,7 @@ describe('pressure thresholds propagation', () => {
       policy: stubPolicy({
         shouldExit: () => false,
         onProduced: () => ({ type: 'idle', reason: 'pressure_softcut' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -727,7 +729,7 @@ describe('multi-agent interactions', () => {
             }
             return { type: 'idle', reason: 'free_text_stop' };
           },
-          onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+          hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         });
         return p;
       })(),
@@ -759,7 +761,7 @@ describe('multi-agent interactions', () => {
           if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -791,7 +793,7 @@ describe('multi-agent interactions', () => {
           if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -811,7 +813,7 @@ describe('multi-agent interactions', () => {
           if (parsed.content) return { type: 'free_text_return', content: parsed.content };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
       pruneOnReturn: true,
     });
@@ -837,7 +839,7 @@ describe('multi-agent interactions', () => {
           return true;
         },
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         pressureThresholds: { softLimit: 64, hardLimit: 512 },
       }),
     });
@@ -872,7 +874,7 @@ describe('multi-agent interactions', () => {
           if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -903,7 +905,7 @@ describe('multi-agent interactions', () => {
           if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -929,7 +931,7 @@ describe('recovery edge cases', () => {
       policy: stubPolicy({
         shouldExit: () => false,
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         onRecovery: () => ({
           type: 'extract',
           // Very long prompt that won't fit in remaining KV
@@ -954,7 +956,7 @@ describe('recovery edge cases', () => {
       policy: stubPolicy({
         shouldExit: () => false,
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         onRecovery: () => ({
           type: 'extract',
           prompt: { system: '', user: '' },
@@ -966,37 +968,43 @@ describe('recovery edge cases', () => {
   });
 });
 
-// ── Group 7: Tool probe lifecycle hook ──────────────────────────
+// ── Group 7: the follow-up (`hooks.afterAdmit`) ──────────────────
+// A tool's `afterAdmit` may answer an admitted item — its result, or a nudge
+// in its place — with a follow-up the agent reads next. On the wire the
+// placement is `branch:prefill role: 'probe'`.
 
-describe('tool probe lifecycle hook', () => {
-  /** Tool with a probe — returns "Wait, " after result settles */
+describe('tool follow-up (hooks.afterAdmit)', () => {
+  /** A tool that follows every admitted item with "Wait, ". */
   class ProbeTool extends Tool<{ query: string }> {
     readonly name = 'web_search';
-    readonly description = 'search with probe';
+    readonly description = 'search with follow-up';
     readonly parameters = { type: 'object' as const, properties: { query: { type: 'string' as const } } };
-    probe() { return 'Wait, '; }
+    readonly hooks: ToolLifecycleHooks = { afterAdmit: () => ({ type: 'followUp', message: 'Wait, ' }) };
     *execute(): Operation<unknown> { return { results: ['result'] }; }
   }
 
-  /** Tool without a probe — default null */
+  /** A tool that declares nothing — no follow-up. */
   class NoProbeTool extends Tool<{ query: string }> {
     readonly name = 'web_search';
-    readonly description = 'search without probe';
+    readonly description = 'search without follow-up';
     readonly parameters = { type: 'object' as const, properties: { query: { type: 'string' as const } } };
     *execute(): Operation<unknown> { return { results: ['result'] }; }
   }
 
-  /** Tool with conditional probe — only fires on nudge errors */
+  /** The follow-up a report nudge earns. */
+  const REPORT_NOW = 'Wait, the result says I need to call report now with my findings.';
+  const isReportNudge = (result: unknown): boolean => {
+    const err = result && typeof result === 'object' && (result as Record<string, unknown>).error;
+    return typeof err === 'string' && err.toLowerCase().includes('report your findings now');
+  };
+  /** A tool whose follow-up answers only a nudge that tells the agent to report. */
   class ConditionalProbeTool extends Tool<{ query: string }> {
     readonly name = 'web_search';
-    readonly description = 'search with conditional probe';
+    readonly description = 'search with conditional follow-up';
     readonly parameters = { type: 'object' as const, properties: { query: { type: 'string' as const } } };
-    probe(result: unknown) {
-      const err = result && typeof result === 'object' && (result as Record<string, unknown>).error;
-      if (typeof err === 'string' && err.toLowerCase().includes('report your findings now'))
-        return 'Wait, the result says I need to call report now with my findings.';
-      return null;
-    }
+    readonly hooks: ToolLifecycleHooks = {
+      afterAdmit: ({ result }) => (isReportNudge(result) ? { type: 'followUp', message: REPORT_NOW } : undefined),
+    };
     *execute(): Operation<unknown> { return { results: ['result'] }; }
   }
 
@@ -1007,7 +1015,7 @@ describe('tool probe lifecycle hook', () => {
         if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
         return { type: 'idle', reason: 'free_text_stop' };
       },
-      onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
     });
   }
 
@@ -1147,9 +1155,9 @@ describe('tool probe lifecycle hook', () => {
     expect(prefillCallCount).toBe(2);
   });
 
-  it('7c: default Tool.probe returns null', () => {
+  it('7c: a tool that declares no hooks has none — the frame default is no follow-up', () => {
     const tool = new NoProbeTool();
-    expect(tool.probe({})).toBeNull();
+    expect(tool.hooks).toBeUndefined();
   });
 
   it('7d: probe fires on nudge when tool returns probe for error result', async () => {
@@ -1175,33 +1183,29 @@ describe('tool probe lifecycle hook', () => {
             }
             return { type: 'idle', reason: 'free_text_stop' };
           },
-          onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+          hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         });
       })(),
     });
 
-    // Agent was nudged — probe should fire because tool.probe() receives nudge error
+    // The nudge was booked, so the tool's afterAdmit saw its `{ error }` and followed up.
     expect(result.agents[0]).toBeDefined();
   });
 
-  it('7e: conditional probe fires only on nudge error, not on normal results', () => {
+  it('7e: a conditional follow-up abstains on a normal result and answers a report nudge', () => {
     const tool = new ConditionalProbeTool();
+    const agent = new Agent({ id: 1, parentId: 0, branch: createMockBranch() as never, fmt: FMT });
+    const ask = (result: unknown) => tool.hooks!.afterAdmit!({ agent, tool: 'web_search', args: {}, outcome: 'toolResult', result });
+    const followUp = { type: 'followUp', message: REPORT_NOW };
 
-    // Normal result — no probe
-    expect(tool.probe({ results: ['data'] })).toBeNull();
+    // A normal result, a generic error: the hook abstains.
+    expect(ask({ results: ['data'] })).toBeUndefined();
+    expect(ask({ error: 'Network timeout' })).toBeUndefined();
 
-    // Generic error — no probe
-    expect(tool.probe({ error: 'Network timeout' })).toBeNull();
-
-    // Nudge error — probe fires
-    expect(tool.probe({ error: 'KV memory pressure — report your findings now.' }))
-      .toBe('Wait, the result says I need to call report now with my findings.');
-
-    // Other nudge variants — probe fires
-    expect(tool.probe({ error: 'Turn limit reached — report your findings now.' }))
-      .toBe('Wait, the result says I need to call report now with my findings.');
-    expect(tool.probe({ error: 'Time limit reached — report your findings now.' }))
-      .toBe('Wait, the result says I need to call report now with my findings.');
+    // A nudge that tells the agent to report: the follow-up, whatever the reason given.
+    expect(ask({ error: 'KV memory pressure — report your findings now.' })).toEqual(followUp);
+    expect(ask({ error: 'Turn limit reached — report your findings now.' })).toEqual(followUp);
+    expect(ask({ error: 'Time limit reached — report your findings now.' })).toEqual(followUp);
   });
 
   it('7f: conditional probe integrates with pool nudge path without error', async () => {
@@ -1226,7 +1230,7 @@ describe('tool probe lifecycle hook', () => {
             }
             return { type: 'idle', reason: 'free_text_stop' };
           },
-          onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+          hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         });
       })(),
     });
@@ -1319,7 +1323,7 @@ describe('tool probe lifecycle hook', () => {
                 }
                 return { type: 'tool_call', tc: parsed.toolCalls[0] };
               },
-              onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+              hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
             });
           })(),
           maxTurns: 10,
@@ -1330,11 +1334,9 @@ describe('tool probe lifecycle hook', () => {
       });
     });
 
-    // The probe text should have been prefilled somewhere in allPrefills.
-    // ConditionalProbeTool.probe() returns "Wait, the result says I need to
-    // call report now with my findings." for nudge errors.
-    // Tokenize it to know what to look for.
-    const probeTokens = ctx.tokenizeSync('Wait, the result says I need to call report now with my findings.');
+    // The follow-up should have been prefilled somewhere in allPrefills:
+    // ConditionalProbeTool answers a report nudge with REPORT_NOW.
+    const probeTokens = ctx.tokenizeSync(REPORT_NOW);
 
     // At least one prefill should contain the probe tokens
     const probeWasPrefilled = allPrefills.some(arr =>
@@ -1375,7 +1377,7 @@ describe('SPLIT-SEMANTICS GATE: voluntary vs recovery emission', () => {
           if (parsed.content) return { type: 'free_text_return', content: parsed.content };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -1458,7 +1460,7 @@ describe('SPLIT-SEMANTICS GATE: voluntary vs recovery emission', () => {
           policy: stubPolicy({
             shouldExit: () => false,
             onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-            onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+            hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
             onRecovery: () => ({
               type: 'extract',
               prompt: { system: 'Extract findings.', user: 'Report.' },
@@ -1507,7 +1509,7 @@ describe('no-tool agent seams', () => {
       if (parsed.content) return { type: 'free_text_return', content: parsed.content };
       return { type: 'idle', reason: 'free_text_stop' };
     },
-    onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+    hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
   });
 
   it('7a: dangling <tool_call> fragment stripped from free-text result capture', async () => {
@@ -1618,14 +1620,14 @@ describe('no-tool agent seams', () => {
   });
 });
 
-describe('probe prefill — buffered emission still writes on success', () => {
-  // The probe's `branch:prefill` is success-only: buffered through the
-  // batched dispatch and written after it lands. This pins the success
-  // half — the event survives the buffering with its cells and text.
+describe('follow-up prefill — buffered emission still writes on success', () => {
+  // The follow-up's `branch:prefill` (role `probe`) is success-only: buffered
+  // through the batched dispatch and written after it lands. This pins the
+  // success half — the event survives the buffering with its cells and text.
   // (The failure half is structural: the writes are lexically after the
   // `yield* call(...)`, so a rejected dispatch cannot reach them.)
   class ProbingTool extends SpyTool {
-    override probe(): string { return 'probe reflection'; }
+    readonly hooks: ToolLifecycleHooks = { afterAdmit: () => ({ type: 'followUp', message: 'probe reflection' }) };
   }
 
   const probePolicy = () => stubPolicy({
@@ -1982,8 +1984,9 @@ describe('self-healing ladder', () => {
 // ── Group 8: transient tool failure — park + retry (ToolRetryError) ──
 // A tool throwing ToolRetryError parks its agent (awaiting_tool, skipped by
 // PRODUCE — no turns/tokens/KV) and re-executes after the delay. Strategy
-// (retry count, delay override, fail message) is the policy's via
-// onToolRetry; the pool is pure mechanism. Observability: agent:tool_retry
+// (retry count, delay override, fail message) is an `afterExecute`
+// contributor's — the tool's, the policy's, else the frame's default of one
+// retry; the pool is pure mechanism. Observability: agent:tool_retry
 // event + tool:retry trace, so a waiting agent never reads as hung.
 
 import { ToolRetryError } from '../src/Tool';
@@ -2008,7 +2011,7 @@ describe('transient tool failure (park + retry)', () => {
       if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
       return { type: 'idle', reason: 'free_text_stop' };
     },
-    onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+    hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
     ...overrides,
   });
   const callOnFirstTurn = (raw: string) => raw.includes('t1')
@@ -2070,7 +2073,8 @@ describe('transient tool failure (park + retry)', () => {
       forkTokenQueues: [[1, STOP]],
       parseChatOutputFn: callOnFirstTurn,
       policy: toolCallPolicy({
-        onToolRetry: () => ({ type: 'fail', message: 'no time to wait — pivot now' }),
+        hooks: [{ afterExecute: ({ completion }) =>
+          completion.kind === 'threw' ? { type: 'fail', message: 'no time to wait — pivot now' } : undefined }],
       }),
       tools,
     });
@@ -2088,8 +2092,8 @@ describe('transient tool failure (park + retry)', () => {
       forkTokenQueues: [[1, STOP]],
       parseChatOutputFn: callOnFirstTurn,
       policy: toolCallPolicy({
-        onToolRetry: (_a, _t, _e, attempt) =>
-          attempt <= 1 ? { type: 'retry', afterMs: 20 } : { type: 'fail' },
+        hooks: [{ afterExecute: ({ attempt, completion }) =>
+          completion.kind !== 'threw' ? undefined : attempt <= 1 ? { type: 'retry', afterMs: 20 } : { type: 'fail' } }],
       }),
       tools,
     });
@@ -2145,7 +2149,7 @@ describe('trace fidelity: pool:tick, agent span, harvested ppl', () => {
       policy: stubPolicy({
         shouldExit: () => false,
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -2169,7 +2173,7 @@ describe('trace fidelity: pool:tick, agent span, harvested ppl', () => {
           if (parsed.content) return { type: 'free_text_return', content: parsed.content };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -2191,7 +2195,7 @@ describe('trace fidelity: pool:tick, agent span, harvested ppl', () => {
       policy: stubPolicy({
         shouldExit: () => true,
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -2224,7 +2228,7 @@ describe('trace fidelity: pool:tick, agent span, harvested ppl', () => {
           if (parsed.toolCalls.length > 0) return { type: 'return', result: 'done' };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -2261,7 +2265,7 @@ describe('branch:prune traced at every in-run free (#104)', () => {
           if (parsed.toolCalls.length > 0) return { type: 'return', result: 'done' };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -2284,7 +2288,7 @@ describe('branch:prune traced at every in-run free (#104)', () => {
       policy: stubPolicy({
         shouldExit: () => true,
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -2308,7 +2312,7 @@ describe('unlimited-context pressure serialization', () => {
       policy: stubPolicy({
         shouldExit: () => false,
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -2639,7 +2643,7 @@ describe('assets available to the run', () => {
         return { type: 'idle', reason: 'free_text_stop' };
       },
       // Capacity made available: the same page now prices within headroom.
-      onSettleReject: () => { if (ctxRef) ctxRef.mockImageCells = 16; return { type: 'nudge', message: 'Too large now; try again.' }; },
+      hooks: [{ beforeAdmit: () => { if (ctxRef) ctxRef.mockImageCells = 16; return { type: 'nudge', message: 'Too large now; try again.' }; } }],
     });
     const { ctx, result, events } = await runPool({
       // Headroom (nCtx − cellsUsed − the 1024 soft limit) is ~2000: far above

@@ -1,8 +1,11 @@
 import type { ParsedToolCall, MultimodalDelta } from '@lloyal-labs/sdk';
+// `ToolRetryError` is no longer named here: a completion carries how the call
+// ended; recognising a transient failure is the frame's (`hooks.ts`).
 import type { Attachment } from '@lloyal-labs/media';
 import type { Agent, ToolHistoryEntry } from './Agent';
 import type { ContextPressure } from './pressure';
 import type { RecoveryAction } from './AgentPolicy';
+import type { Outcome, Completion } from './Tool';
 import type { AgentTaskSpec, AgentExitReason } from './types';
 import type { ReplayStep, AgentTurnRecord } from './replay';
 import type { TraceEvent } from './trace-types';
@@ -30,12 +33,17 @@ export type DropReason = Extract<TraceEvent, { type: 'pool:agentDrop' }>['reason
  * is never re-derived here.
  */
 export type PrefillItem = {
-  kind: 'toolResult' | 'nudge' | 'recovery';
+  /** What the item places: the call's result, a nudge in its place, or a
+   *  recovery prompt — the same word the agent's ledger books. */
+  kind: Outcome;
   agent: Agent;
   toolName: string;
   callId: string;
   args: string;
-  probe?: string;
+  /** What the agent receives: the tool's value, a nudge's `{ error }`, the
+   *  pool's own failure text. What `afterAdmit` is shown once the item is
+   *  booked. Absent only for a recovery prompt. */
+  result?: unknown;
   /** The tool-result string the delta was built from — the heal record's
    *  replay material. Absent for nudges and recovery turns. */
   resultStr?: string;
@@ -226,11 +234,16 @@ export interface Schedule {
   close: boolean;
 }
 
-/** A tool's completion, carried from wherever it ran to the intake. */
-export type ToolCompletion =
-  | { kind: 'result'; agent: Agent; tc: ParsedToolCall; callId: string; dispatchTraceId: number; toolT0: number; result: unknown }
-  | { kind: 'retry'; agent: Agent; tc: ParsedToolCall; callId: string; dispatchTraceId: number; toolT0: number; retryAttempt: number; err: import('./Tool').ToolRetryError }
-  | { kind: 'error'; agent: Agent; tc: ParsedToolCall; callId: string; dispatchTraceId: number; err: Error };
+/** A tool's completion, carried from wherever it ran to the intake: how the
+ *  call completed, and which attempt this was (1 for the first execution, one
+ *  more per retry — `DispatchRequest.retryAttempt` counts the retries before
+ *  it, so the two are offset by one). What it means — an attempt, a park, a
+ *  failure — is the frame's to decide at intake, not the runner's. */
+export interface ToolCompletion {
+  agent: Agent; tc: ParsedToolCall; callId: string; dispatchTraceId: number; toolT0: number;
+  attempt: number;
+  completion: Completion;
+}
 
 /** One admitted prefill's fate, as the store reported it. */
 export type PrefillOutcome =

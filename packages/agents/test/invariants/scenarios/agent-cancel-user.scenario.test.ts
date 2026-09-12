@@ -17,7 +17,7 @@ describe('scenario: per-agent cancel discards one agent (user_cancel)', () => {
     const policy: AgentPolicy = {
       recoveryShape: 'parallel',
       onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-      onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       // If the cancel somehow missed, the agent would free-text → recover; the assertions
       // below (exactly one agent:failed=user_cancel, zero recovered) would then fail loud.
       onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),

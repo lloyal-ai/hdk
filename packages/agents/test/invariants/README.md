@@ -26,7 +26,7 @@ the guarantee machine-checked.
 
 - `harness.ts` — `runPool(spec)` returns a `PoolRun` carrying the full
   trace event stream, channel events, native-call timing, and result.
-- `predicates.ts` — named predicate functions (I1, I4, I24, …) that
+- `predicates.ts` — named predicate functions (I1, I4, I29, …) that
   consume a `PoolRun` and return `{ok, violations}`.
 - `arbitraries.ts` — `fast-check` generators for orchestration shapes,
   pressure profiles, tool result sizes, agent token scripts.
@@ -68,7 +68,7 @@ Implemented as predicates in `predicates.ts`, each wired into at least one test:
 
 - I1 (native-store-single-fiber) — `fanout-*`, `parallel-recovery`, `wind-down`, `concurrent-extend-spine`
 - I4 (SPAWN-batched) — `scenarios/concurrent-extend-spine.scenario.test.ts`
-- I24 (SETTLE-policy-consulted) — `pressure.prop.test.ts`
+
 - I29 (recovery-diagnostic-complete) — `scenarios/recovery-fails.scenario.test.ts`
 - I30 (exit-reason-matches-trace) — `exit-reason.prop.test.ts`
 - I31 (trace-attribution) — `scenarios/trace-attribution.scenario.test.ts`
@@ -76,7 +76,7 @@ Implemented as predicates in `predicates.ts`, each wired into at least one test:
 - I33 (agent-failure-isolated) — `scenarios/media-*.scenario.test.ts`
 - I41 (terminal-is-last) — `scenarios/agent-cancel-with-queued-work.scenario.test.ts`
 - I42 (no-leaked-branches) — `scenarios/spawn-batch-failure-leaves-no-fork.scenario.test.ts`
-- I43 (attended-is-booked) — `scenarios/nudge-not-counted-as-received.scenario.test.ts`
+- I43 (attended-is-admitted) — `scenarios/nudge-not-counted-as-received.scenario.test.ts`, `predicates.test.ts`
 
 The stall-break reason distinction (once "I25") is asserted directly by
 `scenarios/pressure-exit-via-stall-break.scenario.test.ts` and
