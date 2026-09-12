@@ -5,7 +5,7 @@ import type { Attachment } from '@lloyal-labs/media';
 import { buildTurnDelta } from '@lloyal-labs/sdk';
 import { Ctx, Store, Trace, TraceParent, GrantStoreCtx, WindDown, CancelAgent, Pause, Attachments, Ingress } from './context';
 import { useTraceScope } from './trace-scope';
-import { landedArgs } from './Agent';
+import { argsOf, isAttended } from './Agent';
 import type { Agent } from './Agent';
 import { DefaultAgentPolicy } from './AgentPolicy';
 import type { PolicyConfig } from './AgentPolicy';
@@ -142,13 +142,14 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     if (opts.maxConcurrentTools !== undefined) requireInteger('maxConcurrentTools', opts.maxConcurrentTools, 1);
 
     // ── The pool's state ─────────────────────────────────────────
-    // `agents` is declared before `config` so the retrieval ledger can close
-    // over the live array: a coordination fact is the RUN's, read fresh each
-    // guard check across every agent's landed history (self included).
+    // `agents` is declared before `config` so the cohort view can close over
+    // the live array: the dedup guards read every agent's attended entries
+    // (self included) at each check. The tool-lifecycle contract replaces this
+    // closure with an argument at the check.
     const agents: Agent[] = [];
     const config: PolicyConfig = {
       maxTurns, terminalToolName, hasNonTerminalTools, protectedTools, grants,
-      cohortLanded: (tool) => landedArgs(agents.flatMap((a) => a.toolHistory), tool),
+      cohortAttended: (tool) => argsOf(agents.flatMap((a) => a.toolHistory).filter(isAttended), tool),
     };
     const pending: Pending = emptyPending();
     const ladder: Ladder = { consecutiveFatalRc: 0, backendSuspect: false };

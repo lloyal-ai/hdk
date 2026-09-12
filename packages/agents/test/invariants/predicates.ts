@@ -41,7 +41,7 @@ export function I1_nativeStoreSingleFiber(run: PoolRun): PredicateResult {
  * suffix prefill lands in one native prefill call with N pairs, not N calls.
  * Implemented as: the spawn batch is the LAST store.prefill that started
  * before the first agentFork `branch:create` — the create is written once the
- * suffix has landed, so the batch precedes it and the root's own prefill is
+ * suffix has been prefilled, so the batch precedes it and the root's own prefill is
  * earlier still. It must carry branchCount equal to the number of agentFork
  * creates.
  */
@@ -418,7 +418,7 @@ export function I41_terminalIsLast(run: PoolRun): PredicateResult {
  *
  * A fork holds a KV sequence lease (`kv::tenancy`) that only `release()`
  * returns, and leases are the scarce resource — `branches: 4` on a laptop.
- * The trace cannot see a fork that never landed (`branch:create` is written
+ * The trace cannot see a fork that never entered the pool (`branch:create` is written
  * after its suffix prefill), so this reads the mock's branch table directly:
  * every handle but the root must be disposed, and the cell gauge must be back
  * to the root's own position.
@@ -436,32 +436,30 @@ export function I42_noLeakedBranches(run: PoolRun): PredicateResult {
 }
 
 /**
- * I43 received-is-landed: what an agent attends over is exactly what LANDED.
+ * I43 attended-is-booked: `attendedResults(tool)` reports exactly the lineage
+ * entries booked `outcome: 'toolResult'` for that tool — one per booking, no
+ * more, no nudge or recovery turn among them.
  *
- * `attendedResults(tool)` must report one entry per `outcome:'toolResult'`
- * booking of that tool and no more. A settle-reject nudge (or a recovery turn)
- * is booked on the branch but delivered no result — it carries the ORIGINAL
- * call's name and args, so anything reading history by name alone would mistake
- * it for a receipt. This invariant pins that a nudge is never counted as
- * received, across any run, whatever produced it.
+ * A regression check on the derivation, not yet an independent oracle: the
+ * filter is re-stated here inline, and it reads the same `outcome` field the
+ * derivation reads, so a mis-booked nudge would satisfy both sides. The
+ * tool-lifecycle contract rewrites it against the trace's admission record.
  */
-export function I43_receivedIsLanded(run: PoolRun): PredicateResult {
+export function I43_attendedIsBooked(run: PoolRun): PredicateResult {
   for (const { agent, agentId } of run.result.agents) {
     // `attendedResults` is lineage-aware (self + ancestors), so the expectation
-    // must be built the same way: from `walkAncestors`, filtered to what
-    // actually LANDED. Comparing the entries — not just a count — is what
-    // enforces "exactly what landed": a nudge or recovery carries the ORIGINAL
-    // args but delivered no result, so it must never appear in what the agent
-    // attends over.
+    // is built the same way: from `walkAncestors`. Comparing the entries — not
+    // just a count — is what enforces "exactly": a nudge or recovery carries the
+    // ORIGINAL args but delivered no result, so it must never appear.
     const lineage = agent.walkAncestors((a) => a.toolHistory);
     for (const tool of new Set(lineage.map((h) => h.name))) {
       const attended = agent.attendedResults(tool).map((a) => JSON.stringify(a)).sort();
-      const landed = lineage
+      const booked = lineage
         .filter((h) => h.name === tool && h.outcome === 'toolResult')
         .map((h) => JSON.stringify(parseHistoryArgs(h.args)))
         .sort();
-      if (attended.length !== landed.length || attended.some((a, i) => a !== landed[i])) {
-        return fail('I43', `agent ${agentId}: attendedResults(${tool})=[${attended.join(', ')}] but landed lineage calls=[${landed.join(', ')}]`);
+      if (attended.length !== booked.length || attended.some((a, i) => a !== booked[i])) {
+        return fail('I43', `agent ${agentId}: attendedResults(${tool})=[${attended.join(', ')}] but booked lineage results=[${booked.join(', ')}]`);
       }
     }
   }

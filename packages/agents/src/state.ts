@@ -72,7 +72,7 @@ export interface SpawnRequest {
   agent: Agent; suffixTokens: number[]; formattedPrompt: string; task: AgentTaskSpec;
   resolve: (agent: Agent) => void; reject: (err: Error) => void; discarded: boolean;
   /** A heal is a spawn wearing a lineage: the original's record, replayed onto
-   *  the fork once its suffix has landed. Nobody awaits it (`resolve`/`reject`
+   *  the fork once its suffix has been prefilled. Nobody awaits it (`resolve`/`reject`
    *  are no-ops) and a rejection drops it with `pressure_init`. */
   replay?: SpawnReplay;
 }
@@ -80,7 +80,7 @@ export interface SpawnReplay {
   /** The lineage, built once and priced — what the replacement will prefill after its suffix. */
   steps: ReplayStep[]; cells: number;
   of: number; rc?: number; attempt: number;
-  /** The original's LANDED tool history — re-booked onto the replacement so its
+  /** The original's attended tool history — re-booked onto the replacement so its
    *  receipt ledger matches the KV the steps replay. The replay restores content,
    *  not history; without this a healed read tool re-delivers what its branch holds. */
   history: readonly ToolHistoryEntry[];
@@ -89,7 +89,7 @@ export interface SpawnReplay {
 /** What a heal hands to the pool to forge its replacement from. */
 export interface Lineage {
   records: readonly AgentTurnRecord[];
-  /** The original's landed tool history — carried onto the replacement (see {@link SpawnReplay.history}). */
+  /** The original's attended tool history — carried onto the replacement (see {@link SpawnReplay.history}). */
   history: readonly ToolHistoryEntry[];
   of: number; rc?: number; attempt: number;
 }
@@ -130,7 +130,7 @@ export interface TickState {
   now: number;
   /** The wall clock, sampled with the pressure: what retry parks are due against. */
   wall: number;
-  /** ONE sample, taken after the previous tick's effects landed. */
+  /** ONE sample, taken after the previous tick's effects were applied. */
   pressure: ContextPressure;
   agents: readonly Agent[];
   pending: Pending;
@@ -247,7 +247,7 @@ export interface Outputs {
    *  `parsed` is the strict parse taken at the sample (null for an extracting
    *  agent, whose report is parsed by the recovery path). */
   produced: { agent: Agent; token: number; text: string; isStop: boolean; parsed: import('@lloyal-labs/sdk').ParseChatOutputResult | null }[];
-  /** The commit landed (`steps` counts these), with the reading taken as it did. */
+  /** The commit succeeded (`steps` counts these), with the reading taken as it did. */
   committed: boolean;
   commitPressure: ContextPressure | null;
   /** A decode failed beyond the ladder: a fatal prefill rc, or the commit
@@ -268,9 +268,9 @@ export function alive(a: Agent): boolean {
 
 /**
  * The self-healing ladder's one classification (docs/self-healing.md):
- * rc 1 restored the failing call and nothing before it landed → the branch
- * is INTACT and the item may re-queue; rc 1 with an earlier chunk landed
- * → the cohort cannot be re-queued whole (it would decode landed chunks
+ * rc 1 restored the failing call and nothing before it was prefilled → the
+ * branch is INTACT and the item may re-queue; rc 1 with an earlier chunk
+ * prefilled → the cohort cannot be re-queued whole (it would decode those chunks
  * twice) → fail; rc 2 / < −1 / no rc / tripwire up → fatal.
  */
 export function classifyRc(rc: number | undefined, partial: boolean | undefined, backendSuspect: boolean): 'defer' | 'fail' | 'fatal' {

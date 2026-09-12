@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { DefaultAgentPolicy, defaultToolGuards } from '../src/AgentPolicy';
 import { ContextPressure } from '../src/pressure';
 import type { PolicyConfig } from '../src/AgentPolicy';
-import { Agent, landedArgs } from '../src/Agent';
+import { Agent, argsOf, isAttended } from '../src/Agent';
 import type { ToolHistoryEntry } from '../src/Agent';
 import { createMockBranch } from './helpers/mock-branch';
 
@@ -15,10 +15,10 @@ const BASE_CONFIG: PolicyConfig = { maxTurns: 20, terminalToolName: 'report', ha
 const cohortEntry = (name: string, args: object, outcome: 'toolResult' | 'nudge' | 'recovery' = 'toolResult'): ToolHistoryEntry =>
   ({ name, args: JSON.stringify(args), resultCells: 0, contextAfterPercent: 100, timestamp: 0, outcome });
 
-/** BASE_CONFIG plus the cohort-retrieval service the pool injects — a live
- *  `landedArgs` view over the cohort, exactly as `agent-pool.ts` builds it. */
+/** BASE_CONFIG plus the cohort view the pool injects — the attended entries of
+ *  the cohort, exactly as `agent-pool.ts` builds it. */
 const cohortConfig = (cohort: ToolHistoryEntry[]): PolicyConfig =>
-  ({ ...BASE_CONFIG, cohortLanded: (tool) => landedArgs(cohort, tool) });
+  ({ ...BASE_CONFIG, cohortAttended: (tool) => argsOf(cohort.filter(isAttended), tool) });
 
 function makeAgent(overrides?: { toolCallCount?: number; turns?: number; toolHistory?: Array<{ name: string; args: string }> }) {
   const branch = createMockBranch();
@@ -120,7 +120,7 @@ describe('DefaultAgentPolicy', () => {
   });
 
   describe('tool guards', () => {
-    it('rejects fetch_page the cohort already landed', () => {
+    it('rejects fetch_page the cohort already attended', () => {
       const a = makeAgent({ toolCallCount: 2 });
       const cohort = [cohortEntry('fetch_page', { url: 'https://example.com' })];
       const tc = { name: 'fetch_page', arguments: JSON.stringify({ url: 'https://example.com' }), id: 'c1' };
@@ -136,10 +136,10 @@ describe('DefaultAgentPolicy', () => {
       expect(action.type).toBe('tool_call');
     });
 
-    // The dedup fact is the RUN's, not one branch's KV: a URL a SIBLING landed
+    // The dedup fact is the pool's, not one branch's KV: a URL a SIBLING attended
     // must dedup even though THIS agent never fetched it, and a call that was
-    // only NUDGED (its result never landed) is not a receipt.
-    it('rejects a fetch a SIBLING landed, though this agent never fetched it', () => {
+    // only NUDGED (its result never reached the KV) does not count.
+    it('rejects a fetch a SIBLING attended, though this agent never fetched it', () => {
       const a = makeAgent({ toolCallCount: 2 }); // empty own history
       const cohort = [cohortEntry('fetch_page', { url: 'https://sib.com' })];
       const tc = { name: 'fetch_page', arguments: JSON.stringify({ url: 'https://sib.com' }), id: 'c1' };
@@ -156,7 +156,7 @@ describe('DefaultAgentPolicy', () => {
       expect(action.type).toBe('tool_call');
     });
 
-    it('rejects a web_search query the cohort already landed', () => {
+    it('rejects a web_search query the cohort already attended', () => {
       const a = makeAgent({ toolCallCount: 2 });
       const cohort = [cohortEntry('web_search', { query: 'Same Query' })];
       const tc = { name: 'web_search', arguments: JSON.stringify({ query: 'same query' }), id: 'c1' };
@@ -471,7 +471,7 @@ describe('DefaultAgentPolicy', () => {
         extraGuards: [{
           tools: ['web_search'],
           reject: () => true,  // always reject — simulates duplicate-query match
-          message: 'This query was already searched. Refine your search or report findings.',
+          message: 'This search was already attempted in this run. Refine the query or report your findings.',
         }],
       });
       // Agent is PAST maxTurns (20 >= 10) — _isOverBudget would fire.
@@ -479,7 +479,7 @@ describe('DefaultAgentPolicy', () => {
       const tc = { name: 'web_search', arguments: '{"query":"same"}', id: 'c1' };
       const action = p.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
       expect(action.type).toBe('nudge');
-      expect((action as any).message).toBe('This query was already searched. Refine your search or report findings.');
+      expect((action as any).message).toBe('This search was already attempted in this run. Refine the query or report your findings.');
       // Specifically NOT the turn-limit message
       expect((action as any).message).not.toContain('Turn limit');
       expect((action as any).message).not.toContain('within');

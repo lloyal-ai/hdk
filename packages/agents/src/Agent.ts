@@ -87,11 +87,10 @@ export interface ToolHistoryEntry {
   /** Timestamp (performance.now) when result was recorded */
   timestamp: number;
   /**
-   * WHAT landed on the branch, which is not always what was called. A settle
-   * rejection replaces an oversized tool result with a nudge that carries the
-   * ORIGINAL call's name and args, so without this an entry claims a call
-   * succeeded when the model never saw its result. Taken from the prefill
-   * item's own `kind`, so the two cannot drift.
+   * What the pool admitted for this call: the tool's result, or a nudge or
+   * recovery turn in its place. A settle rejection replaces an oversized
+   * result with a nudge that carries the ORIGINAL call's name and args, so
+   * without this an entry would read as a result the model never attended.
    */
   outcome: 'toolResult' | 'nudge' | 'recovery';
 }
@@ -102,23 +101,17 @@ export function parseHistoryArgs(argsStr: string): Record<string, unknown> {
   try { return JSON.parse(argsStr) as Record<string, unknown>; } catch { return {}; }
 }
 
-/**
- * The history entries whose results actually LANDED — the ONE definition of
- * "received". A nudge or a recovery turn is booked on the branch but delivered
- * no result, so `outcome === 'toolResult'` is what separates a receipt from a
- * turn. Everything that asks "what did this agent receive" reads through here
- * (dedup, the heal's ledger carry) so the answer cannot drift.
- */
-export function landedEntries(histories: readonly ToolHistoryEntry[]): ToolHistoryEntry[] {
-  return histories.filter((h) => h.outcome === 'toolResult');
+/** Whether the entry's result is attended: the tool's result was prefilled
+ *  onto the branch. A nudge or recovery turn is booked, but its call's result
+ *  never reached the KV. */
+export function isAttended(h: ToolHistoryEntry): boolean {
+  return h.outcome === 'toolResult';
 }
 
-/** The parsed args of a tool's LANDED calls — {@link landedEntries} narrowed to
- *  `tool` and read as args (the shape a dedup or read tool matches on). */
-export function landedArgs(histories: readonly ToolHistoryEntry[], tool: string): Record<string, unknown>[] {
-  return landedEntries(histories)
-    .filter((h) => h.name === tool)
-    .map((h) => parseHistoryArgs(h.args));
+/** The parsed args of the entries that name `tool`. No attention semantics of
+ *  its own: whoever passes `entries` decided that. */
+export function argsOf(entries: readonly ToolHistoryEntry[], tool: string): Record<string, unknown>[] {
+  return entries.filter((h) => h.name === tool).map((h) => parseHistoryArgs(h.args));
 }
 
 // ── Agent ───────────────────────────────────────────────────
@@ -419,17 +412,14 @@ export class Agent {
   }
 
   /**
-   * The calls of one tool whose RESULTS this agent attends over — its own and
-   * its callers' — as parsed args.
-   *
-   * Attention in the literal sense: those tokens are in the KV this branch
-   * reads across. A forked child attends over its parent's prefix, so the scope
-   * is the caller chain {@link walkAncestors} walks. `outcome === 'toolResult'`
-   * (via {@link landedArgs}) is what separates a receipt from a settle-reject
-   * nudge, which sits on the branch carrying the ORIGINAL call's name and args.
+   * The calls of one tool whose results this agent attends over, as parsed
+   * args: in the KV this branch reads across — its own and, by the fork, its
+   * ancestors' — so the scope is the caller chain {@link walkAncestors} walks.
+   * A settle-reject nudge sits on the branch carrying the ORIGINAL call's name
+   * and args; {@link isAttended} is what keeps it out.
    */
   attendedResults(tool: string): Record<string, unknown>[] {
-    return landedArgs(this.walkAncestors((a) => a.toolHistory), tool);
+    return argsOf(this.walkAncestors((a) => a.toolHistory).filter(isAttended), tool);
   }
 
   // ── Child findings ─────────────────────────────────────────
@@ -449,13 +439,9 @@ export class Agent {
    * Self is visited first, then the calling agent, then its caller, etc.
    * Iterative — no stack overflow on deep recursion chains.
    *
-   * For "has this agent already RECEIVED X" prefer {@link attendedResults},
-   * which folds this walk and keeps only what LANDED — a raw history read here
-   * counts a settle-reject nudge (which carries the original args) as a receipt:
-   *
-   * @example Whether this agent has already fetched a URL
+   * @example The tasks along this agent's lineage
    * ```typescript
-   * const fetched = agent.attendedResults('fetch_page').some(a => a.url === url);
+   * const tasks = agent.walkAncestors(a => a.task ? [a.task] : []);
    * ```
    */
   walkAncestors<T>(fn: (agent: Agent) => readonly T[]): T[] {

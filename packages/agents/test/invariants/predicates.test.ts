@@ -1,8 +1,8 @@
 /**
- * I43 (received-is-landed) as a unit — the predicate itself, over constructed
+ * I43 (attended-is-booked) as a unit — the predicate itself, over constructed
  * lineages. `attendedResults` is lineage-aware (self + ancestors), so the
  * invariant must reason over the lineage, not one agent's own history: a child
- * that lands a tool its ancestor also landed is NOT a violation, and a nudge
+ * that books a tool its ancestor also booked is NOT a violation, and a nudge
  * that leaks into `attendedResults` IS.
  *
  * @category Testing
@@ -11,7 +11,7 @@ import { describe, it, expect } from 'vitest';
 import { Agent } from '../../src/Agent';
 import type { FormatConfig, ToolHistoryEntry } from '../../src/Agent';
 import type { PoolRun } from './harness';
-import { I43_receivedIsLanded } from './predicates';
+import { I43_attendedIsBooked } from './predicates';
 
 const entry = (name: string, args: object, outcome: 'toolResult' | 'nudge' | 'recovery' = 'toolResult'): ToolHistoryEntry =>
   ({ name, args: JSON.stringify(args), resultCells: 0, contextAfterPercent: 100, timestamp: 0, outcome });
@@ -26,29 +26,29 @@ function agentAt(id: number, history: ToolHistoryEntry[] = [], parent: Agent | n
 const runOf = (...agents: Agent[]): PoolRun =>
   ({ result: { agents: agents.map((a) => ({ agent: a, agentId: a.id })) } } as unknown as PoolRun);
 
-describe('I43 received-is-landed', () => {
-  it('holds across a lineage — a child sharing a landed tool with its parent is not a violation', () => {
+describe('I43 attended-is-booked', () => {
+  it('holds across a lineage — a child sharing an attended tool with its parent is not a violation', () => {
     const parent = agentAt(1, [entry('search', { q: 'a' })]);
     const child = agentAt(2, [entry('search', { q: 'b' })], parent);
     // child.attendedResults('search') sees BOTH (self + parent); a self-only
     // count would read 1 against an attended 2 and falsely fail.
-    expect(I43_receivedIsLanded(runOf(parent, child)).ok).toBe(true);
+    expect(I43_attendedIsBooked(runOf(parent, child)).ok).toBe(true);
   });
 
-  it('checks a tool only an ANCESTOR landed (never in the child\'s own history)', () => {
+  it('checks a tool only an ANCESTOR attended (never in the child\'s own history)', () => {
     const parent = agentAt(1, [entry('read_file', { f: 'x' })]);
     const child = agentAt(2, [], parent);
-    expect(I43_receivedIsLanded(runOf(parent, child)).ok).toBe(true);
+    expect(I43_attendedIsBooked(runOf(parent, child)).ok).toBe(true);
   });
 
   it('passes with the real, outcome-filtered attendedResults when a call was only nudged', () => {
     const a = agentAt(1, [entry('fetch_page', { url: 'u' }, 'nudge')]);
     expect(a.attendedResults('fetch_page')).toEqual([]);
-    expect(I43_receivedIsLanded(runOf(a)).ok).toBe(true);
+    expect(I43_attendedIsBooked(runOf(a)).ok).toBe(true);
   });
 
   it('CATCHES a nudge leaking into attendedResults — the regression it guards', () => {
-    // A stub whose attendedResults reports a call that only NUDGED (no landed
+    // A stub whose attendedResults reports a call that only NUDGED (no attended
     // twin): exactly what a broken outcome filter would do.
     const broken = {
       id: 9,
@@ -56,6 +56,6 @@ describe('I43 received-is-landed', () => {
         fn({ toolHistory: [entry('fetch_page', { url: 'u' }, 'nudge')] } as unknown as Agent),
       attendedResults: () => [{ url: 'u' }],
     } as unknown as Agent;
-    expect(I43_receivedIsLanded(runOf(broken)).ok).toBe(false);
+    expect(I43_attendedIsBooked(runOf(broken)).ok).toBe(false);
   });
 });

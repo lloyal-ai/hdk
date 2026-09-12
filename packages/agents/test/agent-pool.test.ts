@@ -1721,7 +1721,7 @@ describe('self-healing ladder', () => {
     expect((defers[0] as { rc: number }).rc).toBe(1);
     expect((defers[0] as { attempt: number }).attempt).toBe(1);
     expect(ladderFailures(events)).toHaveLength(0);
-    // The retried settle actually landed — success-only, so its event exists.
+    // The retried settle actually prefilled — success-only, so its event exists.
     expect(trace.events.some(e => e.type === 'branch:prefill'
       && (e as { role?: string }).role === 'toolResult')).toBe(true);
   });
@@ -1755,10 +1755,10 @@ describe('self-healing ladder', () => {
     expect((settleFailed as { rc?: number }).rc).toBe(1);
   });
 
-  it('token rail rc 1 + partial: an earlier chunk landed, so nothing is re-queued', async () => {
+  it('token rail rc 1 + partial: an earlier chunk was prefilled, so nothing is re-queued', async () => {
     // The kernel's rule (liblloyal DecodeError): intact ⇔ rc == 1 && !partial.
     // With `partial` set, some branches in the cohort advanced and the error
-    // does not say which; re-queuing the cohort whole would decode the landed
+    // does not say which; re-queuing the cohort whole would decode the prefilled
     // ones twice onto advanced positions. The cohort fails and heals instead.
     const spy = new SpyTool();
     const tools = new Map<string, Tool>([['web_search', spy]]);
@@ -1786,7 +1786,7 @@ describe('self-healing ladder', () => {
     expect((settleFailed as { rc?: number }).rc).toBe(1);
   });
 
-  it('media rc 1 + partial: an earlier chunk landed — not intact, so no deferral', async () => {
+  it('media rc 1 + partial: an earlier chunk was prefilled — not intact, so no deferral', async () => {
     const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
     const { events, trace } = await runPool({
       nCtx: MEDIA_TEST_NCTX,
@@ -1859,7 +1859,7 @@ describe('self-healing ladder', () => {
     // State was restored: nothing died, nothing was pruned for this.
     expect(ladderFailures(events)).toHaveLength(0);
     expect(trace.events.some(e => e.type === 'pool:settleFailed')).toBe(false);
-    // The substitute note prefilled as tokens — a landed toolResult event.
+    // The substitute note prefilled as tokens — a prefilled toolResult event.
     expect(trace.events.some(e => e.type === 'branch:prefill'
       && (e as { role?: string }).role === 'toolResult'
       && (e as { cells: number }).cells > 0)).toBe(true);
@@ -2455,7 +2455,7 @@ describe('tool results carrying images', () => {
     // The agent really ran and really called the tool...
     expect(events.some(e => e.type === 'agent:tool_result')).toBe(true);
     // ...and its image was still refused admission. Charged at zero it would
-    // have sailed through and landed here.
+    // have sailed through and arrived here.
     expect(ctx.multimodalPrefills).toHaveLength(0);
     expect(mediaFailures(events)).toHaveLength(0);
   });
@@ -2614,7 +2614,7 @@ describe('assets available to the run', () => {
     const { result } = await runPool({
       nCtx: MEDIA_TEST_NCTX, taskCount: 2,
       // A admits on its first turn and finishes. B generates for a while,
-      // then calls — well after A's result landed and A was pruned.
+      // then calls — well after A's result was admitted and A was pruned.
       forkTokenQueues: [[1, STOP, STOP], [7, 7, 7, 7, 7, 7, 2, STOP, STOP]],
       parseChatOutputFn: calls('open', 'look'), policy: policy(),
       tools: new Map<string, Tool>([['open', new RootTool([doc], 'open')], ['look', spy]]),
@@ -2657,14 +2657,14 @@ describe('assets available to the run', () => {
     });
     expect(ctx.multimodalPrefills).toHaveLength(1);
     expect(announced(events)).toEqual([[page]]);
-    // The nudge is booked as a nudge; only the retry is a landed call.
+    // The nudge is booked as a nudge; only the retry is an attended result.
     const agent = result.agents[0].agent;
     expect(agent.toolHistory.filter((h) => h.name === 'view')
       .map((h) => (h as { outcome?: string }).outcome)).toEqual(['nudge', 'toolResult']);
     expect(agent.attendedResults('view')).toHaveLength(1);
   });
 
-  it('a heal preserves the receipt ledger: a read landed before the poison is not re-delivered after the respawn', async () => {
+  it('a heal preserves the receipt ledger: a read attended before the poison is not re-delivered after the respawn', async () => {
     // The original LANDS a `look`, then a poisoned media call (rc −3) heals it.
     // The replay restores the read into the replacement's KV; the receipt ledger
     // must ride with it, or the read tools re-deliver what the branch holds.
@@ -2691,7 +2691,7 @@ describe('assets available to the run', () => {
     // KV), and it does not inherit an ambient agent as its lineage parent.
     expect(replacement!.agent.parent).toBeNull();
     expect(replacement!.agent.toolHistory.filter((h) => h.name === 'look' && (h as { outcome?: string }).outcome === 'toolResult')).toHaveLength(1);
-    // So it attends over the `look` the original landed, and does not re-deliver.
+    // So it attends over the `look` the original attended, and does not re-deliver.
     expect(replacement!.agent.attendedResults('look')).toHaveLength(1);
   });
 
@@ -2729,7 +2729,7 @@ describe('assets available to the run', () => {
     expect(heal).toBeDefined();
     const replacement = result.agents.find((a) => a.agentId === heal!.agentId);
     expect(replacement).toBeDefined();
-    // The healer landed `look`; the replacement's KV holds it, so it attends over it.
+    // The original attended `look`; the replacement's KV holds it, so it attends over it.
     expect(replacement!.agent.attendedResults('look')).toHaveLength(1);
     // The sibling's `peek` is NOT in the replacement's KV — it must not be attended over.
     expect(replacement!.agent.attendedResults('peek')).toHaveLength(0);

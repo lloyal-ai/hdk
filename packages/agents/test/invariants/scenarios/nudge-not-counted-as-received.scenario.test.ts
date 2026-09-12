@@ -20,7 +20,7 @@ import type { Operation } from 'effection';
 import type { JsonSchema } from '../../../src/types';
 import type { AgentPolicy } from '../../../src/AgentPolicy';
 import { runPool, STOP } from '../harness';
-import { I43_receivedIsLanded, formatResult } from '../predicates';
+import { I43_attendedIsBooked, formatResult } from '../predicates';
 
 class BigResultTool extends Tool<{ query: string }> {
   readonly name = 'web_search';
@@ -65,6 +65,6 @@ describe('scenario: a nudge is booked but never counted as received (I43)', () =
     // And so it is NOT counted as something the agent received.
     expect(agent.attendedResults('web_search')).toEqual([]);
     // The structural invariant holds for the whole run.
-    expect(formatResult('I43', I43_receivedIsLanded(run))).toBe('I43: ok');
+    expect(formatResult('I43', I43_attendedIsBooked(run))).toBe('I43: ok');
   });
 });

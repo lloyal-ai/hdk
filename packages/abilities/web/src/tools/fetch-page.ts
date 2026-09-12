@@ -77,7 +77,7 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
     if (!url) return { error: "url must not be empty" };
 
     // Cross-agent dedup is the run's concern, not this tool's: the `url_dedup`
-    // guard refuses a URL the cohort already LANDED (never one merely nudged),
+    // guard refuses a URL the cohort already attempted (never one merely nudged),
     // before this tool is ever dispatched.
 
     // Early reject PDF URLs

@@ -9,8 +9,8 @@ import { makeFixture, wordTokenize } from './helpers/fixture';
 
 type View = Record<string, unknown> & { note?: string; error?: string; cite?: string; caption?: string };
 
-/** What the POOL books once the page has landed on the branch. Never the tool. */
-const landedView = (document: string, page: number, outcome: 'toolResult' | 'nudge' = 'toolResult'): ToolHistoryEntry =>
+/** What the POOL books once the page has been prefilled onto the branch. Never the tool. */
+const bookedView = (document: string, page: number, outcome: 'toolResult' | 'nudge' = 'toolResult'): ToolHistoryEntry =>
   ({ name: 'view_page', args: JSON.stringify({ document, page }), resultCells: 1629, contextAfterPercent: 80, timestamp: 0, outcome }) as ToolHistoryEntry;
 
 /** A real {@link Agent} with a cast branch, exactly as the agents suite builds
@@ -19,7 +19,7 @@ const landedView = (document: string, page: number, outcome: 'toolResult' | 'nud
  *  hand-rolled walk would prove the test's own loop instead. Only `id`,
  *  `parent` and the booked history are read here, so the branch and format
  *  never have to exist. History is booked through `recordToolResult`, the
- *  method the pool itself calls once a result has landed. */
+ *  method the pool itself calls once a result has been prefilled. */
 function agentAt(id: number, history: ToolHistoryEntry[] = [], parent: Agent | null = null): Agent {
   const a = new Agent({ id, parentId: parent?.id ?? 0, branch: { handle: id } as never, fmt: {} as FormatConfig, parent });
   for (const h of history) a.recordToolResult(h);
@@ -81,7 +81,7 @@ describe('view_page', () => {
     const agent = agentAt(1);
     expect((await view({ document: documentId(doc), page: 1 }, [doc], agent))[TOOL_ATTACHMENTS_KEY]).toEqual([renders[1]]);
     // Nothing is remembered until the page LANDS; the pool books it here.
-    agent.recordToolResult(landedView(documentId(doc), 1));
+    agent.recordToolResult(bookedView(documentId(doc), 1));
 
     // A settle rejection can replace a result with a nudge, and the tool cannot
     // see that, so a repeat must still put the page in front of the model.
@@ -107,13 +107,13 @@ describe('view_page', () => {
 });
 
 describe('view_page — the note follows admission, not the tool\'s memory', () => {
-  it('a landed view earns the note on repeat; a nudged view does not; the page comes back either way', async () => {
+  it('an attended view earns the note on repeat; a nudged view does not; the page comes back either way', async () => {
     const { doc, renders, view } = setup();
     const viewAs = (agent: Agent) => view({ document: documentId(doc), page: 1 }, [doc], agent);
-    const seen = await viewAs(agentAt(1, [landedView(documentId(doc), 1)]));
+    const seen = await viewAs(agentAt(1, [bookedView(documentId(doc), 1)]));
     expect(seen[TOOL_ATTACHMENTS_KEY]).toEqual([renders[1]]);
     expect(seen.note).toMatch(/viewed page 1 before/);
-    const unseen = await viewAs(agentAt(2, [landedView(documentId(doc), 1, 'nudge')]));
+    const unseen = await viewAs(agentAt(2, [bookedView(documentId(doc), 1, 'nudge')]));
     expect(unseen[TOOL_ATTACHMENTS_KEY]).toEqual([renders[1]]);
     expect(unseen.note).toBeUndefined();
   });

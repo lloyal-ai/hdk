@@ -101,10 +101,11 @@ export const TraceParent = createContext<TraceId>('lloyal.traceParent');
 /**
  * Effection context holding the calling agent during DISPATCH
  *
- * Set by the pool before each tool execution in `scoped()`. Tools and
- * recursive `withSpine` calls read this to access the calling
- * agent's branch (for Continuous Context forking) and tool history
- * (for deduplication guards).
+ * Set by the pool for the duration of each tool call, in `scoped()`. Tools and
+ * recursive `withSpine` calls read it for the calling agent's branch
+ * (Continuous Context forking) and its attended results
+ * ({@link Agent.attendedResults}). `.get()` returns `undefined` outside a call
+ * and never throws.
  *
  * Scope-isolated: each `scoped()` DISPATCH sees only its own agent.
  * Nested pools (web_research) shadow the parent's context correctly.

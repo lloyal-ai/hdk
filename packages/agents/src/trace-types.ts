@@ -61,7 +61,7 @@ export type TraceEvent =
        *  prefill it seeds. Absent on the embedding rail: mtmd owns
        *  tokenization there, and this event is written write-ahead so a
        *  failed prefill still leaves something to replay from. The cost that
-       *  actually landed is `branch:prefill.cells`, which is written
+       *  actually prefilled is `branch:prefill.cells`, which is written
        *  only after the KV moved. */
       tokenCount?: number;
       /** Roots for the images this seed's markers stand for, in marker

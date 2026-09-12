@@ -45,7 +45,7 @@ export function tokenBudgetAsWords(budgetTokens: number): number {
  * `agent.attendedResults(tool)` — when a guard needs "already in my context"),
  * `toolName` (so `tools: '*'` guards know which tool they're gating), and the
  * pool-level `config`, which carries pool-resolved state: the protected-tool
- * set, the session's grants, and `cohortLanded` (this pool cohort's landed
+ * set, the session's grants, and `cohortAttended` (this pool cohort's attended
  * retrievals, for coordination dedup). Guards that don't need a parameter omit it.
  *
  * `name` is the optional guard identifier surfaced via
@@ -95,22 +95,22 @@ export const defaultToolGuards: ToolGuard[] = [
       'you can, and report what blocks completion.',
   },
   // Retrieval dedup is a COORDINATION fact, not KV-truth: it reads this pool
-  // cohort's landed retrievals (`config.cohortLanded`), so a URL/query any agent
-  // in the pool already fetched is refused once — whichever paid — and a call
-  // that was only NUDGED (its result never landed) is not counted, so a retry
-  // after a settle reject is not blinded.
+  // cohort's attended retrievals (`config.cohortAttended`). An attempt any agent
+  // in the pool already made — content or error alike — is refused once, and a
+  // call that was only NUDGED (its result never reached the KV) is not counted,
+  // so a retry after a settle reject is not blinded.
   {
     name: 'url_dedup',
     tools: ['fetch_page'],
     reject: (args, _agent, _toolName, config) => {
       // Normalize BOTH sides the way the tool does before it fetches
-      // (fetch-page.ts trims), or a whitespace-only variant of a landed URL
+      // (fetch-page.ts trims), or a whitespace-only variant of an attended URL
       // slips the guard and fetches the same resource twice. The guard must
       // normalize at least as aggressively as the tool.
       const url = trimmed(args.url);
-      return !!url && (config.cohortLanded?.('fetch_page') ?? []).some((a) => trimmed(a.url) === url);
+      return !!url && (config.cohortAttended?.('fetch_page') ?? []).some((a) => trimmed(a.url) === url);
     },
-    message: 'This URL was already fetched. Try a different source.',
+    message: 'This URL was already attempted in this run. Try a different source.',
   },
   {
     name: 'query_dedup',
@@ -119,16 +119,16 @@ export const defaultToolGuards: ToolGuard[] = [
       // web-search.ts trims before searching; the guard also folds case so a
       // capitalization-only variant is one query. Normalize both sides alike.
       const query = trimmed(args.query)?.toLowerCase();
-      return !!query && (config.cohortLanded?.('web_search') ?? []).some(
+      return !!query && (config.cohortAttended?.('web_search') ?? []).some(
         (a) => trimmed(a.query)?.toLowerCase() === query,
       );
     },
-    message: 'This query was already searched. Refine your search or report findings.',
+    message: 'This search was already attempted in this run. Refine the query or report your findings.',
   },
 ];
 
 /** A string arg trimmed as the web tools trim it, or undefined when absent or
- *  not a string. The dedup guards normalize both the current and landed args
+ *  not a string. The dedup guards normalize both the current and attended args
  *  through here so a whitespace-only variant is not treated as a new resource. */
 function trimmed(v: unknown): string | undefined {
   return typeof v === 'string' ? v.trim() : undefined;
@@ -394,21 +394,14 @@ export interface PolicyConfig {
    */
   grants?: ReadonlySet<string>;
   /**
-   * This pool cohort's landed retrievals of a tool: the parsed args of every
-   * agent IN THIS POOL whose `outcome === 'toolResult'` call named `tool`. The
-   * coordination-dedup guards read it so a retrieval an agent in the pool
-   * already paid for is refused once — whichever paid — while a call that was
-   * only nudged (its result never landed) is never counted.
-   *
-   * Scope is the pool, NOT the whole run: it closes over this pool's `agents`
-   * and does not reach a parent pool's agents, so cross-pool dedup under nested
-   * delegation is not covered here (no nesting is constructed today).
-   *
-   * Unlike the fields above, this is NOT resolved once: it is a live SERVICE the
-   * pool injects (a closure over the agent cohort, see `agent-pool.ts`), read
-   * afresh on every guard check. Absent outside a pool.
+   * This pool cohort's attended retrievals of a tool: the parsed args of every
+   * agent's calls of `tool` whose result reached the KV, content and error
+   * results alike, never a nudge. Read from this pool's roster at each check;
+   * pool-scoped, not run-scoped. A live read on an otherwise resolved-once
+   * record — the tool-lifecycle contract replaces it with an argument at the
+   * check. Absent outside a pool.
    */
-  cohortLanded?: (tool: string) => Record<string, unknown>[];
+  cohortAttended?: (tool: string) => Record<string, unknown>[];
 }
 
 // ── Default policy ──────────────────────────────────────────

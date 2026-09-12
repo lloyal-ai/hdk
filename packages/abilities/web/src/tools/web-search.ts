@@ -93,7 +93,7 @@ export class WebSearchTool extends Tool<{ query: string }> {
     if (!query) return { error: "query must not be empty" };
 
     // Cross-agent dedup is the run's concern, not this tool's: the `query_dedup`
-    // guard refuses a query the cohort already LANDED (never one merely nudged),
+    // guard refuses a query the cohort already attempted (never one merely nudged),
     // before this tool is ever dispatched.
 
     const provider = this._provider;

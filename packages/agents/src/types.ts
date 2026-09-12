@@ -52,14 +52,9 @@ export interface ToolSchema {
 
 /**
  * Execution context passed to {@link Tool.execute} — the values of THIS call,
- * and nothing that outlives it.
- *
- * WHO is calling is not here: read {@link CallingAgent}, which the pool sets on
- * every dispatch and which carries the agent's id, its branch (fork sub-agents
- * from `caller.branch`), and the history of what it has actually received
- * ({@link Agent.attendedResults}). An id or a history slice on this port invites
- * a tool to keep private per-agent state — which is how three tools came to
- * record evidence before the pool had admitted it.
+ * and nothing that outlives it. WHO is calling is {@link CallingAgent}; an id
+ * or history slice on this port invites a tool to keep private per-agent
+ * state, recording evidence before the pool has admitted it.
  *
  * @category Agents
  */
@@ -409,7 +404,7 @@ export type AgentEvent =
   | { type: 'agent:tool_result'; agentId: number; tool: string; result: string; contextAvailablePercent?: number }
   | { type: 'agent:tool_progress'; agentId: number; tool: string; filled: number; total: number }
   | { type: 'agent:tool_retry'; agentId: number; tool: string; retryAfterMs: number; attempt: number }
-  /** A prefill LANDED on the agent's branch — a tool result, a recovery
+  /** A prefill reached the agent's branch — a tool result, a recovery
    *  prompt or a probe — with the roots it admitted (`attachments`, present
    *  when the result carried any). Admission is a run-record fact the host
    *  books and shows, so it rides the bus like every other one; the trace's

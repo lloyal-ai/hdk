@@ -13,7 +13,7 @@ import type { IndexFor } from './search-documents';
  * The exact text of a document: a page, or a line range from a search hit.
  * A page reads as the whole sections that touch it, so a table split by a
  * page break stays whole. Only the unread part comes back, and what counts as
- * read is what the calling agent has actually RECEIVED — its own landed calls
+ * read is what the calling agent attends over — its own attended calls
  * and its ancestors'. The tool keeps no memory of its own: it cannot see
  * whether its last result was admitted, so a settle rejection would otherwise
  * leave the model blind on the retry.
@@ -59,7 +59,7 @@ export class ReadDocumentTool extends Tool<{ document: string; page?: number; st
 
     // What this agent already attends over of THIS document. Each past call is
     // resolved by the same rule as the present one, because the pool books the
-    // model's raw arguments: a landed `{ page: 2 }` carries no line numbers,
+    // model's raw arguments: an attended `{ page: 2 }` carries no line numbers,
     // and only this document's section map turns it into a span.
     const agent = yield* CallingAgent.get();
     const prev = agent

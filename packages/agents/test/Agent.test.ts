@@ -211,32 +211,32 @@ describe('Agent', () => {
     // What the pool books once a result LANDS on the branch — never the tool.
     // `outcome` is the only thing that separates a delivered result from a
     // settle-reject nudge, which carries the ORIGINAL call's name and args.
-    const landed = (name: string, args: object, outcome: 'toolResult' | 'nudge' | 'recovery' = 'toolResult') =>
+    const booked = (name: string, args: object, outcome: 'toolResult' | 'nudge' | 'recovery' = 'toolResult') =>
       ({ name, args: JSON.stringify(args), resultCells: 10, contextAfterPercent: 90, timestamp: 0, outcome } as any);
 
-    it('returns the parsed args of this tool\'s LANDED calls — self then ancestors', () => {
+    it('returns the parsed args of this tool\'s attended calls — self then ancestors', () => {
       const parent = makeAgent({ id: 1 });
-      parent.recordToolResult(landed('read_file', { filename: 'a.md', startLine: 1, endLine: 20 }));
+      parent.recordToolResult(booked('read_file', { filename: 'a.md', startLine: 1, endLine: 20 }));
       const child = makeAgent({ id: 2, parent });
-      child.recordToolResult(landed('read_file', { filename: 'b.md', startLine: 1, endLine: 5 }));
+      child.recordToolResult(booked('read_file', { filename: 'b.md', startLine: 1, endLine: 5 }));
       expect(child.attendedResults('read_file')).toEqual([
         { filename: 'b.md', startLine: 1, endLine: 5 },
         { filename: 'a.md', startLine: 1, endLine: 20 },
       ]);
     });
 
-    it('excludes a nudge and a recovery — only what LANDED counts', () => {
+    it('excludes a nudge and a recovery — only an attended result counts', () => {
       const a = makeAgent();
-      a.recordToolResult(landed('read_file', { filename: 'a.md' }, 'nudge'));
-      a.recordToolResult(landed('recovery', {}, 'recovery'));
-      a.recordToolResult(landed('read_file', { filename: 'b.md' }));
+      a.recordToolResult(booked('read_file', { filename: 'a.md' }, 'nudge'));
+      a.recordToolResult(booked('recovery', {}, 'recovery'));
+      a.recordToolResult(booked('read_file', { filename: 'b.md' }));
       expect(a.attendedResults('read_file')).toEqual([{ filename: 'b.md' }]);
     });
 
     it('filters by tool name', () => {
       const a = makeAgent();
-      a.recordToolResult(landed('fetch_page', { url: 'x' }));
-      a.recordToolResult(landed('web_search', { query: 'q' }));
+      a.recordToolResult(booked('fetch_page', { url: 'x' }));
+      a.recordToolResult(booked('web_search', { query: 'q' }));
       expect(a.attendedResults('fetch_page')).toEqual([{ url: 'x' }]);
     });
   });

@@ -37,7 +37,7 @@ export function projectable(page: PageFacts): boolean {
  * so instead, and a page past the render bound says it is not archived.
  *
  * A repeat by the same agent carries the page AGAIN, with a note. The tool
- * cannot see whether its last result landed — the pool may have replaced it
+ * cannot see whether its last result was admitted — the pool may have replaced it
  * with a settle nudge — so suppressing a repeat would leave the model blind;
  * admission is the only gate on what a page costs.
  */

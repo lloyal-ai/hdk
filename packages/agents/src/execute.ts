@@ -200,7 +200,7 @@ export class Executor {
     if (S.hold) return out;
 
     // 1. Admitted prefills: the token rail, the media rail, probes, re-activation.
-    const landed = yield* this.settle(S.prefills, out);
+    const admitted = yield* this.settle(S.prefills, out);
     if (out.fatal) return out;
 
     // 2. Tool dispatch — inline on this fiber, fan-out on a child.
@@ -213,7 +213,7 @@ export class Executor {
     // 4. Sampling — the scheduled decode set, in roster order. Agents that
     //    became active in THIS step (admitted items, spawns) sample next
     //    tick, after the scheduler has had its say on them.
-    void landed; void born;
+    void admitted; void born;
     const set = new Set<Agent>(S.decode);
     const entries: [Branch, number][] = [];
     for (const a of d.agents) {
@@ -253,10 +253,10 @@ export class Executor {
     return out;
   }
 
-  /** Prefill the admitted items; book and re-activate what landed. */
+  /** Prefill the admitted items; book and re-activate what was admitted. */
   private *settle(items: PrefillItem[], out: Outputs): Operation<Agent[]> {
     const d = this.d;
-    const landed: Agent[] = [];
+    const admitted: Agent[] = [];
     const order: { agentId: number; callId: string; cells: number }[] = [];
     const probes = new Map<number, string>();
     // Admissions to announce once the rails are done: `prefilled` rides the
@@ -278,7 +278,7 @@ export class Executor {
       for (const r of refs ?? []) {
         if (!d.available.some((x) => x.digest === r.digest)) d.available.push(r);
       }
-      landed.push(a);
+      admitted.push(a);
       order.push({ agentId: a.id, callId: it.callId, cells });
       if (it.probe) probes.set(a.id, it.probe);
       a.deferAttempts = 0;
@@ -304,7 +304,7 @@ export class Executor {
         // records it and the pool closes partial.
         if (classifyRc(de?.rc, de?.partial, d.ladder.backendSuspect) === 'fatal') {
           out.fatal = { phase: 'prefill', err };
-          return landed;
+          return admitted;
         }
       }
     }
@@ -327,11 +327,11 @@ export class Executor {
 
     for (const t of admissions) yield* d.emit.emit(t);
 
-    if (landed.length > 0) {
+    if (admitted.length > 0) {
       d.emit.trace({ kind: 'settleOrder', batch: order });
       const probePairs: [Branch, number[]][] = [];
       const probeMeta: { agent: Agent; cells: number; text: string }[] = [];
-      for (const a of landed) {
+      for (const a of admitted) {
         const text = probes.get(a.id);
         if (!text) continue;
         const tokens = d.ctx.tokenizeSync(text, false);
@@ -347,14 +347,14 @@ export class Executor {
       }
       // Re-activate. An extracting agent gets the eager terminal-tool grammar
       // (the grammar-swap); everyone else the lazy tool-call grammar.
-      for (const a of landed) {
+      for (const a of admitted) {
         a.transition('active');
         a.resetTurn();
         if (a.extracting && d.terminalGrammar) a.branch.setGrammar(d.terminalGrammar);
         else this.applyLazyGrammar(a);
       }
     }
-    return landed;
+    return admitted;
   }
 
   /** Spawns (heals among them) and extends land as one prefill; the new agents activate. */
@@ -409,7 +409,7 @@ export class Executor {
         e.resolve(e.tokens.length);
       }
       for (const s of S.spawns) {
-        // Discarded while the batch was in flight: its suffix landed, but nobody
+        // Discarded while the batch was in flight: its suffix was prefilled, but nobody
         // awaits it and the pool is draining or its orchestrator is gone. The
         // fork goes back rather than into a roster that would only reap it.
         if (s.discarded) { discardSpawn(s); handed.add(s); continue; }

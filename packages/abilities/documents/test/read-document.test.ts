@@ -20,7 +20,7 @@ import { makeFixture, wordTokenize } from './helpers/fixture';
 type Read = { document?: string; id?: string; lines?: string[]; pageStart?: number; pageEnd?: number; cite?: string; content?: string; note?: string; error?: string };
 
 /** What the POOL books once a result lands on the branch. Never the tool. */
-const landed = (args: Record<string, unknown>, outcome: 'toolResult' | 'nudge' = 'toolResult'): ToolHistoryEntry =>
+const booked = (args: Record<string, unknown>, outcome: 'toolResult' | 'nudge' = 'toolResult'): ToolHistoryEntry =>
   ({ name: 'read_document', args: JSON.stringify(args), resultCells: 10, contextAfterPercent: 90, timestamp: 0, outcome }) as ToolHistoryEntry;
 
 /** A real {@link Agent} with a cast branch, exactly as the agents suite builds
@@ -29,7 +29,7 @@ const landed = (args: Record<string, unknown>, outcome: 'toolResult' | 'nudge' =
  *  hand-rolled walk would prove the test's own loop instead. Only `id`,
  *  `parent` and the booked history are read here, so the branch and format
  *  never have to exist. History is booked through `recordToolResult`, the
- *  method the pool itself calls once a result has landed. */
+ *  method the pool itself calls once a result has been prefilled. */
 function agentAt(id: number, history: ToolHistoryEntry[] = [], parent: Agent | null = null): Agent {
   const a = new Agent({ id, parentId: parent?.id ?? 0, branch: { handle: id } as never, fmt: {} as FormatConfig, parent });
   for (const h of history) a.recordToolResult(h);
@@ -82,14 +82,14 @@ describe('read_document', () => {
   });
 });
 
-describe('read_document — the agent\'s landed history is the memory', () => {
+describe('read_document — the agent\'s attended history is the memory', () => {
   it('a re-read of what this agent RECEIVED is a note; another agent reads it fresh', async () => {
     const { doc, read } = setup();
     const agent = agentAt(1);
     const first = await read({ document: documentId(doc), page: 2 }, [doc], agent);
     expect(first.lines).toEqual(['7-12']);
     // Nothing is remembered until the result LANDS. The pool books it here.
-    agent.recordToolResult(landed({ document: documentId(doc), page: 2 }));
+    agent.recordToolResult(booked({ document: documentId(doc), page: 2 }));
 
     const again = await read({ document: documentId(doc), page: 2 }, [doc], agent);
     expect(again.note).toMatch(/already read/);
@@ -101,22 +101,22 @@ describe('read_document — the agent\'s landed history is the memory', () => {
 
   it('a forked child skips what its parent received; a call the pool rejected counts for nothing', async () => {
     const { doc, read } = setup();
-    const parent = agentAt(1, [landed({ document: documentId(doc), startLine: 1, endLine: 6 })]);
+    const parent = agentAt(1, [booked({ document: documentId(doc), startLine: 1, endLine: 6 })]);
     const child = agentAt(2, [], parent);
     expect((await read({ document: documentId(doc), startLine: 1, endLine: 10 }, [doc], child)).lines).toEqual(['7-10']);
 
-    const nudged = agentAt(3, [landed({ document: documentId(doc), startLine: 1, endLine: 6 }, 'nudge')]);
+    const nudged = agentAt(3, [booked({ document: documentId(doc), startLine: 1, endLine: 6 }, 'nudge')]);
     expect((await read({ document: documentId(doc), startLine: 1, endLine: 6 }, [doc], nudged)).lines).toEqual(['1-6']);
   });
 
   it('a page already read is subtracted from a later line range — which only the document\'s own map can resolve', async () => {
-    // The pool books the model's RAW arguments, so a landed `{ page: 2 }` call
+    // The pool books the model's RAW arguments, so an attended `{ page: 2 }` call
     // carries no line numbers at all. Turning it into lines 7–12 needs this
     // document's section map. No amount of range arithmetic over the history
     // can do it: an implementation that only subtracts numbers it finds in
     // `args` returns the whole span, and this test fails.
     const { doc, read } = setup();
-    const seenPage2 = agentAt(9, [landed({ document: documentId(doc), page: 2 })]);
+    const seenPage2 = agentAt(9, [booked({ document: documentId(doc), page: 2 })]);
     const r = await read({ document: documentId(doc), startLine: 7, endLine: 16 }, [doc], seenPage2);
     expect(r.lines).toEqual(['13-16']);
     expect(r.content).toContain('Discussion');
