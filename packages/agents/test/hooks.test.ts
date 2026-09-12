@@ -141,6 +141,16 @@ describe('beforeDispatch: the gates', () => {
       expect(gateOn(call('t', { q: 1 }), { tool: t, agent: a })).toBeUndefined();
     });
 
+    it('a gate named like an Object.prototype member stays lineage-scoped: the override lookup reads own keys only', () => {
+      const { parent, sibling, roster } = family();
+      void parent;
+      for (const name of ['constructor', 'toString', 'hasOwnProperty', 'valueOf', '__proto__']) {
+        const t = new Stub('t', { beforeDispatch: [gate(name, ({ args, attended }) => attended().some((a) => a.q === args.q))] });
+        expect(gateOn(call('t', { q: 1 }), { tool: t, agent: sibling, roster }), name).toBeUndefined();
+        expect(gateOn(call('t', { q: 1 }), { tool: t, agent: sibling, roster, policy: literal({ guardOverrides: { other: false } }) }), name).toBeUndefined();
+      }
+    });
+
     it('is computed once per scope, and not at all when no gate asks', () => {
       const a = agent();
       let walks = 0;

@@ -64,6 +64,19 @@ describe('tool-lifecycle contract (real pool)', () => {
     expect(r.result.agents.map((x) => x.agent.attendedResults('t'))).toEqual([[{ q: 'same' }], [{ q: 'same' }]]);
   });
 
+  it('a gate named like an Object.prototype member keeps the lineage default: an isolated row is not refused for a sibling\'s fetch', async () => {
+    // `overrides[name]` on a plain object walks the prototype: `constructor`
+    // is truthy there, its `.scope` undefined, and the scope selection fell to
+    // cohort. The override lookup must read own keys only.
+    const t = new OpenTool('t', { ok: true }, gate(sameArg('constructor', 'q')));
+    const r = await runPool({
+      scripts: [{ tokens: FIRST }, { tokens: LATER }], policy: literalPolicy(), tools: only(t), trace: true,
+      instrument: parse({ t1: call('same'), t2: call('same') }),
+    });
+    expect(nudges(r)).toEqual([]);
+    expect(t.calls).toHaveLength(2);
+  });
+
   it("re-scoped to the cohort by the harness: the sibling's repeat is refused under the gate's name", async () => {
     const t = new OpenTool('t', { ok: true }, gate(sameQ));
     const r = await runPool({
@@ -138,6 +151,33 @@ describe('afterAdmit runs at the booking, once per admitted item, with what the 
     expect(seen[0].outcome).toBe('toolResult');
     expect(seen[0].result).toMatchObject({ ok: true, _contextAvailablePercent: expect.any(Number) });
     expect(seen[0].attendedNow).toBe(1);
+  });
+
+  it('the value the agent was shown, not the tool\'s live object: two calls in one tick from a tool that reuses one result object', async () => {
+    // Both agents stop on their first turn, so both calls are dispatched in ONE
+    // tick and booked in the next. The tool mutates and returns the same object
+    // each call; the hook must see each agent's own admitted value.
+    const seen: Array<[number, string]> = [];
+    class SharedResult extends Tool<{ v: string }> {
+      readonly name = 'shared';
+      readonly description = 'returns one mutable object every call';
+      readonly parameters: JsonSchema = { type: 'object', properties: {} };
+      readonly state = { v: '' };
+      readonly hooks: ToolLifecycleHooks = {
+        afterAdmit: ({ agent, result }) => { seen.push([agent.id, (result as { v: string }).v]); return undefined; },
+      };
+      *execute(args: { v: string }): Operation<unknown> { this.state.v = args.v; return this.state; }
+    }
+    const r = await runPool({
+      scripts: [{ tokens: [1, STOP, STOP] }, { tokens: [2, STOP, STOP] }],
+      policy: literalPolicy(), tools: only(new SharedResult()), trace: true,
+      instrument: parse({ t1: { name: 'shared', arguments: '{"v":"first"}' }, t2: { name: 'shared', arguments: '{"v":"second"}' } }),
+    });
+    const [a, b] = r.result.agents.map((x) => x.agentId);
+    const shown = (r.channelEvents.filter((e) => e.type === 'agent:tool_result') as Array<{ agentId: number; result: string }>)
+      .map((e) => [e.agentId, (JSON.parse(e.result) as { v: string }).v]);
+    expect(shown).toEqual([[a, 'first'], [b, 'second']]);
+    expect(seen).toEqual([[a, 'first'], [b, 'second']]);
   });
 
   it("a guard nudge: with outcome nudge and the gate's message as the { error } the model reads", async () => {

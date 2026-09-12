@@ -152,7 +152,8 @@ export function decideBeforeDispatch(i: {
   for (const h of policy.hooks ?? []) for (const gate of h.beforeDispatch ?? []) gates.push({ by: 'policy', gate, overridable: true });
 
   for (const { by, gate, overridable } of gates) {
-    const override = overridable ? overrides[gate.name] : undefined;
+    // Own keys only: a gate named like an Object.prototype member must not read the prototype.
+    const override = overridable && Object.hasOwn(overrides, gate.name) ? overrides[gate.name] : undefined;
     if (override === false) continue;
     const scope: GuardScope = override ? override.scope : 'lineage';
     const input: GuardInput = { tool: tc.name, args, attended: () => attendedIn(scope) };

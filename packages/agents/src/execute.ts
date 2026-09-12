@@ -692,7 +692,11 @@ export class Executor {
     }
     const resultStr = JSON.stringify(told);
     yield* d.emit.emit({ kind: 'toolTold', agent, tool: tc.name, resultStr, contextAvailablePercent });
-    const common = { agent, toolName: tc.name, callId, args: tc.arguments, resultStr, result: told };
+    // The item carries what the agent was shown: the serialized text, read
+    // back. Not `told` itself — a tool may return one mutable object for every
+    // call (a cache), and the hook runs a tick later, after that object may
+    // have changed under it.
+    const common = { agent, toolName: tc.name, callId, args: tc.arguments, resultStr, result: JSON.parse(resultStr) as unknown };
     let item: PrefillItem;
     if (prepared && prepared.bitmaps.length > 0) {
       const delta = buildToolResultDeltaMultimodal(d.ctx, resultStr, callId, prepared.bitmaps as Uint8Array[], { enableThinking: agent.fmt.enableThinking });
