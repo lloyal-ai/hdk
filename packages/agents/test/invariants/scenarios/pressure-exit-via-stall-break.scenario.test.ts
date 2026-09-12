@@ -1,7 +1,7 @@
 /**
  * Scenario: SETTLE stall-break (last-resort sacrifice)
  *
- * Shape: single agent, oversized tool result, policy's onSettleReject
+ * Shape: single agent, oversized tool result, policy's `beforeAdmit`
  * returns { type: 'nudge' } — but the nudge payload ALSO doesn't fit
  * (pathological headroom). The framework should:
  *
@@ -48,12 +48,12 @@ describe('scenario: pressure exit via stall-break prevention', () => {
         if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
         return { type: 'idle', reason: 'free_text_stop' };
       },
-      onSettleReject: () => {
+      hooks: [{ beforeAdmit: () => {
         nudgeCount++;
         // Pathological: returning an absurdly long message so even the
         // nudge payload exceeds headroom on re-evaluation.
         return { type: 'nudge', message: 'x'.repeat(12000) };
-      },
+      } }],
       shouldExit: () => false,
       onRecovery: () => ({ type: 'skip' }),
     };

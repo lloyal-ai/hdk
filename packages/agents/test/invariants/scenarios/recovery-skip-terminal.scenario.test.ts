@@ -20,7 +20,7 @@ describe('scenario: skipped recovery emits agent:failed (no orphan)', () => {
     const policy: AgentPolicy = {
       recoveryShape: 'parallel',
       onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-      onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       onRecovery: () => ({ type: 'skip' }), // force the skip the research policy hit in the wild
     };
 

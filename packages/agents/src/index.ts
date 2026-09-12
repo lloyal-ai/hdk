@@ -13,11 +13,14 @@ export {
   Attachments, Ingress,
 } from './context';
 export { Tool, ToolRetryError } from './Tool';
+export type {
+  Outcome, GuardInput, ToolGuard, Completion, ExecuteDecision, AdmitDecision, FollowUp, ToolLifecycleHooks,
+} from './Tool';
 export { Agent } from './Agent';
 export type { AgentStatus, ResultSource, FormatConfig, ToolHistoryEntry } from './Agent';
-export { DefaultAgentPolicy } from './AgentPolicy';
-export type { AgentPolicy, ProduceAction, SettleAction, RecoveryAction, ToolRetryAction, IdleReason, PolicyConfig, ToolGuard, DefaultAgentPolicyOpts } from './AgentPolicy';
-export { defaultToolGuards } from './AgentPolicy';
+export { DefaultAgentPolicy, isGuardOverrides } from './AgentPolicy';
+export type { AgentPolicy, ProduceAction, RecoveryAction, IdleReason, PolicyConfig, DefaultAgentPolicyOpts, GuardScope, GuardOverrides } from './AgentPolicy';
+export { defaultAfterExecute, defaultBeforeAdmit, defaultAfterAdmit, retryUpTo } from './hooks';
 export { CallingAgent } from './context';
 export { Source, NULL_SCORER } from './source';
 export type { EntailmentScorer, ScorerReranker } from './source';

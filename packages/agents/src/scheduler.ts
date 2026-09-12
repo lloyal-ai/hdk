@@ -1,9 +1,11 @@
 import type { SessionContext } from '@lloyal-labs/sdk';
 import { buildToolResultDelta } from '@lloyal-labs/sdk';
 import type { Agent } from './Agent';
-import type { AgentPolicy, PolicyConfig } from './AgentPolicy';
-import { RECOVERY_PREFILL_OVERHEAD, BATCH_BUFFER } from './AgentPolicy';
+import { parseHistoryArgs } from './Agent';
+import type { AgentPolicy } from './AgentPolicy';
+import { RECOVERY_PROMPT_OVERHEAD, BATCH_BUFFER } from './AgentPolicy';
 import type { Tool } from './Tool';
+import { decideBeforeAdmit, type Frame } from './hooks';
 import { type ContextPressure } from './pressure';
 import {
   type TickState, type Schedule, type Pending, type PrefillItem, type Recovery, type ExtendRequest,
@@ -44,7 +46,6 @@ export interface SchedulerOptions {
    *  its stop token or when the pressure turns critical. */
   recoveryBudget?: number;
   terminalToolName?: string;
-  config: PolicyConfig;
 }
 
 export interface Scheduler {
@@ -73,7 +74,7 @@ export function recoveryFor(
   let budget: number;
   let action;
   if (mode === 'cohort') {
-    const fits = Math.floor((pressure.remaining - pressure.hardLimit - BATCH_BUFFER) / Math.max(1, aliveCount)) - RECOVERY_PREFILL_OVERHEAD;
+    const fits = Math.floor((pressure.remaining - pressure.hardLimit - BATCH_BUFFER) / Math.max(1, aliveCount)) - RECOVERY_PROMPT_OVERHEAD;
     budget = recoveryBudget != null
       ? (fits > 0 ? Math.min(recoveryBudget, fits) : recoveryBudget)
       : Math.min(MAX_RECOVERY_BUDGET, Math.max(MIN_RECOVERY_BUDGET, fits));
@@ -86,11 +87,27 @@ export function recoveryFor(
   return { type: 'extract', action, budget, serial: mode === 'serial' };
 }
 
+/**
+ * A nudge as a pending item: the compact `{ error }` the model reads in the
+ * call's place — the ONE construction, shared by the produce path (a gate or
+ * the policy refused the call) and the stall-break (the result could not be
+ * admitted). Booked as `nudge`, never attended.
+ */
+export function nudgeItem(
+  ctx: SessionContext, agent: Agent, message: string, call: { tool: string; callId: string; args: string },
+): PrefillItem {
+  const result = { error: message };
+  const tokens = buildToolResultDelta(ctx, JSON.stringify(result), call.callId, { enableThinking: agent.fmt.enableThinking });
+  return { kind: 'nudge', rail: 'token', agent, tokens, toolName: call.tool, callId: call.callId, args: call.args, result };
+}
+
 export class DefaultScheduler implements Scheduler {
   constructor(
     private readonly opts: SchedulerOptions,
     private readonly ctx: SessionContext,
     private readonly tools: Map<string, Tool>,
+    /** The framework's contributor to a call's lifecycle: with the tool and the policy, what `beforeAdmit` consults. */
+    private readonly frame: Frame,
   ) {}
 
   schedule(state: TickState, policy: AgentPolicy): Schedule {
@@ -270,32 +287,33 @@ export class DefaultScheduler implements Scheduler {
       for (const it of deferred) {
         const a = it.agent;
         if (a.status !== 'awaiting_tool' || a.branch.disposed) continue;
-        const action = policy.onSettleReject?.(a, itemCells(it), P0, this.opts.config);
-        const reason = action ? 'pressure_settle_reject' as const : 'settle_stall_break' as const;
         if (it.kind === 'recovery') {
           // An extracting agent whose recovery turn never fit: its span already
-          // ended at the kill, so no second `agent:done`. A cohort turn whose
-          // band was too small is re-decided serial, so the report decodes from
-          // the reserve one at a time; a turn the serial rule cannot admit
-          // either — the prompt exceeds what physically remains — is skipped.
+          // ended at the kill, so no second `agent:done`. The turn is the
+          // pool's own, so no contributor is asked. A cohort turn whose band
+          // was too small is re-decided serial, so the report decodes from the
+          // reserve one at a time; a turn the serial rule cannot admit either
+          // — the prompt exceeds what physically remains — is skipped.
           const recovery: Recovery = fitsSerial(itemCells(it)) ? this.recovery(a, policy, P0, S.alive, 'serial') : { type: 'skip' };
-          S.stall.push({ agent: a, nudge: null, drop: { agent: a, reason, done: false, recovery } });
+          S.stall.push({ agent: a, nudge: null, drop: { agent: a, reason: 'settle_stall_break', done: false, recovery } });
           continue;
         }
+        // The result does not fit and nothing can free room: the tool, the
+        // policy, then the frame say what happens. A contributor's drop is a
+        // `pressure_settle_reject`; the frame's default is the stall-break.
+        const { decision, by } = decideBeforeAdmit(
+          { agent: a, tool: it.toolName, args: parseHistoryArgs(it.args), cost: itemCells(it), pressure: P0, terminal },
+          { frame: this.frame, tool: this.tools.get(it.toolName), policy },
+        );
+        const reason = by === 'frame' ? 'settle_stall_break' as const : 'pressure_settle_reject' as const;
         let nudge: StallOutcome['nudge'] = null;
-        if (action?.type === 'nudge') {
-          const nudgeResult = { error: action.message };
-          const tokens = buildToolResultDelta(this.ctx, JSON.stringify(nudgeResult), it.callId, { enableThinking: a.fmt.enableThinking });
-          const fits = tokens.length <= stallHeadroom;
-          const replacement: PrefillItem | null = fits ? {
-            kind: 'nudge', rail: 'token', agent: a, tokens,
-            toolName: it.toolName, callId: it.callId, args: it.args,
-            probe: this.tools.get(it.toolName)?.probe(nudgeResult) ?? undefined,
-          } : null;
-          nudge = { message: action.message, tool: it.toolName, args: it.args, replacement };
-          if (replacement) { remaining.items.push(replacement); stallHeadroom -= tokens.length; }
+        if (decision.type === 'nudge') {
+          const replacement = nudgeItem(this.ctx, a, decision.message, { tool: it.toolName, callId: it.callId, args: it.args });
+          const fits = itemCells(replacement) <= stallHeadroom;
+          nudge = { message: decision.message, tool: it.toolName, args: it.args, replacement: fits ? replacement : null };
+          if (fits) { remaining.items.push(replacement); stallHeadroom -= itemCells(replacement); }
         }
-        // The policy's suggestion was infeasible (or it said idle, or it is absent): drop.
+        // The nudge was infeasible, or the decision was to drop: drop.
         const drop: Drop | null = nudge?.replacement ? null
           : { agent: a, reason, done: true, recovery: this.recovery(a, policy, P0, S.alive, mode) };
         S.stall.push({ agent: a, nudge, drop });

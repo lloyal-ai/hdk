@@ -1,24 +1,20 @@
+/**
+ * `DefaultAgentPolicy` as a router: what `onProduced` makes of a turn, and the
+ * policy's other per-agent answers. Gates are not here — the pool runs them
+ * before `onProduced` is called (`hooks.ts`, tested in `hooks.test.ts`), and
+ * the policy's own lifecycle entry (its retry budget and settle nudge) is
+ * tested there too, through the frame's walk.
+ */
 import { describe, it, expect } from 'vitest';
-import { DefaultAgentPolicy, defaultToolGuards } from '../src/AgentPolicy';
+import { DefaultAgentPolicy } from '../src/AgentPolicy';
 import { ContextPressure } from '../src/pressure';
 import type { PolicyConfig } from '../src/AgentPolicy';
-import { Agent, argsOf, isAttended } from '../src/Agent';
-import type { ToolHistoryEntry } from '../src/Agent';
+import { Agent } from '../src/Agent';
 import { createMockBranch } from './helpers/mock-branch';
 
 import { FMT } from './helpers/format-config';
 
 const BASE_CONFIG: PolicyConfig = { maxTurns: 20, terminalToolName: 'report', hasNonTerminalTools: true };
-
-/** A cohort history entry as the POOL books it once a result lands (or is
- *  nudged). Retrieval dedup reads the RUN's retrievals, not one agent's KV. */
-const cohortEntry = (name: string, args: object, outcome: 'toolResult' | 'nudge' | 'recovery' = 'toolResult'): ToolHistoryEntry =>
-  ({ name, args: JSON.stringify(args), resultCells: 0, contextAfterPercent: 100, timestamp: 0, outcome });
-
-/** BASE_CONFIG plus the cohort view the pool injects — the attended entries of
- *  the cohort, exactly as `agent-pool.ts` builds it. */
-const cohortConfig = (cohort: ToolHistoryEntry[]): PolicyConfig =>
-  ({ ...BASE_CONFIG, cohortAttended: (tool) => argsOf(cohort.filter(isAttended), tool) });
 
 function makeAgent(overrides?: { toolCallCount?: number; turns?: number; toolHistory?: Array<{ name: string; args: string }> }) {
   const branch = createMockBranch();
@@ -85,17 +81,6 @@ describe('DefaultAgentPolicy', () => {
       expect(action).toEqual({ type: 'return', result: 'not valid json' });
     });
 
-    it('T8: tool guard with malformed JSON args proceeds with empty object', () => {
-      const a = makeAgent({
-        toolCallCount: 2,
-        toolHistory: [{ name: 'fetch_page', args: 'https://example.com' }],
-      });
-      // Invalid JSON in arguments — guard should still evaluate (with empty args)
-      const tc = { name: 'fetch_page', arguments: 'not json', id: 'c1' };
-      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      // Guard checks url field — with empty args, url is undefined, so guard doesn't reject
-      expect(action.type).toBe('tool_call');
-    });
   });
 
   describe('onProduced — over budget', () => {
@@ -119,75 +104,12 @@ describe('DefaultAgentPolicy', () => {
     });
   });
 
-  describe('tool guards', () => {
-    it('rejects fetch_page the cohort already attended', () => {
-      const a = makeAgent({ toolCallCount: 2 });
-      const cohort = [cohortEntry('fetch_page', { url: 'https://example.com' })];
-      const tc = { name: 'fetch_page', arguments: JSON.stringify({ url: 'https://example.com' }), id: 'c1' };
-      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), cohortConfig(cohort));
-      expect(action.type).toBe('nudge');
-    });
-
-    it('allows fetch_page with new URL', () => {
-      const a = makeAgent({ toolCallCount: 2 });
-      const cohort = [cohortEntry('fetch_page', { url: 'https://other.com' })];
-      const tc = { name: 'fetch_page', arguments: JSON.stringify({ url: 'https://example.com' }), id: 'c1' };
-      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), cohortConfig(cohort));
-      expect(action.type).toBe('tool_call');
-    });
-
-    // The dedup fact is the pool's, not one branch's KV: a URL a SIBLING attended
-    // must dedup even though THIS agent never fetched it, and a call that was
-    // only NUDGED (its result never reached the KV) does not count.
-    it('rejects a fetch a SIBLING attended, though this agent never fetched it', () => {
-      const a = makeAgent({ toolCallCount: 2 }); // empty own history
-      const cohort = [cohortEntry('fetch_page', { url: 'https://sib.com' })];
-      const tc = { name: 'fetch_page', arguments: JSON.stringify({ url: 'https://sib.com' }), id: 'c1' };
-      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), cohortConfig(cohort));
-      expect(action.type).toBe('nudge');
-    });
-
-    it('does NOT reject a retrieval the cohort only NUDGED — a nudge is not a receipt', () => {
-      const a = makeAgent({ toolCallCount: 2 });
-      a.recordToolResult(cohortEntry('fetch_page', { url: 'https://x.com' }, 'nudge'));
-      const cohort = [...a.toolHistory]; // the pool's cohort includes self
-      const tc = { name: 'fetch_page', arguments: JSON.stringify({ url: 'https://x.com' }), id: 'c1' };
-      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), cohortConfig(cohort));
-      expect(action.type).toBe('tool_call');
-    });
-
-    it('rejects a web_search query the cohort already attended', () => {
-      const a = makeAgent({ toolCallCount: 2 });
-      const cohort = [cohortEntry('web_search', { query: 'Same Query' })];
-      const tc = { name: 'web_search', arguments: JSON.stringify({ query: 'same query' }), id: 'c1' };
-      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), cohortConfig(cohort));
-      expect(action.type).toBe('nudge');
-    });
-
-    // The tool TRIMS its arg before it fetches/searches (fetch-page.ts,
-    // web-search.ts), so a whitespace-only variant hits the same resource. The
-    // guard must normalize the same way, or the same URL/query is fetched twice.
-    it('dedups a URL that differs only by surrounding whitespace', () => {
-      const a = makeAgent({ toolCallCount: 2 });
-      const cohort = [cohortEntry('fetch_page', { url: 'https://example.com' })];
-      const tc = { name: 'fetch_page', arguments: JSON.stringify({ url: '  https://example.com  ' }), id: 'c1' };
-      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), cohortConfig(cohort));
-      expect(action.type).toBe('nudge');
-    });
-
-    it('dedups a query that differs only by surrounding whitespace', () => {
-      const a = makeAgent({ toolCallCount: 2 });
-      const cohort = [cohortEntry('web_search', { query: 'same query' })];
-      const tc = { name: 'web_search', arguments: JSON.stringify({ query: '  same query  ' }), id: 'c1' };
-      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), cohortConfig(cohort));
-      expect(action.type).toBe('nudge');
-    });
-
-    it('allows web_research without prior tool calls', () => {
+  describe('onProduced — an ordinary call', () => {
+    it('routes it to dispatch: the gates are the pool\'s, run before this is called', () => {
       const a = makeAgent({ toolCallCount: 0 });
       const tc = { name: 'web_research', arguments: '{"questions":["q"]}', id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action.type).toBe('tool_call');
+      expect(action).toEqual({ type: 'tool_call', tc });
     });
   });
 
@@ -198,34 +120,6 @@ describe('DefaultAgentPolicy', () => {
       const tc = { name: 'report', arguments: '{"findings":"f"}', id: 'c1' };
       const action = customPolicy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
       expect(action.type).toBe('nudge');
-    });
-
-    it('replaces guards with custom guards', () => {
-      const customGuard = {
-        tools: ['any_tool'],
-        reject: () => true,
-        message: 'custom rejection',
-      };
-      const customPolicy = new DefaultAgentPolicy({ guards: [customGuard] });
-      const a = makeAgent({ toolCallCount: 3 });
-      const tc = { name: 'any_tool', arguments: '{}', id: 'c1' };
-      const action = customPolicy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action.type).toBe('nudge');
-      expect((action as any).message).toBe('custom rejection');
-    });
-
-    it('appends extraGuards to defaults', () => {
-      const extra = {
-        tools: ['custom_tool'],
-        reject: () => true,
-        message: 'extra guard fired',
-      };
-      const customPolicy = new DefaultAgentPolicy({ extraGuards: [extra] });
-      const a = makeAgent({ toolCallCount: 3 });
-      const tc = { name: 'custom_tool', arguments: '{}', id: 'c1' };
-      const action = customPolicy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action.type).toBe('nudge');
-      expect((action as any).message).toBe('extra guard fired');
     });
   });
 
@@ -393,39 +287,6 @@ describe('DefaultAgentPolicy', () => {
     });
   });
 
-  describe('onSettleReject', () => {
-    it('nudges with message when terminal tool + toolCallCount > 0', () => {
-      const a = makeAgent({ toolCallCount: 3 });
-      const action = policy.onSettleReject(a, 5000, pressure(), BASE_CONFIG);
-      expect(action.type).toBe('nudge');
-      expect((action as any).message).toContain('Tool result too large');
-    });
-
-    it('returns idle when no terminal tool', () => {
-      const a = makeAgent({ toolCallCount: 3 });
-      const config = { maxTurns: 20, hasNonTerminalTools: true };
-      const action = policy.onSettleReject(a, 5000, pressure(), config);
-      expect(action.type).toBe('idle');
-    });
-
-    it('returns idle when toolCallCount === 0', () => {
-      const a = makeAgent({ toolCallCount: 0 });
-      const action = policy.onSettleReject(a, 5000, pressure(), BASE_CONFIG);
-      expect(action.type).toBe('idle');
-    });
-
-    it('nudge message caps the advertised budget at 1200 words', () => {
-      const a = makeAgent({ toolCallCount: 2 });
-      // pressure(remaining=5000, hardLimit=128) → budgetTokens = 4872
-      // → uncapped words would be 3410; the advisory caps at 1200.
-      const action = policy.onSettleReject(a, 5000, pressure(), BASE_CONFIG);
-      expect(action).toEqual({
-        type: 'nudge',
-        message: 'Tool result too large for remaining KV. Report your findings now within 1200 words.',
-      });
-    });
-  });
-
   describe('budget + pressureThresholds', () => {
     it('no budget → pressureThresholds returns defaults', () => {
       // hardLimit default is 512 (matches llama.cpp's default nBatch —
@@ -456,43 +317,6 @@ describe('DefaultAgentPolicy', () => {
       expect(pt).toHaveProperty('hardLimit');
       expect(typeof pt.softLimit).toBe('number');
       expect(typeof pt.hardLimit).toBe('number');
-    });
-  });
-
-  describe('onProduced: guard-check before budget-check ordering', () => {
-    // Regression for trace-1776819196054 agent 65539: over-budget agent
-    // repeatedly emitting a duplicate query only saw turn-limit nudges
-    // because `_isOverBudget` was checked before `_checkGuards`. Post-fix,
-    // the guard's specific message (e.g. "already searched") wins — giving
-    // the model actionable feedback instead of generic "report now".
-    it('duplicate query + over maxTurns → guard message wins, not budget nudge', () => {
-      const p = new DefaultAgentPolicy({
-        terminalToolName: 'report',
-        extraGuards: [{
-          tools: ['web_search'],
-          reject: () => true,  // always reject — simulates duplicate-query match
-          message: 'This search was already attempted in this run. Refine the query or report your findings.',
-        }],
-      });
-      // Agent is PAST maxTurns (20 >= 10) — _isOverBudget would fire.
-      const a = makeAgent({ toolCallCount: 5, turns: 20 });
-      const tc = { name: 'web_search', arguments: '{"query":"same"}', id: 'c1' };
-      const action = p.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action.type).toBe('nudge');
-      expect((action as any).message).toBe('This search was already attempted in this run. Refine the query or report your findings.');
-      // Specifically NOT the turn-limit message
-      expect((action as any).message).not.toContain('Turn limit');
-      expect((action as any).message).not.toContain('within');
-    });
-
-    it('no guard rejection + over maxTurns → budget nudge fires as before', () => {
-      // Sanity: when guards don't reject, the budget path still fires.
-      const p = new DefaultAgentPolicy({ terminalToolName: 'report' });
-      const a = makeAgent({ toolCallCount: 5, turns: 20 });
-      const tc = { name: 'web_search', arguments: '{"query":"unique"}', id: 'c1' };
-      const action = p.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action.type).toBe('nudge');
-      expect((action as any).message).toContain('Turn limit');
     });
   });
 

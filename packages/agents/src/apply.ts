@@ -7,8 +7,9 @@ import type { AgentPolicy, PolicyConfig } from './AgentPolicy';
 import type { Tool } from './Tool';
 import { TOOL_IMAGE_ERROR_KEY } from './Tool';
 import type { Emitter } from './emit';
+import { decideBeforeDispatch, AUTH_REJECT_GUARD, type Frame } from './hooks';
 import { ContextPressure } from './pressure';
-import { recoveryFor } from './scheduler';
+import { recoveryFor, nudgeItem } from './scheduler';
 import {
   type Schedule, type Outputs, type Pending, type Drop, type Recovery, type PrefillItem, type SpawnRequest,
   type PrefillOutcome, type Ladder, type DropReason,
@@ -22,8 +23,8 @@ import type { PressureThresholds } from './types';
  * Two entry points, one per half of the tick. {@link Applier.applySchedule}
  * enacts what the scheduler decided BEFORE the store runs (drops, finishes,
  * the stall-break, rejections); {@link Applier.applyOutputs} interprets what the
- * store gave back (the ladder on failed prefills, stopped agents through
- * `policy.onProduced`, the commit). Both write agents only through their
+ * store gave back (the ladder on failed prefills, stopped agents through the
+ * gates and then `policy.onProduced`, the commit). Both write agents only through their
  * methods and announce every change through the one {@link Emitter}.
  */
 
@@ -32,6 +33,9 @@ export interface ApplyDeps {
   policy: AgentPolicy;
   config: PolicyConfig;
   tools: Map<string, Tool>;
+  /** The framework's contributor to a call's lifecycle. With the called tool
+   *  and the policy, what a gate consults. */
+  frame: Frame;
   emit: Emitter;
   pending: Pending;
   ladder: Ladder;
@@ -93,7 +97,7 @@ export class Applier {
       yield* this.d.emit.emit({ kind: 'toolTold', agent: r.agent, tool: r.tc.name, resultStr });
       const tokens = buildToolResultDelta(this.d.ctx, resultStr, r.callId, { enableThinking: r.agent.fmt.enableThinking });
       this.d.emit.trace({ kind: 'toolResult', agent: r.agent, tool: r.tc.name, result, cells: tokens.length, durationMs: 0 });
-      this.d.pending.items.push({ kind: 'toolResult', rail: 'token', agent: r.agent, tokens, toolName: r.tc.name, callId: r.callId, args: r.tc.arguments });
+      this.d.pending.items.push({ kind: 'toolResult', rail: 'token', agent: r.agent, tokens, toolName: r.tc.name, callId: r.callId, args: r.tc.arguments, result });
     }
     for (const req of S.rejectedSpawns) {
       if (!req.discarded) this.d.emit.trace({ kind: 'drop', agent: req.agent, reason: 'pressure_init', done: false });
@@ -230,11 +234,24 @@ export class Applier {
     return S.roster;
   }
 
-  /** The agent hit its stop token: the turn is over; the policy decides. */
+  /** The agent hit its stop token: the turn is over; the gates, then the policy, decide. */
   private *stopped(a: Agent, parsed: ParseChatOutputResult | null, S: Schedule): Operation<void> {
     if (a.extracting || !parsed) { yield* this.finishExtraction(a); return; }
     yield* this.d.emit.emit({ kind: 'turn', agent: a, parsed });
     a.records.push({ kind: 'assistant', text: a.rawOutput });
+    // Gates run on what the model emitted, before the policy routes it: a
+    // refusal is the turn's outcome and the policy is not consulted, so a
+    // gate's message beats a budget nudge. The terminal tool is not a dispatch
+    // and is not gated here. The call's values are captured now; what the
+    // policy hands back is compared against them below, so a call the policy
+    // swapped, mutated in place or made up is gated before it is queued.
+    const emitted = parsed.toolCalls[0] as ParsedToolCall | undefined;
+    const checked: ParsedToolCall | undefined =
+      emitted && emitted.name !== this.d.terminalToolName ? { ...emitted } : undefined;
+    if (checked) {
+      const refusal = this.gate(checked, a, S.roster);
+      if (refusal) { yield* this.refused(a, checked, refusal.decision); return; }
+    }
     const action = this.d.policy.onProduced(a, parsed, S.pressure, this.d.config);
     switch (action.type) {
       case 'free_text_return':
@@ -256,13 +273,9 @@ export class Applier {
         }, S);
         return;
       }
-      case 'nudge': {
-        const tc = parsed.toolCalls[0] as ParsedToolCall | undefined;
-        if (action.guard === 'auth_reject') yield* this.d.emit.emit({ kind: 'authRejected', agent: a, attemptedTool: parsed.toolCalls[0].name });
-        yield* this.nudge(a, action.message, tc);
-        yield* this.d.emit.emit({ kind: 'nudged', agent: a, reason: 'nudge', message: action.message, tool: tc?.name, args: tc?.arguments, guard: action.guard });
+      case 'nudge':
+        yield* this.nudge(a, action.message, emitted);
         return;
-      }
       case 'return': {
         const tc = parsed.toolCalls[0];
         a.setResult(stripDanglingToolCall(action.result), 'voluntary_return');
@@ -273,24 +286,45 @@ export class Applier {
         if (this.d.pruneOnReturn) a.pruneRequested = true;
         return;
       }
-      case 'tool_call':
+      case 'tool_call': {
+        // What is queued is the pool's own copy of the call the policy chose,
+        // gated unless it is, value for value, the call gated above.
+        const chosen: ParsedToolCall = { ...action.tc };
+        const same = checked !== undefined
+          && chosen.id === checked.id && chosen.name === checked.name && chosen.arguments === checked.arguments;
+        if (!same) {
+          const refusal = this.gate(chosen, a, S.roster);
+          if (refusal) { yield* this.refused(a, chosen, refusal.decision); return; }
+        }
         a.transition('awaiting_tool');
-        this.d.pending.dispatches.push({ agent: a, tc: action.tc });
+        this.d.pending.dispatches.push({ agent: a, tc: chosen });
         a.resetTurn();
         return;
+      }
     }
   }
 
-  /** Replace a rejected call with a compact error payload the model reads next turn. */
-  private *nudge(a: Agent, message: string, tc: ParsedToolCall | undefined): Operation<void> {
-    const callId = tc?.id || `call_${a.toolCallCount}`;
-    const nudgeResult = { error: message };
+  /** May this call run: the frame's gates, the called tool's, the policy's. */
+  private gate(tc: ParsedToolCall, agent: Agent, roster: readonly Agent[]) {
+    return decideBeforeDispatch({ tc, agent, roster, frame: this.d.frame, tool: this.d.tools.get(tc.name), policy: this.d.policy });
+  }
+
+  /** A gate refused the call: the authorization record when the frame's gate
+   *  did, then the nudge in the call's place, attributed to that call. */
+  private *refused(a: Agent, call: ParsedToolCall, r: { message: string; guard: string }): Operation<void> {
+    if (r.guard === AUTH_REJECT_GUARD) yield* this.d.emit.emit({ kind: 'authRejected', agent: a, attemptedTool: call.name });
+    yield* this.nudge(a, r.message, call, r.guard);
+  }
+
+  /** Replace a call with a compact error payload the model reads next turn;
+   *  the record names the gate when one refused it. */
+  private *nudge(a: Agent, message: string, call: ParsedToolCall | undefined, guard?: string): Operation<void> {
+    const callId = call?.id || `call_${a.toolCallCount}`;
     a.incrementTurns();
     a.transition('awaiting_tool');
-    const tokens = buildToolResultDelta(this.d.ctx, JSON.stringify(nudgeResult), callId, { enableThinking: a.fmt.enableThinking });
-    const probe = this.d.tools.get(tc?.name || '')?.probe(nudgeResult) ?? undefined;
     a.resetTurn();
-    this.d.pending.items.push({ kind: 'nudge', rail: 'token', agent: a, tokens, toolName: tc?.name || '', callId, args: tc?.arguments || '', probe });
+    this.d.pending.items.push(nudgeItem(this.d.ctx, a, message, { tool: call?.name ?? '', callId, args: call?.arguments ?? '' }));
+    yield* this.d.emit.emit({ kind: 'nudged', agent: a, reason: 'nudge', message, tool: call?.name, args: call?.arguments, guard });
   }
 
   // ── The ladder ─────────────────────────────────────────────────
@@ -326,7 +360,7 @@ export class Applier {
         `${it.toolName} returned media the decoder rejected as invalid input. Work from the text, or use a different source.` };
       const noteStr = JSON.stringify(note);
       const tokens = buildToolResultDelta(this.d.ctx, noteStr, it.callId, { enableThinking: a.fmt.enableThinking });
-      this.d.pending.items.push({ kind: 'toolResult', rail: 'token', agent: a, tokens, toolName: it.toolName, callId: it.callId, args: it.args, probe: it.probe, resultStr: noteStr });
+      this.d.pending.items.push({ kind: 'toolResult', rail: 'token', agent: a, tokens, toolName: it.toolName, callId: it.callId, args: it.args, result: note, resultStr: noteStr });
       return;
     }
     if (isFatalRc(o.rc)) {

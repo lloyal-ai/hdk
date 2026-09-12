@@ -1,9 +1,10 @@
 import { call } from "effection";
 import type { Operation } from "effection";
 import { Tool, admitChunks } from "@lloyal-labs/lloyal-agents";
-import type { JsonSchema, ToolContext } from "@lloyal-labs/lloyal-agents";
+import type { JsonSchema, ToolContext, ToolLifecycleHooks } from "@lloyal-labs/lloyal-agents";
 import { chunkHtml } from "@lloyal-labs/rig";
 import type { Reranker } from "@lloyal-labs/rig";
+import { urlDedup, trimmed } from "./guards";
 
 /**
  * Fetch a web page and extract readable article content.
@@ -30,6 +31,8 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
   // main-context op, so it runs off the loop fiber under concurrent dispatch.
   // See Tool.fanout.
   readonly fanout = true;
+  /** This tool's gate: a URL already attended is not fetched again. Scope is the harness's. */
+  readonly hooks: ToolLifecycleHooks = { beforeDispatch: [urlDedup] };
   readonly description =
     "Fetch a web page and extract its article content. Returns readable text with title and excerpt. Pass a query to get only the most relevant sections.";
   readonly parameters: JsonSchema = {
@@ -73,12 +76,8 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
     args: { url: string; query?: string },
     context?: ToolContext,
   ): Operation<unknown> {
-    const url = args.url?.trim();
+    const url = trimmed(args.url);
     if (!url) return { error: "url must not be empty" };
-
-    // Cross-agent dedup is the run's concern, not this tool's: the `url_dedup`
-    // guard refuses a URL the cohort already attempted (never one merely nudged),
-    // before this tool is ever dispatched.
 
     // Early reject PDF URLs
     const lowerUrl = url.toLowerCase();

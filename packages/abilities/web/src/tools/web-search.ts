@@ -1,8 +1,9 @@
 import { call } from "effection";
 import type { Operation } from "effection";
 import { Tool, ToolRetryError, Trace } from "@lloyal-labs/lloyal-agents";
-import type { JsonSchema, ToolContext } from "@lloyal-labs/lloyal-agents";
+import type { JsonSchema, ToolContext, ToolLifecycleHooks } from "@lloyal-labs/lloyal-agents";
 import type { SearchProvider, SearchResult } from "@lloyal-labs/rig";
+import { queryDedup, trimmed } from "./guards";
 
 export type { SearchProvider, SearchResult };
 
@@ -71,6 +72,8 @@ export class WebSearchTool extends Tool<{ query: string }> {
   // Network-only (Tavily HTTP) — issues no op on the main llama_context, so it
   // runs off the loop fiber under concurrent dispatch. See Tool.fanout.
   readonly fanout = true;
+  /** This tool's gate: a query already attended is not searched again. Scope is the harness's. */
+  readonly hooks: ToolLifecycleHooks = { beforeDispatch: [queryDedup] };
   readonly description =
     "Search the web. Returns results with titles, snippets, and URLs.";
   readonly parameters: JsonSchema = {
@@ -89,12 +92,8 @@ export class WebSearchTool extends Tool<{ query: string }> {
   }
 
   *execute(args: { query: string }, context?: ToolContext): Operation<unknown> {
-    const query = args.query?.trim();
+    const query = trimmed(args.query);
     if (!query) return { error: "query must not be empty" };
-
-    // Cross-agent dedup is the run's concern, not this tool's: the `query_dedup`
-    // guard refuses a query the cohort already attempted (never one merely nudged),
-    // before this tool is ever dispatched.
 
     const provider = this._provider;
     const topN = this._topN;

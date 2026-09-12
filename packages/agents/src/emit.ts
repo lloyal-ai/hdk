@@ -6,7 +6,11 @@ import type { AgentEvent } from './types';
 import type { TraceEvent } from './trace-types';
 import type { TraceWriter } from './trace-writer';
 import type { DropReason } from './state';
+import type { Outcome } from './Tool';
 import { type ContextPressure, finiteOrNull, pressureRecord } from './pressure';
+
+/** The settle-order batch as the wire declares it — one declaration, in `trace-types`. */
+export type SettleBatch = Extract<TraceEvent, { type: 'tool:settle_order' }>['batch'];
 
 /**
  * The projection from what the pool DID to what the wire says.
@@ -51,8 +55,8 @@ export type Transition =
   | { kind: 'settleFailed'; agent: Agent; reason: 'media_prefill_failed' | 'tool_result_failed'; detail: string; rc?: number; parentTraceId?: number }
   | { kind: 'deferred'; agent: Agent; rc: number; attempt: number; pressure: ContextPressure }
   | { kind: 'healed'; of: number; agent: Agent; rc?: number; attempt: number; pressure: ContextPressure }
-  | { kind: 'prefilled'; agent: Agent; cells: number; role: 'toolResult' | 'recovery' | 'probe'; attachments?: readonly Attachment[]; probeText?: string }
-  | { kind: 'settleOrder'; batch: Array<{ agentId: number; callId: string; cells: number }> }
+  | { kind: 'prefilled'; agent: Agent; cells: number; role: Outcome | 'probe'; attachments?: readonly Attachment[]; probeText?: string }
+  | { kind: 'settleOrder'; batch: SettleBatch }
   | { kind: 'pruned'; agent: Agent; position: number }
   // ── nudges and guards ──
   | { kind: 'nudged'; agent: Agent; reason: 'nudge' | 'settle_reject'; message: string; tool?: string; args?: string; guard?: string }
@@ -66,7 +70,9 @@ export type Transition =
   /** The result's record on the trace, written once its cost is known. */
   | { kind: 'toolResult'; agent: Agent; tool: string; result: unknown; cells: number; durationMs: number; parentTraceId?: number }
   | { kind: 'toolRetry'; agent: Agent; tool: string; callId: string; retryAfterMs: number; attempt: number; parentTraceId: number }
-  | { kind: 'toolError'; agent: Agent; tool: string; error: string; parentTraceId: number }
+  /** A tool threw, or a tool-lifecycle hook did after its result was admitted
+   *  (no dispatch to parent it to, so `parentTraceId` is optional). */
+  | { kind: 'toolError'; agent: Agent; tool: string; error: string; parentTraceId?: number }
   // ── the spine and the pool ──
   | { kind: 'extended'; userContent: string; assistantContent: string; deltaTokens: number; positionAfter: number }
   | { kind: 'opened'; pressure: ContextPressure }
@@ -223,7 +229,10 @@ export function project(t: Transition): Emission[] {
         { trace: { parentTraceId: t.parentTraceId, type: 'tool:retry', agentId: t.agent.id, tool: t.tool, callId: t.callId, retryAfterMs: t.retryAfterMs, attempt: t.attempt } },
       ];
     case 'toolError':
-      return [{ trace: { parentTraceId: t.parentTraceId, type: 'tool:error', agentId: t.agent.id, tool: t.tool, error: t.error } }];
+      return [{ trace: {
+        ...(t.parentTraceId !== undefined ? { parentTraceId: t.parentTraceId } : {}),
+        type: 'tool:error', agentId: t.agent.id, tool: t.tool, error: t.error,
+      } }];
     case 'extended':
       return [{ trace: { type: 'spine:extend', userContent: t.userContent, assistantContent: t.assistantContent, deltaTokens: t.deltaTokens, positionAfter: t.positionAfter } }];
     case 'opened':

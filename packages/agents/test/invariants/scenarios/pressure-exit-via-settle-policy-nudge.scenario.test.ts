@@ -1,10 +1,10 @@
 /**
- * Scenario: SETTLE-phase nudge via policy.onSettleReject
+ * Scenario: SETTLE-phase nudge via the policy's beforeAdmit
  *
  * Shape: single agent, one tool call, oversized tool result, policy's
- * onSettleReject returns { type: 'nudge' }. The framework should:
+ * beforeAdmit returns { type: 'nudge' }. The framework should:
  *
- *   1. Consult policy.onSettleReject when the tool result can't fit.
+ *   1. Consult the policy's beforeAdmit when the tool result can't fit.
  *   2. Emit `pool:agentNudge reason=settle_reject` with the policy's message.
  *   3. Replace the oversized result with a compact nudge payload.
  *   4. Defer the nudge to the next tick's SETTLE.
@@ -12,7 +12,7 @@
  *      reserved for the "no alternatives remain" path — here the policy
  *      IS the alternative).
  *
- * This invariant is I24 (policy consulted) + the nudge-reason contract.
+ * This pins the nudge-reason contract at the stall-break.
  */
 import { describe, it, expect } from 'vitest';
 import { Tool } from '../../../src/Tool';
@@ -40,21 +40,16 @@ class BigResultTool extends Tool<{ query: string }> {
 }
 
 describe('scenario: pressure exit via SETTLE-phase policy nudge', () => {
-  it('oversized result + onSettleReject→nudge → pool:agentNudge reason=settle_reject', async () => {
+  it('oversized result + beforeAdmit→nudge → pool:agentNudge reason=settle_reject', async () => {
     const bigTool = new BigResultTool(8000);  // ~2000+ tokens when serialized
     const tools = new Map<string, Tool>([['web_search', bigTool]]);
-
-    let onSettleRejectCalls = 0;
 
     const policy: AgentPolicy = {
       onProduced: (_a, parsed) => {
         if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
         return { type: 'idle', reason: 'free_text_stop' };
       },
-      onSettleReject: () => {
-        onSettleRejectCalls++;
-        return { type: 'nudge', message: 'Tool result too large. Report now.' };
-      },
+      hooks: [{ beforeAdmit: () => ({ type: 'nudge', message: 'Tool result too large. Report now.' }) }],
       shouldExit: () => false,
       onRecovery: () => ({ type: 'skip' }),
     };
@@ -74,18 +69,15 @@ describe('scenario: pressure exit via SETTLE-phase policy nudge', () => {
       maxTurns: 5,
     });
 
-    // 1. Policy's onSettleReject was actually invoked (this is the I24 core).
-    expect(onSettleRejectCalls).toBeGreaterThanOrEqual(1);
-
-    // 2. Nudge event fired with the correct reason discriminator and
-    //    message from the policy.
+    // 1. The nudge event fired with the correct reason discriminator and the
+    //    message from the policy's beforeAdmit.
     const nudges = run.traceEvents.filter(e => e.type === 'pool:agentNudge');
     const settleNudges = nudges.filter(e => (e as any).reason === 'settle_reject');
     expect(settleNudges.length).toBeGreaterThanOrEqual(1);
     expect((settleNudges[0] as any).message).toBe('Tool result too large. Report now.');
 
-    // 3. The agent was NOT dropped with settle_stall_break — the policy
-    //    was consulted and gave us an alternative (the nudge).
+    // 2. The agent was NOT dropped with settle_stall_break — a contributor
+    //    decided, and gave an alternative (the nudge).
     const drops = run.traceEvents.filter(e => e.type === 'pool:agentDrop');
     const stallBreaks = drops.filter(d => (d as any).reason === 'settle_stall_break');
     expect(stallBreaks).toHaveLength(0);

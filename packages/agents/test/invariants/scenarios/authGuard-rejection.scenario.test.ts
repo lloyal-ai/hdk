@@ -3,16 +3,16 @@
  *
  * RFC §10.4b: `authGuard-rejection` — confirms the authGuard fires when
  * the model emits a tool call against a `Tool.protected: true` tool and
- * the session holds no grant in `GrantStoreCtx`. Unit-level coverage
- * lives in `agents/test/authGuard.test.ts`; this scenario locks the
- * pool-level wiring: `useAgentPool` reads `Tool.protected` flags into
- * `PolicyConfig.protectedTools`, the authGuard's `nudge` action with
- * `guard: 'auth_reject'` is converted to a structured `tool:authReject`
- * trace event with the attempted tool name and the agent's `assignedAbility`
- * attribution.
+ * the session holds no grant in `GrantStoreCtx`. The frame's walk is tested
+ * as pure functions in `agents/test/hooks.test.ts` and the pool-level auth
+ * pins under literal policies in `agents/test/authGuard.test.ts`; this
+ * scenario locks the wiring: `useAgentPool` reads `Tool.protected` flags into
+ * the frame's authorization gate, and the gate's refusal (`auth_reject`) is
+ * converted to a structured `tool:authReject` trace event with the attempted
+ * tool name and the agent's `assignedAbility` attribution.
  *
  * What this locks:
- *   - `useAgentPool` auto-derives `protectedTools` from `Tool.protected`.
+ *   - `useAgentPool` derives the protected set from `Tool.protected`.
  *   - The authGuard runs INSIDE the pool's tick loop and produces a
  *     trace event distinct from generic nudges.
  *   - The event carries `attemptedTool` (audit attribution) and

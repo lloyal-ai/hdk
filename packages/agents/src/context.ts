@@ -150,14 +150,11 @@ export const RerankerCtx = createContext<Reranker>('lloyal.reranker');
 /**
  * Effection context holding the {@link AbilityRegistry}.
  *
- * Set by `createAbilityRegistry(...)` (lives in `@lloyal-labs/rig`). The
- * scope-guard reads this at tool-dispatch time to resolve
- * the allowed-tools set for an Ability-assigned spawn — looking up
- * `registry.byName(spawn.assignedAbility)` and matching the dispatched
- * `toolName` against `manifest.protocol.tools`.
- *
- * The spine renderer also reads this to compose the catalog in
- * registration order.
+ * Set by `createAbilityRegistry(...)` (lives in `@lloyal-labs/rig`). The spine
+ * renderer reads it to compose the catalog in registration order. No gate
+ * reads it: a spawn's `assignedAbility` is a non-enforcing label, and the one
+ * dispatch-time precondition is authorization (`Tool.protected` and the
+ * session's grants).
  *
  * @category Contract
  */

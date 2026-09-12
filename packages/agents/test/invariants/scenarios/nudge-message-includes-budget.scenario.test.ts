@@ -1,7 +1,7 @@
 /**
  * Scenario: nudge messages carry the remaining budget as a word count.
  *
- * `DefaultAgentPolicy.onSettleReject` and `_handleOverBudget` convert
+ * `DefaultAgentPolicy`'s `beforeAdmit` entry and `_handleOverBudget` convert
  * `pressure.remaining - pressure.hardLimit` to a conservative word count
  * and interpolate it into their messages. Words (not tokens) because
  * tokenizers vary but words are universal.

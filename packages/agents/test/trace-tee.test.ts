@@ -20,7 +20,8 @@ import { useAgentPool } from '../src/agent-pool';
 import { parallel } from '../src/orchestrators';
 import { Ctx, Store, Events, Trace } from '../src/context';
 import { Tool } from '../src/Tool';
-import type { AgentPolicy, ProduceAction, SettleAction } from '../src/AgentPolicy';
+import type { AgentPolicy, ProduceAction } from '../src/AgentPolicy';
+import type { AdmitDecision, ToolGuard } from '../src/Tool';
 import type { AgentEvent, JsonSchema } from '../src/types';
 import { CapturingTraceWriter } from './helpers/capturing-trace';
 
@@ -68,7 +69,7 @@ function toolOncePolicy(action?: (turn: number) => ProduceAction): AgentPolicy {
       if (turn === 1) return { type: 'tool_call', tc: { name: 'tracing_tool', arguments: '{"q":"x"}', id: 'call_a' } };
       return { type: 'idle', reason: 'free_text_stop' };
     },
-    onSettleReject: (): SettleAction => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+    hooks: [{ beforeAdmit: (): AdmitDecision => ({ type: 'drop' }) }],
   };
 }
 
@@ -131,14 +132,16 @@ describe('dispatch attribution', () => {
 
   it('stamps pool-side nudges with their agent, naming the rejected call and guard', async () => {
     const writer = new CapturingTraceWriter();
-    await runPool(writer, toolOncePolicy((turn) => {
-      if (turn === 1) return { type: 'nudge', message: 'This URL was already attempted in this run. Try a different source.', guard: 'url_dedup' };
-      return { type: 'idle', reason: 'free_text_stop' };
-    }), new Map<string, Tool>([['tracing_tool', new TracingTool()]]));
+    // A policy gate that refuses the first call it sees; the pool books the
+    // nudge under the gate's name, and the policy is not consulted for that turn.
+    let refused = false;
+    const once: ToolGuard = { name: 'stub_gate', reject: () => (refused ? false : (refused = true)), message: 'Try a different source.' };
+    const policy: AgentPolicy = { ...toolOncePolicy(), hooks: [{ beforeDispatch: [once] }] };
+    await runPool(writer, policy, new Map<string, Tool>([['tracing_tool', new TracingTool()]]));
 
     const nudge = writer.ofType('pool:agentNudge')[0];
     expect(nudge).toBeDefined();
-    expect(nudge.guard).toBe('url_dedup');
+    expect(nudge.guard).toBe('stub_gate');
     expect(nudge.tool).toBe('tracing_tool');
     expect(nudge.args).toBe('{"q":"x"}');
   });

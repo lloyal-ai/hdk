@@ -3,7 +3,7 @@
  *
  * When the policy's recovery prompt contains eta tags, they are rendered
  * at `onRecovery` call time with a context containing the computed budget:
- *   `budget = max(50, pressure.remaining - RECOVERY_PREFILL_OVERHEAD - BATCH_BUFFER)`.
+ *   `budget = max(50, pressure.remaining - RECOVERY_PROMPT_OVERHEAD - BATCH_BUFFER)`.
  *
  * What this locks:
  *   - `DefaultAgentPolicy.onRecovery` invokes eta templating on both the

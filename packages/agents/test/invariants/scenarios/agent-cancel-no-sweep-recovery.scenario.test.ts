@@ -31,7 +31,7 @@ describe('scenario: cancelled non-leaf agent is not force-recovered by the sweep
     const policy: AgentPolicy = {
       recoveryShape: 'staggered', // staggered ⇒ the termination sweep runs at pool close
       onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-      onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       onRecovery: () => ({ type: 'skip' }),
     };
 

@@ -1,5 +1,7 @@
 import type { Operation } from 'effection';
 import type { JsonSchema, ToolSchema, ToolContext } from './types';
+import type { Agent } from './Agent';
+import type { ContextPressure } from './pressure';
 import { asAttachment } from '@lloyal-labs/media';
 import type { Attachment } from '@lloyal-labs/media';
 
@@ -62,8 +64,9 @@ export abstract class Tool<TArgs = any> {
    * **Open by default** (`false`/unset): any agent may call the tool. This
    * is the right setting for read/gather tools — search, fetch, grep — where
    * agents discover an ability's coverage by *trying*, the frontier-agentic
-   * pattern. The spine loads every ability's tools for KV amortization; an open
-   * tool is callable regardless of which ability a spawn nominally belongs to.
+   * pattern. The spine loads every ability's tools once, shared by every agent;
+   * an open tool is callable regardless of which ability a spawn nominally
+   * belongs to.
    *
    * **Protected** (`true`): the tool mutates state or takes a consequential
    * action (transfer funds, file a ticket, send a message). The framework's
@@ -80,33 +83,40 @@ export abstract class Tool<TArgs = any> {
   readonly protected?: boolean;
 
   /**
-   * Whether this tool is eligible for **fan-out** dispatch — running on a
-   * child fiber concurrently with other agents' tool calls (and the pool's
-   * own decode), instead of inline on the single tick-loop fiber.
+   * Whether this tool is eligible for **fan-out** dispatch — running
+   * concurrently with other agents' tool calls (and the pool's own generation),
+   * instead of one at a time on the pool's loop.
    *
-   * **Inline by default** (`false`/unset): the pool `await`s `execute()` on
-   * the loop fiber. Safe for ANY tool, and REQUIRED for any tool that issues
-   * a native op on the **main** `llama_context` — anything that nests
-   * `agentPool` / `withSpine` / `useAgent` (e.g. `delegate`, `plan`) or
-   * decodes on the calling agent's branch. Two concurrent decodes on one context
-   * segfault, so the single-fiber discipline must hold for these.
+   * **Inline by default** (`false`/unset): the pool runs `execute()` itself and
+   * waits for it. Safe for ANY tool, and REQUIRED for any tool that generates
+   * on the **shared model** — anything that nests `agentPool` / `withSpine` /
+   * `useAgent` (e.g. `delegate`, `plan`) or samples on the calling agent's
+   * branch. Two concurrent generations on one model crash the process, so the
+   * one-at-a-time discipline must hold for these.
    *
-   * **Fan-out** (`true`): `execute()` issues NO native op on the main context
-   * — only network I/O, pure CPU, or a *separate* context (e.g. the reranker,
-   * which owns its own and self-serializes). The pool spawns it off the loop
-   * fiber so one agent's slow/hung tool never stalls the others; completions
-   * drain back on-fiber. Set this ONLY when the no-main-context-decode
-   * invariant holds: a wrong `true` is a segfault, a wrong `false` is merely a
-   * parked loop — so the default is deliberately the safe one.
+   * **Fan-out** (`true`): `execute()` never touches the shared model — only
+   * network I/O, pure CPU, or a *separate* model (e.g. the reranker, which owns
+   * its own and self-serializes). The pool runs it beside everything else so
+   * one agent's slow/hung tool never stalls the others. Set this ONLY when that
+   * holds: a wrong `true` is a crash, a wrong `false` is merely a waiting pool
+   * — so the default is deliberately the safe one.
    */
   readonly fanout?: boolean;
+
+  /**
+   * What this tool says about the life of its own calls: its gates, its view of
+   * a completion, of a result that does not fit, of a result just admitted.
+   * Declared where `protected` and `fanout` are, so a subclass inherits it.
+   * See {@link ToolLifecycleHooks}.
+   */
+  readonly hooks?: ToolLifecycleHooks;
 
   /**
    * Execute the tool with parsed arguments
    *
    * Called by the agent pool when the model emits a tool call matching
-   * this tool's name. The return value is JSON-serialized and prefilled
-   * back into the agent's context as a tool result.
+   * this tool's name. The return value is JSON-serialized and placed in the
+   * agent's context as the tool result.
    *
    * Returns an Effection Operation — implement as a generator method.
    * The operation runs inside the agent pool's scope, so it has access
@@ -117,21 +127,6 @@ export abstract class Tool<TArgs = any> {
    * @returns Tool result (will be JSON-serialized)
    */
   abstract execute(args: TArgs, context?: ToolContext): Operation<unknown>;
-
-  /**
-   * Optional reasoning probe prefilled after this tool's result settles.
-   *
-   * When set, the pool prefills this text into the agent's context after
-   * the tool result, before the lazy grammar resets. This nudges the model
-   * to reason in prose about the result before generating the next tool call.
-   *
-   * Receives the tool result so the probe can be conditional — return null
-   * to skip.
-   *
-   * @param result - The tool result that was prefilled
-   * @returns Probe text to prefill, or null to skip
-   */
-  probe(_result: unknown): string | null { return null; }
 
   /**
    * OpenAI-compatible function tool schema
@@ -152,22 +147,169 @@ export abstract class Tool<TArgs = any> {
   }
 }
 
+/*
+ * ── The tool-lifecycle contract ─────────────────────────────────────────
+ *
+ * Everything a tool, a harness or the framework says about the life of a tool
+ * call is a value of ONE type, `ToolLifecycleHooks`, whose members are the four
+ * moments a call passes through the pool. The tool declares its value on
+ * `Tool.hooks`; the harness contributes one through its policy; the framework's
+ * own frame is one too. At each position the first concrete decision wins and
+ * `undefined` abstains.
+ */
+
+/**
+ * What the agent received in answer to a tool call: the tool's result, a nudge
+ * in its place, or a recovery prompt.
+ *
+ * @category Agents
+ */
+export type Outcome = 'toolResult' | 'nudge' | 'recovery';
+
+/**
+ * One call, as a gate sees it.
+ *
+ * `attended()` is computed on demand: the arguments of this tool's earlier calls
+ * whose results the agent attended, in the scope the harness chose — the agent's
+ * own lineage unless the harness re-scoped the gate to the whole cohort. A gate
+ * that decides without it never pays for it.
+ *
+ * @category Agents
+ */
+export interface GuardInput {
+  tool: string;
+  args: Record<string, unknown>;
+  attended(): readonly Record<string, unknown>[];
+}
+
+/**
+ * A gate on a tool call: may this call run.
+ *
+ * Declared by the tool that owns it (`Tool.hooks.beforeDispatch`) or contributed
+ * by the harness through its policy. A gate that applies to some tools only
+ * selects by `i.tool`.
+ *
+ * @category Agents
+ */
+export interface ToolGuard {
+  /**
+   * A published identifier: the key a harness overrides the gate by, and the
+   * value on the trace. Renaming it is a breaking change for the ability.
+   */
+  name: string;
+  /** `true` refuses the call. */
+  reject(i: GuardInput): boolean;
+  /** What the model reads when the call is refused. */
+  message: string;
+}
+
+/**
+ * How a call completed: the tool returned a value, or it threw.
+ *
+ * @category Agents
+ */
+export type Completion =
+  | { kind: 'returned'; value: unknown }
+  | { kind: 'threw'; error: Error };
+
+/**
+ * After a call completed: this was an attempt, or it is not one yet.
+ *
+ * @category Agents
+ */
+export type ExecuteDecision =
+  | { type: 'attempt' }
+  | { type: 'retry'; afterMs: number }
+  | { type: 'fail'; message?: string };
+
+/**
+ * When a result does not fit and nothing can free room.
+ *
+ * @category Agents
+ */
+export type AdmitDecision =
+  | { type: 'nudge'; message: string }
+  | { type: 'drop' };
+
+/**
+ * After a result is admitted: a follow-up message the agent reads after it, or none.
+ *
+ * @category Agents
+ */
+export type FollowUp =
+  | { type: 'followUp'; message: string }
+  | { type: 'none' };
+
+/**
+ * Everything a contributor says about the life of a tool call, in one place.
+ *
+ * Four positions, one per moment a call passes through the pool. A tool
+ * declares the ones it has an opinion about and leaves the rest to the harness
+ * and the framework, which contribute values of this same type.
+ *
+ * @category Agents
+ */
+export interface ToolLifecycleHooks {
+  /** May this call run. */
+  beforeDispatch?: readonly ToolGuard[];
+
+  /** The call completed. Is this an attempt, or not yet. `undefined` abstains. */
+  afterExecute?(i: {
+    agent: Agent;
+    tool: string;
+    args: Record<string, unknown>;
+    attempt: number;
+    completion: Completion;
+  }): ExecuteDecision | undefined;
+
+  /**
+   * The result does not fit and nothing can free room. `cost` is what placing
+   * it would spend, in the unit `pressure.headroom` reports room in (the unit
+   * is defined on `ContextPressure`, once). `terminal` is the pool's terminal
+   * tool, when it has one: whether the agent can be told to report instead.
+   * `undefined` abstains.
+   */
+  beforeAdmit?(i: {
+    agent: Agent;
+    tool: string;
+    args: Record<string, unknown>;
+    cost: number;
+    pressure: ContextPressure;
+    terminal?: string;
+  }): AdmitDecision | undefined;
+
+  /**
+   * The result is admitted and on the agent's ledger (a tool result is now in
+   * `attendedResults`; a nudge is booked but not attended). `result` is what the
+   * agent received: the tool's value, or a nudge's `{ error }`. Runs once per
+   * admitted item, after admission, never for an item that is not admitted,
+   * never for a recovery prompt. A hook that throws yields no follow-up and
+   * cannot affect the admission. `undefined` abstains.
+   */
+  afterAdmit?(i: {
+    agent: Agent;
+    tool: string;
+    args: Record<string, unknown>;
+    outcome: Outcome;
+    result: unknown;
+  }): FollowUp | undefined;
+}
+
 /**
  * Thrown by a tool (or its backend provider) when the operation failed
  * transiently and should be retried after a delay — rate limiting being the
  * canonical case.
  *
- * The pool's DISPATCH phase catches this BEFORE the generic tool-error
- * handler: instead of settling an error into the agent's KV, it parks the
- * agent (`awaiting_tool` — skipped by PRODUCE at zero cost) and re-executes
- * the same call after `retryAfterMs`. The model never sees transient
- * infrastructure weather in its context; from its side the tool call just
- * took longer. One retry is budgeted — a second ToolRetryError settles an
- * honest "unavailable, use other sources" result, because at that point the
- * outage is a fact the model needs in order to pivot.
+ * The model never sees transient infrastructure weather: the agent waits, at
+ * no cost to its turns or its context, and the same call runs again after
+ * `retryAfterMs` — from the model's side the tool call just took longer. How
+ * many times is an `afterExecute` decision (the tool's, the harness's, else
+ * the framework's default of one retry), after which an honest "unavailable,
+ * use other sources" result is placed in the tool's stead, because at that
+ * point the outage is a fact the model needs in order to pivot.
  *
- * Observability: the pool emits `agent:tool_retry` (TUI) and `tool:retry`
- * (trace) when parking, so a waiting agent is never mistaken for a hung one.
+ * Observability: the pool emits `agent:tool_retry` and traces `tool:retry`
+ * while the agent waits, so a waiting agent is never mistaken for a hung one.
  */
 export class ToolRetryError extends Error {
   override readonly name = 'ToolRetryError';
@@ -195,24 +337,23 @@ export class ToolRetryError extends Error {
  * | `_imageError` | INTO the result | yes — it exists to be read |
  *
  * `_contextAvailablePercent` is an AMBIENT METER for the model: reaching it is
- * the point, and it carries how much KV was free when the tool ran. Its
+ * the point, and it carries how much of the context was free when the tool ran. Its
  * absence from any prompt is deliberate, not an oversight — the number travels
  * with every tool result and is meant to be read as one.
  */
 
 /** The key a tool returns image bytes under.
  *
- *  Taken OUT before serializing, because these bytes must reach the cache down
- *  the embedding rail and must never reach it as JSON. A 180 KB image
- *  stringifies to ~700k characters of digits, which is not a degraded prefill
- *  but a destroyed one.
+ *  Taken OUT before serializing, because images reach the model as images and
+ *  must never reach it as JSON text. A 180 KB image stringifies to ~700k
+ *  characters of digits, which is not a degraded result but a destroyed one.
  *
  *  An entry is raw bytes — admitted through the ingress door — or a root
  *  descriptor already in the content store (a page render a tool looked up, a
- *  document a tool fetched): no bytes, no door, the ingest-time digest. The
- *  rail follows what the root materializes to: bitmaps ride the embedding
- *  rail; a root with none rides the token rail beside the tool's text and is
- *  booked as an asset available to the run. */
+ *  document a tool fetched): no bytes, no door, the ingest-time digest. What
+ *  the root materializes to decides how it is placed: as images when it has
+ *  any; beside the tool's text, and booked as an asset available to the run,
+ *  when it has none. */
 export const TOOL_ATTACHMENTS_KEY = '_attachments';
 
 /** Split a tool result into the images it carried and the result WITHOUT them.
@@ -241,7 +382,7 @@ export function takeToolMedia(
   const { [TOOL_ATTACHMENTS_KEY]: raw, ...rest } = result as Record<string, unknown>;
   // The reserved key never survives into the serialized result, even when its
   // value is malformed — returning the original would JSON-encode byte
-  // indices onto the token rail, the exact failure this helper exists to
+  // indices into the model's prompt, the exact failure this helper exists to
   // prevent. An invalid value is simply zero media entries.
   const media: (Uint8Array | Attachment)[] = [];
   if (Array.isArray(raw)) {
@@ -255,8 +396,8 @@ export function takeToolMedia(
 }
 
 /**
- * The key the framework INJECTS onto a tool result, carrying how much KV was
- * free when the tool ran.
+ * The key the framework INJECTS onto a tool result, carrying how much of the
+ * context was free when the tool ran.
  *
  * @category Agents
  */

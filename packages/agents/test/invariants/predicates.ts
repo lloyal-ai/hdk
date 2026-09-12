@@ -1,4 +1,3 @@
-import { parseHistoryArgs } from '../../src/Agent';
 import type { AgentExitReason } from '../../src/types';
 import type { PoolRun, NativeCall } from './harness';
 import type { AgentEvent } from '../../src/types';
@@ -62,36 +61,6 @@ export function I4_spawnBatched(run: PoolRun): PredicateResult {
     return fail(
       'I4',
       `SPAWN-phase prefill carried ${spawnBatch.branchCount} branches, expected ${forks} (batched as one native call)`,
-    );
-  }
-  return ok();
-}
-
-/**
- * I24 SETTLE-policy-consulted: when SETTLE encounters an oversized tool
- * result (headroom exceeded) the policy's onSettleReject is consulted.
- *
- * Proxy assertion: for every agent drop with reason `pressure_settle_reject`
- * or `settle_stall_break`, the run must have called the policy's
- * onSettleReject at least once for that agent (counted by the policy probe).
- *
- * Since we don't have direct visibility into policy calls from trace events,
- * this predicate requires the caller to pass a probe — see I24_via_probe.
- */
-export function I24_settlePolicyConsulted(
-  run: PoolRun,
-  probeCallCount: number,
-): PredicateResult {
-  const settleDrops = run.traceEvents.filter(
-    e => e.type === 'pool:agentDrop'
-      && ((e as any).reason === 'pressure_settle_reject'
-        || (e as any).reason === 'settle_stall_break'),
-  );
-  if (settleDrops.length === 0) return ok();
-  if (probeCallCount === 0) {
-    return fail(
-      'I24',
-      `${settleDrops.length} settle-related drop(s) but policy.onSettleReject was never invoked`,
     );
   }
   return ok();
@@ -436,30 +405,51 @@ export function I42_noLeakedBranches(run: PoolRun): PredicateResult {
 }
 
 /**
- * I43 attended-is-booked: `attendedResults(tool)` reports exactly the lineage
- * entries booked `outcome: 'toolResult'` for that tool — one per booking, no
- * more, no nudge or recovery turn among them.
+ * I43 attended-is-admitted: `attendedResults(tool)` reports exactly what the
+ * pool ANNOUNCED it admitted for that tool in the agent's lineage — one entry
+ * per `tool:settle_order` batch entry of kind `toolResult`, no nudge or
+ * recovery turn among them.
  *
- * A regression check on the derivation, not yet an independent oracle: the
- * filter is re-stated here inline, and it reads the same `outcome` field the
- * derivation reads, so a mis-booked nudge would satisfy both sides. The
- * tool-lifecycle contract rewrites it against the trace's admission record.
+ * The count comes from the trace, not from the ledger's own `outcome`, so a
+ * mis-booked outcome is caught. The scope is the same on both sides — the
+ * agent and its ancestors (`walkAncestors` over `Agent.parent`) — closed over
+ * heals: a replacement carries the original's attended entries, which the
+ * pool announced under the ORIGINAL's id. A batch entry's tool is the most
+ * recent preceding `tool:dispatch` for that (agent, call): dispatch is
+ * per-agent serial and a retry re-dispatches the same call id, so it is
+ * unambiguous.
  */
-export function I43_attendedIsBooked(run: PoolRun): PredicateResult {
+export function I43_attendedIsAdmitted(run: PoolRun): PredicateResult {
+  type Dispatch = { agentId: number; callId: string; tool: string };
+  type Settle = { batch: Array<{ agentId: number; callId: string; kind: string }> };
+  type Heal = { of: number; agentId: number };
+  const healedFrom = new Map<number, number>();
+  const dispatched = new Map<string, string>();
+  const admitted: Array<{ agentId: number; tool: string }> = [];
+  for (const e of run.traceEvents) {
+    if (e.type === 'pool:agentHeal') { const h = e as unknown as Heal; healedFrom.set(h.agentId, h.of); continue; }
+    if (e.type === 'tool:dispatch') { const d = e as unknown as Dispatch; dispatched.set(`${d.agentId}:${d.callId}`, d.tool); continue; }
+    if (e.type !== 'tool:settle_order') continue;
+    for (const b of (e as unknown as Settle).batch) {
+      if (b.kind !== 'toolResult') continue;
+      const tool = dispatched.get(`${b.agentId}:${b.callId}`);
+      if (!tool) return fail('I43', `agent ${b.agentId}: admitted result ${b.callId} has no preceding tool:dispatch`);
+      admitted.push({ agentId: b.agentId, tool });
+    }
+  }
+  const everyTool = new Set(admitted.map((x) => x.tool));
   for (const { agent, agentId } of run.result.agents) {
-    // `attendedResults` is lineage-aware (self + ancestors), so the expectation
-    // is built the same way: from `walkAncestors`. Comparing the entries — not
-    // just a count — is what enforces "exactly": a nudge or recovery carries the
-    // ORIGINAL args but delivered no result, so it must never appear.
-    const lineage = agent.walkAncestors((a) => a.toolHistory);
-    for (const tool of new Set(lineage.map((h) => h.name))) {
-      const attended = agent.attendedResults(tool).map((a) => JSON.stringify(a)).sort();
-      const booked = lineage
-        .filter((h) => h.name === tool && h.outcome === 'toolResult')
-        .map((h) => JSON.stringify(parseHistoryArgs(h.args)))
-        .sort();
-      if (attended.length !== booked.length || attended.some((a, i) => a !== booked[i])) {
-        return fail('I43', `agent ${agentId}: attendedResults(${tool})=[${attended.join(', ')}] but booked lineage results=[${booked.join(', ')}]`);
+    // The lineage's ids, then every original a member of it replaced.
+    const ids = new Set(agent.walkAncestors((a) => [a.id]));
+    for (const id of [...ids]) {
+      for (let of = healedFrom.get(id); of !== undefined && !ids.has(of); of = healedFrom.get(of)) ids.add(of);
+    }
+    const tools = new Set([...everyTool, ...agent.walkAncestors((a) => a.toolHistory.map((h) => h.name))]);
+    for (const tool of tools) {
+      const expected = admitted.filter((x) => ids.has(x.agentId) && x.tool === tool).length;
+      const attended = agent.attendedResults(tool).length;
+      if (attended !== expected) {
+        return fail('I43', `agent ${agentId}: attendedResults(${tool}) has ${attended} entries but the pool admitted ${expected} result(s) for ${tool} in its lineage`);
       }
     }
   }

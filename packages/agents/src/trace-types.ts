@@ -97,7 +97,12 @@ export type TraceEvent =
        *  against `SegmentSource::cells()` and `DecodeSegmentsResult::cells`,
        *  which share the word so the numbers can be compared. */
       cells: number;
-      role: 'spineHeader' | 'agentSuffix' | 'toolResult' | 'warmDelta' | 'probe' | 'recovery';
+      /** What was placed: a tool's result, a nudge in its place, or a recovery
+       *  prompt (the agent's `Outcome` vocabulary), or one of the pool's own
+       *  placements — the shared header, an agent's suffix, a warm delta, a
+       *  follow-up (`probe`). A nudge is announced as a nudge, never as a
+       *  `toolResult`. */
+      role: 'spineHeader' | 'agentSuffix' | 'toolResult' | 'nudge' | 'warmDelta' | 'probe' | 'recovery';
       /** Which conversation side a `warmDelta` belongs to — carried from the
        *  Session's own prefill call (`prefillUser` / `prefillAssistant` /
        *  tool-result / `commitTurn`'s whole exchange), never inferred from
@@ -198,9 +203,9 @@ export type TraceEvent =
        *  when no call was in hand. */
       tool?: string;
       args?: string;
-      /** The rejecting {@link ToolGuard.name} when a guard produced this
-       *  nudge (`url_dedup`, `query_dedup`, `auth_reject`, or a harness
-       *  guard's own name). Absent for budget/pressure nudges. */
+      /** The gate that refused the call, by its published {@link ToolGuard.name}:
+       *  the framework's `auth_reject`, or a gate the tool or the harness
+       *  declared. Absent for budget/pressure nudges. */
       guard?: string;
     }
 
@@ -360,9 +365,14 @@ export type TraceEvent =
   | TraceEventBase & {
       type: 'tool:settle_order';
       /** `cells`, not tokens — a media item's admission cost is measured, and
-       *  this is the same number SETTLE spent against headroom. */
-      batch: Array<{ agentId: number; callId: string; cells: number }>;
+       *  this is the same number SETTLE spent against headroom. `kind` is what
+       *  the entry placed: the call's result, a nudge in its place, or a
+       *  recovery prompt — the same word the agent's ledger books. */
+      batch: Array<{ agentId: number; callId: string; cells: number; kind: 'toolResult' | 'nudge' | 'recovery' }>;
     }
+  // A tool threw (the agent ends with `tool_error`), or a tool-lifecycle hook
+  // threw after the call's result was admitted (the admission stands; no
+  // follow-up; no dispatch to parent it to).
   | TraceEventBase & { type: 'tool:error'; agentId: number; tool: string; error: string }
   // Transient tool failure (ToolRetryError — e.g. provider rate-limited).
   // The agent is parked (awaiting_tool) and the call re-executes after

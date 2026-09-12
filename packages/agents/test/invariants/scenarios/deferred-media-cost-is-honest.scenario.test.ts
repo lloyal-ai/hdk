@@ -16,8 +16,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { Agent } from '../../../src/Agent';
-import type { AgentPolicy, SettleAction } from '../../../src/AgentPolicy';
-import type { Tool } from '../../../src/Tool';
+import type { AgentPolicy } from '../../../src/AgentPolicy';
+import type { Tool, AdmitDecision } from '../../../src/Tool';
 import { runPool } from '../harness';
 import { MediaTool, PNG_BYTES, MEDIA_TEST_NCTX } from '../../helpers/media';
 
@@ -30,10 +30,10 @@ describe('scenario: a deferred media item reports its real cost', () => {
           ? { type: 'tool_call', tc: parsed.toolCalls[0] }
           : { type: 'idle', reason: 'free_text_stop' },
       shouldExit: () => false,
-      onSettleReject: (_a, cost): SettleAction => {
+      hooks: [{ beforeAdmit: ({ cost }): AdmitDecision => {
         costsSeen.push(cost);
-        return { type: 'idle', reason: 'pressure_settle_reject' };
-      },
+        return { type: 'drop' };
+      } }],
     };
 
     // Enough images that the item cannot be admitted at this pressure, so it

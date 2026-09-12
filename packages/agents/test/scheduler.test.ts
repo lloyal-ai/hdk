@@ -9,16 +9,18 @@ import { Agent } from '../src/Agent';
 import { ContextPressure } from '../src/pressure';
 import { DefaultScheduler, type SchedulerOptions } from '../src/scheduler';
 import { emptyPending, type TickState, type PrefillItem, type Pending } from '../src/state';
-import type { AgentPolicy, PolicyConfig } from '../src/AgentPolicy';
+import type { AgentPolicy } from '../src/AgentPolicy';
+import { makeFrame } from '../src/hooks';
 import type { AgentTaskSpec } from '../src/types';
 import { createMockBranch } from './helpers/mock-branch';
 import { FMT } from './helpers/format-config';
 
-const config: PolicyConfig = { maxTurns: 10, terminalToolName: 'report', hasNonTerminalTools: true };
 const ctx = new MockSessionContext({ nCtx: 16384 });
+/** The frame with nothing protected: its gate never fires, its defaults stand. */
+const frame = makeFrame({ protectedTools: new Set(), grants: new Set() });
 
 function scheduler(over: Partial<SchedulerOptions> = {}): DefaultScheduler {
-  return new DefaultScheduler({ recovery: 'cohort', terminalToolName: 'report', config, ...over }, ctx as never, new Map());
+  return new DefaultScheduler({ recovery: 'cohort', terminalToolName: 'report', ...over }, ctx as never, new Map(), frame);
 }
 
 function agent(id: number, status: 'active' | 'awaiting_tool' | 'idle' = 'active'): Agent {
@@ -207,7 +209,7 @@ describe('DefaultScheduler.schedule', () => {
     const oversized = (a: Agent) => state([a], 1524, {}, { items: [resultItem(a, 5000)] });
 
     let a = mk();
-    let S = scheduler().schedule(oversized(a), { ...quiet, onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }) });
+    let S = scheduler().schedule(oversized(a), { ...quiet, hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }] });
     expect(S.stall).toHaveLength(1);
     expect(S.stall[0].nudge).toBeNull();
     expect(S.stall[0].drop?.agent).toBe(a);
@@ -219,7 +221,7 @@ describe('DefaultScheduler.schedule', () => {
     expect(S.stall[0].drop?.reason).toBe('settle_stall_break');
 
     a = mk();
-    S = scheduler().schedule(oversized(a), { ...quiet, onSettleReject: () => ({ type: 'nudge', message: 'report now' }) });
+    S = scheduler().schedule(oversized(a), { ...quiet, hooks: [{ beforeAdmit: () => ({ type: 'nudge', message: 'report now' }) }] });
     expect(S.stall[0].nudge?.replacement?.kind).toBe('nudge');
     expect(S.stall[0].drop).toBeNull();
     expect(S.remaining.items).toEqual([S.stall[0].nudge!.replacement]);
