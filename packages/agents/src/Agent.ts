@@ -86,6 +86,32 @@ export interface ToolHistoryEntry {
   contextAfterPercent: number;
   /** Timestamp (performance.now) when result was recorded */
   timestamp: number;
+  /**
+   * What the pool admitted for this call: the tool's result, or a nudge or
+   * recovery turn in its place. A settle rejection replaces an oversized
+   * result with a nudge that carries the ORIGINAL call's name and args, so
+   * without this an entry would read as a result the model never attended.
+   */
+  outcome: 'toolResult' | 'nudge' | 'recovery';
+}
+
+/** A history entry's `args` as an object — `{}` when the model emitted
+ *  something unparseable. The one reader of that field's encoding. */
+export function parseHistoryArgs(argsStr: string): Record<string, unknown> {
+  try { return JSON.parse(argsStr) as Record<string, unknown>; } catch { return {}; }
+}
+
+/** Whether the entry's result is attended: the tool's result was prefilled
+ *  onto the branch. A nudge or recovery turn is booked, but its call's result
+ *  never reached the KV. */
+export function isAttended(h: ToolHistoryEntry): boolean {
+  return h.outcome === 'toolResult';
+}
+
+/** The parsed args of the entries that name `tool`. No attention semantics of
+ *  its own: whoever passes `entries` decided that. */
+export function argsOf(entries: readonly ToolHistoryEntry[], tool: string): Record<string, unknown>[] {
+  return entries.filter((h) => h.name === tool).map((h) => parseHistoryArgs(h.args));
 }
 
 // ── Agent ───────────────────────────────────────────────────
@@ -385,6 +411,17 @@ export class Agent {
     this._toolHistory.push(entry);
   }
 
+  /**
+   * The calls of one tool whose results this agent attends over, as parsed
+   * args: in the KV this branch reads across — its own and, by the fork, its
+   * ancestors' — so the scope is the caller chain {@link walkAncestors} walks.
+   * A settle-reject nudge sits on the branch carrying the ORIGINAL call's name
+   * and args; {@link isAttended} is what keeps it out.
+   */
+  attendedResults(tool: string): Record<string, unknown>[] {
+    return argsOf(this.walkAncestors((a) => a.toolHistory).filter(isAttended), tool);
+  }
+
   // ── Child findings ─────────────────────────────────────────
 
   /** Findings collected from recursive tool results (inner sub-agent findings) */
@@ -402,10 +439,9 @@ export class Agent {
    * Self is visited first, then the calling agent, then its caller, etc.
    * Iterative — no stack overflow on deep recursion chains.
    *
-   * @example Check if any ancestor fetched a URL
+   * @example The tasks along this agent's lineage
    * ```typescript
-   * const fetched = agent.walkAncestors(a => a.toolHistory)
-   *   .some(h => h.name === 'fetch_page' && h.args === url);
+   * const tasks = agent.walkAncestors(a => a.task ? [a.task] : []);
    * ```
    */
   walkAncestors<T>(fn: (agent: Agent) => readonly T[]): T[] {

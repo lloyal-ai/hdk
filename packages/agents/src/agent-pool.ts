@@ -5,6 +5,7 @@ import type { Attachment } from '@lloyal-labs/media';
 import { buildTurnDelta } from '@lloyal-labs/sdk';
 import { Ctx, Store, Trace, TraceParent, GrantStoreCtx, WindDown, CancelAgent, Pause, Attachments, Ingress } from './context';
 import { useTraceScope } from './trace-scope';
+import { argsOf, isAttended } from './Agent';
 import type { Agent } from './Agent';
 import { DefaultAgentPolicy } from './AgentPolicy';
 import type { PolicyConfig } from './AgentPolicy';
@@ -140,10 +141,16 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     if (policy.recoveryBudget !== undefined) requireInteger('policy.recoveryBudget', policy.recoveryBudget, 1);
     if (opts.maxConcurrentTools !== undefined) requireInteger('maxConcurrentTools', opts.maxConcurrentTools, 1);
 
-    const config: PolicyConfig = { maxTurns, terminalToolName, hasNonTerminalTools, protectedTools, grants };
-
     // ── The pool's state ─────────────────────────────────────────
+    // `agents` is declared before `config` so the cohort view can close over
+    // the live array: the dedup guards read every agent's attended entries
+    // (self included) at each check. The tool-lifecycle contract replaces this
+    // closure with an argument at the check.
     const agents: Agent[] = [];
+    const config: PolicyConfig = {
+      maxTurns, terminalToolName, hasNonTerminalTools, protectedTools, grants,
+      cohortAttended: (tool) => argsOf(agents.flatMap((a) => a.toolHistory).filter(isAttended), tool),
+    };
     const pending: Pending = emptyPending();
     const ladder: Ladder = { consecutiveFatalRc: 0, backendSuspect: false };
     const counters = { warmPrefillCalls: 0, warmPrefillBranches: 0 };
@@ -183,9 +190,12 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     function* forge(task: AgentTaskSpec, lineage?: Lineage): Operation<Omit<SpawnRequest, 'resolve' | 'reject' | 'discarded'>> {
       const replay = lineage ? yield* prepareReplay(lineage.records, { enableThinking }) : null;
       const parent = lineage ? spine : (task.parent ?? spine);
+      // A heal forges off the loop fiber, where no tool call is active, so
+      // setupAgent reads CallingAgent as null — the replacement is nobody's
+      // live child. A delegate's forge runs inside its call, so it reads the caller.
       const { agent, suffixTokens, formattedPrompt } = yield* setupAgent(parent, task, ctx, enableThinking, runNow);
       if (!lineage || !replay) return { agent, suffixTokens, formattedPrompt, task };
-      return { agent, suffixTokens, formattedPrompt, task, replay: { ...replay, of: lineage.of, rc: lineage.rc, attempt: lineage.attempt } };
+      return { agent, suffixTokens, formattedPrompt, task, replay: { ...replay, of: lineage.of, rc: lineage.rc, attempt: lineage.attempt, history: lineage.history } };
     }
 
     const applier = new Applier({

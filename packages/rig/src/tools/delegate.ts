@@ -39,6 +39,23 @@ export interface DelegateToolOpts {
   createPolicy?: () => AgentPolicy;
 }
 
+/**
+ * Echo threshold, in LOGITS — the unit `scoreSimilarityBatch` returns, being a
+ * reranker log-odds difference, unbounded and centred on zero. NOT a 0–1
+ * similarity, which is what this number was written as and what the tests
+ * simulated, so a guard meant to catch paraphrases rejected every legitimate
+ * sub-question instead.
+ *
+ * Measured on Qwen3-Reranker-0.6B at q8_0 KV (2026-09-07) against the parent
+ * task "speculative decoding on Apple Silicon": paraphrases scored +8.4 to
+ * +10.0, a broad sub-question +6.3, specific sub-questions −8 to −9, unrelated
+ * text −10 to −11. A threshold of 7 separates paraphrase from sub-question
+ * with room on both sides. One model at one KV precision, so it is a starting
+ * point: measure again when recursion is actually wired, since nothing
+ * constructs this tool today.
+ */
+const DEFAULT_ECHO_THRESHOLD_LOGITS = 7;
+
 const DEFAULT_ARGS_SCHEMA: JsonSchema = {
   type: 'object',
   properties: {
@@ -102,6 +119,11 @@ export class DelegateTool extends Tool<Record<string, unknown>> {
     }
 
     const tw = yield* Trace.expect();
+    // WHO is calling — its branch to fork from, its task for the echo guard,
+    // its lineage for the ancestor check. One read; the tool port carries the
+    // call's own values, never the caller's identity.
+    // undefined at the top level (no caller); CallingAgent.get() never throws.
+    const caller = yield* CallingAgent.get();
 
     // Entailment gate: filter drifted/echoed tasks before spawning
     const scorer = context?.scorer;
@@ -120,16 +142,13 @@ export class DelegateTool extends Tool<Record<string, unknown>> {
       }
       if (rejected.length > 0) filtered = rejected;
 
-      let _diagAgent: Agent | undefined;
-      try { _diagAgent = yield* CallingAgent.get(); } catch { /* top-level */ }
-
       tw.write({
         traceId: tw.nextId(), parentTraceId: null, ts: performance.now(),
         type: 'entailment:delegate',
         tool: this.name,
-        callingAgentId: _diagAgent?.id,
-        callingAgentTaskLength: _diagAgent?.task?.length,
-        callingAgentTask: _diagAgent?.task?.slice(0, 200),
+        callingAgentId: caller?.id,
+        callingAgentTaskLength: caller?.task?.length,
+        callingAgentTask: caller?.task?.slice(0, 200),
         tasks: allTasks.map((text, i) => ({
           text: text.slice(0, 200),
           score: scores[i],
@@ -145,9 +164,8 @@ export class DelegateTool extends Tool<Record<string, unknown>> {
       // Echo guard — only fires when the calling agent has a parent (depth 2+).
       // At depth 1 (first delegation from a harness-spawned agent), there's no relay
       // chain to detect — sub-questions are expected to be similar to the task they decompose.
-      const echoThreshold = this._poolOpts.echoThreshold ?? 0.8;
-      let callingAgent: Agent | undefined;
-      try { callingAgent = yield* CallingAgent.get(); } catch { /* top-level */ }
+      const echoThreshold = this._poolOpts.echoThreshold ?? DEFAULT_ECHO_THRESHOLD_LOGITS;
+      const callingAgent = caller;
 
       if (callingAgent?.task && callingAgent.parent) {
         const echoScores: number[] = yield* call(() =>
@@ -209,7 +227,7 @@ export class DelegateTool extends Tool<Record<string, unknown>> {
       ...opts,
       ...(this._createPolicy ? { policy: this._createPolicy() } : {}),
       orchestrate: parallel(tasks.map(t => ({ systemPrompt: this._systemPrompt, content: t }))),
-      parent: context?.branch,
+      parent: caller?.branch,
       pruneOnReturn: opts.pruneOnReturn ?? true,
       scorer: context?.scorer,
       // The child pool starts with the assets this call can see: the run's

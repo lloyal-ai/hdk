@@ -2,12 +2,23 @@ import { describe, it, expect } from 'vitest';
 import { DefaultAgentPolicy, defaultToolGuards } from '../src/AgentPolicy';
 import { ContextPressure } from '../src/pressure';
 import type { PolicyConfig } from '../src/AgentPolicy';
-import { Agent } from '../src/Agent';
+import { Agent, argsOf, isAttended } from '../src/Agent';
+import type { ToolHistoryEntry } from '../src/Agent';
 import { createMockBranch } from './helpers/mock-branch';
 
 import { FMT } from './helpers/format-config';
 
 const BASE_CONFIG: PolicyConfig = { maxTurns: 20, terminalToolName: 'report', hasNonTerminalTools: true };
+
+/** A cohort history entry as the POOL books it once a result lands (or is
+ *  nudged). Retrieval dedup reads the RUN's retrievals, not one agent's KV. */
+const cohortEntry = (name: string, args: object, outcome: 'toolResult' | 'nudge' | 'recovery' = 'toolResult'): ToolHistoryEntry =>
+  ({ name, args: JSON.stringify(args), resultCells: 0, contextAfterPercent: 100, timestamp: 0, outcome });
+
+/** BASE_CONFIG plus the cohort view the pool injects — the attended entries of
+ *  the cohort, exactly as `agent-pool.ts` builds it. */
+const cohortConfig = (cohort: ToolHistoryEntry[]): PolicyConfig =>
+  ({ ...BASE_CONFIG, cohortAttended: (tool) => argsOf(cohort.filter(isAttended), tool) });
 
 function makeAgent(overrides?: { toolCallCount?: number; turns?: number; toolHistory?: Array<{ name: string; args: string }> }) {
   const branch = createMockBranch();
@@ -16,7 +27,7 @@ function makeAgent(overrides?: { toolCallCount?: number; turns?: number; toolHis
   for (let i = 0; i < (overrides?.toolCallCount ?? 0); i++) a.incrementToolCalls();
   for (let i = 0; i < (overrides?.turns ?? 0); i++) a.incrementTurns();
   for (const h of overrides?.toolHistory ?? []) {
-    a.recordToolResult({ name: h.name, args: h.args, resultCells: 100, contextAfterPercent: 80, timestamp: 0 });
+    a.recordToolResult({ name: h.name, args: h.args, resultCells: 100, contextAfterPercent: 80, timestamp: 0, outcome: 'toolResult' });
   }
   return a;
 }
@@ -109,24 +120,67 @@ describe('DefaultAgentPolicy', () => {
   });
 
   describe('tool guards', () => {
-    it('rejects fetch_page with duplicate URL in lineage', () => {
-      const a = makeAgent({
-        toolCallCount: 2,
-        toolHistory: [{ name: 'fetch_page', args: JSON.stringify({ url: 'https://example.com' }) }],
-      });
+    it('rejects fetch_page the cohort already attended', () => {
+      const a = makeAgent({ toolCallCount: 2 });
+      const cohort = [cohortEntry('fetch_page', { url: 'https://example.com' })];
       const tc = { name: 'fetch_page', arguments: JSON.stringify({ url: 'https://example.com' }), id: 'c1' };
-      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), cohortConfig(cohort));
       expect(action.type).toBe('nudge');
     });
 
     it('allows fetch_page with new URL', () => {
-      const a = makeAgent({
-        toolCallCount: 2,
-        toolHistory: [{ name: 'fetch_page', args: JSON.stringify({ url: 'https://other.com' }) }],
-      });
+      const a = makeAgent({ toolCallCount: 2 });
+      const cohort = [cohortEntry('fetch_page', { url: 'https://other.com' })];
       const tc = { name: 'fetch_page', arguments: JSON.stringify({ url: 'https://example.com' }), id: 'c1' };
-      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), cohortConfig(cohort));
       expect(action.type).toBe('tool_call');
+    });
+
+    // The dedup fact is the pool's, not one branch's KV: a URL a SIBLING attended
+    // must dedup even though THIS agent never fetched it, and a call that was
+    // only NUDGED (its result never reached the KV) does not count.
+    it('rejects a fetch a SIBLING attended, though this agent never fetched it', () => {
+      const a = makeAgent({ toolCallCount: 2 }); // empty own history
+      const cohort = [cohortEntry('fetch_page', { url: 'https://sib.com' })];
+      const tc = { name: 'fetch_page', arguments: JSON.stringify({ url: 'https://sib.com' }), id: 'c1' };
+      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), cohortConfig(cohort));
+      expect(action.type).toBe('nudge');
+    });
+
+    it('does NOT reject a retrieval the cohort only NUDGED — a nudge is not a receipt', () => {
+      const a = makeAgent({ toolCallCount: 2 });
+      a.recordToolResult(cohortEntry('fetch_page', { url: 'https://x.com' }, 'nudge'));
+      const cohort = [...a.toolHistory]; // the pool's cohort includes self
+      const tc = { name: 'fetch_page', arguments: JSON.stringify({ url: 'https://x.com' }), id: 'c1' };
+      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), cohortConfig(cohort));
+      expect(action.type).toBe('tool_call');
+    });
+
+    it('rejects a web_search query the cohort already attended', () => {
+      const a = makeAgent({ toolCallCount: 2 });
+      const cohort = [cohortEntry('web_search', { query: 'Same Query' })];
+      const tc = { name: 'web_search', arguments: JSON.stringify({ query: 'same query' }), id: 'c1' };
+      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), cohortConfig(cohort));
+      expect(action.type).toBe('nudge');
+    });
+
+    // The tool TRIMS its arg before it fetches/searches (fetch-page.ts,
+    // web-search.ts), so a whitespace-only variant hits the same resource. The
+    // guard must normalize the same way, or the same URL/query is fetched twice.
+    it('dedups a URL that differs only by surrounding whitespace', () => {
+      const a = makeAgent({ toolCallCount: 2 });
+      const cohort = [cohortEntry('fetch_page', { url: 'https://example.com' })];
+      const tc = { name: 'fetch_page', arguments: JSON.stringify({ url: '  https://example.com  ' }), id: 'c1' };
+      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), cohortConfig(cohort));
+      expect(action.type).toBe('nudge');
+    });
+
+    it('dedups a query that differs only by surrounding whitespace', () => {
+      const a = makeAgent({ toolCallCount: 2 });
+      const cohort = [cohortEntry('web_search', { query: 'same query' })];
+      const tc = { name: 'web_search', arguments: JSON.stringify({ query: '  same query  ' }), id: 'c1' };
+      const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), cohortConfig(cohort));
+      expect(action.type).toBe('nudge');
     });
 
     it('allows web_research without prior tool calls', () => {
@@ -417,7 +471,7 @@ describe('DefaultAgentPolicy', () => {
         extraGuards: [{
           tools: ['web_search'],
           reject: () => true,  // always reject — simulates duplicate-query match
-          message: 'This query was already searched. Refine your search or report findings.',
+          message: 'This search was already attempted in this run. Refine the query or report your findings.',
         }],
       });
       // Agent is PAST maxTurns (20 >= 10) — _isOverBudget would fire.
@@ -425,7 +479,7 @@ describe('DefaultAgentPolicy', () => {
       const tc = { name: 'web_search', arguments: '{"query":"same"}', id: 'c1' };
       const action = p.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
       expect(action.type).toBe('nudge');
-      expect((action as any).message).toBe('This query was already searched. Refine your search or report findings.');
+      expect((action as any).message).toBe('This search was already attempted in this run. Refine the query or report your findings.');
       // Specifically NOT the turn-limit message
       expect((action as any).message).not.toContain('Turn limit');
       expect((action as any).message).not.toContain('within');

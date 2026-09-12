@@ -20,21 +20,21 @@ import type { Attachment } from '@lloyal-labs/media';
  * - exploit mode (`admitChunks`) takes `min(tool-query score, scoreEntailmentBatch)` — one extra pass, never two
  * - `scoreSimilarityBatch` scores against an arbitrary **reference** (echo detection uses agent task)
  *
+ * **Unit.** Every score this interface returns is the reranker's LOGIT
+ * difference: unbounded, centred on zero, positive meaning "yes". Not a 0–1
+ * similarity; any threshold over these numbers is in logits.
+ *
  * Conflating these produces wrong scores. When adding new scoring
  * methods or trace events, use the field names from this table.
  *
  * @category Agents
  */
 export interface EntailmentScorer {
-  /** Score texts against the original query. Returns 0–1 per text. */
+  /** Score texts against the original query. One score per text, in the
+   *  scorer's unit (see the interface doc). */
   scoreEntailmentBatch(texts: string[]): Promise<number[]>;
-  /**
-   * Dual scoring: min(tool query score, original query score) per text.
-   * Used in exploit mode at content boundaries to tighten focus.
-   * @param texts - Content chunks to score
-   * @param localQuery - The tool call's query argument (NOT the agent task)
-   */
-  /** Score texts against an arbitrary reference string. Returns 0–1 per text. */
+  /** Score texts against an arbitrary reference string (echo detection uses
+   *  the agent task). One score per text, in the scorer's unit. */
   scoreSimilarityBatch(reference: string, texts: string[]): Promise<number[]>;
   /** Threshold gate — returns true if the score is high enough to proceed. */
   shouldProceed(score: number): boolean;

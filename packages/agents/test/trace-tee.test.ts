@@ -132,7 +132,7 @@ describe('dispatch attribution', () => {
   it('stamps pool-side nudges with their agent, naming the rejected call and guard', async () => {
     const writer = new CapturingTraceWriter();
     await runPool(writer, toolOncePolicy((turn) => {
-      if (turn === 1) return { type: 'nudge', message: 'This URL was already fetched. Try a different source.', guard: 'url_dedup' };
+      if (turn === 1) return { type: 'nudge', message: 'This URL was already attempted in this run. Try a different source.', guard: 'url_dedup' };
       return { type: 'idle', reason: 'free_text_stop' };
     }), new Map<string, Tool>([['tracing_tool', new TracingTool()]]));
 

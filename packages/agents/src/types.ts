@@ -3,7 +3,6 @@ import type { Branch } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import type { AgentPolicy } from './AgentPolicy';
 import type { EntailmentScorer } from './source';
-import type { ToolHistoryEntry } from './Agent';
 import type { TraceEvent } from './trace-types';
 import type { Attachment } from '@lloyal-labs/media';
 
@@ -52,23 +51,14 @@ export interface ToolSchema {
 }
 
 /**
- * Execution context passed to {@link Tool.execute}
- *
- * Provides callbacks for reporting progress during long-running tool
- * operations (e.g. reranker scoring chunks).
+ * Execution context passed to {@link Tool.execute} — the values of THIS call,
+ * and nothing that outlives it. WHO is calling is {@link CallingAgent}; an id
+ * or history slice on this port invites a tool to keep private per-agent
+ * state, recording evidence before the pool has admitted it.
  *
  * @category Agents
  */
 export interface ToolContext {
-  /** Stable agent identifier — branch handle at creation time */
-  agentId: number;
-  /**
-   * The calling agent's branch — use for recursive tools that spawn
-   * sub-agents via {@link withSpine} with `parent` option.
-   * Sub-agents forking from this branch inherit the agent's full
-   * KV state (Continuous Context).
-   */
-  branch?: Branch;
   /** Progress callback for long-running operations */
   onProgress?: (p: { filled: number; total: number }) => void;
   /**
@@ -90,12 +80,6 @@ export interface ToolContext {
    * a SessionContext reference.
    */
   pressurePercentAvailable?: number;
-  /**
-   * Tool histories of sibling agents in the same pool (excluding self).
-   * Used by tools to detect cross-agent duplicate calls and return
-   * a "resource unavailable" error to force diversification.
-   */
-  peerHistory?: ToolHistoryEntry[];
   /**
    * Assets available to the run at this call: the roots the host staged the
    * pool with, then every root any agent's tool result has admitted so far,
@@ -420,7 +404,7 @@ export type AgentEvent =
   | { type: 'agent:tool_result'; agentId: number; tool: string; result: string; contextAvailablePercent?: number }
   | { type: 'agent:tool_progress'; agentId: number; tool: string; filled: number; total: number }
   | { type: 'agent:tool_retry'; agentId: number; tool: string; retryAfterMs: number; attempt: number }
-  /** A prefill LANDED on the agent's branch — a tool result, a recovery
+  /** A prefill reached the agent's branch — a tool result, a recovery
    *  prompt or a probe — with the roots it admitted (`attachments`, present
    *  when the result carried any). Admission is a run-record fact the host
    *  books and shows, so it rides the bus like every other one; the trace's

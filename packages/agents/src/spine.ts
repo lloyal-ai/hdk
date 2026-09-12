@@ -243,7 +243,7 @@ export function* withSpine<T>(
       //
       // `tokenCount` is omitted on the embedding rail — mtmd owns tokenization
       // there and no honest count exists before the native call returns. The
-      // count that landed rides `branch:prefill`.
+      // count that was prefilled rides `branch:prefill`.
       const writeSpineSeed = (tokenCount?: number): void => {
         tw.write({
           traceId: tw.nextId(),

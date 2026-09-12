@@ -126,8 +126,8 @@ export function* setupAgent(
   }
   const suffixTokens = [...ctx.getTurnSeparator(), ...ctx.tokenizeSync(fmt.prompt, false)];
 
-  let callingAgent: Agent | null = null;
-  try { const a = yield* CallingAgent.get(); if (a) callingAgent = a; } catch { /* top-level — no caller */ }
+  // undefined at the top level (no caller); CallingAgent.get() never throws.
+  const callingAgent = (yield* CallingAgent.get()) ?? null;
 
   const src = sharedFmt ?? fmt;
   const fmtConfig: FormatConfig = {
@@ -200,7 +200,7 @@ export class Executor {
     if (S.hold) return out;
 
     // 1. Admitted prefills: the token rail, the media rail, probes, re-activation.
-    const landed = yield* this.settle(S.prefills, out);
+    const admitted = yield* this.settle(S.prefills, out);
     if (out.fatal) return out;
 
     // 2. Tool dispatch — inline on this fiber, fan-out on a child.
@@ -213,7 +213,7 @@ export class Executor {
     // 4. Sampling — the scheduled decode set, in roster order. Agents that
     //    became active in THIS step (admitted items, spawns) sample next
     //    tick, after the scheduler has had its say on them.
-    void landed; void born;
+    void admitted; void born;
     const set = new Set<Agent>(S.decode);
     const entries: [Branch, number][] = [];
     for (const a of d.agents) {
@@ -253,10 +253,10 @@ export class Executor {
     return out;
   }
 
-  /** Prefill the admitted items; book and re-activate what landed. */
+  /** Prefill the admitted items; book and re-activate what was admitted. */
   private *settle(items: PrefillItem[], out: Outputs): Operation<Agent[]> {
     const d = this.d;
-    const landed: Agent[] = [];
+    const admitted: Agent[] = [];
     const order: { agentId: number; callId: string; cells: number }[] = [];
     const probes = new Map<number, string>();
     // Admissions to announce once the rails are done: `prefilled` rides the
@@ -278,13 +278,13 @@ export class Executor {
       for (const r of refs ?? []) {
         if (!d.available.some((x) => x.digest === r.digest)) d.available.push(r);
       }
-      landed.push(a);
+      admitted.push(a);
       order.push({ agentId: a.id, callId: it.callId, cells });
       if (it.probe) probes.set(a.id, it.probe);
       a.deferAttempts = 0;
       const after = new ContextPressure(d.ctx, d.pressureOpts);
       a.recordToolResult({ name: it.toolName, args: it.args, resultCells: cells,
-        contextAfterPercent: after.percentAvailable, timestamp: performance.now() });
+        contextAfterPercent: after.percentAvailable, timestamp: performance.now(), outcome: it.kind });
       admissions.push({ kind: 'prefilled', agent: a, cells,
         role: it.kind === 'recovery' ? 'recovery' : 'toolResult', attachments: refs });
     };
@@ -304,7 +304,7 @@ export class Executor {
         // records it and the pool closes partial.
         if (classifyRc(de?.rc, de?.partial, d.ladder.backendSuspect) === 'fatal') {
           out.fatal = { phase: 'prefill', err };
-          return landed;
+          return admitted;
         }
       }
     }
@@ -327,11 +327,11 @@ export class Executor {
 
     for (const t of admissions) yield* d.emit.emit(t);
 
-    if (landed.length > 0) {
+    if (admitted.length > 0) {
       d.emit.trace({ kind: 'settleOrder', batch: order });
       const probePairs: [Branch, number[]][] = [];
       const probeMeta: { agent: Agent; cells: number; text: string }[] = [];
-      for (const a of landed) {
+      for (const a of admitted) {
         const text = probes.get(a.id);
         if (!text) continue;
         const tokens = d.ctx.tokenizeSync(text, false);
@@ -347,14 +347,14 @@ export class Executor {
       }
       // Re-activate. An extracting agent gets the eager terminal-tool grammar
       // (the grammar-swap); everyone else the lazy tool-call grammar.
-      for (const a of landed) {
+      for (const a of admitted) {
         a.transition('active');
         a.resetTurn();
         if (a.extracting && d.terminalGrammar) a.branch.setGrammar(d.terminalGrammar);
         else this.applyLazyGrammar(a);
       }
     }
-    return landed;
+    return admitted;
   }
 
   /** Spawns (heals among them) and extends land as one prefill; the new agents activate. */
@@ -409,7 +409,7 @@ export class Executor {
         e.resolve(e.tokens.length);
       }
       for (const s of S.spawns) {
-        // Discarded while the batch was in flight: its suffix landed, but nobody
+        // Discarded while the batch was in flight: its suffix was prefilled, but nobody
         // awaits it and the pool is draining or its orchestrator is gone. The
         // fork goes back rather than into a roster that would only reap it.
         if (s.discarded) { discardSpawn(s); handed.add(s); continue; }
@@ -444,6 +444,9 @@ export class Executor {
         a.pruneRequested = true;
         return false;
       }
+      // The replay restored the KV; restore the receipt ledger to match, so the
+      // read tools see what the branch now holds instead of re-delivering it.
+      for (const h of s.replay.history) a.recordToolResult(h);
       d.emit.trace({ kind: 'healed', of: s.replay.of, agent: a, rc: s.replay.rc, attempt: s.replay.attempt,
         pressure: new ContextPressure(d.ctx, d.pressureOpts) });
     }
@@ -515,15 +518,12 @@ export class Executor {
     d.emit.trace({ kind: 'dispatched', traceId: dispatchTraceId, ts: toolT0, agent, tool: tc.name,
       toolIndex: d.toolIndexMap.get(tc.name) ?? -1, toolkitSize: d.toolkitSize, args: toolArgs, callId,
       explore, percentAvailable: reading.percentAvailable });
-    const peerHistory = d.agents.filter(a => a.id !== agent.id).flatMap(a => a.toolHistory);
     const toolContext: ToolContext = {
-      agentId: agent.id, branch: agent.branch,
       onProgress: (p: { filled: number; total: number }) => {
         d.progress.send({ type: 'agent:tool_progress', agentId: agent.id, tool: tc.name, filled: p.filled, total: p.total });
       },
       scorer: d.scorer, explore,
       pressurePercentAvailable: reading.percentAvailable,
-      peerHistory,
       attachments: [...d.available],
     };
 
@@ -563,9 +563,12 @@ export class Executor {
     let completion: ToolCompletion;
     try {
       yield* TraceParent.set(dispatchTraceId);
-      yield* CallingAgent.set(agent);
       yield* Trace.set(tee(agent.id, callId, dispatchTraceId));
       const result: unknown = yield* scoped(function*() {
+        // Scoped to the call: CallingAgent is "who is calling THIS tool", so it
+        // must revert when the call ends. Left set on the loop fiber it lingers,
+        // and a later spawn off the loop (a heal's forge) reads a stale agent.
+        yield* CallingAgent.set(agent);
         return yield* call(() =>
           tool ? tool.execute(toolArgs, toolContext) : Promise.resolve({
             error: d.tools.size === 0

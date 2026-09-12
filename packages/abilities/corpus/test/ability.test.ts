@@ -110,25 +110,26 @@ describe('createCorpusAbility', () => {
   });
 });
 
-// ── SearchTool envelope (TICK-001) ───────────────────────────────
+// ── SearchTool envelope ──────────────────────────────────────────
 //
-// SearchTool now returns `{hits, thresholdScore, totalScored, topRejected}`
-// instead of a raw `ScoredChunk[]`. The threshold gives the agent an
-// honest "0 hits above the floor" signal — when nothing passes, the
-// envelope still surfaces the top 3 rejected hits so the agent sees
-// "best I could find, but the model said no to all of them" rather
-// than getting fed garbage as if it were honest signal.
+// What comes back is `{hits, totalScored}`: the ranking's top-K within a token
+// budget, each hit keeping the file and line range `read_file` is addressed by.
+// No score decides admission. The reranker is a RELATIVE judge — its scale
+// shifts per query and its top-ranked candidate goes negative routinely — so a
+// floor at zero returned nothing exactly when the agent most needed the best
+// available passages.
 
-/** Build a fixture `Chunk` with the minimum fields SearchTool reads. */
-function mkChunk(file: string, heading: string, score: number): Chunk {
+/** A fixture `Chunk`. Line ranges are distinct because the admission pipeline
+ *  locates a scored chunk by file AND start line. */
+function mkChunk(file: string, heading: string, startLine: number, tokenCount = 3): Chunk {
   return {
     resource: file,
     heading,
     section: heading,
     text: `body of ${heading}`,
-    tokens: [1, 2, 3],
-    startLine: 1,
-    endLine: 5,
+    tokens: Array.from({ length: tokenCount }, (_, i) => i + 1),
+    startLine,
+    endLine: startLine + 4,
   };
 }
 
@@ -166,73 +167,55 @@ function mkScoringReranker(expectedScores: Map<string, number>): Reranker {
   };
 }
 
-describe('SearchTool envelope (TICK-001)', () => {
-  it('returns hits + envelope; drops sub-threshold hits to topRejected when empty', async () => {
-    // Three chunks; all score below threshold=0. No hits should pass; the
-    // envelope must surface up to 3 topRejected so the agent sees "best
-    // I could find, but the model said no."
-    const chunks = [
-      mkChunk('a.md', 'cake', -1.2),
-      mkChunk('a.md', 'weather', -2.5),
-      mkChunk('b.md', 'tls', -3.0),
-    ];
-    const reranker = mkScoringReranker(
-      new Map([['cake', -1.2], ['weather', -2.5], ['tls', -3.0]]),
-    );
-    const tool = new SearchTool(chunks, reranker, { threshold: 0 });
-
-    const result = (await run(function* () {
+describe('SearchTool envelope', () => {
+  const searchWith = (chunks: Chunk[], scores: Map<string, number>, opts?: { topK?: number; tokenBudget?: number }, context?: unknown) => {
+    const tool = new SearchTool(chunks, mkScoringReranker(scores), opts);
+    return run(function* () {
       yield* Trace.set(new NullTraceWriter());
-      return yield* tool.execute({ query: 'q' });
-    })) as { hits: ScoredChunk[]; thresholdScore: number; totalScored: number; topRejected: ScoredChunk[] };
+      return (yield* tool.execute({ query: 'q' }, context as never)) as { hits: ScoredChunk[]; totalScored: number };
+    });
+  };
 
-    expect(result.hits).toEqual([]);
-    expect(result.thresholdScore).toBe(0);
+  it('an all-negative ranking still returns its best — no score decides admission', async () => {
+    // Every chunk is a "probably not" by the model's own judgement, which on a
+    // real corpus is the common case, not the failure case. The agent gets the
+    // ranking and the scores, and decides for itself.
+    const chunks = [mkChunk('a.md', 'cake', 1), mkChunk('a.md', 'weather', 11), mkChunk('b.md', 'tls', 1)];
+    const result = await searchWith(chunks, new Map([['cake', -1.2], ['weather', -2.5], ['tls', -3.0]]));
+
+    expect(result.hits.map((h) => h.heading)).toEqual(['cake', 'weather', 'tls']);
     expect(result.totalScored).toBe(3);
-    expect(result.topRejected.length).toBe(3);
-    // topRejected is sorted high-to-low so the agent sees the best of the
-    // bad first.
-    expect(result.topRejected[0].heading).toBe('cake'); // -1.2 is least bad
-    expect(result.topRejected[2].heading).toBe('tls');  // -3.0 is worst
+    expect(result.hits[0]).toMatchObject({ file: 'a.md', startLine: 1, endLine: 5, score: -1.2 });
   });
 
-  it('returns hits above threshold; topRejected is empty when any hit passes', async () => {
-    const chunks = [
-      mkChunk('a.md', 'high',   5.5),
-      mkChunk('a.md', 'medium', 1.2),
-      mkChunk('b.md', 'low',   -2.0),
-    ];
-    const reranker = mkScoringReranker(
-      new Map([['high', 5.5], ['medium', 1.2], ['low', -2.0]]),
-    );
-    const tool = new SearchTool(chunks, reranker, { threshold: 0 });
+  it('hits are the ranking in order, each addressed the way read_file takes it', async () => {
+    const chunks = [mkChunk('a.md', 'high', 1), mkChunk('a.md', 'medium', 11), mkChunk('b.md', 'low', 1)];
+    const result = await searchWith(chunks, new Map([['high', 5.5], ['medium', 1.2], ['low', -2.0]]));
 
-    const result = (await run(function* () {
-      yield* Trace.set(new NullTraceWriter());
-      return yield* tool.execute({ query: 'q' });
-    })) as { hits: ScoredChunk[]; thresholdScore: number; totalScored: number; topRejected: ScoredChunk[] };
-
-    expect(result.hits.map((h) => h.heading)).toEqual(['high', 'medium']);
-    expect(result.thresholdScore).toBe(0);
-    expect(result.totalScored).toBe(3);
-    expect(result.topRejected).toEqual([]); // not surfaced when hits is non-empty
+    expect(result.hits.map((h) => h.heading)).toEqual(['high', 'medium', 'low']);
+    expect(result.hits.map((h) => [h.file, h.startLine, h.endLine])).toEqual([
+      ['a.md', 1, 5], ['a.md', 11, 15], ['b.md', 1, 5],
+    ]);
   });
 
-  it('respects custom threshold (tighter floor)', async () => {
-    const chunks = [
-      mkChunk('a.md', 'high',   5.5),
-      mkChunk('a.md', 'medium', 1.2),
-    ];
-    const reranker = mkScoringReranker(new Map([['high', 5.5], ['medium', 1.2]]));
-    // Tighter threshold of 2 ⇒ only "confident yes" hits pass.
-    const tool = new SearchTool(chunks, reranker, { threshold: 2 });
+  it("scores in explore mode whatever the run's stance — the corpus is the on-topic universe, so the original question never vetoes a passage", async () => {
+    // Measured on the pharmacology thread at q8_0 KV: exploit's min() against
+    // the original question took the answer-bearing passage from +5.5 to −5.0.
+    // A scorer that throws proves the exploit pass is never consulted here.
+    const chunks = [mkChunk('a.md', 'high', 1), mkChunk('a.md', 'medium', 11)];
+    const scorer = { scoreEntailmentBatch: async () => { throw new Error('the entailment scorer must not be consulted for a corpus search'); } };
+    const r = await searchWith(chunks, new Map([['high', 5.5], ['medium', 1.2]]), undefined,
+      { attachments: [], explore: false, scorer });
+    expect(r.hits.map((h) => h.heading)).toEqual(['high', 'medium']);
+  });
 
-    const result = (await run(function* () {
-      yield* Trace.set(new NullTraceWriter());
-      return yield* tool.execute({ query: 'q' });
-    })) as { hits: ScoredChunk[]; thresholdScore: number };
+  it('topK bounds the count; the token budget bounds the payload', async () => {
+    const chunks = [mkChunk('a.md', 'high', 1), mkChunk('a.md', 'medium', 11), mkChunk('b.md', 'low', 1)];
+    const scores = new Map([['high', 5.5], ['medium', 1.2], ['low', -2.0]]);
 
-    expect(result.hits.map((h) => h.heading)).toEqual(['high']);
-    expect(result.thresholdScore).toBe(2);
+    expect((await searchWith(chunks, scores, { topK: 2 })).hits.map((h) => h.heading)).toEqual(['high', 'medium']);
+
+    // Three tokens per chunk, so a budget of four fits exactly one.
+    expect((await searchWith(chunks, scores, { tokenBudget: 4 })).hits.map((h) => h.heading)).toEqual(['high']);
   });
 });

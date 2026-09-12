@@ -1,6 +1,7 @@
 import type { Operation } from 'effection';
 import type { SessionContext, ParsedToolCall, ParseChatOutputResult } from '@lloyal-labs/sdk';
 import { buildToolResultDelta, buildUserDelta, decodeErrorOf } from '@lloyal-labs/sdk';
+import { isAttended } from './Agent';
 import type { Agent } from './Agent';
 import type { AgentPolicy, PolicyConfig } from './AgentPolicy';
 import type { Tool } from './Tool';
@@ -297,8 +298,8 @@ export class Applier {
   private *tokenRailFailed(items: PrefillItem[], o: PrefillOutcome & { ok: false }): Operation<void> {
     switch (classifyRc(o.rc, o.partial, this.d.ladder.backendSuspect)) {
       case 'fail':
-        // An earlier chunk landed and the error does not say which: the cohort
-        // takes the per-agent terminal rather than decode landed cells twice.
+        // An earlier chunk was prefilled and the error does not say which: the
+        // cohort takes the per-agent terminal rather than decode those cells twice.
         for (const it of items) yield* this.failSettled(it.agent, 'tool_result_failed', `partial prefill: ${o.message}`, o.rc);
         return;
       case 'defer':
@@ -347,8 +348,11 @@ export class Applier {
       // after the prune pass — a replacement forks the spine and needs the
       // lease this agent is about to give back. From there it is a spawn
       // wearing a lineage: priced whole, admitted by fit, replayed once its
-      // suffix has landed. Nobody awaits it.
-      a.heal = { records, of: a.id, ...(o.rc !== undefined ? { rc: o.rc } : {}), attempt };
+      // suffix has been prefilled. Nobody awaits it.
+      // Carry the attended entries so the replacement's ledger matches the KV
+      // its records replay — a nudge or recovery turn delivered nothing.
+      const history = a.toolHistory.filter(isAttended);
+      a.heal = { records, history, of: a.id, ...(o.rc !== undefined ? { rc: o.rc } : {}), attempt };
     }
   }
 

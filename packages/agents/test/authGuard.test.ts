@@ -78,6 +78,7 @@ function makeAgent(opts: {
       resultCells: 100,
       contextAfterPercent: 80,
       timestamp: 0,
+      outcome: 'toolResult',
     });
   }
   return agent;
@@ -203,7 +204,7 @@ describe('ToolGuard "*" matcher', () => {
     const allCallsGuard: ToolGuard = {
       name: 'audit',
       tools: '*',
-      reject: (_args, _hist, _agent, toolName) => {
+      reject: (_args, _agent, toolName) => {
         seen.push(toolName);
         return false;
       },
@@ -222,7 +223,7 @@ describe('ToolGuard "*" matcher', () => {
         {
           name: 'blanket',
           tools: '*',
-          reject: (_a, _h, _ag, _name, config) => config.maxTurns > 0,
+          reject: (_a, _ag, _name, config) => config.maxTurns > 0,
           message: 'all calls blocked',
         },
       ],

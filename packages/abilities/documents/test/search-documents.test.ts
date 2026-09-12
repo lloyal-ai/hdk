@@ -15,10 +15,10 @@ function setup() {
   const reranker = scoringReranker();
   const indexFor = documentIndexer(fx.store, (t) => reranker.tokenize(t));
   const tool = new SearchDocumentsTool(indexFor, reranker);
-  const search = (args: { query: string; document?: string }, attachments: readonly Attachment[], agentId = 1) =>
+  const search = (args: { query: string; document?: string }, attachments: readonly Attachment[]) =>
     run(function* () {
       yield* Trace.set(new NullTraceWriter());
-      return (yield* tool.execute(args, { agentId, attachments } as ToolContext)) as Envelope;
+      return (yield* tool.execute(args, { attachments } as ToolContext)) as Envelope;
     });
   return { ...fx, tool, search };
 }
@@ -74,7 +74,7 @@ describe('search_documents', () => {
     };
     const r = await run(function* () {
       yield* Trace.set(new NullTraceWriter());
-      return (yield* tool.execute({ query: 'baseline cells' }, { agentId: 1, attachments: [doc], explore: false, scorer } as unknown as ToolContext)) as Envelope;
+      return (yield* tool.execute({ query: 'baseline cells' }, { attachments: [doc], explore: false, scorer } as unknown as ToolContext)) as Envelope;
     });
     expect(r.error).toBeUndefined();
     expect(r.hits.length).toBeGreaterThan(0);

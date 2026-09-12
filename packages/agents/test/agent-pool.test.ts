@@ -17,7 +17,8 @@ import { MockSessionContext, createMockSdk } from '../../sdk/src/testing.js';
 import type { ChatFormat, ParseChatOutputOptions, ParseChatOutputResult } from '@lloyal-labs/sdk';
 import { useAgentPool } from '../src/agent-pool';
 import { parallel } from '../src/orchestrators';
-import { Ctx, Store, Events, Trace, WindDown, Attachments, Ingress } from '../src/context';
+import { agentPool } from '../src/create-agent-pool';
+import { Ctx, Store, Events, Trace, WindDown, Attachments, Ingress, CallingAgent } from '../src/context';
 import { MemoryAttachmentStore } from './helpers/memory-store';
 import { rawIngress } from './helpers/raw-ingress';
 import { mkdtempSync } from 'node:fs';
@@ -25,7 +26,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Tool, TOOL_IMAGE_ERROR_KEY } from '../src/Tool';
 import type { AgentPolicy } from '../src/AgentPolicy';
-import type { AgentPoolResult, AgentEvent, ToolContext } from '../src/types';
+import type { AgentPoolResult, AgentEvent, ToolContext, JsonSchema } from '../src/types';
 import type { Agent } from '../src/Agent';
 import { CapturingTraceWriter } from './helpers/capturing-trace';
 import { MockTool } from './helpers/mock-tool';
@@ -1720,7 +1721,7 @@ describe('self-healing ladder', () => {
     expect((defers[0] as { rc: number }).rc).toBe(1);
     expect((defers[0] as { attempt: number }).attempt).toBe(1);
     expect(ladderFailures(events)).toHaveLength(0);
-    // The retried settle actually landed — success-only, so its event exists.
+    // The retried settle actually prefilled — success-only, so its event exists.
     expect(trace.events.some(e => e.type === 'branch:prefill'
       && (e as { role?: string }).role === 'toolResult')).toBe(true);
   });
@@ -1754,10 +1755,10 @@ describe('self-healing ladder', () => {
     expect((settleFailed as { rc?: number }).rc).toBe(1);
   });
 
-  it('token rail rc 1 + partial: an earlier chunk landed, so nothing is re-queued', async () => {
+  it('token rail rc 1 + partial: an earlier chunk was prefilled, so nothing is re-queued', async () => {
     // The kernel's rule (liblloyal DecodeError): intact ⇔ rc == 1 && !partial.
     // With `partial` set, some branches in the cohort advanced and the error
-    // does not say which; re-queuing the cohort whole would decode the landed
+    // does not say which; re-queuing the cohort whole would decode the prefilled
     // ones twice onto advanced positions. The cohort fails and heals instead.
     const spy = new SpyTool();
     const tools = new Map<string, Tool>([['web_search', spy]]);
@@ -1785,7 +1786,7 @@ describe('self-healing ladder', () => {
     expect((settleFailed as { rc?: number }).rc).toBe(1);
   });
 
-  it('media rc 1 + partial: an earlier chunk landed — not intact, so no deferral', async () => {
+  it('media rc 1 + partial: an earlier chunk was prefilled — not intact, so no deferral', async () => {
     const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
     const { events, trace } = await runPool({
       nCtx: MEDIA_TEST_NCTX,
@@ -1858,7 +1859,7 @@ describe('self-healing ladder', () => {
     // State was restored: nothing died, nothing was pruned for this.
     expect(ladderFailures(events)).toHaveLength(0);
     expect(trace.events.some(e => e.type === 'pool:settleFailed')).toBe(false);
-    // The substitute note prefilled as tokens — a landed toolResult event.
+    // The substitute note prefilled as tokens — a prefilled toolResult event.
     expect(trace.events.some(e => e.type === 'branch:prefill'
       && (e as { role?: string }).role === 'toolResult'
       && (e as { cells: number }).cells > 0)).toBe(true);
@@ -2454,7 +2455,7 @@ describe('tool results carrying images', () => {
     // The agent really ran and really called the tool...
     expect(events.some(e => e.type === 'agent:tool_result')).toBe(true);
     // ...and its image was still refused admission. Charged at zero it would
-    // have sailed through and landed here.
+    // have sailed through and arrived here.
     expect(ctx.multimodalPrefills).toHaveLength(0);
     expect(mediaFailures(events)).toHaveLength(0);
   });
@@ -2613,13 +2614,167 @@ describe('assets available to the run', () => {
     const { result } = await runPool({
       nCtx: MEDIA_TEST_NCTX, taskCount: 2,
       // A admits on its first turn and finishes. B generates for a while,
-      // then calls — well after A's result landed and A was pruned.
+      // then calls — well after A's result was admitted and A was pruned.
       forkTokenQueues: [[1, STOP, STOP], [7, 7, 7, 7, 7, 7, 2, STOP, STOP]],
       parseChatOutputFn: calls('open', 'look'), policy: policy(),
       tools: new Map<string, Tool>([['open', new RootTool([doc], 'open')], ['look', spy]]),
       contentStore: store, pruneOnReturn: true, trace: true,
     });
     expect(result.agents[0].result).toBe('done');
+    expect(spy.capturedContexts).toHaveLength(1);
+    expect(spy.capturedContexts[0].attachments).toEqual([doc]);
+  });
+
+  it('a settle rejection books the nudge, not the call: the retry lands, and the agent attends over exactly one result', async () => {
+    // The page is priced over a tiny headroom on the first call; the policy
+    // nudges and frees capacity; the agent asks for the same page again.
+    const store = new MemoryAttachmentStore();
+    const page = imageRoot(store);
+    let ctxRef: MockSessionContext | undefined;
+    const pol = stubPolicy({
+      shouldExit: () => false,
+      onProduced: (_a, parsed) => {
+        if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
+        if (parsed.content) return { type: 'free_text_return', content: parsed.content };
+        return { type: 'idle', reason: 'free_text_stop' };
+      },
+      // Capacity made available: the same page now prices within headroom.
+      onSettleReject: () => { if (ctxRef) ctxRef.mockImageCells = 16; return { type: 'nudge', message: 'Too large now; try again.' }; },
+    });
+    const { ctx, result, events } = await runPool({
+      // Headroom (nCtx − cellsUsed − the 1024 soft limit) is ~2000: far above
+      // the nudge, far below the page. The PAGE is what does not fit, priced by
+      // the projector's geometry. Starving the context instead would leave the
+      // nudge unaffordable too — the pool spends the difference on its own spine
+      // and decodes before the stall, and `scheduler.ts` samples headroom ONCE
+      // per tick — so the agent would be dropped rather than nudged.
+      nCtx: MEDIA_TEST_NCTX, cellsUsed: MEDIA_TEST_NCTX - 1024 - 2000,
+      mutateCtx: (c) => { ctxRef = c; c.mockImageCells = 4000; },
+      forkTokenQueues: [[1, STOP, 2, STOP, STOP]],
+      parseChatOutputFn: calls('view', 'view'), policy: pol,
+      tools: new Map<string, Tool>([['view', new RootTool([page], 'view')]]),
+      contentStore: store, trace: true,
+    });
+    expect(ctx.multimodalPrefills).toHaveLength(1);
+    expect(announced(events)).toEqual([[page]]);
+    // The nudge is booked as a nudge; only the retry is an attended result.
+    const agent = result.agents[0].agent;
+    expect(agent.toolHistory.filter((h) => h.name === 'view')
+      .map((h) => (h as { outcome?: string }).outcome)).toEqual(['nudge', 'toolResult']);
+    expect(agent.attendedResults('view')).toHaveLength(1);
+  });
+
+  it('a heal preserves the receipt ledger: a read attended before the poison is not re-delivered after the respawn', async () => {
+    // The original LANDS a `look`, then a poisoned media call (rc −3) heals it.
+    // The replay restores the read into the replacement's KV; the receipt ledger
+    // must ride with it, or the read tools re-deliver what the branch holds.
+    const store = new MemoryAttachmentStore();
+    const doc = documentRoot(store);
+    const { result, trace } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      // original: look (t1, lands), rasterize (t2, poisons); replacement: done.
+      forkTokenQueues: [[1, STOP, 2, STOP, STOP], [STOP]],
+      parseChatOutputFn: calls('look', 'rasterize'),
+      policy: policy(),
+      tools: new Map<string, Tool>([['look', new RootTool([doc], 'look')], ['rasterize', new MediaTool([PNG_BYTES])]]),
+      contentStore: store, trace: true,
+      mutateCtx: (c) => {
+        let seen = 0;
+        c.mockMultimodalError = () => (seen++ === 0 ? { message: 'compute failed', rc: -3 } : null);
+      },
+    });
+    const heal = trace.events.find((e) => e.type === 'pool:agentHeal') as { of: number; agentId: number } | undefined;
+    expect(heal).toBeDefined();
+    const replacement = result.agents.find((a) => a.agentId === heal!.agentId);
+    expect(replacement).toBeDefined();
+    // The ledger rides on the replacement's OWN history (matching its replayed
+    // KV), and it does not inherit an ambient agent as its lineage parent.
+    expect(replacement!.agent.parent).toBeNull();
+    expect(replacement!.agent.toolHistory.filter((h) => h.name === 'look' && (h as { outcome?: string }).outcome === 'toolResult')).toHaveLength(1);
+    // So it attends over the `look` the original attended, and does not re-deliver.
+    expect(replacement!.agent.attendedResults('look')).toHaveLength(1);
+  });
+
+  it('a heal takes the ORIGINAL\'s ledger, not a sibling\'s: the replacement attends over what its KV holds', async () => {
+    // Two agents run: the one that will heal LANDS `look`; a sibling LANDS a
+    // DIFFERENT read, `peek`. The healer is poisoned and respawned. Its KV was
+    // replayed from ITS OWN records (the `look`), not the sibling's — so the
+    // replacement must attend over `look` and NOT `peek`. If the replacement
+    // inherits the ambient sibling as its lineage parent, it reads `peek`
+    // (which is not in its KV → blinding) and misses `look`.
+    const store = new MemoryAttachmentStore();
+    const look = documentRoot(store, 'Look Paper');
+    const peek = documentRoot(store, 'Peek Paper');
+    const byToken = (raw: string) =>
+      raw.includes('t2') ? { content: '', reasoningContent: '', toolCalls: [{ name: 'rasterize', arguments: '{}', id: 'c2' }] }
+      : raw.includes('t3') ? { content: '', reasoningContent: '', toolCalls: [{ name: 'peek', arguments: '{}', id: 'c3' }] }
+      : raw.includes('t1') ? { content: '', reasoningContent: '', toolCalls: [{ name: 'look', arguments: '{}', id: 'c1' }] }
+      : { content: 'done', reasoningContent: '', toolCalls: [] };
+    const { result, trace } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      taskCount: 2,
+      // agent 0: look, rasterize(poison); agent 1 (sibling): peek; replacement: done.
+      forkTokenQueues: [[1, STOP, 2, STOP, STOP], [3, STOP, STOP], [STOP]],
+      parseChatOutputFn: byToken,
+      policy: policy(),
+      tools: new Map<string, Tool>([
+        ['look', new RootTool([look], 'look')],
+        ['peek', new RootTool([peek], 'peek')],
+        ['rasterize', new MediaTool([PNG_BYTES])],
+      ]),
+      contentStore: store, trace: true,
+      mutateCtx: (c) => { let seen = 0; c.mockMultimodalError = () => (seen++ === 0 ? { message: 'compute failed', rc: -3 } : null); },
+    });
+    const heal = trace.events.find((e) => e.type === 'pool:agentHeal') as { of: number; agentId: number } | undefined;
+    expect(heal).toBeDefined();
+    const replacement = result.agents.find((a) => a.agentId === heal!.agentId);
+    expect(replacement).toBeDefined();
+    // The original attended `look`; the replacement's KV holds it, so it attends over it.
+    expect(replacement!.agent.attendedResults('look')).toHaveLength(1);
+    // The sibling's `peek` is NOT in the replacement's KV — it must not be attended over.
+    expect(replacement!.agent.attendedResults('peek')).toHaveLength(0);
+  });
+
+  // Phase 2's red test, on the record now. Each pool copies its own `available`,
+  // so a child's admissions never reach the run that spawned it. `it.fails`
+  // keeps it in the suite and announces itself when the scorer and the asset
+  // list go ambient and a child inherits both by scope.
+  it.fails('a root admitted inside a nested pool is available to the run that spawned it', async () => {
+    // A tool that delegates: it opens a child pool from the calling agent's
+    // branch with the assets it can see. The child admits a document root.
+    // The parent's next call must see that root — assets belong to the run.
+    const store = new MemoryAttachmentStore();
+    const doc = documentRoot(store);
+    const spy = new SpyTool('look');
+    class NestTool extends Tool<Record<string, never>> {
+      readonly name = 'nest';
+      readonly description = 'delegate once';
+      readonly parameters: JsonSchema = { type: 'object', properties: {} };
+      *execute(_args: Record<string, never>, context?: ToolContext): Operation<unknown> {
+        const caller = yield* CallingAgent.get();
+        const child = yield* agentPool({
+          orchestrate: parallel([{ systemPrompt: 'sys', content: 'child task' }]),
+          tools: [new RootTool([doc], 'open')],
+          policy: policy(),
+          parent: caller?.branch,
+          attachments: context?.attachments,
+        });
+        return { agents: child.agents.length };
+      }
+    }
+    const byToken = (raw: string) =>
+      raw.includes('t3') ? { content: '', reasoningContent: '', toolCalls: [{ name: 'open', arguments: '{}', id: 'c3' }] }
+      : raw.includes('t2') ? { content: '', reasoningContent: '', toolCalls: [{ name: 'look', arguments: '{}', id: 'c2' }] }
+      : raw.includes('t1') ? { content: '', reasoningContent: '', toolCalls: [{ name: 'nest', arguments: '{}', id: 'c1' }] }
+      : { content: 'done', reasoningContent: '', toolCalls: [] };
+    await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      // parent: nest (t1), then look (t2), then done; child: open (t3), then done.
+      forkTokenQueues: [[1, STOP, 2, STOP, STOP], [STOP], [3, STOP, STOP]],
+      parseChatOutputFn: byToken, policy: policy(),
+      tools: new Map<string, Tool>([['nest', new NestTool()], ['look', spy]]),
+      contentStore: store, trace: true,
+    });
     expect(spy.capturedContexts).toHaveLength(1);
     expect(spy.capturedContexts[0].attachments).toEqual([doc]);
   });

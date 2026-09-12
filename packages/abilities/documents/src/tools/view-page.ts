@@ -1,6 +1,6 @@
 import { call } from 'effection';
 import type { Operation } from 'effection';
-import { Tool, TOOL_ATTACHMENTS_KEY } from '@lloyal-labs/lloyal-agents';
+import { Tool, TOOL_ATTACHMENTS_KEY, CallingAgent } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema, ToolContext } from '@lloyal-labs/lloyal-agents';
 import type { DocumentMeta } from '@lloyal-labs/media';
 import { pageCite, unknownDocument, NO_DOCUMENTS } from '../documents-index';
@@ -37,7 +37,7 @@ export function projectable(page: PageFacts): boolean {
  * so instead, and a page past the render bound says it is not archived.
  *
  * A repeat by the same agent carries the page AGAIN, with a note. The tool
- * cannot see whether its last result landed — the pool may have replaced it
+ * cannot see whether its last result was admitted — the pool may have replaced it
  * with a settle nudge — so suppressing a repeat would leave the model blind;
  * admission is the only gate on what a page costs.
  */
@@ -56,7 +56,6 @@ export class ViewPageTool extends Tool<{ document: string; page: number; figure?
   };
 
   private readonly _indexFor: IndexFor;
-  private readonly _viewed = new Set<string>();
 
   constructor(indexFor: IndexFor) {
     super();
@@ -72,8 +71,14 @@ export class ViewPageTool extends Tool<{ document: string; page: number; figure?
     if (!page) return { error: `Page ${args.page} is out of range: ${doc.meta.title} has ${doc.meta.pageCount} pages.` };
 
     const where = { document: doc.meta.title, id: doc.id, page: page.page };
-    const key = `${context?.agentId ?? ''}:${doc.id}:${page.page}:${args.figure ?? ''}`;
-    const again = this._viewed.has(key)
+    // "Before" means the model actually received it, which only the agent's
+    // booked history knows — a view the pool rejected never happened.
+    const agent = yield* CallingAgent.get();
+    const seen = !!agent && agent.attendedResults(this.name).some((a) =>
+      index.find(String(a.document ?? ''))?.id === doc.id
+      && a.page === page.page
+      && (a.figure ?? undefined) === args.figure);
+    const again = seen
       ? { note: args.figure !== undefined ? `You viewed figure ${args.figure} on page ${page.page} before.` : `You viewed page ${page.page} before.` }
       : {};
 
@@ -85,14 +90,12 @@ export class ViewPageTool extends Tool<{ document: string; page: number; figure?
           ? `Page ${page.page} has no figures.`
           : `Page ${page.page} has ${figures.length} figure(s); figure must be between 1 and ${figures.length}.` };
       }
-      this._viewed.add(key);
       return { ...where, ...again, figure: args.figure, ...(fig.caption ? { caption: fig.caption } : {}),
         cite: pageCite(doc.attachment, page.page), [TOOL_ATTACHMENTS_KEY]: [fig.root] };
     }
 
     if (!projectable(page)) return { ...where, note: `Page ${page.page} is text only — read_document gives you its text.` };
     if (!page.render) return { ...where, note: `Page ${page.page} is not archived as an image.` };
-    this._viewed.add(key);
     return { ...where, ...again, cite: pageCite(doc.attachment, page.page), [TOOL_ATTACHMENTS_KEY]: [page.render] };
   }
 }
