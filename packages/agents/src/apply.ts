@@ -7,7 +7,7 @@ import type { AgentPolicy, PolicyConfig } from './AgentPolicy';
 import type { Tool } from './Tool';
 import { TOOL_IMAGE_ERROR_KEY } from './Tool';
 import type { Emitter } from './emit';
-import { decideBeforeDispatch, AUTH_REJECT_GUARD, type Frame } from './hooks';
+import { decideBeforeDispatch, AUTH_REJECT_GUARD, type Frame, type Resolved } from './hooks';
 import { ContextPressure } from './pressure';
 import { recoveryFor, nudgeItem } from './scheduler';
 import {
@@ -89,9 +89,11 @@ export class Applier {
     }
     for (const r of S.abandoned) {
       // The drain reports with what agents HAVE: an honest failure settles
-      // through the normal path and the next reap recovers the report.
+      // through the normal path and the next reap recovers the report. It says
+      // what the pool knows — the call was parked and the run is winding down —
+      // and diagnoses nothing: any hook may ask for a retry, for any completion.
       const result = { error:
-        `${r.tc.name} is unavailable (rate-limited) and the run is winding down — ` +
+        `${r.tc.name} did not complete before the run began winding down — ` +
         `report your findings with what you have.` };
       const resultStr = JSON.stringify(result);
       yield* this.d.emit.emit({ kind: 'toolTold', agent: r.agent, tool: r.tc.name, resultStr });
@@ -250,7 +252,7 @@ export class Applier {
       emitted && emitted.name !== this.d.terminalToolName ? { ...emitted } : undefined;
     if (checked) {
       const refusal = this.gate(checked, a, S.roster);
-      if (refusal) { yield* this.refused(a, checked, refusal.decision); return; }
+      if (refusal) { yield* this.refused(a, checked, refusal); return; }
     }
     const action = this.d.policy.onProduced(a, parsed, S.pressure, this.d.config);
     switch (action.type) {
@@ -294,7 +296,7 @@ export class Applier {
           && chosen.id === checked.id && chosen.name === checked.name && chosen.arguments === checked.arguments;
         if (!same) {
           const refusal = this.gate(chosen, a, S.roster);
-          if (refusal) { yield* this.refused(a, chosen, refusal.decision); return; }
+          if (refusal) { yield* this.refused(a, chosen, refusal); return; }
         }
         a.transition('awaiting_tool');
         this.d.pending.dispatches.push({ agent: a, tc: chosen });
@@ -309,11 +311,14 @@ export class Applier {
     return decideBeforeDispatch({ tc, agent, roster, frame: this.d.frame, tool: this.d.tools.get(tc.name), policy: this.d.policy });
   }
 
-  /** A gate refused the call: the authorization record when the frame's gate
-   *  did, then the nudge in the call's place, attributed to that call. */
-  private *refused(a: Agent, call: ParsedToolCall, r: { message: string; guard: string }): Operation<void> {
-    if (r.guard === AUTH_REJECT_GUARD) yield* this.d.emit.emit({ kind: 'authRejected', agent: a, attemptedTool: call.name });
-    yield* this.nudge(a, r.message, call, r.guard);
+  /** A gate refused the call: the authorization record when the FRAME's gate
+   *  did — by who decided, never by the published name, which any gate may
+   *  carry — then the nudge in the call's place, attributed to that call. */
+  private *refused(a: Agent, call: ParsedToolCall, r: Resolved<{ message: string; guard: string }>): Operation<void> {
+    if (r.by === 'frame' && r.decision.guard === AUTH_REJECT_GUARD) {
+      yield* this.d.emit.emit({ kind: 'authRejected', agent: a, attemptedTool: call.name });
+    }
+    yield* this.nudge(a, r.decision.message, call, r.decision.guard);
   }
 
   /** Replace a call with a compact error payload the model reads next turn;

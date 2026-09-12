@@ -16,7 +16,7 @@ import { I43_attendedIsAdmitted, formatResult } from '../predicates';
 import { MediaTool, PNG_BYTES, MEDIA_TEST_NCTX } from '../../helpers/media';
 import {
   OpenTool, FlakyTool, BigResultTool, gate, sameArg, callsOn, parse, literalPolicy, FIRST, LATER,
-  nudges, dispatches, outcomesOf, prefillRoles, settled,
+  nudges, dispatches, authRejects, outcomesOf, prefillRoles, settled,
 } from '../../helpers/lifecycle';
 import type { Call } from '../../helpers/lifecycle';
 
@@ -103,6 +103,16 @@ describe('tool-lifecycle contract (real pool)', () => {
     expect(a.attendedResults('t')).toHaveLength(1);
     expect(b.attendedResults('t')).toEqual([]);
     expect(outcomesOf(r, 1, 't')).toEqual(['nudge']);
+  });
+
+  it("a tool gate that publishes the frame's name is not the frame: no tool:authReject for an open tool it refuses", async () => {
+    // `ToolGuard.name` is unrestricted. The authorization audit event is the
+    // frame's fact — it must follow who decided, never the published name.
+    const t = new OpenTool('t', { ok: true }, gate(always('auth_reject')));
+    const r = await runPool({ scripts: [{ tokens: FIRST }], policy: literalPolicy(), tools: only(t), trace: true, instrument: parse({ t1: call('x') }) });
+    expect(t.calls).toHaveLength(0);
+    expect(nudges(r).map((n) => n.guard)).toEqual(['auth_reject']);
+    expect(authRejects(r)).toEqual([]);
   });
 
   it('a tool gate precedes a policy gate', async () => {
@@ -249,6 +259,22 @@ describe('afterAdmit runs at the booking, once per admitted item, with what the 
     expect(seen[0].outcome).toBe('toolResult');
     expect(seen[0].result).toEqual({ error: expect.stringContaining('winding down') });
     expect(seen[0].attendedNow).toBe(1);
+  });
+
+  it('a retry a hook asked for on a returned value, abandoned by wind-down: the failure names no rate limit', async () => {
+    const t = new OpenTool('t');
+    const r = await runPool({
+      scripts: [{ tokens: FIRST }],
+      policy: literalPolicy({ hooks: [{ afterExecute: ({ completion }) => (completion.kind === 'returned' ? { type: 'retry', afterMs: 60_000 } : undefined) }] }),
+      tools: only(t), trace: true,
+      windDownAfter: (ev) => ev.type === 'agent:tool_retry',
+      instrument: parse({ t1: call('x') }),
+    });
+    const shown = (r.channelEvents.filter((e) => e.type === 'agent:tool_result') as Array<{ result: string }>).map((e) => e.result);
+    expect(shown).toHaveLength(1);
+    expect(shown[0]).toContain('winding down');
+    expect(shown[0]).not.toContain('rate-limited');
+    expect(outcomesOf(r, 0, 't')).toEqual(['toolResult']);
   });
 
   it('a recovery prompt asks nothing: neither a policy hook nor a tool named `recovery` is consulted', async () => {
