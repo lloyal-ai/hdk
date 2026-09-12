@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
+import { FMT } from './helpers/format-config';
 import { createToolkit } from '../src/toolkit';
+import { ContextPressure } from '../src/pressure';
 import { Agent } from '../src/Agent';
 import { MockTool } from './helpers/mock-tool';
 import { createMockReranker } from './helpers/mock-reranker';
@@ -9,6 +11,11 @@ import type { EntailmentScorer } from '../src/source';
 import { DefaultAgentPolicy } from '../src/AgentPolicy';
 
 // ── Pure unit tests (no Effection) ──────────────────────────
+
+/** A frozen pressure reading — the real value, not a hand-rolled twin. */
+function pressureAt(remaining: number, nCtx: number): ContextPressure {
+  return new ContextPressure({ nCtx, cellsUsed: nCtx - remaining, remaining }, { softLimit: 1024, hardLimit: 128 });
+}
 
 describe('spawnAgents — toolkit composition', () => {
   // We can't call spawnAgents directly without Effection, but we can
@@ -132,12 +139,10 @@ describe('Entailment boundary discipline', () => {
     // Verify EntailmentScorer interface has the right shape
     const scorer: EntailmentScorer = {
       scoreEntailmentBatch: async (texts) => texts.map(() => 0.5),
-      scoreRelevanceBatch: async (texts) => texts.map(() => 0.5),
       scoreSimilarityBatch: async (_ref, texts) => texts.map(() => 0),
       shouldProceed: (score) => score >= 0.25,
     };
     expect(scorer.scoreEntailmentBatch).toBeDefined();
-    expect(scorer.scoreRelevanceBatch).toBeDefined();
     expect(scorer.shouldProceed).toBeDefined();
   });
 
@@ -234,36 +239,6 @@ describe('RecursiveOpts', () => {
   });
 });
 
-// ── Local-history recursion guard (regression test) ──────────
-
-describe('Local-history recursion guard', () => {
-  // This is the hypothesis grep regression fix. The guard must check
-  // AGENT-LOCAL history, not lineage. Without this, children inherit
-  // parent's search+fetch and skip their own research, producing
-  // blind relay chains.
-
-  it('guard checks agent.toolHistory, not walkAncestors', () => {
-    // The guard implementation in AgentPolicy.ts lines 42-52:
-    // reject: (_args, _lineage, agent) => {
-    //   const local = agent.toolHistory;
-    //   const hasSearch = local.some(h => h.name === 'web_search' || h.name === 'search');
-    //   const hasFetch = local.some(h => h.name === 'fetch_page' || h.name === 'read_file');
-    //   return !hasSearch || !hasFetch;
-    // },
-
-    // This is already tested in AgentPolicy.test.ts "rejects web_research
-    // even when PARENT has search+fetch". This test is a design marker
-    // documenting WHY it matters.
-
-    // The guard receives (args, lineageHistory, agent).
-    // lineageHistory includes parent's tools — the guard IGNORES it.
-    // agent.toolHistory is local only — the guard USES it.
-    // This prevents the blind relay chains seen in trace-1774628104830.
-
-    expect(true).toBe(true); // tested in AgentPolicy.test.ts
-  });
-});
-
 // ── Echo detection guard ────────────────────────────────────
 
 describe('Echo detection guard', () => {
@@ -350,7 +325,7 @@ describe('Agent.task', () => {
     const branch = createMockBranch();
     const a = new Agent({
       id: 1, parentId: 0, branch: branch as any,
-      fmt: { format: 0, reasoningFormat: 0, generationPrompt: '', parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
+      fmt: FMT,
       task: 'investigate speculative decoding on M3',
     });
     expect(a.task).toBe('investigate speculative decoding on M3');
@@ -360,7 +335,7 @@ describe('Agent.task', () => {
     const branch = createMockBranch();
     const a = new Agent({
       id: 1, parentId: 0, branch: branch as any,
-      fmt: { format: 0, reasoningFormat: 0, generationPrompt: '', parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
+      fmt: FMT,
     });
     expect(a.task).toBe('');
   });
@@ -376,17 +351,14 @@ describe('Explore/exploit decoupled from lifecycle', () => {
     const branch = createMockBranch();
     const a = new Agent({
       id: 1, parentId: 0, branch: branch as any,
-      fmt: { format: 0, reasoningFormat: 0, generationPrompt: '', parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
+      fmt: FMT,
     });
     a.transition('active');
     a.incrementToolCalls();
     a.incrementToolCalls();
 
     // Pressure at 45% — below context threshold (0.5) → exploit mode
-    const p = {
-      headroom: 5000, critical: false, remaining: 7372, nCtx: 16384,
-      cellsUsed: 9012, percentAvailable: 45, canFit: () => true, softLimit: 1024, hardLimit: 128,
-    };
+    const p = pressureAt(7372, 16384);
 
     // shouldExplore = false (exploit)
     expect(policy.shouldExplore(a, p)).toBe(false);
@@ -408,7 +380,7 @@ describe('Explore/exploit decoupled from lifecycle', () => {
     const branch = createMockBranch();
     const a = new Agent({
       id: 1, parentId: 0, branch: branch as any,
-      fmt: { format: 0, reasoningFormat: 0, generationPrompt: '', parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
+      fmt: FMT,
     });
     a.transition('active');
     a.incrementToolCalls();
@@ -417,10 +389,7 @@ describe('Explore/exploit decoupled from lifecycle', () => {
     for (let i = 0; i < 25; i++) a.incrementTurns();
 
     // Pressure at 60% — above threshold → explore mode
-    const p = {
-      headroom: 5000, critical: false, remaining: 9830, nCtx: 16384,
-      cellsUsed: 6554, percentAvailable: 60, canFit: () => true, softLimit: 1024, hardLimit: 128,
-    };
+    const p = pressureAt(9830, 16384);
 
     // shouldExplore = true (explore)
     expect(policy.shouldExplore(a, p)).toBe(true);
@@ -438,17 +407,11 @@ describe('Explore/exploit decoupled from lifecycle', () => {
     const policy = new DefaultAgentPolicy({ shouldExplore: { context: 0.4 } });
     const a = new Agent({
       id: 1, parentId: 0, branch: createMockBranch() as any,
-      fmt: { format: 0, reasoningFormat: 0, generationPrompt: '', parser: '', grammar: '', grammarLazy: false, grammarTriggers: [] },
+      fmt: FMT,
     });
 
-    const highPressure = {
-      headroom: 5000, critical: false, remaining: 12000, nCtx: 16384,
-      cellsUsed: 4384, percentAvailable: 73, canFit: () => true, softLimit: 1024, hardLimit: 128,
-    };
-    const lowPressure = {
-      headroom: 5000, critical: false, remaining: 4915, nCtx: 16384,
-      cellsUsed: 11469, percentAvailable: 30, canFit: () => true, softLimit: 1024, hardLimit: 128,
-    };
+    const highPressure = pressureAt(12000, 16384);
+    const lowPressure = pressureAt(4915, 16384);
 
     // High pressure: explore=true, shouldExit=false
     expect(policy.shouldExplore(a, highPressure)).toBe(true);
@@ -459,10 +422,7 @@ describe('Explore/exploit decoupled from lifecycle', () => {
     expect(policy.shouldExit(a, lowPressure)).toBe(false);
 
     // Critical: shouldExit=true, explore is irrelevant but still computable
-    const criticalPressure = {
-      headroom: -900, critical: true, remaining: 100, nCtx: 16384,
-      cellsUsed: 16284, percentAvailable: 1, canFit: () => false, softLimit: 1024, hardLimit: 128,
-    };
+    const criticalPressure = pressureAt(100, 16384);
     expect(policy.shouldExit(a, criticalPressure)).toBe(true);
     expect(policy.shouldExplore(a, criticalPressure)).toBe(false);
   });
@@ -471,13 +431,13 @@ describe('Explore/exploit decoupled from lifecycle', () => {
 // ── EntailmentScorer interface shape ──────────────────────
 
 describe('EntailmentScorer interface', () => {
-  it('scoreRelevanceBatch exists on interface shape', () => {
+  it('scores against the original question, against a reference, and gates — exploit combines in admission, not here', () => {
     const scorer: EntailmentScorer = {
       scoreEntailmentBatch: async (texts) => texts.map(() => 0.5),
-      scoreRelevanceBatch: async (texts) => texts.map(() => 0.5),
       scoreSimilarityBatch: async (_ref, texts) => texts.map(() => 0),
       shouldProceed: (score) => score >= 0.25,
     };
-    expect(scorer.scoreRelevanceBatch).toBeDefined();
+    expect(scorer.scoreEntailmentBatch).toBeDefined();
+    expect('scoreRelevanceBatch' in scorer).toBe(false);
   });
 });

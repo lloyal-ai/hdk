@@ -73,7 +73,7 @@ describe('buildPlanSchema — the decode grammar', () => {
     const names = [...PROTOCOLS];
     const { properties } = taskItems(buildPlanSchema(names, 5));
     names.push('injected_protocol');
-    const e = (properties[TASK_ROUTING_KEY] as { enum: string[] }).enum;
+    const e = (properties[TASK_ROUTING_KEY] as unknown as { enum: string[] }).enum;
     expect(e).not.toContain('injected_protocol');
   });
 
@@ -85,7 +85,7 @@ describe('buildPlanSchema — the decode grammar', () => {
 
   it('caps the task array at maxTasks', () => {
     const props = buildPlanSchema(PROTOCOLS, 3).properties as Record<string, JsonSchema>;
-    expect((props.tasks as { maxItems: number }).maxItems).toBe(3);
+    expect((props.tasks as unknown as { maxItems: number }).maxItems).toBe(3);
   });
 });
 

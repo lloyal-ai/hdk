@@ -4,6 +4,8 @@ import type { BranchStore, Branch } from '@lloyal-labs/sdk';
 import type { Channel, Signal } from 'effection';
 import type { AgentEvent } from './types';
 import type { TraceWriter } from './trace-writer';
+import type { AttachmentStore, ContentIngress } from '@lloyal-labs/media';
+import { NullAttachmentStore, NoContentIngress } from '@lloyal-labs/media';
 import type { TraceId } from './trace-types';
 import type { Agent, FormatConfig } from './Agent';
 import type { Reranker } from './chunk';
@@ -15,7 +17,7 @@ import type { GrantStore } from './grant-store';
  * Effection context holding the active {@link SessionContext}
  *
  * Set by {@link initAgents} in the caller's scope. All agent operations
- * (`useAgent`, `agentPool`, `useAgentPool`, `withSpine`, `diverge`) read from this
+ * (`useAgent`, `agentPool`, `useAgentPool`, `withSpine`) read from this
  * context via `yield* Ctx.expect()`.
  *
  * @category Agents
@@ -25,7 +27,7 @@ export const Ctx = createContext<SessionContext>('lloyal.ctx');
 /**
  * Effection context holding the active {@link BranchStore}
  *
- * Set by {@link initAgents}. Used by {@link diverge} and {@link useAgentPool}
+ * Set by {@link initAgents}. Used by {@link useAgentPool}
  * for batched commit/prefill across multiple branches.
  *
  * @category Agents
@@ -53,6 +55,39 @@ export const Events = createContext<Channel<AgentEvent, void>>('lloyal.events');
 export const Trace = createContext<TraceWriter>('lloyal.trace');
 
 /**
+ * Effection context holding the store for images that entered the KV cache
+ *
+ * Set by {@link initAgents}. Defaults to {@link NullAttachmentStore}, so a run
+ * nobody is recording hashes nothing and touches no disk.
+ *
+ * A trace records the media marker, not the pixels. This is where the pixels
+ * go, so a media-bearing run stays replayable and inspectable: the trace
+ * carries a digest per image on `branch:prefill`, and this resolves it back to
+ * bytes. One store per run, whichever ingress an image arrived through.
+ *
+ * @category Agents
+ */
+export const Attachments = createContext<AttachmentStore>(
+  'lloyal.attachments',
+  new NullAttachmentStore(),
+);
+
+/**
+ * Effection context holding the service that admits raw media.
+ *
+ * Defaults to {@link NoContentIngress}: inert for a text-only run, and a loud
+ * failure the first time media arrives without one installed. Normalizing
+ * needs a native dependency this package must not import, so the harness
+ * supplies it — the same shape as {@link Attachments}.
+ *
+ * @category Agents
+ */
+export const Ingress = createContext<ContentIngress>(
+  'lloyal.ingress',
+  new NoContentIngress(),
+);
+
+/**
  * Effection context carrying the current trace scope ID
  *
  * Used to build parent-child relationships across nested agent pools.
@@ -66,10 +101,11 @@ export const TraceParent = createContext<TraceId>('lloyal.traceParent');
 /**
  * Effection context holding the calling agent during DISPATCH
  *
- * Set by the pool before each tool execution in `scoped()`. Tools and
- * recursive `withSpine` calls read this to access the calling
- * agent's branch (for Continuous Context forking) and tool history
- * (for deduplication guards).
+ * Set by the pool for the duration of each tool call, in `scoped()`. Tools and
+ * recursive `withSpine` calls read it for the calling agent's branch
+ * (Continuous Context forking) and its attended results
+ * ({@link Agent.attendedResults}). `.get()` returns `undefined` outside a call
+ * and never throws.
  *
  * Scope-isolated: each `scoped()` DISPATCH sees only its own agent.
  * Nested pools (web_research) shadow the parent's context correctly.
@@ -104,10 +140,8 @@ export const SpineFmt = createContext<FormatConfig | null>('lloyal.spineFmt', nu
  * third-party abilities) read this via `yield* RerankerCtx.expect()` at
  * construction time and pass it to their `Source` / search tools.
  *
- * Replaces the per-source `source.bind({reranker})` pattern — chunks
- * tokenized by one reranker can't be re-bound to another without
- * re-tokenization, so one cross-encoder per harness
- * is the invariant.
+ * One reranker per harness is the invariant: chunks tokenized by one
+ * reranker can't be re-scored by another without re-tokenization.
  *
  * @category Contract
  */
@@ -116,14 +150,11 @@ export const RerankerCtx = createContext<Reranker>('lloyal.reranker');
 /**
  * Effection context holding the {@link AbilityRegistry}.
  *
- * Set by `createAbilityRegistry(...)` (lives in `@lloyal-labs/rig`). The
- * scope-guard reads this at tool-dispatch time to resolve
- * the allowed-tools set for an Ability-assigned spawn — looking up
- * `registry.byName(spawn.assignedAbility)` and matching the dispatched
- * `toolName` against `manifest.protocol.tools`.
- *
- * The spine renderer also reads this to compose the catalog in
- * registration order.
+ * Set by `createAbilityRegistry(...)` (lives in `@lloyal-labs/rig`). The spine
+ * renderer reads it to compose the catalog in registration order. No gate
+ * reads it: a spawn's `assignedAbility` is a non-enforcing label, and the one
+ * dispatch-time precondition is authorization (`Tool.protected` and the
+ * session's grants).
  *
  * @category Contract
  */
@@ -170,8 +201,8 @@ export const GrantStoreCtx = createContext<GrantStore>('lloyal.grantStore');
  * in the pool's run scope and `.send()`s it on its Stop/Wrap-up command. The pool
  * reads it at boot (`yield* WindDown.get()`); on emission it stops spawning new
  * agents, reaps active ones to recovery, and lets in-flight tool calls **drain**
- * (complete + settle) before reaping — then the termination sweep runs each
- * policy's `onRecovery`. Answer-agnostic: what recovery yields (a report, or
+ * (complete + settle) before reaping — every reap decides its recovery through
+ * the policy's `onRecovery` at the drop. Answer-agnostic: what recovery yields (a report, or
  * `skip`) is the policy's call. Parked tool RETRIES are the one thing not
  * drained: a rate-limit park (often 60–90s) is abandoned with an honest
  * failure result, because the drain reports with what agents have. The flip
@@ -216,11 +247,14 @@ export const CancelAgent = createContext<Signal<{ agentId: number }, void>>('llo
  * measure RUN time (paused spans excluded); retry parks stay on the wall
  * clock — rate limits elapse in the real world.
  *
- * Pause takes effect at the next tick boundary: an in-flight recovery decode
- * (`recoverInline`, the termination sweep) completes first. Lifecycle
- * sequencing is the harness's job — the pool holds while paused regardless of
- * other signals; conflicting commands (wind-down while paused) are the
- * consumer's to refuse. Absent context = no pause capability.
+ * Pause suspends DECODE at the next tick boundary: the tick in flight — a
+ * prefill, a sampling pass, a commit, a recovery turn's decode — completes
+ * first, and no new one starts until play. Control handling does not stop:
+ * cancels still run (as hold ticks) and the prune pass still reclaims what a
+ * cancel frees. Lifecycle sequencing is the harness's job — the pool holds
+ * while paused regardless of other signals; conflicting commands (wind-down
+ * while paused) are the consumer's to refuse. Absent context = no pause
+ * capability.
  *
  * This is the whole-run sibling of {@link WindDown} (drain) and
  * {@link CancelAgent} (targeted discard); `halt()` remains the discard-now

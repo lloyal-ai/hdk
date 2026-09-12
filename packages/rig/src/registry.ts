@@ -31,13 +31,13 @@
  * @category Protocol
  */
 
-import { call, createScope, ensure, suspend } from 'effection';
+import { call, createScope, ensure, scoped, suspend } from 'effection';
 import type { Operation } from 'effection';
 import {
   AbilityRegistryCtx,
   AbilityConfigStoreCtx,
   GrantStoreCtx,
-  RerankerCtx,
+  RerankerCtx, Attachments,
 } from '@lloyal-labs/lloyal-agents';
 import type {
   Ability,
@@ -125,9 +125,26 @@ export function* createAbilityRegistry(
         reranker = undefined;
       }
 
+      // The content store the harness installed (the null store when none was):
+      // an ability that reads documents resolves them through it.
+      const attachments = yield* Attachments.expect();
+
       const [scope, destroy] = createScope();
       let added = false;
-      try {
+      return yield* scoped(function* () {
+        // Factory threw, validation failed, or the caller was halted before
+        // the ability entered the registry → tear down its detached scope
+        // (best-effort; the original error wins). Registered with ensure(),
+        // not a finally: cleanup that yields inside a finally takes a halted
+        // frame out of unwind mode and the halt is lost (Effection's contract).
+        yield* ensure(function* () {
+          if (added) return;
+          try {
+            yield* call(() => destroy());
+          } catch {
+            /* teardown error on the failure path — original error wins */
+          }
+        });
         // Run the factory in a DETACHED scope (so its teardown errors stay
         // isolated and swallowable), seeded with the framework contexts.
         // It resolves the Ability out, then suspends — keeping the Ability and its
@@ -141,6 +158,7 @@ export function* createAbilityRegistry(
                     yield* AbilityConfigStoreCtx.set(configStore);
                     yield* AbilityRegistryCtx.set(registry);
                     if (reranker !== undefined) yield* RerankerCtx.set(reranker);
+                    yield* Attachments.set(attachments);
                     const constructed = yield* factory();
                     resolve(constructed);
                     yield* suspend();
@@ -212,18 +230,7 @@ export function* createAbilityRegistry(
         order.push(ability.manifest.name);
         added = true;
         return ability;
-      } finally {
-        // Factory threw, validation failed, or the caller was halted before
-        // the ability entered the registry → tear down its detached scope
-        // (best-effort; don't mask the original error).
-        if (!added) {
-          try {
-            yield* call(() => destroy());
-          } catch {
-            /* teardown error on the failure path — original error wins */
-          }
-        }
-      }
+      });
     },
     *disable(name: string): Operation<void> {
       const entry = entries.get(name);

@@ -10,13 +10,17 @@ export {
   GrantStoreCtx,
   WindDown,
   CancelAgent, Pause,
+  Attachments, Ingress,
 } from './context';
 export { Tool, ToolRetryError } from './Tool';
+export type {
+  Outcome, GuardInput, ToolGuard, Completion, ExecuteDecision, AdmitDecision, FollowUp, ToolLifecycleHooks,
+} from './Tool';
 export { Agent } from './Agent';
 export type { AgentStatus, ResultSource, FormatConfig, ToolHistoryEntry } from './Agent';
-export { DefaultAgentPolicy } from './AgentPolicy';
-export type { AgentPolicy, ProduceAction, SettleAction, RecoveryAction, ToolRetryAction, IdleReason, PolicyConfig, ToolGuard, DefaultAgentPolicyOpts } from './AgentPolicy';
-export { defaultToolGuards } from './AgentPolicy';
+export { DefaultAgentPolicy, isGuardOverrides } from './AgentPolicy';
+export type { AgentPolicy, ProduceAction, RecoveryAction, IdleReason, PolicyConfig, DefaultAgentPolicyOpts, GuardScope, GuardOverrides } from './AgentPolicy';
+export { defaultAfterExecute, defaultBeforeAdmit, defaultAfterAdmit, retryUpTo } from './hooks';
 export { CallingAgent } from './context';
 export { Source, NULL_SCORER } from './source';
 export type { EntailmentScorer, ScorerReranker } from './source';
@@ -25,21 +29,31 @@ export { useAgent, agent } from './use-agent';
 export type { UseAgentOpts } from './use-agent';
 export { agentPool } from './create-agent-pool';
 export type { CreateAgentPoolOpts } from './create-agent-pool';
-export { diverge } from './diverge';
-export { useAgentPool, ContextPressure } from './agent-pool';
+export { useAgentPool } from './agent-pool';
+export { ContextPressure } from './pressure';
 export { createToolkit } from './toolkit';
 export { initAgents } from './init';
 export { withSpine } from './spine';
 export { NullTraceWriter, JsonlTraceWriter } from './trace-writer';
-export { traceScope } from './trace-scope';
+// The content vocabulary is NOT re-exported. It lives in `@lloyal-labs/media`
+// and eighteen symbols of it used to surface here, in the package whose job is
+// orchestration — `agents` NAMES attachments, it does not define them. What it
+// does own is the barrier that drives the two ports across a batch.
+export { prepareBatch } from './prepare-content';
+// The one member of the framework-channel namespace a TOOL writes. The other
+// two are framework→model and no tool author ever sets them, so they stay
+// internal rather than growing the surface to describe a convention.
+export { TOOL_ATTACHMENTS_KEY } from './Tool';
+export { useTraceScope } from './trace-scope';
 export { admitChunks } from './admission';
 export type { AdmitOpts, AdmitResult, AdmitSelect, AdmittedPassage } from './admission';
 export { composePrompt, renderPrompt, renderTemplate } from './prompt';
 export type { PromptState, PromptSection, PromptStep } from './prompt';
-export { reduce } from './combinators';
+export { reduce, waitUntilSettled } from './combinators';
 export { parallel, chain, fanout, dag } from './orchestrators';
 export type { SpawnSpec, ChainStep, DAGNode, Orchestrator, PoolContext } from './orchestrators';
-export { extractSpineSeed, extractSpineCheckpoint, reconstructBranch } from './replay';
+export { extractSpineSeed, extractSpineCheckpoint, reconstructBranch, replayTurns, replayAgentTurns } from './replay';
+export type { AgentTurnRecord } from './replay';
 export type { BranchCheckpoint } from './replay';
 
 export type { Toolkit } from './toolkit';
@@ -58,10 +72,8 @@ export type {
   AgentPoolOptions,
   AgentResult,
   AgentPoolResult,
-  DivergeOptions,
-  DivergeAttempt,
-  DivergeResult,
   AgentEvent,
+  AgentTraceEvent,
 } from './types';
 
 export type {

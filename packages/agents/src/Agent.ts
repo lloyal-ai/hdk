@@ -1,7 +1,11 @@
 import type { Branch, SessionContext, ParseChatOutputResult } from '@lloyal-labs/sdk';
 import type { GrammarTrigger } from '@lloyal-labs/sdk';
-import { createSignal, type Signal } from 'effection';
-import type { TraceToken, AgentExitReason } from './types';
+import { withResolvers } from 'effection';
+import type { Operation } from 'effection';
+import type { TraceToken, AgentExitReason, AgentTaskSpec } from './types';
+import type { AgentTurnRecord } from './replay';
+import type { Lineage } from './state';
+import type { Outcome } from './Tool';
 
 // ── Status ──────────────────────────────────────────────────
 
@@ -10,9 +14,13 @@ import type { TraceToken, AgentExitReason } from './types';
  *
  * - `idle`: created but not yet generating, OR finished but branch still
  *    alive (extraction window for recovery)
- * - `active`: generating tokens (between PRODUCE start and stop token)
- * - `awaiting_tool`: tool call parsed, waiting for result in SETTLE
+ * - `active`: generating tokens (between a sample and its stop token)
+ * - `awaiting_tool`: a tool call, nudge or recovery turn is pending admission
  * - `disposed`: branch pruned, agent no longer usable
+ *
+ * `extracting` is a separate, one-way latch orthogonal to status: an agent
+ * producing its forced recovery report is `awaiting_tool` while the turn is
+ * pending and `active` while it decodes.
  *
  * @category Agents
  */
@@ -26,8 +34,7 @@ export type AgentStatus = 'idle' | 'active' | 'awaiting_tool' | 'disposed';
 export type ResultSource =
   | 'voluntary_return' // agent voluntarily returned via the terminal tool
   | 'free_text'        // agent emitted prose without tool call
-  | 'recovery'         // extracted post-idle via the recovery path (recoverInline)
-  | 'nudge'            // agent returned after nudge injection
+  | 'recovery'         // extracted by a forced recovery turn after a drop
   | 'tool_error';      // tool threw, error captured as findings
 
 // ── Format config ───────────────────────────────────────────
@@ -67,16 +74,49 @@ export interface FormatConfig {
  * @category Agents
  */
 export interface ToolHistoryEntry {
-  /** Tool name (e.g. 'web_search', 'fetch_page') */
+  /** The tool's name. */
   name: string;
   /** Summarized arguments (e.g. query string, URL) */
   args: string;
-  /** Number of tokens prefilled for this tool's result */
-  resultTokenCount: number;
+  /** KV CELLS this tool's result cost — not tokens. Equal on the token rail;
+   *  on the embedding rail a returned image costs cells that no token count
+   *  describes, and this is the number admission actually spent. */
+  resultCells: number;
   /** Context available percent after this result settled */
   contextAfterPercent: number;
   /** Timestamp (performance.now) when result was recorded */
   timestamp: number;
+  /**
+   * What the agent received in answer to this call: the tool's result, or a
+   * nudge or recovery prompt in its place. A settle rejection replaces an
+   * oversized result with a nudge that carries the ORIGINAL call's name and
+   * args, so without this an entry would read as a result the model never
+   * attended.
+   */
+  outcome: Outcome;
+}
+
+/** A history entry's `args` as an object — `{}` when the model emitted
+ *  something unparseable, or valid JSON that is not an object (`null`, an
+ *  array, a scalar), so a reader of `args.url` never throws. The one reader
+ *  of that field's encoding. */
+export function parseHistoryArgs(argsStr: string): Record<string, unknown> {
+  let v: unknown;
+  try { v = JSON.parse(argsStr); } catch { return {}; }
+  return v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+}
+
+/** Whether the entry's result is attended: the tool's result was prefilled
+ *  onto the branch. A nudge or recovery turn is booked, but its call's result
+ *  never reached the KV. */
+export function isAttended(h: ToolHistoryEntry): boolean {
+  return h.outcome === 'toolResult';
+}
+
+/** The parsed args of the entries that name `tool`. No attention semantics of
+ *  its own: whoever passes `entries` decided that. */
+export function argsOf(entries: readonly ToolHistoryEntry[], tool: string): Record<string, unknown>[] {
+  return entries.filter((h) => h.name === tool).map((h) => parseHistoryArgs(h.args));
 }
 
 // ── Agent ───────────────────────────────────────────────────
@@ -129,7 +169,9 @@ export class Agent {
   // ── Mutable state ───────────────────────────────────────
 
   private _status: AgentStatus = 'idle';
-  private _statusSignal: Signal<AgentStatus, void> = createSignal<AgentStatus, void>();
+  /** Resolved the first time the agent reaches a final status — `idle` after it
+   *  lived, or `disposed` — and never by the pre-activation idle it is born with. */
+  private readonly _final = withResolvers<void>('agent final');
   private _startedAt: number | null = null;
   private readonly _clock: () => number;
   private _rawOutput = '';
@@ -160,8 +202,8 @@ export class Agent {
   // `parallel` recovery path): PRODUCE routes its isStop to finishRecovery
   // instead of onProduced, and the kill/reap guards skip it.
   private _extracting = false;
-  // Per-report cap for the in-loop recovery report. `_recoveryBudget` is the token
-  // target the pool set (policy.reportBudget, else a headroom share across the live
+  // Per-recovery cap for the in-loop recovery report. `_recoveryBudget` is the token
+  // target the pool set (policy.recoveryBudget, else a headroom share across the live
   // agents); the token-stop fires once the report's own tokens reach it.
   // `_recoveryTokenBase` snapshots the cumulative `_tokenCount` at recovery entry so
   // the cap counts ONLY the report's tokens (resetTurn clears rawOutput, not _tokenCount).
@@ -173,6 +215,34 @@ export class Agent {
 
   /** The agent that called the tool which spawned this agent's pool (null for top-level) */
   readonly parent: Agent | null = null;
+
+  // ── Pool bookkeeping (one fact, one place — on the agent it is about) ──
+
+  /**
+   * The terminal `agent:failed` reason, once one has been announced. An agent
+   * with this set is DISCARDED: never recovered, never handed a late tool
+   * completion (a fan-out result that lands after the cancel is dropped at
+   * intake). `null` while it is live or finished on its own terms.
+   */
+  failed: string | null = null;
+  /** The branch holds cells nothing will read again; the next prune pass
+   *  reclaims it (a leaf only — a branch with live children keeps its prefix). */
+  pruneRequested = false;
+  /** The spec this agent was born from — what a heal reproduces. */
+  spec: AgentTaskSpec | null = null;
+  /** Every KV delta since spawn, in order — the heal's replay material. */
+  readonly records: AgentTurnRecord[] = [];
+  /** How many times this lineage has been healed (a replacement inherits +1). */
+  healAttempt = 0;
+  /** The heal this agent is owed after a poison — its lineage, recorded by the
+   *  ladder at the failure and forged by the loop at the next observe, after
+   *  the prune pass, so the replacement asks for a lease once this branch has
+   *  given its own back. Cleared when forged, whether or not the forge succeeds. */
+  heal: Lineage | null = null;
+  /** rc==1 deferrals of this agent's pending item; cleared when one lands. */
+  deferAttempts = 0;
+  /** Serial recovery: the report is uncapped and one runs at a time. */
+  recoverySerial = false;
 
   // ── Constructor ─────────────────────────────────────────
 
@@ -205,11 +275,11 @@ export class Agent {
   get status(): AgentStatus { return this._status; }
 
   /**
-   * Signal that fires on every status transition. Used by `PoolContext.waitFor`
-   * to suspend until the agent reaches a terminal status. Multi-subscriber —
-   * every active listener receives every transition.
+   * The future an orchestrator waits on (`PoolContext.waitFor`): completes
+   * once the agent is final — `idle` after it lived, or `disposed` — and
+   * yields the same outcome to every waiter, however many and however late.
    */
-  get statusSignal(): Signal<AgentStatus, void> { return this._statusSignal; }
+  get final(): Operation<void> { return this._final.operation; }
 
   /**
    * Transition to a new status. Enforces valid transitions:
@@ -220,7 +290,7 @@ export class Agent {
    * - awaiting_tool → idle (settle reject + kill)
    * - idle → disposed (branch pruned)
    *
-   * Emits the new status via `statusSignal` for orchestrator-side observers.
+   * A move into a final status resolves {@link final}.
    */
   transition(to: AgentStatus): void {
     const from = this._status;
@@ -235,7 +305,7 @@ export class Agent {
     if (to === 'active' && this._startedAt === null) {
       this._startedAt = this._clock();
     }
-    this._statusSignal.send(to);
+    if (to === 'idle' || to === 'disposed') this._final.resolve();
   }
 
   /**
@@ -256,18 +326,20 @@ export class Agent {
   get parsed(): ParseChatOutputResult | null { return this._parsed; }
   /** Whether this agent is mid forced-recovery-report (in-loop parallel path). */
   get extracting(): boolean { return this._extracting; }
-  /** The fixed per-report token cap for this recovery (set at {@link markExtracting}). */
+  /** The fixed per-recovery token cap for this recovery (set at {@link markExtracting}). */
   get recoveryBudget(): number { return this._recoveryBudget; }
   /** Tokens produced SINCE recovery entry — what the token-stop backstop checks. */
   get recoveryTokens(): number { return this._tokenCount - this._recoveryTokenBase; }
   /** Tokens produced in the CURRENT turn — what the voluntary report cap checks. */
   get turnTokens(): number { return this._tokenCount - this._turnTokenBase; }
   /** Mark the agent as producing its recovery report (idempotent, one-way). Records
-   *  the per-report budget `b` and snapshots the token base for the cap. */
-  markExtracting(budget: number): void {
+   *  the per-recovery budget `b` (Infinity = uncapped) and snapshots the token base
+   *  for the cap. */
+  markExtracting(budget: number, serial = false): void {
     this._extracting = true;
     this._recoveryBudget = budget;
     this._recoveryTokenBase = this._tokenCount;
+    this.recoverySerial = serial;
   }
 
   /** Accumulate generated token text into the current turn */
@@ -344,6 +416,17 @@ export class Agent {
     this._toolHistory.push(entry);
   }
 
+  /**
+   * The calls of one tool whose results this agent attends over, as parsed
+   * args: in the KV this branch reads across — its own and, by the fork, its
+   * ancestors' — so the scope is the caller chain {@link walkAncestors} walks.
+   * A settle-reject nudge sits on the branch carrying the ORIGINAL call's name
+   * and args; {@link isAttended} is what keeps it out.
+   */
+  attendedResults(tool: string): Record<string, unknown>[] {
+    return argsOf(this.walkAncestors((a) => a.toolHistory).filter(isAttended), tool);
+  }
+
   // ── Child findings ─────────────────────────────────────────
 
   /** Findings collected from recursive tool results (inner sub-agent findings) */
@@ -361,10 +444,9 @@ export class Agent {
    * Self is visited first, then the calling agent, then its caller, etc.
    * Iterative — no stack overflow on deep recursion chains.
    *
-   * @example Check if any ancestor fetched a URL
+   * @example The tasks along this agent's lineage
    * ```typescript
-   * const fetched = agent.walkAncestors(a => a.toolHistory)
-   *   .some(h => h.name === 'fetch_page' && h.args === url);
+   * const tasks = agent.walkAncestors(a => a.task ? [a.task] : []);
    * ```
    */
   walkAncestors<T>(fn: (agent: Agent) => readonly T[]): T[] {
@@ -417,31 +499,11 @@ export class Agent {
     return !this.fmt.grammarLazy || !this.fmt.grammar;
   }
 
-  // ── Async iteration ─────────────────────────────────────
-
-  /**
-   * Async iterator — delegates to Branch, accumulates state
-   *
-   * Each yielded token is already committed to KV (Branch's commit-before-yield
-   * semantics). Agent accumulates rawOutput and tokenCount as tokens flow.
-   *
-   * Available for Layer 1 users who create Agents directly and want to
-   * stream with state accumulation. The pool's tick loop does NOT use this
-   * iterator — it calls `produceSync()`/`store.commit()` directly for
-   * batched multi-agent generation.
-   */
-  async *[Symbol.asyncIterator](): AsyncIterableIterator<{ token: number; text: string }> {
-    for await (const produced of this.branch) {
-      this.accumulateToken(produced.text);
-      yield produced;
-    }
-  }
-
   // ── Lifecycle ───────────────────────────────────────────
 
   /** Mark agent as disposed — called by pool when branch is pruned */
   dispose(): void {
     this._status = 'disposed';
-    this._statusSignal.send('disposed');
+    this._final.resolve();
   }
 }

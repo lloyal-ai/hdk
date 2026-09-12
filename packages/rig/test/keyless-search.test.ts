@@ -470,7 +470,10 @@ describe("createKeylessSearchProvider — timeout cancellation", () => {
       // → Marginalia branch will also fetchWithTimeout (same hanging fetch). To
       // avoid hanging the test, resolve the (now-aborted) primary fetch as a
       // safety net.
-      if (resolveFetchOuter) resolveFetchOuter(htmlResponse(503, ""));
+      // Re-assert the type: `resolveFetchOuter` is assigned only inside the
+      // promise executor, which control-flow analysis cannot order against
+      // this line, so it narrows to `null` here and the call becomes `never`.
+      (resolveFetchOuter as ((res: Response) => void) | null)?.(htmlResponse(503, ""));
 
       // Fire any subsequent sleeps (Marginalia request timeout etc).
       await clock.flushAll();

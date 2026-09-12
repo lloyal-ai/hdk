@@ -1,0 +1,33 @@
+{
+  "name": "@lloyal-labs/documents-ability",
+  "version": "0.1.1",
+  "private": true,
+  "description": "HDK reference ability — research over the documents attached to a conversation (PDFs through the content plane). Distributed via the signed-bundle channel, never public npm.",
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "ability.json",
+    "skill.eta",
+    "attention-surface.json",
+    "LICENSE",
+    "LICENSE-FAQ.md"
+  ],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "peerDependencies": {
+    "@lloyal-labs/lloyal-agents": "^5.0.0 || >=6.0.0-0 <7.0.0",
+    "@lloyal-labs/media": ">=0.2.0-0 <0.3.0",
+    "@lloyal-labs/rig": "^5.5.0 || >=5.6.0-0 <6.0.0",
+    "effection": "^4.0.2"
+  }
+}

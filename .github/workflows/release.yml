@@ -10,10 +10,16 @@ on:
         description: 'Skip npm publish (for testing)'
         type: boolean
         default: true
+      runner:
+        description: 'Runner label. self-hosted when hosted minutes are unavailable.'
+        type: string
+        default: 'ubuntu-latest'
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # `inputs` is null on the tag-push trigger, so the fallback is what keeps a
+    # release tag on hosted runners. An empty label queues forever, silently.
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
     permissions:
       contents: read
       id-token: write
@@ -30,6 +36,10 @@ jobs:
 
       - name: Verify dist outputs
         run: |
+          test -f packages/media/dist/index.js
+          test -f packages/media/dist/index.d.ts
+          test -f packages/media/dist/node.js
+          test -f packages/media/dist/node.d.ts
           test -f packages/sdk/dist/index.js
           test -f packages/sdk/dist/index.d.ts
           test -f packages/agents/dist/index.js
@@ -63,7 +73,21 @@ jobs:
           test -f packages/channel-verify/dist/esm/package.json
 
       - name: Typecheck
-        run: npx tsc -b packages/sdk packages/agents packages/rig packages/channel-verify packages/binding packages/relay packages/host
+        run: npx tsc -b packages/media packages/sdk packages/agents packages/rig packages/channel-verify packages/binding packages/relay packages/host
+
+      # Publishing authenticates through trusted publishing, and the OIDC token
+      # is minted by the Actions service for the job — including on a
+      # self-hosted runner. This runs unconditionally so a skip_publish
+      # rehearsal proves the plumbing before a real cut depends on it. The
+      # request URL only, never the token.
+      - name: OIDC available?
+        run: |
+          echo "runner environment: ${RUNNER_ENVIRONMENT:-<unset>}"
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "OIDC token endpoint present - trusted publishing can authenticate."
+          else
+            echo "::warning::No OIDC token in this job, so trusted publishing cannot authenticate."
+          fi
 
       - name: Publish packages
         if: success() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.skip_publish))
@@ -73,15 +97,44 @@ jobs:
           # rig pointing at a version that does not exist on the registry —
           # breaking fresh installs until someone repaired the partial release.
           # It has no dependencies of its own, so it is safe at the head.
-          for pkg in packages/channel-verify packages/sdk packages/agents packages/rig packages/binding packages/relay packages/host packages/dev-tools; do
+          # media sits right after channel-verify: sdk, agents and rig all
+          # depend on it, so it must exist on the registry before they do.
+          for pkg in packages/channel-verify packages/media packages/sdk packages/agents packages/rig packages/binding packages/relay packages/host packages/dev-tools; do
             name=$(node -p "require('./$pkg/package.json').name")
             version=$(node -p "require('./$pkg/package.json').version")
+            # The dist-tag follows each package's OWN version: an -alpha.N
+            # version publishes under the alpha channel and can never move
+            # `latest`. Committed on an arc branch, this is what makes
+            # `npx lloyal-ai@alpha` possible without touching production.
+            case "$version" in
+              *-alpha*) tag=alpha ;;
+              *-beta*)  tag=beta ;;
+              *-rc*)    tag=rc ;;
+              *)        tag=latest ;;
+            esac
             if npm view "$name@$version" version >/dev/null 2>&1; then
               echo "⏭ $name@$version already published, skipping"
             else
-              echo "Publishing $name@$version..."
-              npm publish --workspace "$pkg" --access public --provenance
+              # A manual dispatch may only ever ship a prerelease. The tag falls
+              # through to `latest` for any version without a suffix, so one
+              # hand-edited manifest would otherwise move production. Releases
+              # go out through a v* tag, which is not affected by this.
+              if [ "$tag" = "latest" ] && [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+                echo "::error::$name@$version would publish to latest. A manual dispatch may only ship a prerelease; production goes through a v* tag."
+                exit 1
+              fi
+              # npm verifies the sigstore bundle's runner claim and refuses
+              # anything but a hosted one: "Only github-hosted runners are
+              # supported when publishing with provenance" (422). Measured, on
+              # run 34142877384. Ask the environment rather than take a flag,
+              # so a hosted run keeps attestation with nothing to remember and
+              # a local one drops only what it cannot have.
+              echo "Publishing $name@$version (tag: $tag)..."
+              if [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ]; then
+                npm publish --workspace "$pkg" --access public --provenance --tag "$tag"
+              else
+                echo "::warning::$name@$version published WITHOUT provenance (runner is ${RUNNER_ENVIRONMENT:-unknown})"
+                npm publish --workspace "$pkg" --access public --tag "$tag"
+              fi
             fi
           done
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

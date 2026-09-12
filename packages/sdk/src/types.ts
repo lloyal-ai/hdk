@@ -241,6 +241,110 @@ export interface ContextOptions {
    * Default: 'f16'
    */
   typeV?: KvCacheType;
+
+  /**
+   * Path to the model's multimodal projector (mmproj .gguf)
+   *
+   * Enables image input: the projector encodes images into embedding rows
+   * that prefill into a branch's KV beside text (see
+   * {@link Branch.prefillMultimodal}). Any llama.cpp-supported VL model
+   * works — the projector decides the position mode at runtime.
+   *
+   * Fail-loud: a configured mmproj that cannot load throws at
+   * `createContext` — never a silent fall back to text-only.
+   */
+  mmprojPath?: string;
+
+  /**
+   * Minimum tokens per image (multimodal)
+   *
+   * Per-image token budget floor for models with dynamic resolution.
+   * Default: model metadata. Only relevant with {@link mmprojPath}.
+   */
+  imageMinTokens?: number;
+
+  /**
+   * Maximum tokens per image (multimodal)
+   *
+   * Per-image token budget cap — the lever for fitting many images (or
+   * video frames) into a context. Default: model metadata. Only relevant
+   * with {@link mmprojPath}.
+   */
+  imageMaxTokens?: number;
+}
+
+/**
+ * Per-branch result of a multimodal prefill
+ *
+ * The native layer owns multimodal tokenization (the projector's token
+ * counts aren't knowable from JS), so the prefill reports what it decoded:
+ * `tokensDecoded` is KV cells added; `positionAdvance` is how far the
+ * branch position moved. Under M-RoPE the two differ for images (cells
+ * grow by rows, position by max(nx, ny)).
+ *
+ * @category Branching
+ */
+export interface MultimodalPrefillResult {
+  /** KV cells added (sep + text + image rows) */
+  tokensDecoded: number;
+  /** Branch position advance (< tokensDecoded under M-RoPE with images) */
+  positionAdvance: number;
+  /** `llama_decode`'s raw return code when this entry failed with one. With
+   *  {@link partial} it classifies the failure — the rule is on
+   *  {@link DecodeError}. Absent on success and for failures that never
+   *  reached llama_decode. */
+  rc?: number;
+  /** True when an earlier chunk of this entry landed before the failing call:
+   *  the branch moved, so it is not intact even though `rc` says the failing
+   *  call restored state. Present exactly when `rc` is. */
+  partial?: boolean;
+  /** Why THIS entry failed, when it did — the cohort keeps going.
+   *
+   *  A rejected promise would lose which entries landed, and the caller needs
+   *  that: six agents settling images must not lose five because one page was
+   *  corrupt, and pruning the right branch requires knowing which one it was.
+   *  Set ⇒ classify by `rc` and `partial` ({@link DecodeError}): intact only
+   *  when the failing call restored state (`rc` 1 or -1) and `!partial`;
+   *  anything else is POISONED — prune and replay from content, never resume
+   *  (`decode_segments` is not atomic and partial-range KV ops are
+   *  meaningless on recurrent layers).
+   *
+   *  `Branch.prefillMultimodal` throws instead of setting this — it is a
+   *  cohort of one, where a throw is the friendlier shape. */
+  error?: string;
+}
+
+/**
+ * What a failed `llama_decode` left behind, as the kernel reports it (the
+ * same two fields as liblloyal's `DecodeError`): `rc` classifies the failing
+ * call — `1` no KV slot and `-1` invalid batch both restored that call, `2`
+ * aborted and `< -1` fatal did not — and `partial` says whether earlier
+ * chunks of the same operation landed. One rule, true on every path: the
+ * branch is INTACT iff the failing call restored state (`rc` 1 or -1) and
+ * `!partial`. Intact with 1 is a capacity wait — retry once the KV has room;
+ * intact with -1 is the input — do not resend the same delta. Anything else
+ * ⇒ prune the branch and replay.
+ *
+ * @category Branching
+ */
+export interface DecodeError {
+  rc: number;
+  partial: boolean;
+}
+
+/**
+ * Read the {@link DecodeError} off a rejected native call, when the binding
+ * attached one. The ONE place the rejection's shape is known — every consumer
+ * classifies through this, never by matching message text.
+ *
+ * @category Branching
+ */
+export function decodeErrorOf(err: unknown): DecodeError | undefined {
+  if (typeof err === 'object' && err !== null && 'rc' in err) {
+    const { rc, partial } = err as { rc: unknown; partial?: unknown };
+    if (typeof rc === 'number' && Number.isInteger(rc)) return { rc, partial: partial === true };
+  }
+  return undefined;
 }
 
 /**
@@ -691,6 +795,17 @@ export interface SessionContext {
   tokenToText(token: number): string;
 
   /**
+   * Raw bytes of a single token's text piece.
+   *
+   * The byte-level twin of {@link tokenToText}. A BPE piece is a byte
+   * sequence, not a string — it can end or begin mid-character — so per-token
+   * string conversion tears multi-byte UTF-8 into U+FFFD. Streaming callers
+   * (Branch.produceSync) assemble text from bytes at character boundaries
+   * instead.
+   */
+  tokenToBytes(token: number): Uint8Array;
+
+  /**
    * Check if token is a model stop token
    *
    * Returns true for built-in end-of-generation tokens:
@@ -889,6 +1004,23 @@ export interface SessionContext {
    * ```
    */
   kvCacheLoad(sequenceId: number, state: Buffer): Promise<void>;
+
+  /**
+   * True when the loaded mmproj has a vision encoder
+   *
+   * `false` when no {@link ContextOptions.mmprojPath} was configured.
+   * Gate image features on this rather than on configuration.
+   */
+  supportsVision(): boolean;
+
+  /**
+   * True when the loaded mmproj has an audio encoder
+   *
+   * `false` when no mmproj was configured, and for vision-only projectors.
+   * Audio input has no API surface yet — a prefill that routes audio bytes
+   * throws rather than silently skipping.
+   */
+  supportsAudio(): boolean;
 
   /**
    * Clear all KV cache (fresh start)
@@ -1464,6 +1596,26 @@ export interface SessionContext {
 
   /** @internal */
   _storePrefill(handles: number[], tokenArrays: number[][]): Promise<void>;
+
+  /** @internal — multimodal prefill: per-branch sep tokens + templated
+   *  prompt (with `<__media__>` markers) + image bytes. The native worker
+   *  walks TEXT/IMAGE chunks in order (token rail / embedding rail) and
+   *  returns per-branch counts. See {@link Branch.prefillMultimodal}. */
+  _storePrefillMultimodal(
+    handles: number[],
+    sepTokens: number[][],
+    prompts: string[],
+    bitmaps: Uint8Array[][],
+  ): Promise<MultimodalPrefillResult[]>;
+
+  /** @internal — KV cells a multimodal prefill WOULD consume, known before
+   *  anything decodes. Pays bitmap decode + tokenization, not the vision-tower
+   *  encode. Wrapped by {@link deltaCells}. */
+  _cellsMultimodal(
+    sepTokens: number[],
+    prompt: string,
+    bitmaps: Uint8Array[],
+  ): Promise<number>;
 
   /** @internal — additively merge experts' logits_snapshot into dst's:
    *  dst[t] += alpha * sum(experts[i][t]). Pure CPU op, no GPU dispatch. */

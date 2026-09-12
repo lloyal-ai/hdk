@@ -1,9 +1,10 @@
 import { call } from "effection";
 import type { Operation } from "effection";
 import { Tool, admitChunks } from "@lloyal-labs/lloyal-agents";
-import type { JsonSchema, ToolContext } from "@lloyal-labs/lloyal-agents";
+import type { JsonSchema, ToolContext, ToolLifecycleHooks } from "@lloyal-labs/lloyal-agents";
 import { chunkHtml } from "@lloyal-labs/rig";
 import type { Reranker } from "@lloyal-labs/rig";
+import { urlDedup, trimmed } from "./guards";
 
 /**
  * Fetch a web page and extract readable article content.
@@ -30,6 +31,8 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
   // main-context op, so it runs off the loop fiber under concurrent dispatch.
   // See Tool.fanout.
   readonly fanout = true;
+  /** This tool's gate: a URL already attended is not fetched again. Scope is the harness's. */
+  readonly hooks: ToolLifecycleHooks = { beforeDispatch: [urlDedup] };
   readonly description =
     "Fetch a web page and extract its article content. Returns readable text with title and excerpt. Pass a query to get only the most relevant sections.";
   readonly parameters: JsonSchema = {
@@ -64,7 +67,7 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
     this._tokenBudget = opts?.tokenBudget ?? 2048;
   }
 
-  /** Inject reranker for chunk scoring. Call from Source.bind(). */
+  /** Inject reranker for chunk scoring. Called by the source at construction. */
   setReranker(reranker: Reranker): void {
     this._reranker = reranker;
   }
@@ -73,19 +76,8 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
     args: { url: string; query?: string },
     context?: ToolContext,
   ): Operation<unknown> {
-    const url = args.url?.trim();
+    const url = trimmed(args.url);
     if (!url) return { error: "url must not be empty" };
-
-    // Cross-agent dedup: another worker in this pool already fetched this URL
-    if (context?.peerHistory?.some(h => {
-      if (h.name !== 'fetch_page') return false;
-      try {
-        const prev = (JSON.parse(h.args) as { url?: string }).url;
-        return prev === url;
-      } catch { return false; }
-    })) {
-      return { error: 'Resource unavailable. Try a different URL.' };
-    }
 
     // Early reject PDF URLs
     const lowerUrl = url.toLowerCase();
@@ -96,7 +88,7 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
     ) {
       return {
         error:
-          "PDF documents cannot be extracted. Try searching for an HTML version of this content.",
+          "This is a PDF, which fetch_page cannot read. Ask the user to attach the file to the conversation.",
         url,
       };
     }
@@ -135,7 +127,7 @@ export class FetchPageTool extends Tool<{ url: string; query?: string }> {
       if (contentType.includes("application/pdf")) {
         return {
           error:
-            "PDF documents cannot be extracted. Try searching for an HTML version of this content.",
+            "This is a PDF, which fetch_page cannot read. Ask the user to attach the file to the conversation.",
           url,
         } as const;
       }

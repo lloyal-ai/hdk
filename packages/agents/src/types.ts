@@ -3,8 +3,9 @@ import type { Branch } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import type { AgentPolicy } from './AgentPolicy';
 import type { EntailmentScorer } from './source';
-import type { ToolHistoryEntry } from './Agent';
 import type { TraceEvent } from './trace-types';
+import type { Attachment } from '@lloyal-labs/media';
+import type { Outcome } from './Tool';
 
 // ── Tool base class types ──────────────────────────────────────
 
@@ -51,23 +52,14 @@ export interface ToolSchema {
 }
 
 /**
- * Execution context passed to {@link Tool.execute}
- *
- * Provides callbacks for reporting progress during long-running tool
- * operations (e.g. reranker scoring chunks).
+ * Execution context passed to {@link Tool.execute} — the values of THIS call,
+ * and nothing that outlives it. WHO is calling is {@link CallingAgent}; an id
+ * or history slice on this port invites a tool to keep private per-agent
+ * state, recording evidence before the pool has admitted it.
  *
  * @category Agents
  */
 export interface ToolContext {
-  /** Stable agent identifier — branch handle at creation time */
-  agentId: number;
-  /**
-   * The calling agent's branch — use for recursive tools that spawn
-   * sub-agents via {@link withSpine} with `parent` option.
-   * Sub-agents forking from this branch inherit the agent's full
-   * KV state (Continuous Context).
-   */
-  branch?: Branch;
   /** Progress callback for long-running operations */
   onProgress?: (p: { filled: number; total: number }) => void;
   /**
@@ -78,7 +70,7 @@ export interface ToolContext {
   scorer?: EntailmentScorer;
   /**
    * When false, content-boundary tools apply dual scoring
-   * (scoreRelevanceBatch) for tighter focus. Computed per-DISPATCH
+   * (min with the original-question score) for tighter focus. Computed per-DISPATCH
    * by policy.shouldExplore(). @default true
    */
   explore?: boolean;
@@ -90,11 +82,13 @@ export interface ToolContext {
    */
   pressurePercentAvailable?: number;
   /**
-   * Tool histories of sibling agents in the same pool (excluding self).
-   * Used by tools to detect cross-agent duplicate calls and return
-   * a "resource unavailable" error to force diversification.
+   * Assets available to the run at this call: the roots the host staged the
+   * pool with, then every root any agent's tool result has admitted so far,
+   * in admission order. Roots only — reading one costs no KV; the content
+   * store resolves it. Availability is not projection: nothing here is in
+   * the model's context unless a branch admitted it.
    */
-  peerHistory?: ToolHistoryEntry[];
+  attachments?: readonly Attachment[];
 }
 
 // ── Trace types ───────────────────────────────────────────────
@@ -141,6 +135,12 @@ export interface AgentTaskSpec {
   /** Parent branch to fork from (required by {@link useAgentPool}) */
   parent?: Branch;
   /**
+   * Agent ids whose completion gated this spawn — the DAG's dependency
+   * edges, resolved by the orchestrator. Non-enforcing (the `ability`-label
+   * class): carried onto `agent:spawn` for the trace and the dev pane only.
+   */
+  after?: number[];
+  /**
    * Non-enforcing label naming the Ability this spawn nominally belongs to
    * Carried for trace attribution (`tool:authReject`) and
    * harness UI only — tool access is gated by {@link Tool.protected} +
@@ -154,7 +154,7 @@ export interface AgentTaskSpec {
  * Sampling parameters for generation
  *
  * Controls the sampler chain applied during token generation. Passed to
- * {@link Branch.create}, {@link generate}, {@link diverge}, and agent
+ * {@link Branch.create}, {@link useAgent}, and agent
  * pool tasks.
  *
  * @category Agents
@@ -217,7 +217,7 @@ export interface PressureThresholds {
 }
 
 /**
- * Configuration for {@link useAgentPool} and {@link runAgents}
+ * Configuration for {@link useAgentPool}
  *
  * @category Agents
  */
@@ -296,6 +296,12 @@ export interface AgentPoolOptions {
    *  Passed to every tool via {@link ToolContext.scorer}. */
   scorer?: EntailmentScorer;
   /**
+   * Assets available to the run from the start — roots the host stages the
+   * pool with. Zero KV: the pool never materializes them. Every tool call
+   * reads them, plus whatever the run admits, as {@link ToolContext.attachments}.
+   */
+  attachments?: readonly Attachment[];
+  /**
    * Eager GBNF grammar applied to every spawned agent's generating branch —
    * constrains generation from the first sampled token (no trigger). Used for
    * schema-constrained single-shot agents (e.g. the planner via
@@ -318,7 +324,7 @@ export type AgentExitReason =
   | 'policy_exit'
   | 'pressure_softcut'
   | 'maxTurns'
-  | 'report_cap';
+  | 'terminal_cap';
 
 export interface AgentResult {
   /** Stable agent identifier (branch handle at creation time) */
@@ -355,7 +361,7 @@ export interface AgentResult {
 /**
  * Aggregate result from a completed agent pool run
  *
- * Returned by both {@link useAgentPool} and {@link runAgents}. Contains
+ * Returned by {@link useAgentPool}. Contains
  * per-agent results plus aggregate statistics for display and telemetry.
  *
  * @category Agents
@@ -378,103 +384,6 @@ export interface AgentPoolResult {
   };
 }
 
-// ── Generate types ─────────────────────────────────────────────
-
-/**
- * Options for single-branch {@link generate}
- *
- * @category Agents
- */
-export interface GenerateOptions {
-  /** Pre-formatted prompt string (from `formatChat()` + `tokenize()`) */
-  prompt: string;
-  /** GBNF grammar string for constrained generation */
-  grammar?: string;
-  /** Sampling parameters */
-  params?: SamplingParams;
-  /** Optional parser applied to the raw output string */
-  parse?: (output: string) => unknown;
-  /** Fork from parent instead of creating a fresh root. Prompt is prefilled as a delta (with turn separator). */
-  parent?: Branch;
-}
-
-/**
- * Result from single-branch {@link generate}
- *
- * @category Agents
- */
-export interface GenerateResult<T = unknown> {
-  /** Raw generated text */
-  output: string;
-  /** Number of tokens generated */
-  tokenCount: number;
-  /** Parsed output (present only when `parse` was provided in options) */
-  parsed?: T;
-}
-
-// ── Diverge types ──────────────────────────────────────────────
-
-/**
- * Options for multi-branch {@link diverge}
- *
- * Either `parent` or `prompt` must be provided. When `parent` is given,
- * branches fork from it and no new root is created. When only `prompt`
- * is given, a fresh root is created, prefilled, and cleaned up on error.
- *
- * @category Agents
- */
-export interface DivergeOptions {
-  /** Pre-formatted prompt for creating a fresh root (mutually exclusive with parent) */
-  prompt?: string;
-  /** Number of parallel generation attempts */
-  attempts: number;
-  /** Parent branch to fork from (mutually exclusive with prompt) */
-  parent?: Branch;
-  /** Sampling parameters for all attempts */
-  params?: SamplingParams;
-  /** Base seed for sampler diversity across attempts. @default 2000 */
-  seedBase?: number;
-}
-
-/**
- * Single attempt result from {@link diverge}
- *
- * @category Agents
- */
-export interface DivergeAttempt {
-  /** The attempt's branch (only the best branch survives after diverge) */
-  branch: Branch;
-  /** Generated text for this attempt */
-  output: string;
-  /** Number of tokens generated */
-  tokenCount: number;
-  /** Model perplexity — lower indicates more coherent generation */
-  ppl: number;
-}
-
-/**
- * Aggregate result from {@link diverge}
- *
- * The `best` branch is still alive; all other attempt branches have been
- * pruned. The caller owns cleanup — typically via {@link Session.promote}
- * to make the best branch the new conversation trunk.
- *
- * @category Agents
- */
-export interface DivergeResult {
-  /** Lowest-perplexity branch — still alive, caller owns cleanup */
-  best: Branch;
-  /** Text output from the best attempt */
-  bestOutput: string;
-  /** All attempts (losers already pruned, branches disposed) */
-  attempts: DivergeAttempt[];
-  /** Sum of all attempt token counts */
-  totalTokens: number;
-  /** Number of batched commit steps */
-  steps: number;
-  /** Shared prefix length in tokens (for KV savings calculation) */
-  prefixLength: number;
-}
 
 // ── Runtime events ─────────────────────────────────────────────
 
@@ -487,12 +396,21 @@ export interface DivergeResult {
  * @category Agents
  */
 export type AgentEvent =
-  | { type: 'agent:spawn'; agentId: number; parentAgentId: number }
+  /** `after`: agent ids whose completion gated this spawn (DAG dependency
+   *  edges, resolved by the orchestrator — never inferred). Absent outside
+   *  DAG pools. */
+  | { type: 'agent:spawn'; agentId: number; parentAgentId: number; after?: number[] }
   | { type: 'agent:produce'; agentId: number; text: string; tokenCount: number; entropy?: number; surprisal?: number }
   | { type: 'agent:tool_call'; agentId: number; tool: string; args: string }
   | { type: 'agent:tool_result'; agentId: number; tool: string; result: string; contextAvailablePercent?: number }
   | { type: 'agent:tool_progress'; agentId: number; tool: string; filled: number; total: number }
   | { type: 'agent:tool_retry'; agentId: number; tool: string; retryAfterMs: number; attempt: number }
+  /** A prefill reached the agent's branch — a tool result, a recovery
+   *  prompt or a probe — with the roots it admitted (`attachments`, present
+   *  when the result carried any). Admission is a run-record fact the host
+   *  books and shows, so it rides the bus like every other one; the trace's
+   *  `branch:prefill` is the same moment written for replay. */
+  | { type: 'agent:prefilled'; agentId: number; cells: number; role: Outcome | 'probe'; attachments?: readonly Attachment[] }
   | { type: 'agent:return'; agentId: number; result: string }
   | { type: 'agent:recovered'; agentId: number; result: string }
   | { type: 'agent:failed'; agentId: number; reason: string }
@@ -508,9 +426,14 @@ export type AgentEvent =
    *  abandoned rather than waited out — the drain reports with what agents
    *  HAVE. A UI's cue to show the run as finishing. */
   | { type: 'run:windingDown' }
-  /** Dev-gated trace tee: a trace event mirrored onto the bus, stamped with
-   *  the agent it belongs to. Tool-scoped writes carry the `callId` of the
-   *  dispatch that produced them; pool-side interventions (nudges, drops,
-   *  auth rejections, prunes) mirror without one. Emitted only when a real
-   *  (non-Null) TraceWriter is active — production streams never carry it. */
+  /** Dev-gated trace mirror: a trace event carried onto the bus, attributed.
+   *  Emitted at the WRITER boundary — rig's `useTraceWriter`, when a dev
+   *  boot hands it the bus — so a live consumer sees exactly what the file
+   *  sees: every write, session-level `warmDelta` included. `agentId` and
+   *  `callId` are read off the event's own attribution fields (stamped by
+   *  the pool's dispatch tee); `-1` marks a write no agent owns. Production
+   *  streams never carry it: the mirror exists only on dev boots. */
   | { type: 'agent:trace'; agentId: number; callId?: string; event: TraceEvent };
+
+/** The `agent:trace` bus envelope — what the writer-boundary mirror sends. */
+export type AgentTraceEvent = Extract<AgentEvent, { type: 'agent:trace' }>;

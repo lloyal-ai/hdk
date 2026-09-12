@@ -1,13 +1,18 @@
 import { run, createChannel, scoped, createSignal, sleep, call, spawn } from 'effection';
 import type { Channel } from 'effection';
-import { MockSessionContext } from '../../../sdk/test/MockSessionContext';
+import { MockSessionContext } from '../../../sdk/src/testing.js';
 import { Branch } from '../../../sdk/src/Branch';
 import { BranchStore } from '../../../sdk/src/BranchStore';
-import type { ChatFormat, ParseChatOutputOptions, ParseChatOutputResult } from '@lloyal-labs/sdk';
+import type { ChatFormat, ParseChatOutputOptions, ParseChatOutputResult, MultimodalPrefillResult } from '@lloyal-labs/sdk';
 import { useAgentPool } from '../../src/agent-pool';
 import type { Orchestrator } from '../../src/orchestrators';
 import { parallel, chain } from '../../src/orchestrators';
-import { Ctx, Store, Events, Trace, WindDown, CancelAgent, Pause } from '../../src/context';
+import { Ctx, Store, Events, Trace, WindDown, CancelAgent, Pause, Attachments, Ingress, GrantStoreCtx } from '../../src/context';
+import type { GrantStore } from '../../src/grant-store';
+import type { AttachmentStore } from '@lloyal-labs/media';
+import type { ContentIngress } from '@lloyal-labs/media';
+import { MemoryAttachmentStore } from '../helpers/memory-store';
+import { rawIngress } from '../helpers/raw-ingress';
 import type { AgentPolicy } from '../../src/AgentPolicy';
 import type { AgentPoolResult, AgentEvent } from '../../src/types';
 import type { TraceEvent } from '../../src/trace-types';
@@ -16,7 +21,7 @@ import { CapturingTraceWriter } from '../helpers/capturing-trace';
 
 const STOP = 999;
 
-export type NativeOp = 'prefill' | 'commit' | 'sample';
+export type NativeOp = 'prefill' | 'commit' | 'sample' | 'prefillMultimodal';
 
 export interface NativeCall {
   seq: number;
@@ -25,6 +30,8 @@ export interface NativeCall {
   tEnd: number;
   branchCount: number;
   tokenCount: number;
+  /** The branch handles in the call, in order — a batch must never repeat one. */
+  handles: number[];
 }
 
 export interface PoolRun {
@@ -33,6 +40,8 @@ export interface PoolRun {
   channelEvents: AgentEvent[];
   nativeCalls: NativeCall[];
   ctx: InstrumentedMockSessionContext;
+  /** The root branch the pool was given; the one handle that may outlive the pool. */
+  rootHandle: number;
   /** Set if the pool run THREW (e.g. a decode OOM) instead of completing. The
    *  captured `traceEvents`/`channelEvents` still reflect everything up to the throw. */
   error?: unknown;
@@ -60,7 +69,37 @@ export class InstrumentedMockSessionContext extends MockSessionContext {
       seq, op: 'prefill', tStart, tEnd,
       branchCount: handles.length,
       tokenCount: tokenArrays.reduce((s, a) => s + a.length, 0),
+      handles: [...handles],
     });
+  }
+
+  /**
+   * The embedding rail, recorded like the token rail.
+   *
+   * Without this override every multimodal prefill is invisible in
+   * `nativeCalls`, so `I1_nativeStoreSingleFiber` and `I32_pauseHoldsNative`
+   * — both of which reason about native access — silently do not cover media
+   * at all. `tokenCount` is the CELL count the mock reports, which is the unit
+   * admission actually spends.
+   */
+  async _storePrefillMultimodal(
+    handles: number[],
+    sepTokens: number[][],
+    prompts: string[],
+    bitmaps: Uint8Array[][],
+  ): Promise<MultimodalPrefillResult[]> {
+    const tStart = performance.now();
+    const seq = this._seq++;
+    const out = await super._storePrefillMultimodal(handles, sepTokens, prompts, bitmaps);
+    const tEnd = performance.now();
+    this.nativeCalls.push({
+      seq, op: 'prefillMultimodal', tStart, tEnd,
+      branchCount: handles.length,
+      // CELLS, not tokens — the unit admission actually spends on this rail.
+      tokenCount: out.reduce((n, r) => n + (r?.tokensDecoded ?? 0), 0),
+      handles: [...handles],
+    });
+    return out;
   }
 
   async _storeCommit(handles: number[], tokens: number[]): Promise<void> {
@@ -75,7 +114,18 @@ export class InstrumentedMockSessionContext extends MockSessionContext {
       seq, op: 'commit', tStart, tEnd,
       branchCount: handles.length,
       tokenCount: tokens.length,
+      handles: [...handles],
     });
+  }
+
+  /** Handles of every branch not yet disposed — what a fork leak looks like. */
+  liveHandles(): number[] {
+    return [...this._branches].filter(([, b]) => !b.disposed).map(([h]) => h);
+  }
+
+  /** A branch's decode position (0 for an unknown handle), for cell arithmetic. */
+  positionOf(handle: number): number {
+    return this._branchGetPosition(handle);
   }
 }
 
@@ -112,13 +162,6 @@ export interface PoolSpec {
   toolsJson?: string;
   /** The pool's terminal tool name — read by `runPool`. */
   terminalToolName?: string;
-  /**
-   * @deprecated Dead field — `runPool` reads `terminalToolName`, not this. Kept so
-   * the 6 existing call sites (authGuard-rejection, xss-cross-ability-prose) still
-   * type-check; migrating them to `terminalToolName` changes their behaviour and is
-   * tracked in lloyal-ai/hdk#24.
-   */
-  terminalTool?: string;
   maxTurns?: number;
   maxConcurrentTools?: number;
   taskCount?: number;
@@ -160,9 +203,36 @@ export interface PoolSpec {
    * `maxLength` budget out of `jsonSchemaToGrammar`.
    */
   instrument?: (ctx: InstrumentedMockSessionContext) => void;
+  /**
+   * The run's content store. Defaults to an in-memory one, so media WORKS by
+   * default — previously the harness set neither context, `Ingress` fell back
+   * to `NoContentIngress`, every media path rejected, and the throw unwound to
+   * the tick loop's own catch, which closes with a partial result and no
+   * error. A media invariant written against that would have passed vacuously.
+   */
+  attachments?: AttachmentStore;
+  /**
+   * The run's ingress. Defaults to `rawIngress` over `attachments` — it
+   * commits bytes verbatim, exercising the RAIL without pulling `sharp` into
+   * the agents test run. Pass a rejecting one to exercise the barrier.
+   */
+  ingress?: ContentIngress;
   /** Capture a thrown pool run into `PoolRun.error` instead of rejecting — for scenarios
    *  that expect a throw AND need the events emitted before it. Default: re-throw (fail-loud). */
   captureError?: boolean;
+  /**
+   * Install a `GrantStoreCtx` holding exactly these tool names, so a `protected`
+   * tool can be exercised on its GRANTED branch. Absent = no store, which is the
+   * pool's fail-closed default (every protected tool denied).
+   */
+  grants?: readonly string[];
+  /**
+   * Hands the scenario the signal senders themselves, so a signal can be fired
+   * from INSIDE an instrumented native call — the one place the event-driven
+   * `windDownAfter` cannot reach, since no event flows while a prefill is
+   * suspended. Providing it installs the `WindDown` context.
+   */
+  signals?: (s: { windDown: () => void }) => void;
 }
 
 /**
@@ -176,8 +246,6 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
     nCtx: spec.nCtx,
     cellsUsed: spec.cellsUsed,
   });
-  spec.instrument?.(ctx);
-
   // Wire scripted _branchSample: index by forkCount, advance per sample.
   let forkCount = 0;
   const branchForkIndex = new Map<number, number>();
@@ -236,6 +304,14 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
     return { content: script?.content ?? '', reasoningContent: '', toolCalls: [] };
   };
 
+  // AFTER the fork/sample/parse wiring, not before it. The previous call site
+  // ran first, so an `instrument` that overrode `_branchSample` or
+  // `parseChatOutput` was silently clobbered by the harness a few lines later
+  // — while its own docstring promised it was the same affordance the harness
+  // uses. Plain field writes (`mockImageCells`, `throwOnCommitToken`) were
+  // unaffected, which is why nothing noticed.
+  spec.instrument?.(ctx);
+
   const trace = new CapturingTraceWriter();
   const channelEvents: AgentEvent[] = [];
 
@@ -255,8 +331,16 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
     const events: Channel<AgentEvent, void> = createChannel();
     yield* Events.set(events as any);
     yield* Trace.set(trace);
+    // Media contexts, always installed. A real harness that accepts media wires
+    // both; a harness that does not never reaches them, and an in-memory store
+    // costs a text-only run nothing.
+    const contentStore = spec.attachments ?? new MemoryAttachmentStore();
+    yield* Attachments.set(contentStore);
+    yield* Ingress.set(spec.ingress ?? rawIngress(contentStore));
+    if (spec.grants) yield* GrantStoreCtx.set(grantStoreOf(spec.grants));
     const windDownSignal = createSignal<void, void>();
-    if (spec.windDownAfter) yield* WindDown.set(windDownSignal);
+    if (spec.windDownAfter || spec.signals) yield* WindDown.set(windDownSignal);
+    spec.signals?.({ windDown: () => windDownSignal.send() });
     const cancelSignal = createSignal<{ agentId: number }, void>();
     if (spec.cancelAfter || spec.pauseAfter) yield* CancelAgent.set(cancelSignal);
     const pauseSignal = createSignal<boolean, void>();
@@ -347,6 +431,18 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
     channelEvents,
     nativeCalls: ctx.nativeCalls,
     ctx,
+    rootHandle: root.handle,
+  };
+}
+
+/** An in-memory `GrantStore` holding a fixed set of grants — the literal a harness would install. */
+function grantStoreOf(names: readonly string[]): GrantStore {
+  const held = new Set(names);
+  return {
+    *has(toolName) { return held.has(toolName); },
+    *grant(toolName) { held.add(toolName); },
+    *revoke(toolName) { held.delete(toolName); },
+    *granted() { return [...held]; },
   };
 }
 

@@ -136,6 +136,26 @@ session.trunk;  // the live branch
 
 `commitTurn` is the recommended high-level helper. Future queries fork from `session.trunk` and read prior conversation through KV attention — no prompt-history injection.
 
+## Multimodal (Vision)
+
+With a context created with `mmprojPath`, images prefill into any branch's KV beside text. One `<__media__>` marker per image; the native layer tokenizes the prompt and decodes text on the token rail, image rows on the embedding rail.
+
+```typescript
+import { buildUserDeltaMultimodal } from '@lloyal-labs/sdk';
+
+const ctx = await createContext({ modelPath, mmprojPath, nSeqMax: 8 });
+ctx.supportsVision();  // true
+
+// Trunk turn with an image — one call
+await session.prefillUserMultimodal('What is in this image?', [imageBytes]);
+
+// Or branch-level, via the delta builder
+const { sep, prompt, bitmaps } = buildUserDeltaMultimodal(ctx, 'Describe:', [imageBytes]);
+const { tokensDecoded } = await branch.prefillMultimodal(prompt, bitmaps, sep);
+```
+
+The image lands as an ordinary shared prefix: fork afterwards and every child attends it with zero re-encode. Several markers with several images in one prefill also works — video frames, each preceded by a timestamp, are just that.
+
 ## Rerank
 
 Backend-agnostic reranker. The caller provides a `SessionContext` — how it was created (local, remote, quantized) is not the SDK's concern.
@@ -153,8 +173,8 @@ const scores = await reranker.rank(query, documents);
 // Classes
 export { Branch, BranchStore, Session, Rerank };
 
-// Delta builders (for tool result injection)
-export { buildUserDelta, buildToolResultDelta };
+// Delta builders (for tool result injection + multimodal turns)
+export { buildUserDelta, buildUserDeltaMultimodal, buildToolResultDelta, MEDIA_MARKER };
 
 // Types
 export type { SessionContext, SamplingParams, Produced, ContextOptions, ... };

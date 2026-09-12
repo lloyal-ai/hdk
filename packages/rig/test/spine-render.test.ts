@@ -71,7 +71,6 @@ function makeAbility(opts: {
   const protocolName = opts.protocolName ?? `${opts.name}_research`;
   const manifest: AbilityManifest = {
     name: opts.name,
-    version: '1.0.0',
     abilityProtocolVersion: '3.0',
     protocol: {
       name: protocolName,
@@ -81,7 +80,6 @@ function makeAbility(opts: {
   };
   return {
     name: opts.name,
-    version: '1.0.0',
     manifest,
     source: { name: opts.name } as Ability['source'],
     tools: [],

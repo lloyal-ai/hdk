@@ -48,7 +48,7 @@ function mockFetch(map: Record<string, Uint8Array | Error>): typeof fetch {
     const v = map[url];
     if (v instanceof Error) throw v;
     if (v === undefined) throw new Error(`no mock for ${url}`);
-    return new Response(v);
+    return new Response(v as unknown as BodyInit);
   }) as unknown as typeof fetch;
 }
 

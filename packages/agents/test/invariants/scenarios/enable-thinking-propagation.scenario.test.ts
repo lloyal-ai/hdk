@@ -27,7 +27,7 @@ describe('scenario: enableThinking propagation (pool → agent.fmt)', () => {
       if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
       return { type: 'idle', reason: 'free_text_stop' };
     },
-    onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+    hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
     shouldExit: () => false,
     onRecovery: () => ({ type: 'skip' }),
   };

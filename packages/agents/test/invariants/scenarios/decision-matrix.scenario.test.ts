@@ -12,6 +12,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import { DefaultAgentPolicy } from '../../../src/AgentPolicy';
+import type { Agent } from '../../../src/Agent';
+import type { ParsedToolCall } from '@lloyal-labs/sdk';
 import type { AgentPolicy } from '../../../src/AgentPolicy';
 import { Tool } from '../../../src/Tool';
 import type { Operation } from 'effection';
@@ -53,17 +55,17 @@ describe('decision matrix: scattered kill/nudge paths', () => {
     expect(reasons.some(r => ['pressure_critical', 'pressure_init'].includes(r))).toBe(true);
   });
 
-  // ── Cell: SETTLE stall-break | no onSettleReject hook → settle_stall_break ──
-  it('[SETTLE stall-break] no onSettleReject hook → drop settle_stall_break (legacy fallback)', async () => {
-    // Custom policy with NO onSettleReject — forces the hook-absent path.
+  // ── Cell: SETTLE stall-break | no beforeAdmit contributor → settle_stall_break ──
+  it('[SETTLE stall-break] no beforeAdmit contributor → the frame drops settle_stall_break', async () => {
+    // A literal policy with no hooks — the frame's default decides.
     // Using `as any` because the interface requires the method; we're
     // simulating a buggy/legacy policy that doesn't implement it.
     const policy: AgentPolicy = {
-      onProduced: (_a, parsed) => {
+      onProduced: (_a: Agent, parsed: { content: string | null; toolCalls: ParsedToolCall[] }) => {
         if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
         return { type: 'idle', reason: 'free_text_stop' };
       },
-      // onSettleReject intentionally omitted
+      // no hooks: the frame's beforeAdmit default (drop) decides
       shouldExit: () => false,
       onRecovery: () => ({ type: 'skip' }),
       pressureThresholds: { softLimit: 1024, hardLimit: 512 },
@@ -88,14 +90,14 @@ describe('decision matrix: scattered kill/nudge paths', () => {
     expect(reasons).not.toContain('pressure_settle_reject');
   });
 
-  // ── Cell: SETTLE stall-break | policy.onSettleReject returns idle → pressure_settle_reject ──
-  it('[SETTLE stall-break] onSettleReject returns idle → drop pressure_settle_reject', async () => {
+  // ── Cell: SETTLE stall-break | a contributor's beforeAdmit drops → pressure_settle_reject ──
+  it('[SETTLE stall-break] a contributor drops → drop pressure_settle_reject', async () => {
     const policy: AgentPolicy = {
       onProduced: (_a, parsed) => {
         if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
         return { type: 'idle', reason: 'free_text_stop' };
       },
-      onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       shouldExit: () => false,
       onRecovery: () => ({ type: 'skip' }),
       pressureThresholds: { softLimit: 1024, hardLimit: 512 },
@@ -131,7 +133,7 @@ describe('decision matrix: scattered kill/nudge paths', () => {
         if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
         return { type: 'idle', reason: 'free_text_stop' };
       },
-      onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       shouldExit: () => false,
       onRecovery: () => ({ type: 'skip' }),
       pressureThresholds: { softLimit: 1024, hardLimit: 512 },

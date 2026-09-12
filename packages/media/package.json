@@ -1,0 +1,68 @@
+{
+  "name": "@lloyal-labs/media",
+  "version": "0.2.0-alpha.4",
+  "description": "Content addressing for a harness — an OCI layout, and the image and document ingresses that feed it",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lloyal-ai/hdk.git",
+    "directory": "packages/media"
+  },
+  "homepage": "https://github.com/lloyal-ai/hdk/tree/main/packages/media#readme",
+  "bugs": {
+    "url": "https://github.com/lloyal-ai/hdk/issues"
+  },
+  "keywords": [
+    "oci",
+    "content-addressable",
+    "multimodal",
+    "vision",
+    "image",
+    "sharp",
+    "pdf",
+    "pdfium",
+    "document"
+  ],
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "commonjs",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE",
+    "LICENSE-FAQ.md"
+  ],
+  "devDependencies": {
+    "@embedpdf/pdfium": "^2.15.0",
+    "@types/emscripten": "^1.41.6",
+    "sharp": "^0.35.4"
+  },
+  "peerDependencies": {
+    "sharp": "^0.35.4",
+    "@embedpdf/pdfium": "^2.15.0"
+  },
+  "peerDependenciesMeta": {
+    "sharp": {
+      "optional": true
+    },
+    "@embedpdf/pdfium": {
+      "optional": true
+    }
+  }
+}

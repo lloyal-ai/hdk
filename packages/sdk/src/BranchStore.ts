@@ -1,5 +1,6 @@
 import type { Branch } from './Branch';
-import type { SessionContext } from './types';
+import type { SessionContext, MultimodalPrefillResult } from './types';
+import type { MultimodalDelta } from './deltas';
 
 /**
  * High-throughput multi-branch decode operations
@@ -107,6 +108,7 @@ export class BranchStore {
       tokens.push(token);
     }
     await this._ctx._storeCommit(handles, tokens);
+    for (const [branch, token] of entries) branch._advanceText(token);
   }
 
   /**
@@ -132,6 +134,51 @@ export class BranchStore {
       tokenArrays.push(tokens);
     }
     await this._ctx._storePrefill(handles, tokenArrays);
+    for (const [branch] of entries) branch._endTail();
+  }
+
+  /**
+   * Prefill multimodal deltas across branches in one call.
+   *
+   * The embedding-rail mirror of {@link prefill}. `llama_batch` is
+   * token-XOR-embd, so an image is always its own dispatch and these cannot be
+   * bin-packed with token prefills — they are a separate call, not a separate
+   * strategy. How many dispatches (and vision-tower encodes) the cohort costs
+   * is the native worker's business, which is what lets that get cheaper later
+   * without any caller changing.
+   *
+   * **Reports failures rather than throwing.** Unlike {@link prefill}, a bad
+   * entry does not reject the call: it comes back with `error` set on its own
+   * result, and the rest still land. A rejected promise would lose which
+   * branches were mutated, and every caller here needs that — see
+   * {@link MultimodalPrefillResult.error}. A failed entry's `rc` and `partial`
+   * say whether its branch is still intact ({@link DecodeError}); anything but
+   * a restored call (`rc` 1 or -1) with `!partial` is POISONED: prune it and
+   * replay from content.
+   *
+   * @param entries - One `[branch, delta]` pair per prefill, in dispatch order
+   * @returns One result per entry, positionally
+   * @throws Only if a branch is disposed — a caller bug, not an input failure
+   */
+  async prefillMultimodal(
+    entries: [Branch, MultimodalDelta][],
+  ): Promise<MultimodalPrefillResult[]> {
+    const handles: number[] = [];
+    const sepTokens: number[][] = [];
+    const prompts: string[] = [];
+    const bitmaps: Uint8Array[][] = [];
+    for (const [branch, delta] of entries) {
+      if (branch.disposed) throw new Error('BranchStore.prefillMultimodal: branch is disposed');
+      handles.push(branch.handle);
+      sepTokens.push(delta.sep);
+      prompts.push(delta.prompt);
+      bitmaps.push(delta.bitmaps);
+    }
+    const results = await this._ctx._storePrefillMultimodal(handles, sepTokens, prompts, bitmaps);
+    // A landed entry ended its branch's text stream; a failed one is pruned
+    // by the caller, tail and all.
+    results.forEach((r, i) => { if (!r.error) entries[i][0]._endTail(); });
+    return results;
   }
 
   /**

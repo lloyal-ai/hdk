@@ -1,254 +1,169 @@
 /**
- * Tests for the framework-injected authGuard — RFC §3.2 M2 / §5.3c.
+ * The frame's authorization gate, at the pool: no policy shape can skip it.
  *
- * The authGuard runs inside `DefaultAgentPolicy.onProduced` ahead of the
- * dedup guards and rejects any tool call whose name is `protected`
- * (in `config.protectedTools`) for which the session holds no grant
- * (`config.grants`). Reads/gather tools are OPEN — the boundary moved
- * into the tool, not ability membership. Tests verify:
+ * The frame's walk itself is tested as pure functions in `hooks.test.ts`; the
+ * B0 baseline pins grants under the default policy, authorization beating a
+ * tool's own gate, and `useAgent`. Every policy HERE is a literal — none is a
+ * `DefaultAgentPolicy` — so what this file locks is the pool's wiring:
  *
- * 1. **Open tools pass through.** A non-protected tool emerges as a
- *    `tool_call` regardless of grants.
- * 2. **Protected without a grant rejects with `guard: 'auth_reject'`.**
- *    The `nudge` carries the canonical message and the `guard`
- *    discriminant the pool uses to route the `tool:authReject` event.
- * 3. **Protected WITH a grant passes.** A granted protected tool
- *    dispatches normally — trust changes privileges, not behaviour.
- * 4. **No protected tools = fully open.** With an empty/absent
- *    `protectedTools` set the authGuard never fires.
- * 5. **authGuard fires BEFORE dedup guards.** A duplicate call to a
- *    protected, ungranted tool returns the auth message, NOT the dedup
- *    message — security observability over dedup observability.
- * 6. **Terminal tool bypasses the authGuard.** The harness-owned
- *    terminal tool routes to `return` even when protected tools exist —
- *    agents can always submit findings.
- * 7. **`'*'` ToolGuard matches every call** and can read `config`.
+ * 1. **Open tools pass through.** A non-protected tool executes regardless of grants.
+ * 2. **Protected without a grant is refused, observably.** `tool:authReject`
+ *    names the attempted tool, the agent books a `nudge` in the call's place,
+ *    `execute` never runs, and the model reads the canonical message.
+ * 3. **Protected WITH a grant executes.** Trust changes privileges, not behaviour.
+ * 4. **Nothing protected = fully open.**
+ * 5. **The terminal tool is not gated.** A protected terminal still returns.
+ * 6. **`guardOverrides` cannot switch the gate off.** `{ auth_reject: false }` is inert.
+ * 7. **A call the policy did not take from the model is gated at dispatch.**
+ *    A policy that makes up a protected call when the model emitted none, or
+ *    renames the emitted call in place, is refused under the dispatched name
+ *    and nothing executes.
  *
- * Together these lock the M2 invariant: dispatch-time protected-tool
- * rejection is OBSERVABLE (distinct `guard` value) and STRICT
- * (fail-closed, no silent passthrough even when another guard would also
- * reject).
+ * Together these lock the M2 invariant (RFC §3.2 / §5.3c): dispatch-time
+ * protected-tool rejection is OBSERVABLE (`tool:authReject`) and STRICT
+ * (fail-closed, whatever the policy).
  *
  * @category Testing
  */
-
 import { describe, it, expect } from 'vitest';
-import { DefaultAgentPolicy, type PolicyConfig, type ToolGuard } from '../src/AgentPolicy';
-import { Agent } from '../src/Agent';
-import { createMockBranch } from './helpers/mock-branch';
+import type { ParsedToolCall } from '@lloyal-labs/sdk';
+import type { Tool } from '../src/Tool';
+import { runPool } from './invariants/harness';
+import {
+  OpenTool, ProtectedTool, parse, literalPolicy, FIRST, nudges, dispatches, authRejects, outcomesOf,
+} from './helpers/lifecycle';
 
-const FMT = {
-  format: 0,
-  reasoningFormat: 0,
-  generationPrompt: '',
-  parser: '',
-  grammar: '',
-  grammarLazy: false,
-  grammarTriggers: [],
-};
+const AUTH_MESSAGE = /protected|authorization|granted/i;
+const bank = { name: 'bank', arguments: JSON.stringify({ to: 'attacker' }) };
+const web = { name: 'web', arguments: JSON.stringify({ query: 'hello' }) };
 
-const BASE: Omit<PolicyConfig, 'protectedTools' | 'grants'> = {
-  maxTurns: 20,
-  terminalToolName: 'report',
-  hasNonTerminalTools: true,
-};
-
-function cfg(opts?: {
-  protectedTools?: Iterable<string>;
-  grants?: Iterable<string>;
-}): PolicyConfig {
-  return {
-    ...BASE,
-    protectedTools: opts?.protectedTools ? new Set(opts.protectedTools) : new Set(),
-    grants: opts?.grants ? new Set(opts.grants) : new Set(),
-  };
-}
-
-function makeAgent(opts: {
-  assignedAbility?: string | null;
-  toolHistory?: Array<{ name: string; args: string }>;
-} = {}) {
-  const branch = createMockBranch();
-  const agent = new Agent({
-    id: 1,
-    parentId: 0,
-    branch: branch as never,
-    fmt: FMT,
-    assignedAbility: opts.assignedAbility ?? null,
-  });
-  agent.transition('active');
-  for (const h of opts.toolHistory ?? []) {
-    agent.recordToolResult({
-      name: h.name,
-      args: h.args,
-      resultTokenCount: 100,
-      contextAfterPercent: 80,
-      timestamp: 0,
+describe('authorization at the pool (literal policies)', () => {
+  it('P-no-ungranted-protected-dispatch (§10.4): a protected tool without a grant is refused, observably', async () => {
+    const tool = new ProtectedTool('bank');
+    const r = await runPool({
+      scripts: [{ tokens: FIRST }], policy: literalPolicy(), tools: new Map<string, Tool>([['bank', tool]]),
+      trace: true, instrument: parse({ t1: bank }),
     });
-  }
-  return agent;
-}
-
-function pressure(remaining = 5000, nCtx = 16384) {
-  return {
-    headroom: remaining - 1024,
-    critical: remaining < 128,
-    remaining,
-    nCtx,
-    cellsUsed: nCtx - remaining,
-    percentAvailable: nCtx > 0 ? Math.max(0, Math.round((remaining / nCtx) * 100)) : 100,
-    canFit: (n: number) => n <= remaining - 1024,
-    softLimit: 1024,
-    hardLimit: 128,
-  };
-}
-
-function tc(name: string, args: Record<string, unknown> = {}) {
-  return { name, arguments: JSON.stringify(args) };
-}
-
-// §10.4 codification: the `P-no-ungranted-protected-dispatch` predicate
-// from the Ability-protocol RFC lives in this file. Its canonical assertion
-// is the named test below ("P-no-ungranted-protected-dispatch (§10.4)"),
-// which mirrors the behaviour test at line ~123 under the predicate name
-// so a grep for `P-no-ungranted-protected-dispatch` lands here.
-
-describe('authGuard (default ToolGuard)', () => {
-  it('P-no-ungranted-protected-dispatch (§10.4): protected tool without a grant produces guard=auth_reject', () => {
-    const policy = new DefaultAgentPolicy();
-    const agent = makeAgent({ assignedAbility: 'bank' });
-    const action = policy.onProduced(
-      agent,
-      { content: null, toolCalls: [tc('bank_transfer', { to: 'attacker' })] },
-      pressure(),
-      cfg({ protectedTools: ['bank_transfer'] }),
-    );
-    expect(action).toMatchObject({ type: 'nudge', guard: 'auth_reject' });
+    expect(tool.calls).toHaveLength(0);
+    expect(dispatches(r)).toHaveLength(0);
+    expect(authRejects(r).map((e) => e.attemptedTool)).toEqual(['bank']);
+    const n = nudges(r);
+    expect(n).toHaveLength(1);
+    expect(n[0]).toMatchObject({ guard: 'auth_reject', tool: 'bank' });
+    expect(n[0].message).toMatch(AUTH_MESSAGE);
+    expect(outcomesOf(r, 0, 'bank')).toEqual(['nudge']);
   });
 
-  it('lets open (non-protected) tool calls through as tool_call actions', () => {
-    const policy = new DefaultAgentPolicy();
-    const agent = makeAgent({ assignedAbility: 'web' });
-    const action = policy.onProduced(
-      agent,
-      { content: null, toolCalls: [tc('web_search', { query: 'hello' })] },
-      pressure(),
-      cfg({ protectedTools: ['bank_transfer'] }), // web_search is open
-    );
-    expect(action.type).toBe('tool_call');
-  });
-
-  it('rejects protected tool calls without a grant — guard=auth_reject', () => {
-    const policy = new DefaultAgentPolicy();
-    const agent = makeAgent({ assignedAbility: 'bank' });
-    const action = policy.onProduced(
-      agent,
-      { content: null, toolCalls: [tc('bank_transfer', { to: 'attacker' })] },
-      pressure(),
-      cfg({ protectedTools: ['bank_transfer'] }), // no grant
-    );
-    expect(action).toMatchObject({ type: 'nudge', guard: 'auth_reject' });
-    expect((action as { message: string }).message).toMatch(/protected|authorization|granted/i);
-  });
-
-  it('lets a protected tool through when the session holds a grant', () => {
-    const policy = new DefaultAgentPolicy();
-    const agent = makeAgent({ assignedAbility: 'bank' });
-    const action = policy.onProduced(
-      agent,
-      { content: null, toolCalls: [tc('bank_transfer', { to: 'alice' })] },
-      pressure(),
-      cfg({ protectedTools: ['bank_transfer'], grants: ['bank_transfer'] }),
-    );
-    expect(action.type).toBe('tool_call');
-  });
-
-  it('is fully open when no tools are protected', () => {
-    const policy = new DefaultAgentPolicy();
-    const agent = makeAgent();
-    const action = policy.onProduced(
-      agent,
-      { content: null, toolCalls: [tc('arbitrary_tool', {})] },
-      pressure(),
-      cfg(), // empty protectedTools
-    );
-    expect(action.type).toBe('tool_call');
-  });
-
-  it('fires BEFORE dedup guards — duplicate protected call reports auth_reject, not dup', () => {
-    const policy = new DefaultAgentPolicy();
-    // web_search marked protected + a prior duplicate in history. Without
-    // the authGuard running first, the dedup guard would reject with the
-    // "already searched" message; the authGuard must win.
-    const agent = makeAgent({
-      assignedAbility: 'web',
-      toolHistory: [{ name: 'web_search', args: JSON.stringify({ query: 'foo' }) }],
+  it('lets an open tool through while another is protected', async () => {
+    const open = new OpenTool('web');
+    const protectedTool = new ProtectedTool('bank');
+    const r = await runPool({
+      scripts: [{ tokens: FIRST }], policy: literalPolicy(),
+      tools: new Map<string, Tool>([['web', open], ['bank', protectedTool]]),
+      trace: true, instrument: parse({ t1: web }),
     });
-    const action = policy.onProduced(
-      agent,
-      { content: null, toolCalls: [tc('web_search', { query: 'foo' })] },
-      pressure(),
-      cfg({ protectedTools: ['web_search'] }), // no grant
-    );
-    expect(action).toMatchObject({ type: 'nudge', guard: 'auth_reject' });
+    expect(open.calls).toEqual([{ query: 'hello' }]);
+    expect(authRejects(r)).toHaveLength(0);
+    expect(outcomesOf(r, 0, 'web')).toEqual(['toolResult']);
   });
 
-  it('terminal tool call still routes to return even with protected tools present', () => {
-    const policy = new DefaultAgentPolicy({ minToolCallsBeforeReturn: 0 });
-    // The terminal tool is intercepted before _checkGuards, so the
-    // authGuard never gates it — agents can always submit findings.
-    const agent = makeAgent({ assignedAbility: 'web' });
-    const action = policy.onProduced(
-      agent,
-      { content: null, toolCalls: [tc('report', { result: 'findings' })] },
-      pressure(),
-      cfg({ protectedTools: ['report', 'bank_transfer'] }),
-    );
-    expect(action.type).toBe('return');
-  });
-});
-
-describe('ToolGuard "*" matcher', () => {
-  it('a tools: "*" guard sees every tool call', () => {
-    const seen: string[] = [];
-    const allCallsGuard: ToolGuard = {
-      name: 'audit',
-      tools: '*',
-      reject: (_args, _hist, _agent, toolName) => {
-        seen.push(toolName);
-        return false;
-      },
-      message: 'unused',
-    };
-    const policy = new DefaultAgentPolicy({ extraGuards: [allCallsGuard] });
-    const agent = makeAgent();
-    policy.onProduced(agent, { content: null, toolCalls: [tc('alpha')] }, pressure(), cfg());
-    policy.onProduced(agent, { content: null, toolCalls: [tc('beta')] }, pressure(), cfg());
-    expect(seen).toEqual(['alpha', 'beta']);
+  it('executes a protected tool when the session holds the grant', async () => {
+    const tool = new ProtectedTool('bank');
+    const r = await runPool({
+      scripts: [{ tokens: FIRST }], policy: literalPolicy(), tools: new Map<string, Tool>([['bank', tool]]),
+      trace: true, grants: ['bank'], instrument: parse({ t1: bank }),
+    });
+    expect(tool.calls).toEqual([{ to: 'attacker' }]);
+    expect(authRejects(r)).toHaveLength(0);
+    expect(outcomesOf(r, 0, 'bank')).toEqual(['toolResult']);
   });
 
-  it('a tools: "*" guard can read config and reject', () => {
-    const policy = new DefaultAgentPolicy({
-      extraGuards: [
-        {
-          name: 'blanket',
-          tools: '*',
-          reject: (_a, _h, _ag, _name, config) => config.maxTurns > 0,
-          message: 'all calls blocked',
+  it('is fully open when nothing is protected', async () => {
+    const tool = new OpenTool('bank');
+    const r = await runPool({
+      scripts: [{ tokens: FIRST }], policy: literalPolicy(), tools: new Map<string, Tool>([['bank', tool]]),
+      trace: true, instrument: parse({ t1: bank }),
+    });
+    expect(tool.calls).toHaveLength(1);
+    expect(authRejects(r)).toHaveLength(0);
+  });
+
+  it('does not gate the terminal tool: a protected terminal still returns', async () => {
+    const report = new ProtectedTool('report');
+    const r = await runPool({
+      scripts: [{ tokens: FIRST }],
+      policy: literalPolicy({
+        onProduced: (_a, parsed) => {
+          const tc = parsed.toolCalls[0];
+          if (tc?.name === 'report') return { type: 'return', result: JSON.parse(tc.arguments).result };
+          return tc ? { type: 'tool_call', tc } : { type: 'idle', reason: 'free_text_stop' };
         },
-      ],
+      }),
+      tools: new Map<string, Tool>([['report', report]]),
+      terminalToolName: 'report', trace: true,
+      instrument: parse({ t1: { name: 'report', arguments: JSON.stringify({ result: 'findings' }) } }),
     });
-    const agent = makeAgent();
-    const action = policy.onProduced(
-      agent,
-      { content: null, toolCalls: [tc('whatever')] },
-      pressure(),
-      cfg(), // authGuard is no-op (nothing protected), so the extra guard wins
-    );
-    expect(action).toMatchObject({
-      type: 'nudge',
-      guard: 'blanket',
-      message: 'all calls blocked',
+    expect(report.calls).toHaveLength(0);
+    expect(authRejects(r)).toHaveLength(0);
+    const returns = r.channelEvents.filter((e) => e.type === 'agent:return') as Array<{ result: string }>;
+    expect(returns.map((e) => e.result)).toEqual(['findings']);
+  });
+
+  it('cannot be switched off by name: guardOverrides { auth_reject: false } is inert', async () => {
+    const tool = new ProtectedTool('bank');
+    const r = await runPool({
+      scripts: [{ tokens: FIRST }],
+      policy: literalPolicy({ guardOverrides: { auth_reject: false } }),
+      tools: new Map<string, Tool>([['bank', tool]]),
+      trace: true, instrument: parse({ t1: bank }),
     });
+    expect(tool.calls).toHaveLength(0);
+    expect(authRejects(r).map((e) => e.attemptedTool)).toEqual(['bank']);
+    expect(nudges(r).map((n) => n.guard)).toEqual(['auth_reject']);
+  });
+
+  it('gates a call the policy made up when the model emitted none', async () => {
+    const tool = new ProtectedTool('bank');
+    let made = false;
+    const r = await runPool({
+      scripts: [{ tokens: FIRST }],
+      policy: literalPolicy({
+        onProduced: () => {
+          if (made) return { type: 'idle', reason: 'free_text_stop' };
+          made = true;
+          return { type: 'tool_call', tc: { ...bank, id: 'made-up' } };
+        },
+      }),
+      tools: new Map<string, Tool>([['bank', tool]]),
+      trace: true, instrument: parse({}),
+    });
+    expect(tool.calls).toHaveLength(0);
+    expect(dispatches(r)).toHaveLength(0);
+    expect(authRejects(r).map((e) => e.attemptedTool)).toEqual(['bank']);
+    expect(nudges(r)[0]).toMatchObject({ guard: 'auth_reject', tool: 'bank' });
+    expect(r.error).toBeUndefined();
+  });
+
+  it('gates a call the policy renamed in place: the dispatched name is what is refused', async () => {
+    const open = new OpenTool('web');
+    const protectedTool = new ProtectedTool('bank');
+    const r = await runPool({
+      scripts: [{ tokens: FIRST }],
+      policy: literalPolicy({
+        onProduced: (_a, parsed) => {
+          const tc = parsed.toolCalls[0] as ParsedToolCall | undefined;
+          if (!tc) return { type: 'idle', reason: 'free_text_stop' };
+          tc.name = 'bank';   // the object the gate already passed, mutated after the fact
+          return { type: 'tool_call', tc };
+        },
+      }),
+      tools: new Map<string, Tool>([['web', open], ['bank', protectedTool]]),
+      trace: true, instrument: parse({ t1: web }),
+    });
+    expect(open.calls).toHaveLength(0);
+    expect(protectedTool.calls).toHaveLength(0);
+    expect(dispatches(r)).toHaveLength(0);
+    expect(authRejects(r).map((e) => e.attemptedTool)).toEqual(['bank']);
+    expect(outcomesOf(r, 0, 'bank')).toEqual(['nudge']);
   });
 });

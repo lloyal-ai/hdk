@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { run } from 'effection';
-import { AbilityConfigStoreCtx } from '@lloyal-labs/lloyal-agents';
+import { AbilityConfigStoreCtx, Trace, NullTraceWriter } from '@lloyal-labs/lloyal-agents';
+import type { ToolContext } from '@lloyal-labs/lloyal-agents';
 import { createInMemoryConfigStore } from '@lloyal-labs/rig';
 import { createWebAbility } from '../src/index';
 
@@ -22,5 +23,21 @@ describe('createWebAbility', () => {
     // skill.eta must NOT carry the framework boundary marker (defineAbility would reject it).
     const agentSrc = typeof ability.skill === 'string' ? ability.skill : '';
     expect(agentSrc).not.toContain('Apply the **');
+  });
+});
+
+describe('fetch_page on a PDF', () => {
+  it('names the way in — attach the file — instead of a dead end', async () => {
+    const ability = await run(function* () {
+      yield* AbilityConfigStoreCtx.set(createInMemoryConfigStore());
+      yield* Trace.set(new NullTraceWriter());
+      return yield* createWebAbility();
+    });
+    const fetchPage = ability.tools.find((t) => t.name === 'fetch_page')!;
+    const r = (await run(function* () {
+      yield* Trace.set(new NullTraceWriter());
+      return yield* fetchPage.execute({ url: 'https://example.com/paper.pdf' }, {} as ToolContext);
+    })) as { error?: string };
+    expect(r.error).toBe('This is a PDF, which fetch_page cannot read. Ask the user to attach the file to the conversation.');
   });
 });

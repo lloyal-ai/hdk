@@ -1,8 +1,15 @@
-import { call, ensure } from 'effection';
+import { ensure } from 'effection';
 import type { Operation } from 'effection';
-import { Branch, buildTurnDelta } from '@lloyal-labs/sdk';
-import { Ctx, Store } from './context';
+import { prefill, prefillBranch, prefillBranchMultimodal, measureCells } from './execute';
+import {
+  Branch, buildAssistantDelta, buildToolResultDelta,
+  buildToolResultDeltaMultimodal, buildTurnDelta, MEDIA_MARKER,
+} from '@lloyal-labs/sdk';
+import type { MultimodalDelta } from '@lloyal-labs/sdk';
+import { Ctx, Store, Attachments } from './context';
 import type { TraceEvent } from './trace-types';
+import type { Attachment } from '@lloyal-labs/media';
+import { materialize } from '@lloyal-labs/media';
 
 /**
  * Serialized state needed to reconstruct a Branch deterministically.
@@ -21,6 +28,11 @@ import type { TraceEvent } from './trace-types';
 export interface BranchCheckpoint {
   seedPrompt: string;
   turns: Array<{ userContent: string; assistantContent: string }>;
+  /** Images the spine was seeded with, in marker order — one per
+   *  {@link MEDIA_MARKER} in `seedPrompt`. Absent for a text-seeded spine.
+   *  These are references, not bytes: {@link reconstructBranch} resolves them
+   *  through the run's attachment store. */
+  seedAttachments?: readonly Attachment[];
 }
 
 /**
@@ -44,7 +56,29 @@ export function extractSpineSeed(events: TraceEvent[]): BranchCheckpoint {
       'extractSpineSeed: no prompt:format event with role=spine found in trace',
     );
   }
-  return { seedPrompt: seed.promptText, turns: [] };
+  // The seed prompt and the images it marks arrive on two different events:
+  // `prompt:format` carries the text, `branch:prefill` carries the
+  // attachments. They are paired by scope — the spine setup emits both under
+  // the same parent trace id — which is what keeps a nested pool's spine from
+  // claiming an outer one's images.
+  const header = events.find(
+    (e): e is Extract<TraceEvent, { type: 'branch:prefill' }> =>
+      e.type === 'branch:prefill' &&
+      e.role === 'spineHeader' &&
+      e.parentTraceId === seed.parentTraceId &&
+      e.attachments !== undefined,
+  );
+
+  // Prefer the success-only copy on `branch:prefill`; fall back to the
+  // seed's write-ahead roots. A spine whose multimodal prefill FAILED has
+  // only the fallback — and that failure is exactly when replay is the only
+  // way back, so refusing it for want of roots would defeat the write-ahead.
+  const roots = header?.attachments ?? seed.attachments;
+  return {
+    seedPrompt: seed.promptText,
+    turns: [],
+    ...(roots && roots.length > 0 ? { seedAttachments: roots } : {}),
+  };
 }
 
 /**
@@ -73,7 +107,11 @@ export function extractSpineCheckpoint(
     if (opts.poolTraceId != null && e.parentTraceId !== opts.poolTraceId) continue;
     turns.push({ userContent: e.userContent, assistantContent: e.assistantContent });
   }
-  return { seedPrompt: seed.seedPrompt, turns };
+  return {
+    seedPrompt: seed.seedPrompt,
+    turns,
+    ...(seed.seedAttachments ? { seedAttachments: seed.seedAttachments } : {}),
+  };
 }
 
 /**
@@ -88,6 +126,12 @@ export function extractSpineCheckpoint(
  * Pass the returned branch as `parent` to `agentPool` to run a replacement
  * stage (synth re-run, single-agent replay with modified prompt, etc.) against
  * the reconstructed KV state.
+ *
+ * A spine seeded with images (`withSpine({ bitmaps })`) replays too, provided
+ * the run's attachment store still holds them and the active context has a
+ * projector loaded. Everything that cannot rebuild the ORIGINAL KV state
+ * throws rather than falling back to the text path — a marker tokenized as
+ * text is a different state wearing the same prompt.
  *
  * @example Replay a pool-start (parallel orchestration) with a modified task
  * ```ts
@@ -119,17 +163,199 @@ export function extractSpineCheckpoint(
 export function* reconstructBranch(checkpoint: BranchCheckpoint): Operation<Branch> {
   const ctx = yield* Ctx.expect();
   const store = yield* Store.expect();
+  const attachments = yield* Attachments.expect();
+
+  // A marker in the seed means this spine was seeded with images. Tokenizing
+  // that marker as text would rebuild a DIFFERENT KV state — marker tokens
+  // where the encoded image rows belong — so every path below either restores
+  // the bytes or throws. Silently degrading to text is the one thing it must
+  // never do, because the result looks like a successful replay.
+  const markers = checkpoint.seedPrompt.split(MEDIA_MARKER).length - 1;
+
+  let bitmaps: Uint8Array[] = [];
+  if (markers > 0) {
+    const refs = checkpoint.seedAttachments ?? [];
+    if (refs.length === 0) {
+      throw new Error(
+        `reconstructBranch: this spine was seeded with ${markers} marker(s), ` +
+          'but the checkpoint carries no attachment references. The trace ' +
+          'records the marker, not the pixels, so its KV state cannot be ' +
+          'rebuilt. Re-run the pool with the original images via ' +
+          'withSpine({ bitmaps }).',
+      );
+    }
+    // Runtime capability, checked before any KV is touched: a replay tool that
+    // built its context without `mmprojPath` would otherwise fail deep inside
+    // the native prefill, after the spine exists and with a worse message.
+    if (!ctx.supportsVision()) {
+      throw new Error(
+        'reconstructBranch: this spine was seeded with images, but the active ' +
+          'context has no vision projector loaded. Pass `mmprojPath` to ' +
+          'createContext() to replay it.',
+      );
+    }
+    // One resolution path, not two: `materialize` IS this walk, and replay
+    // reimplementing it by hand is how the two silently drift. A batch that
+    // materializes at ingress is one that can be rebuilt here, by construction
+    // rather than by assertion.
+    bitmaps = [...materialize(attachments, refs).bitmaps];
+
+    // The count that must match is REPRESENTATIONS, not attachments. One
+    // manifest is one image (1 representation) but also one video (N sampled
+    // frames) or one live capture — so comparing attachment count would reject
+    // every media type except a plain image. Checked AFTER resolution because
+    // only expanding the manifests reveals how many the seed actually holds.
+    if (bitmaps.length !== markers) {
+      throw new Error(
+        `reconstructBranch: the seed prompt has ${markers} media marker(s), ` +
+          `but its ${refs.length} attachment(s) expand to ${bitmaps.length} ` +
+          'representation(s). Rebuilding would put a different number of ' +
+          'images into the cache than the prompt marks — a different KV state ' +
+          'wearing the same prompt.',
+      );
+    }
+  }
 
   const spine = Branch.create(ctx, 0, {});
   yield* ensure(() => { if (!spine.disposed) spine.pruneSubtreeSync(); });
 
-  const seedTokens = ctx.tokenizeSync(checkpoint.seedPrompt, false);
-  yield* call(() => spine.prefill(seedTokens));
-
-  for (const turn of checkpoint.turns) {
-    const delta = buildTurnDelta(ctx, turn.userContent, turn.assistantContent);
-    yield* call(() => store.prefill([[spine, delta]]));
+  // Routed by how the seed was built, not by what is convenient here: the
+  // multimodal path re-runs mtmd's tokenizer over the same prompt and bytes,
+  // which is what makes the rebuilt cells match the originals.
+  if (bitmaps.length > 0) {
+    yield* prefillBranchMultimodal(spine, checkpoint.seedPrompt, bitmaps);
+  } else {
+    const seedTokens = ctx.tokenizeSync(checkpoint.seedPrompt, false);
+    yield* prefillBranch(spine, seedTokens);
   }
 
+  yield* replayTurns(spine, checkpoint.turns);
+
   return spine;
+}
+
+/**
+ * Apply checkpointed turn deltas to a branch, in order.
+ *
+ * The delta-replay primitive under {@link reconstructBranch}, exported on its
+ * own because the two halves of replay have different contracts and callers:
+ * seed REBUILD verifies it can restore the recorded state or throws
+ * (`reconstructBranch`, above); delta replay is provenance-blind — the branch
+ * may be a fresh seed rebuild or a fork of live, resident state, and this
+ * function neither knows nor checks. A caller continuing from a live fork
+ * owns the prefix contract by construction: it forked the very branch whose
+ * state the checkpoint's turns extend.
+ *
+ * Owns nothing about lifetime — no `ensure`, no prune. The workbench ties
+ * the rebuilt spine to its scope; a pool ties a fork to its own bookkeeping.
+ *
+ * @category Agents
+ */
+export function* replayTurns(
+  branch: Branch,
+  turns: BranchCheckpoint['turns'],
+): Operation<void> {
+  const ctx = yield* Ctx.expect();
+  const store = yield* Store.expect();
+  for (const turn of turns) {
+    const delta = buildTurnDelta(ctx, turn.userContent, turn.assistantContent);
+    yield* prefill(store, [[branch, delta]]);
+  }
+}
+
+/**
+ * One KV delta in an AGENT's life since its spawn — the heal record
+ * (docs/self-healing.md). Every piece is already on the trace in its own
+ * event (`agent:turn.rawOutput`, `tool:result`, `branch:prefill.probeText`);
+ * this is the same data as one ordered, replayable list.
+ */
+export type AgentTurnRecord =
+  | { kind: 'assistant'; text: string }
+  | {
+      kind: 'toolResult'; resultStr: string; callId: string;
+      /** Roots admitted with this result — resolved through the run's
+       *  attachment store at replay, exactly as the seed's are. The rail
+       *  follows what they materialize to, as it did live. */
+      attachments?: readonly Attachment[];
+    }
+  | { kind: 'probe'; text: string };
+
+/** One prefill of a replayed lineage: built once, priced in cells. */
+export type ReplayStep =
+  | { kind: 'tokens'; tokens: number[] }
+  | { kind: 'media'; delta: MultimodalDelta; cells: number };
+
+/** A lineage ready to replay — its steps in order, and what they will cost. */
+export interface PreparedReplay { steps: ReplayStep[]; cells: number }
+
+/**
+ * Build every delta of a record ONCE, with the same builders the live path
+ * uses, and price them. The admission that decides a heal reads `cells`;
+ * {@link runReplay} prefills exactly the steps that were priced. Media-bearing
+ * results resolve through `materialize()` here, so a record whose content is
+ * gone fails at pricing, before any fork exists.
+ */
+export function* prepareReplay(
+  records: readonly AgentTurnRecord[],
+  opts: { enableThinking?: boolean } = {},
+): Operation<PreparedReplay> {
+  const ctx = yield* Ctx.expect();
+  const attachments = yield* Attachments.expect();
+  const steps: ReplayStep[] = [];
+  let cells = 0;
+  const tokenStep = (tokens: number[]): void => {
+    if (tokens.length === 0) return;
+    steps.push({ kind: 'tokens', tokens });
+    cells += tokens.length;
+  };
+  for (const r of records) {
+    if (r.kind === 'assistant') {
+      tokenStep(buildAssistantDelta(ctx, r.text, opts));
+    } else if (r.kind === 'probe') {
+      tokenStep(ctx.tokenizeSync(r.text, false));
+    } else if (r.attachments && r.attachments.length > 0) {
+      // Rail by what the roots MATERIALIZE to: a document root expands to no
+      // bitmaps and replays as the tool text it was.
+      const { bitmaps } = materialize(attachments, r.attachments);
+      if (bitmaps.length === 0) {
+        tokenStep(buildToolResultDelta(ctx, r.resultStr, r.callId, opts));
+        continue;
+      }
+      const delta = buildToolResultDeltaMultimodal(ctx, r.resultStr, r.callId, [...bitmaps], opts);
+      const priced = yield* measureCells(ctx, delta);
+      steps.push({ kind: 'media', delta, cells: priced });
+      cells += priced;
+    } else {
+      tokenStep(buildToolResultDelta(ctx, r.resultStr, r.callId, opts));
+    }
+  }
+  return { steps, cells };
+}
+
+/** Prefill a prepared lineage onto a branch, in order. Provenance-blind and
+ *  lifetime-free, like {@link replayTurns}. */
+export function* runReplay(branch: Branch, steps: readonly ReplayStep[]): Operation<void> {
+  const store = yield* Store.expect();
+  for (const step of steps) {
+    if (step.kind === 'tokens') yield* prefill(store, [[branch, step.tokens]]);
+    else yield* prefillBranchMultimodal(branch, step.delta.prompt, step.delta.bitmaps, step.delta.sep);
+  }
+}
+
+/**
+ * Replay an agent's recorded deltas onto a branch, in order — prepare, then
+ * run. The agent-shaped sibling of {@link replayTurns}: an agent's KV timeline
+ * is assistant turns, tool-result deltas and probe prefills, not user/assistant
+ * pairs. Same contract: provenance-blind (the branch is typically a fork of
+ * the live spine, whose prefix — seed images included — rides for free),
+ * lifetime-free, and a media-bearing record whose content is gone fails
+ * loudly rather than replaying a marker as text.
+ */
+export function* replayAgentTurns(
+  branch: Branch,
+  records: readonly AgentTurnRecord[],
+  opts: { enableThinking?: boolean } = {},
+): Operation<void> {
+  const { steps } = yield* prepareReplay(records, opts);
+  yield* runReplay(branch, steps);
 }

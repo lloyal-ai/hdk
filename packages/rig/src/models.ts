@@ -22,8 +22,10 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
 /** The model roles a harness provisions. `llm` always; `reranker` when an ability
- *  requires it; `embedding` reserved for the first consumer. */
-export type ModelRole = 'llm' | 'reranker' | 'embedding';
+ *  requires it; `mmproj` rides its llm entry (vision — resolved in the boot
+ *  beside the llm, never a Service); `embedding` reserved for the first
+ *  consumer. */
+export type ModelRole = 'llm' | 'reranker' | 'embedding' | 'mmproj';
 
 /**
  * A curated default model. `sha256` is the platform trust root — every catalog
@@ -44,6 +46,12 @@ export interface ModelCatalogEntry {
   sizeBytes: number;
   /** Suggested `context` (nCtx) when the harness doesn't set one. */
   recommendedContext?: number;
+  /** LLM entries only: the id of this model's multimodal projector (role
+   *  `mmproj`). One vision tower serves every quant of the same model. The
+   *  boot resolves the llm, then its linked mmproj, and passes `mmprojPath`
+   *  into `createContext` — vision rides the llm choice, never a separate
+   *  pick. */
+  mmproj?: string;
 }
 
 const USER_AGENT = '@lloyal-labs/rig model-fetch';
@@ -80,6 +88,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     sha256: '00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4',
     sizeBytes: 2_600_000_000,
     recommendedContext: 32768,
+    mmproj: 'qwen3.5-4b-mmproj',
   },
   {
     id: 'qwen3.8-27b-q4',
@@ -94,6 +103,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     sha256: '322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482',
     sizeBytes: 16_464_440_224,
     recommendedContext: 32768,
+    mmproj: 'qwen3.8-27b-mmproj',
   },
   {
     id: 'qwen3.8-27b-iq1',
@@ -105,6 +115,29 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     sha256: '3895b6eaa91e705c06ad1938d16c22e86f073c6a67df86260a1da79be3d1f887',
     sizeBytes: 6_192_222_208,
     recommendedContext: 32768,
+    mmproj: 'qwen3.8-27b-mmproj',
+  },
+  {
+    id: 'qwen3.5-4b-mmproj',
+    role: 'mmproj',
+    label: 'Qwen3.5 4B vision projector · F16',
+    // Upstream only: models.lloyal.ai does not carry the mmprojs yet — add
+    // the mirror URL when seeded, never a fallback that cannot serve.
+    urls: [
+      'https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/mmproj-F16.gguf',
+    ],
+    sha256: 'cd88edcf8d031894960bb0c9c5b9b7e1fea6ebee02b9f7ce925a00d12891f864',
+    sizeBytes: 672_423_616,
+  },
+  {
+    id: 'qwen3.8-27b-mmproj',
+    role: 'mmproj',
+    label: 'Qwen3.8 27B vision projector · F16',
+    urls: [
+      'https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.gguf',
+    ],
+    sha256: 'cbb841a9ee0636b2ec172f5bb8df2ea8dfeb01e90fe7c6126581d662a0b4e43e',
+    sizeBytes: 927_607_488,
   },
   {
     id: 'qwen3-reranker-0.6b-q8',
@@ -308,4 +341,78 @@ async function streamOne(
   }
   opts.onProgress?.(got, total, url);
   return dest;
+}
+
+
+/**
+ * What a runtime boot needs on disk before it can create a context.
+ *
+ * @category Models
+ */
+export interface RuntimeModels {
+  /** The reasoning model — verified, local, ready for `createContext`. */
+  modelPath: string;
+  /** The vision projector, when this llm has one. Absent ⇒ a text-only
+   *  runtime, which is a normal outcome and never an error. */
+  mmprojPath?: string;
+}
+
+/**
+ * Resolve the models a runtime boots with — the reasoning model and, when the
+ * catalog pairs one with it, its vision projector.
+ *
+ * Every target that boots a runtime needs both, resolved the same way, which
+ * is why this is not each target's job: the CLI boot and the served host had
+ * independent copies of the pairing logic, and only one of them was ever
+ * updated when vision landed — so the served host ran text-only however
+ * capable its model was.
+ *
+ * **Vision is implicit by design.** The catalog pairs a projector with each
+ * vision-capable llm, so choosing a model chooses vision with it;
+ * `config.mmproj` only overrides that pairing. A text-only model has no
+ * pairing, `mmprojPath` comes back undefined, and `createContext` then reports
+ * `supportsVision() === false` rather than failing.
+ *
+ * Not the reranker: the CLI provisions it through the abilities that declare
+ * it (`provisionAbilityModels`) while a served host resolves it directly, so
+ * it is genuinely each boot's own business.
+ *
+ * @param opts.config - The layered config's model block. A saved `path`
+ *                      outranks the manifest's catalog id, matching how the
+ *                      config layering resolves every other field.
+ * @param opts.llmId - The manifest's `model.llm.id` — what selects the pairing.
+ *
+ * @category Models
+ */
+export async function resolveRuntimeModels(opts: {
+  projectRoot: string;
+  config: { path?: string | undefined; mmproj?: string | undefined };
+  llmId: string | undefined;
+  onProgress?: (role: ModelRole, got: number, total: number) => void;
+}): Promise<RuntimeModels> {
+  const { projectRoot, config, llmId, onProgress } = opts;
+
+  const modelPath = await resolveModel({
+    projectRoot,
+    role: 'llm',
+    spec: config.path ? { path: config.path } : { id: llmId },
+    ...(onProgress ? { onProgress: (g: number, t: number) => onProgress('llm', g, t) } : {}),
+  });
+
+  // A path override points the runtime at bytes the catalog knows nothing
+  // about, so the catalog's projector pairing does not apply: inferring one
+  // from the id would load a projector for a model that is not running —
+  // wrong dimensions at best, a failed context at worst. Vision with a
+  // custom path takes an explicit `config.mmproj`.
+  const mmprojId = config.mmproj ??
+    (config.path ? undefined : llmId ? catalogEntry('llm', llmId)?.mmproj : undefined);
+  if (!mmprojId) return { modelPath };
+
+  const mmprojPath = await resolveModel({
+    projectRoot,
+    role: 'mmproj',
+    spec: { id: mmprojId },
+    ...(onProgress ? { onProgress: (g: number, t: number) => onProgress('mmproj', g, t) } : {}),
+  });
+  return { modelPath, mmprojPath };
 }

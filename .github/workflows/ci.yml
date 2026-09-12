@@ -51,7 +51,36 @@ jobs:
           node-version: 24
 
       - run: npm install
-      - run: npx tsc -b packages/sdk packages/agents packages/rig packages/channel-verify
+      - run: npm run typecheck
+
+  # The format claim is that a store directory is a VALID OCI Image Layout, not
+  # an approximation of one — which is what keeps distribution a later,
+  # replaceable adapter. Only a tool with none of our code in it can check that,
+  # so this drives `oras` against a layout the real ingress wrote, and our
+  # reader against a layout `oras` wrote.
+  oci-conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install oras
+        run: |
+          VERSION=1.3.0
+          curl -fsSL -o oras.tar.gz \
+            "https://github.com/oras-project/oras/releases/download/v${VERSION}/oras_${VERSION}_linux_amd64.tar.gz"
+          # A pinned version is not a verified artifact: check the archive
+          # against the release's published digest before anything runs.
+          echo "6cdc692f929100feb08aa8de584d02f7bcc30ec7d88bc2adc2054d782db57c64  oras.tar.gz" | sha256sum -c -
+          tar -xzf oras.tar.gz oras
+          sudo mv oras /usr/local/bin/
+          oras version
+
+      - run: npm install
+      - run: npm run verify:oci
 
   gpu-tests:
     name: GPU Integration Tests

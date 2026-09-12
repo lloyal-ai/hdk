@@ -1,7 +1,7 @@
 import { Branch } from './Branch';
 import type { BranchStore } from './BranchStore';
 import type { SessionContext } from './types';
-import { buildUserDelta, buildAssistantDelta, buildToolResultDelta, buildTurnDelta } from './deltas';
+import { buildUserDelta, buildUserDeltaMultimodal, buildAssistantDelta, buildToolResultDelta, buildTurnDelta } from './deltas';
 
 /**
  * Observer invoked after each trunk conversation prefill lands.
@@ -10,15 +10,52 @@ import { buildUserDelta, buildAssistantDelta, buildToolResultDelta, buildTurnDel
  * agents-layer tracer emits a `branch:prefill` event) WITHOUT coupling
  * Session to any trace type — the callback is sdk-native. Pure
  * observability: it runs after the prefill and never affects it. `content`
- * is the verbatim turn text; `tokenCount` is the prefilled delta length.
+ * is the verbatim turn text; `cells` is what the prefill added to the cache.
  *
  * @category Branching
  */
 export type TrunkPrefillObserver = (info: {
   role: 'user' | 'assistant' | 'turn' | 'tool';
   content: string;
-  tokenCount: number;
+  /** The halves of a committed exchange (`role: 'turn'`), verbatim as the
+   *  caller passed them — structural so no consumer re-splits the join. */
+  query?: string;
+  response?: string;
+  /** KV CELLS the prefill added — not tokens.
+   *
+   *  Equal on the token rail, where this is the delta length. NOT equal on the
+   *  multimodal path, which reports `tokensDecoded` — itself documented as
+   *  "KV cells added", a name inherited from the native contract and shared
+   *  with lloyal.node, so it cannot be corrected from here. This field is
+   *  sdk-native and can be, so it is. */
+  cells: number;
   branchHandle: number;
+  /** Roots of the content this prefill put into the cache, in marker order —
+   *  present only on the multimodal path.
+   *
+   *  Descriptors, NOT bytes: by the time a prefill happens the caller has
+   *  already normalized and committed the content, because media that reaches
+   *  the cache unaddressed produces a run that cannot be replayed. So there is
+   *  nothing left to store here — only a reference to record. Structural on
+   *  purpose: the SDK has no attachment concept and does not want one. */
+  attachments?: readonly { digest: string; mediaType: string; size: number }[];
+}) => void;
+
+/**
+ * Observer invoked after the Session releases a trunk branch — the other
+ * half of the pair with {@link TrunkPrefillObserver}: prefills report what
+ * entered the trunk's KV, releases report a trunk leaving it. Fired by
+ * {@link Session.dispose} (trunk pruned), by {@link Session.promote} when
+ * the crown moves off a live trunk (retainOnly frees it), and by the
+ * multimodal poison path (a failed prefill prunes the trunk it poisoned).
+ * Pure observability: it runs after the prune and never affects it.
+ *
+ * @category Branching
+ */
+export type TrunkReleaseObserver = (info: {
+  branchHandle: number;
+  /** The branch's position (cells decoded) at release. */
+  position: number;
 }) => void;
 
 /**
@@ -57,12 +94,14 @@ export class Session {
   private _store: BranchStore;
   private _trunk: Branch | null;
   private _onPrefill?: TrunkPrefillObserver;
+  private _onRelease?: TrunkReleaseObserver;
 
-  constructor({ ctx, store, onPrefill }: { ctx: SessionContext; store: BranchStore; onPrefill?: TrunkPrefillObserver }) {
+  constructor({ ctx, store, onPrefill, onRelease }: { ctx: SessionContext; store: BranchStore; onPrefill?: TrunkPrefillObserver; onRelease?: TrunkReleaseObserver }) {
     this._ctx = ctx;
     this._store = store;
     this._trunk = null;
     this._onPrefill = onPrefill;
+    this._onRelease = onRelease;
   }
 
   /** Current trunk branch */
@@ -81,8 +120,15 @@ export class Session {
    * Safe even if winner is the only branch (resets topology, no-op on KV).
    */
   async promote(winner: Branch): Promise<void> {
+    // Capture the outgoing trunk's identity BEFORE retainOnly frees it —
+    // the getters are not for disposed branches.
+    const old = this._trunk;
+    const released = old !== null && old !== winner && !old.disposed
+      ? { branchHandle: old.handle, position: old.position }
+      : null;
     await this._store.retainOnly(winner);
     this._trunk = winner;
+    if (released) this._onRelease?.(released);
   }
 
   /**
@@ -90,7 +136,9 @@ export class Session {
    */
   async dispose(): Promise<void> {
     if (this._trunk && !this._trunk.disposed) {
+      const released = { branchHandle: this._trunk.handle, position: this._trunk.position };
       await this._trunk.prune();
+      this._onRelease?.(released);
     }
     this._trunk = null;
   }
@@ -104,7 +152,79 @@ export class Session {
   async prefillUser(content: string, opts: { tools?: string } = {}): Promise<void> {
     const tokens = buildUserDelta(this._ctx, content, opts);
     await this._trunk!.prefill(tokens);
-    this._onPrefill?.({ role: 'user', content, tokenCount: tokens.length, branchHandle: this._trunk!.handle });
+    this._onPrefill?.({ role: 'user', content, cells: tokens.length, branchHandle: this._trunk!.handle });
+  }
+
+  /**
+   * Prefill a user turn with images into trunk
+   *
+   * The multimodal counterpart of {@link prefillUser}: same composition,
+   * with one media marker per image in the user content. The images land
+   * as a shared prefix on the trunk — a spine forked from it (and every
+   * agent forked from the spine) attends them with zero re-encode.
+   *
+   * Requires a context created with `mmprojPath`.
+   *
+   * Handles warm/cold internally, like {@link commitTurn} and unlike
+   * {@link prefillUser}:
+   * - **Warm** (trunk exists): appends separator + delta to the existing trunk
+   * - **Cold** (no trunk): creates a branch at position 0, prefills WITHOUT a
+   *   separator (fresh branch — no prior turn to separate from), promotes it
+   *
+   * The cold path is what a composer needs. An image attached to the FIRST
+   * question has no trunk yet, and the trunk is otherwise not established
+   * until a run ends; without this the image could only reach the model as a
+   * per-agent copy. Landing it on the trunk first is what lets every agent
+   * forked from it attend the same encoded rows.
+   *
+   * @param content - User message text
+   * @param images - Encoded image bytes in a format the projector decodes
+   * @param opts - Optional tools JSON string
+   */
+  async prefillUserMultimodal(
+    content: string,
+    images: Uint8Array[],
+    opts: {
+      tools?: string;
+      /** Roots for the content in `images`, already committed by the caller's
+       *  barrier. Passed through to the prefill observer so the trace records
+       *  what was admitted; the Session itself never inspects them. */
+      attachments?: readonly { digest: string; mediaType: string; size: number }[];
+    } = {},
+  ): Promise<void> {
+    const { sep, prompt, bitmaps } = buildUserDeltaMultimodal(this._ctx, content, images, opts);
+    const attachments = opts.attachments;
+    if (this._trunk) {
+      const trunk = this._trunk;
+      try {
+        const { tokensDecoded } = await trunk.prefillMultimodal(prompt, bitmaps, sep);
+        this._onPrefill?.({ role: 'user', content, cells: tokensDecoded, branchHandle: trunk.handle, ...(attachments ? { attachments } : {}) });
+      } catch (e) {
+        // A failed multimodal prefill POISONS the branch — decode_segments
+        // is not atomic, and partial-range KV ops are meaningless on
+        // recurrent layers. Leaving it installed would let the next turn
+        // resume invalid KV; prune (subtree — poisoned KV invalidates
+        // anything forked from it) and clear, so the failure surfaces once,
+        // here.
+        const released = { branchHandle: trunk.handle, position: trunk.position };
+        trunk.pruneSubtreeSync();
+        this._trunk = null;
+        this._onRelease?.(released);
+        throw e;
+      }
+    } else {
+      const trunk = Branch.create(this._ctx, 0, {});
+      try {
+        const { tokensDecoded } = await trunk.prefillMultimodal(prompt, bitmaps, []);
+        await this.promote(trunk);
+        this._onPrefill?.({ role: 'user', content, cells: tokensDecoded, branchHandle: trunk.handle, ...(attachments ? { attachments } : {}) });
+      } catch (e) {
+        // Never promoted — prune so the failed cold bootstrap does not leak
+        // the branch slot.
+        trunk.pruneSubtreeSync();
+        throw e;
+      }
+    }
   }
 
   /**
@@ -125,7 +245,7 @@ export class Session {
   async prefillAssistant(content: string, opts: { enableThinking?: boolean } = {}): Promise<void> {
     const tokens = buildAssistantDelta(this._ctx, content, opts);
     await this._trunk!.prefill(tokens);
-    this._onPrefill?.({ role: 'assistant', content, tokenCount: tokens.length, branchHandle: this._trunk!.handle });
+    this._onPrefill?.({ role: 'assistant', content, cells: tokens.length, branchHandle: this._trunk!.handle });
   }
 
   /**
@@ -137,7 +257,7 @@ export class Session {
   async prefillToolResult(resultStr: string, callId: string): Promise<void> {
     const tokens = buildToolResultDelta(this._ctx, resultStr, callId);
     await this._trunk!.prefill(tokens);
-    this._onPrefill?.({ role: 'tool', content: resultStr, tokenCount: tokens.length, branchHandle: this._trunk!.handle });
+    this._onPrefill?.({ role: 'tool', content: resultStr, cells: tokens.length, branchHandle: this._trunk!.handle });
   }
 
   /**
@@ -157,7 +277,7 @@ export class Session {
       // conversations; no thinking blocks should be embedded.
       const tokens = buildTurnDelta(this._ctx, query, response, { enableThinking: false });
       await this._trunk.prefill(tokens);
-      this._onPrefill?.({ role: 'turn', content: `${query}\n\n${response}`, tokenCount: tokens.length, branchHandle: this._trunk.handle });
+      this._onPrefill?.({ role: 'turn', content: `${query}\n\n${response}`, query, response, cells: tokens.length, branchHandle: this._trunk.handle });
     } else {
       // Cold path: create trunk at position 0, prefill without separator
       // (fresh branch — no prior turn to separate from), then promote.
@@ -172,7 +292,7 @@ export class Session {
       const trunk = Branch.create(this._ctx, 0, {});
       await trunk.prefill(tokens);
       await this.promote(trunk);
-      this._onPrefill?.({ role: 'turn', content: `${query}\n\n${response}`, tokenCount: tokens.length, branchHandle: trunk.handle });
+      this._onPrefill?.({ role: 'turn', content: `${query}\n\n${response}`, query, response, cells: tokens.length, branchHandle: trunk.handle });
     }
   }
 

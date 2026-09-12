@@ -6,9 +6,9 @@
  * cross-reference another ability's tools. Reads are open by design — an
  * abilityA spawn CAN call abilityB's read tools — but **protected actions stay
  * protected regardless of who is asking**. Cross-ability prose carried in
- * the spawn's preamble doesn't relax the protected gate; the authGuard
- * fires on tool-name lookup against the pool's `protectedTools` set,
- * not on prose content.
+ * the spawn's preamble doesn't relax the protected gate; the frame's
+ * authorization gate fires on tool-name lookup against the pool's protected
+ * set, not on prose content.
  *
  * What this locks:
  *   - Open (non-protected) tools dispatch normally even when called
@@ -67,7 +67,7 @@ describe('scenario: cross-ability prose cannot escalate from open reads to prote
       }],
       policy: new DefaultAgentPolicy({ terminalToolName: 'report' }),
       tools,
-      terminalTool: 'report',
+      terminalToolName: 'report',
       trace: true,
     });
 
@@ -96,7 +96,7 @@ describe('scenario: cross-ability prose cannot escalate from open reads to prote
       }],
       policy: new DefaultAgentPolicy({ terminalToolName: 'report' }),
       tools,
-      terminalTool: 'report',
+      terminalToolName: 'report',
       trace: true,
     });
 
@@ -124,7 +124,7 @@ describe('scenario: cross-ability prose cannot escalate from open reads to prote
       }],
       policy: new DefaultAgentPolicy({ terminalToolName: 'report' }),
       tools,
-      terminalTool: 'report',
+      terminalToolName: 'report',
       trace: true,
     });
 

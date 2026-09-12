@@ -1,4 +1,5 @@
 import type { ToolHistoryEntry } from './Agent';
+import type { Attachment } from '@lloyal-labs/media';
 
 /**
  * Monotonically increasing trace ID
@@ -16,6 +17,17 @@ interface TraceEventBase {
   traceId: TraceId;
   parentTraceId: TraceId | null;
   ts: number; // performance.now()
+  /** Attribution, in the DATA rather than any envelope: the pool's dispatch
+   *  tee stamps the dispatching agent onto every write made while a tool
+   *  executes; write sites that know their agent (an agentSuffix
+   *  `prompt:format`, the pool's intervention events) stamp it themselves.
+   *  Only-if-absent semantics let an inner (nested-pool) stamp win. Readers
+   *  — the file, the dev pane's writer-boundary mirror — take attribution
+   *  from these fields; nothing re-derives it downstream. */
+  agentId?: number;
+  /** The dispatch this write belongs to, stamped alongside {@link agentId}
+   *  for tool-scoped writes. */
+  callId?: string;
 }
 
 /**
@@ -23,9 +35,11 @@ interface TraceEventBase {
  *
  * Every variant extends {@link TraceEventBase} with a `type` discriminant.
  * Events cover the full lifecycle of agent execution: scope open/close,
- * prompt formatting, branch creation/prefill/prune, generation start/end,
- * agent pool ticks, tool dispatch/result, diverge attempts, reranker
- * passes, and source bindings.
+ * prompt formatting, branch creation/prefill/prune, agent pool ticks, tool
+ * dispatch/result, reranker passes and retrieval scoring.
+ *
+ * Every variant declared here has an emit site — `test/trace-vocabulary.test.ts`
+ * holds the file to that.
  *
  * Written to a {@link TraceWriter} throughout the runtime. Consumers
  * (e.g. {@link JsonlTraceWriter}) serialize events to JSONL for
@@ -41,16 +55,25 @@ export type TraceEvent =
   // ── Prompt events ───────────────────────────
   | TraceEventBase & {
       type: 'prompt:format';
-      /** The spawned agent this prompt seeds (role 'agentSuffix' writes) —
-       *  the tee's attribution key; absent on spine/generate writes. */
-      agentId?: number;
       promptText: string;
       taskContent?: string;
-      tokenCount: number;
+      /** What the prompt tokenizes to, when that is knowable BEFORE the
+       *  prefill it seeds. Absent on the embedding rail: mtmd owns
+       *  tokenization there, and this event is written write-ahead so a
+       *  failed prefill still leaves something to replay from. The cost that
+       *  actually prefilled is `branch:prefill.cells`, which is written
+       *  only after the KV moved. */
+      tokenCount?: number;
+      /** Roots for the images this seed's markers stand for, in marker
+       *  order — written WRITE-AHEAD like the event itself, which is the
+       *  point: the barrier commits content before any prefill, so a
+       *  prefill that then fails still leaves a seed replay can rebuild
+       *  from. The success-only copy rides `branch:prefill.attachments`. */
+      attachments?: readonly Attachment[];
       messages: string;
       tools?: string;
       grammar?: string;
-      role: 'spine' | 'agentSuffix' | 'generate' | 'diverge' | 'toolResultDelta';
+      role: 'spine' | 'agentSuffix';
     }
 
   // ── Branch events ───────────────────────────
@@ -59,38 +82,62 @@ export type TraceEvent =
       branchHandle: number;
       parentHandle: number | null;
       position: number;
-      role: 'root' | 'spine' | 'agentFork' | 'divergeAttempt';
+      role: 'root' | 'spine' | 'agentFork';
     }
   | TraceEventBase & {
       type: 'branch:prefill';
       branchHandle: number;
-      tokenCount: number;
-      role: 'spineHeader' | 'agentSuffix' | 'toolResult' | 'warmDelta' | 'probe' | 'recovery';
+      /** KV CELLS this prefill added — not tokens.
+       *
+       *  The two are equal on the token rail and are NOT equal on the
+       *  embedding rail: M-RoPE decouples cells from positions, so one image
+       *  costs hundreds of cells while advancing position far less. `cells` is
+       *  the general unit (a token occupies one cell), which is why it names
+       *  the field for every role rather than only the media ones. Compare it
+       *  against `SegmentSource::cells()` and `DecodeSegmentsResult::cells`,
+       *  which share the word so the numbers can be compared. */
+      cells: number;
+      /** What was placed: a tool's result, a nudge in its place, or a recovery
+       *  prompt (the agent's `Outcome` vocabulary), or one of the pool's own
+       *  placements — the shared header, an agent's suffix, a warm delta, a
+       *  follow-up (`probe`). A nudge is announced as a nudge, never as a
+       *  `toolResult`. */
+      role: 'spineHeader' | 'agentSuffix' | 'toolResult' | 'nudge' | 'warmDelta' | 'probe' | 'recovery';
+      /** Which conversation side a `warmDelta` belongs to — carried from the
+       *  Session's own prefill call (`prefillUser` / `prefillAssistant` /
+       *  tool-result / `commitTurn`'s whole exchange), never inferred from
+       *  the text. Absent on non-warmDelta roles. */
+      speaker?: 'user' | 'assistant' | 'tool' | 'turn';
+      /** A committed exchange's halves (`speaker: 'turn'`), verbatim —
+       *  structural so no reader re-splits the joined `content`. */
+      query?: string;
+      response?: string;
       probeText?: string;
       /** Verbatim prefilled text. Populated for `warmDelta` (session-trunk
        *  conversation turns) so the spine's accreting content is visible in
-       *  the trace — parallels `generate:end.output`. Omitted for the
+       *  the trace. Omitted for the
        *  pool-side prefills (spineHeader/toolResult/recovery), whose text is
        *  already recoverable from prompt:format / tool:result / pool:recovery*. */
       content?: string;
+      /** Images that entered the cache in this prefill, in marker order.
+       *  Present only when the run has an attachment store recording them;
+       *  `digest` resolves to the bytes through it. The prefill's `role`
+       *  names which ingress they came through, which is what replay needs
+       *  to rebuild the same delta rather than a differently-shaped one.
+       *
+       *  Deliberately no per-image cell count: image cost is not additive.
+       *  A model that pairs images temporally charges the same cells for two
+       *  as for one (measured on Qwen3.5: 1 and 2 images both cost 580 cells,
+       *  3 and 4 both cost 1142), so a per-image share would be a fiction.
+       *  `cells` above is the whole prefill's real cost.
+       *
+       *  `readonly`, matching `PreparedContent.attachments` — every value that
+       *  reaches this field comes from there, and the two disagreeing was the
+       *  only reason three call sites cast. A trace event is a record; nothing
+       *  downstream has any business mutating it. */
+      attachments?: readonly Attachment[];
     }
   | TraceEventBase & { type: 'branch:prune'; branchHandle: number; position: number }
-
-  // ── Generation events ───────────────────────
-  | TraceEventBase & {
-      type: 'generate:start';
-      branchHandle: number;
-      hasGrammar: boolean;
-      hasParent: boolean;
-      role: string;
-    }
-  | TraceEventBase & {
-      type: 'generate:end';
-      branchHandle: number;
-      tokenCount: number;
-      output: string;
-      parsed?: unknown;
-    }
 
   // ── Agent pool events ───────────────────────
   | TraceEventBase & {
@@ -139,33 +186,31 @@ export type TraceEvent =
         | 'pressure_softcut'
         | 'pressure_settle_reject'
         | 'settle_stall_break'
-        | 'time_exceeded'
         | 'policy_exit'
         | 'maxTurns'
         | 'tool_error'
-        | 'stop_token'
         | 'wind_down'
         | 'user_cancel'
-        | 'report_cap';
+        | 'terminal_cap';
     }
   | TraceEventBase & {
       type: 'pool:agentNudge';
       agentId: number;
-      reason: 'pressure_softcut' | 'pressure_settle_reject' | 'settle_reject' | 'time_nudge' | 'nudge';
+      reason: 'pressure_softcut' | 'pressure_settle_reject' | 'settle_reject' | 'nudge';
       message?: string;
       /** The tool call the nudge replaced (PRODUCE nudges reject a parsed
        *  call; settle_reject nudges replace an oversized result). Absent
        *  when no call was in hand. */
       tool?: string;
       args?: string;
-      /** The rejecting {@link ToolGuard.name} when a guard produced this
-       *  nudge (`url_dedup`, `query_dedup`, `auth_reject`, or a harness
-       *  guard's own name). Absent for budget/pressure nudges. */
+      /** The gate that refused the call, by its published {@link ToolGuard.name}:
+       *  the framework's `auth_reject`, or a gate the tool or the harness
+       *  declared. Absent for budget/pressure nudges. */
       guard?: string;
     }
 
   // ── Recovery diagnostics ────────────────────
-  // Emitted by recoverInline so silent failures become visible in the
+  // Emitted by the recovery path so silent failures become visible in the
   // trace. A recovery prefill is always followed by exactly one of:
   // `pool:recoveryReturn` (parsed findings captured) or
   // `pool:recoveryFailed` (produce completed but output unparseable).
@@ -184,7 +229,76 @@ export type TraceEvent =
       type: 'pool:recoveryFailed';
       agentId: number;
       reason: string;
+      /** The MODEL'S output, truncated — which is what makes this a recovery
+       *  diagnostic and not a general failure event. Two admission failures
+       *  used to be reported here with a native error string in this field,
+       *  making its own invariant false; they now have
+       *  {@link TraceEvent} `pool:settleFailed`. */
       outputExcerpt: string;
+    }
+
+  // ── Admission failure ───────────────────────
+  /** A tool result could not enter the cache, on either rail, so the agent is
+   *  DISCARDED — terminal `agent:failed`, branch pruned, never resumed.
+   *
+   *  Separate from `pool:recoveryFailed` because it is a different event about
+   *  a different thing: nothing was recovered, nothing was produced, and the
+   *  string worth recording is the failure's own, not the model's. On the
+   *  embedding rail the branch is additionally POISONED — `decode_segments` is
+   *  not atomic and partial-range KV ops are meaningless on recurrent layers —
+   *  which is why the contract is prune and replay from content, never
+   *  resume. */
+  | TraceEventBase & {
+      type: 'pool:settleFailed';
+      agentId: number;
+      /** `media_prefill_failed` (the embedding rail, branch poisoned) or
+       *  `tool_result_failed` (the result could not be processed). */
+      reason: 'media_prefill_failed' | 'tool_result_failed';
+      /** Why it failed, from the failure itself — a native decode message or a
+       *  thrown error. NOT the model's output. */
+      detail: string;
+      /** `llama_decode`'s return code when the failure carried one — the
+       *  self-healing ladder's classification (docs/self-healing.md). */
+      rc?: number;
+    }
+
+  /** An intact-branch capacity failure (rc 1: no KV slot, state restored)
+   *  was RE-QUEUED rather than failed — the item retries when a sibling
+   *  frees cells. Written instead of `branch:prefill` (nothing moved) and
+   *  instead of `pool:settleFailed` (nothing died). Escalates to the
+   *  terminal path after MAX_DEFER_ATTEMPTS. */
+  | TraceEventBase & {
+      type: 'pool:agentDefer';
+      agentId: number;
+      /** Always 1 today; carried so the record never needs re-deriving. */
+      rc: number;
+      attempt: number;
+      /** Diagnostic, not a gate: rc 1 with headroom ≈ 0 is honest fullness;
+       *  rc 1 with plenty of headroom is fragmentation wearing capacity's
+       *  clothes. */
+      pressure: {
+        remaining: number | null; cellsUsed: number;
+        nCtx: number; headroom: number | null;
+      };
+    }
+
+  /** A poisoned agent was HEALED: its branch was pruned, a replacement
+   *  forked from the spine, and its record (suffix + turns + tool results,
+   *  media included) replayed onto the fork — docs/self-healing.md. The
+   *  replacement is a NEW agent (new branch = new id); `of` is the lineage
+   *  for display. The original's `agent:failed` stands. */
+  | TraceEventBase & {
+      type: 'pool:agentHeal';
+      /** The poisoned original. */
+      of: number;
+      /** The replacement. */
+      agentId: number;
+      rc?: number;
+      attempt: number;
+      pressure: {
+        remaining: number | null; cellsUsed: number;
+        nCtx: number; headroom: number | null;
+      };
     }
 
   // ── Agent lifecycle span ─────────────────────
@@ -193,7 +307,9 @@ export type TraceEvent =
   // spawns), `agent:done` ends it at the drop or return. Recovery events
   // (`pool:recovery*`) may follow `agent:done` for the same agent — a span
   // consumer that wants the recovery tail extends to the last such event.
-  | TraceEventBase & { type: 'agent:spawn'; agentId: number; parentAgentId: number }
+  | TraceEventBase & { type: 'agent:spawn'; agentId: number; parentAgentId: number;
+      /** DAG dependency edges the spec declared (`AgentTaskSpec.after`); absent when none. */
+      after?: number[] }
   | TraceEventBase & { type: 'agent:done'; agentId: number }
 
   // ── Agent per-turn output ────────────────────
@@ -235,7 +351,10 @@ export type TraceEvent =
       agentId: number;
       tool: string;
       result: unknown;
-      prefillTokenCount: number;
+      /** KV cells the settled result cost — tokens on the token rail, cells on
+       *  the media rail (an image's cells are not tokens: M-RoPE makes the
+       *  units differ), so the one unit every prefill event already speaks. */
+      cells: number;
       durationMs: number;
     }
   // Fan-out determinism: the ORDERED tool results scatter-prefilled in one
@@ -245,8 +364,15 @@ export type TraceEvent =
   // serial path it equals dispatch order; emitted uniformly either way.
   | TraceEventBase & {
       type: 'tool:settle_order';
-      batch: Array<{ agentId: number; callId: string; tokenCount: number }>;
+      /** `cells`, not tokens — a media item's admission cost is measured, and
+       *  this is the same number SETTLE spent against headroom. `kind` is what
+       *  the entry placed: the call's result, a nudge in its place, or a
+       *  recovery prompt — the same word the agent's ledger books. */
+      batch: Array<{ agentId: number; callId: string; cells: number; kind: 'toolResult' | 'nudge' | 'recovery' }>;
     }
+  // A tool threw (the agent ends with `tool_error`), or a tool-lifecycle hook
+  // threw after the call's result was admitted (the admission stands; no
+  // follow-up; no dispatch to parent it to).
   | TraceEventBase & { type: 'tool:error'; agentId: number; tool: string; error: string }
   // Transient tool failure (ToolRetryError — e.g. provider rate-limited).
   // The agent is parked (awaiting_tool) and the call re-executes after
@@ -279,16 +405,6 @@ export type TraceEvent =
        * rare-by-design (it fires only on an ungranted protected attempt).
        */
       lineageHistory: readonly ToolHistoryEntry[];
-    }
-
-  // ── Diverge events ──────────────────────────
-  | TraceEventBase & { type: 'diverge:start'; attempts: number; prefixLength: number }
-  | TraceEventBase & {
-      type: 'diverge:end';
-      bestIdx: number;
-      ppls: number[];
-      outputs: string[];
-      totalTokens: number;
     }
 
   // ── BM25 first-stage events (corpus ability) ─────
@@ -333,11 +449,6 @@ export type TraceEvent =
       totalScored?: number;
     }
 
-  // ── Source events (rig package) ─────────────
-  | TraceEventBase & { type: 'source:bind'; sourceName: string }
-  | TraceEventBase & { type: 'source:research'; sourceName: string; questions: string[] }
-  | TraceEventBase & { type: 'source:chunks'; sourceName: string; chunkCount: number }
-
   // ── Entailment scoring events ──────────────
   | TraceEventBase & { type: 'entailment:search'; tool: string; query: string; [key: string]: unknown }
   | TraceEventBase & { type: 'entailment:search:reordered'; tool: string; after: Array<{ title: string; url: string }> }
@@ -346,7 +457,7 @@ export type TraceEvent =
   | TraceEventBase & {
       /** Exploit-mode dual scoring at a content boundary (search/fetch_page).
        *  Emitted when policy.shouldExplore() returns false and the tool
-       *  applies scoreRelevanceBatch to tighten focus. */
+       *  ranks by min(tool score, original-question score) to tighten focus. */
       type: 'entailment:content:exploit';
       tool: string;
       /** Pressure snapshot that triggered exploit mode. Only the field the

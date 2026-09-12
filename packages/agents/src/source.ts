@@ -1,5 +1,5 @@
-import type { Operation } from 'effection';
 import type { Tool } from './Tool';
+import type { Attachment } from '@lloyal-labs/media';
 
 /**
  * Entailment scorer — scores texts against an original query to
@@ -12,13 +12,17 @@ import type { Tool } from './Tool';
  *
  * | Concept            | Scope                    | Field name in code                        |
  * |--------------------|--------------------------|-------------------------------------------|
- * | **Tool query**     | Per tool call            | `localQuery` param of scoreRelevanceBatch |
+ * | **Tool query**     | Per tool call            | scored by the tool's own reranker pass |
  * | **Agent task**     | Per agent lifetime       | `reference` param of scoreSimilarityBatch |
  * | **Original query** | Per research invocation  | Captured in closure by createScorer       |
  *
  * - `scoreEntailmentBatch` scores against the **original query** (steering boundaries)
- * - `scoreRelevanceBatch` combines **tool query** + **original query** via min() (exploit mode)
+ * - exploit mode (`admitChunks`) takes `min(tool-query score, scoreEntailmentBatch)` — one extra pass, never two
  * - `scoreSimilarityBatch` scores against an arbitrary **reference** (echo detection uses agent task)
+ *
+ * **Unit.** Every score this interface returns is the reranker's LOGIT
+ * difference: unbounded, centred on zero, positive meaning "yes". Not a 0–1
+ * similarity; any threshold over these numbers is in logits.
  *
  * Conflating these produces wrong scores. When adding new scoring
  * methods or trace events, use the field names from this table.
@@ -26,16 +30,11 @@ import type { Tool } from './Tool';
  * @category Agents
  */
 export interface EntailmentScorer {
-  /** Score texts against the original query. Returns 0–1 per text. */
+  /** Score texts against the original query. One score per text, in the
+   *  scorer's unit (see the interface doc). */
   scoreEntailmentBatch(texts: string[]): Promise<number[]>;
-  /**
-   * Dual scoring: min(tool query score, original query score) per text.
-   * Used in exploit mode at content boundaries to tighten focus.
-   * @param texts - Content chunks to score
-   * @param localQuery - The tool call's query argument (NOT the agent task)
-   */
-  scoreRelevanceBatch(texts: string[], localQuery: string): Promise<number[]>;
-  /** Score texts against an arbitrary reference string. Returns 0–1 per text. */
+  /** Score texts against an arbitrary reference string (echo detection uses
+   *  the agent task). One score per text, in the scorer's unit. */
   scoreSimilarityBatch(reference: string, texts: string[]): Promise<number[]>;
   /** Threshold gate — returns true if the score is high enough to proceed. */
   shouldProceed(score: number): boolean;
@@ -44,7 +43,6 @@ export interface EntailmentScorer {
 /** No-op scorer — all scores 1.0, all proceed. Used when no reranker is available. */
 export const NULL_SCORER: EntailmentScorer = {
   scoreEntailmentBatch: async (texts) => texts.map(() => 1),
-  scoreRelevanceBatch: async (texts) => texts.map(() => 1),
   scoreSimilarityBatch: async (_ref, texts) => texts.map(() => 0),
   shouldProceed: () => true,
 };
@@ -60,24 +58,24 @@ export interface ScorerReranker {
 }
 
 /**
- * Abstract base class for data sources
+ * Abstract base class for data sources.
  *
- * A source is a named collection of data access tools with a bind
- * lifecycle and an entailment scoring factory. It does not orchestrate
- * agents — that is the harness's job via {@link spawnAgents}.
+ * A source is a named collection of data access tools plus an entailment
+ * scoring factory. Its reranker is injected at construction by the ability
+ * factory (`_reranker`); there is no bind lifecycle. It does not orchestrate
+ * agents — the harness does, through the pool.
  *
- * @typeParam TCtx - Runtime context passed to {@link bind} (e.g. reranker)
  * @typeParam TChunk - Chunk type returned by {@link getChunks} for post-use reranking
  *
  * @category Agents
  */
-export abstract class Source<TCtx = unknown, TChunk = unknown> {
+export abstract class Source<TChunk = unknown> {
   /** Human-readable source name (e.g. 'web', 'corpus') for labeling output */
   abstract readonly name: string;
   /** Data access tools provided by this source */
   abstract get tools(): Tool[];
 
-  /** Reranker instance, set during {@link bind}. Used by {@link createScorer}. */
+  /** Reranker instance, injected at construction by the ability factory. Used by {@link createScorer}. */
   protected _reranker: ScorerReranker | null = null;
   /**
    * Minimum entailment score for delegation to proceed.
@@ -110,17 +108,10 @@ export abstract class Source<TCtx = unknown, TChunk = unknown> {
     if (!reranker || !originalQuery) return NULL_SCORER;
 
     const floor = this._entailmentFloor;
-    const combine = (local: number, orig: number) => Math.min(local, orig);
 
     return {
       async scoreEntailmentBatch(texts: string[]): Promise<number[]> {
         return reranker.scoreBatch(originalQuery, texts);
-      },
-      async scoreRelevanceBatch(texts: string[], localQuery: string): Promise<number[]> {
-        // SEQUENTIAL — single llama_context, no concurrent scoreBatch calls
-        const origScores = await reranker.scoreBatch(originalQuery, texts);
-        const localScores = await reranker.scoreBatch(localQuery, texts);
-        return texts.map((_, i) => combine(localScores[i], origScores[i]));
       },
       async scoreSimilarityBatch(reference: string, texts: string[]): Promise<number[]> {
         return reranker.scoreBatch(reference, texts);
@@ -130,9 +121,6 @@ export abstract class Source<TCtx = unknown, TChunk = unknown> {
       },
     };
   }
-
-  /** Late-bind runtime deps not available at construction. Called before tools are used. */
-  *bind(_ctx: TCtx): Operation<void> {}
 
   /** Post-use chunks for reranking. Called after agents have used the tools. */
   getChunks(): TChunk[] { return []; }
@@ -151,6 +139,10 @@ export abstract class Source<TCtx = unknown, TChunk = unknown> {
    * (first-party corpora); it must not blanket-append data from untrusted
    * third-party abilities — `renderSpine` itself stays prose-free for exactly
    * this reason.
+   *
+   * `attachments` are the assets available to the run being staged — roots,
+   * as the host holds them. A source keyed on attachments builds its data
+   * from them; a source that is not ignores the argument.
    */
-  promptData(): Record<string, unknown> { return {}; }
+  promptData(_attachments: readonly Attachment[] = []): Record<string, unknown> { return {}; }
 }

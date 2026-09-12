@@ -12,7 +12,8 @@ import { describe, it, expect } from 'vitest';
 import { sleep } from 'effection';
 import type { Operation } from 'effection';
 import { Tool } from '../../../src/Tool';
-import type { JsonSchema, ToolContext } from '../../../src/types';
+import { CallingAgent } from '../../../src/context';
+import type { JsonSchema } from '../../../src/types';
 import type { AgentPolicy } from '../../../src/AgentPolicy';
 import { runPool, STOP } from '../harness';
 import { I1_nativeStoreSingleFiber, formatResult } from '../predicates';
@@ -34,10 +35,12 @@ class TrackingFanoutTool extends Tool<Record<string, unknown>> {
   maxConcurrent = 0;
   readonly agentsRun = new Set<number>();
   constructor(private readonly ms: number) { super(); }
-  *execute(_args: Record<string, unknown>, context?: ToolContext): Operation<unknown> {
+  *execute(): Operation<unknown> {
     this.concurrent++;
     this.maxConcurrent = Math.max(this.maxConcurrent, this.concurrent);
-    if (context) this.agentsRun.add(context.agentId);
+    // WHO is calling comes from the pool's per-dispatch context, not the tool port.
+    const caller = yield* CallingAgent.get();
+    if (caller) this.agentsRun.add(caller.id);
     yield* sleep(this.ms);
     this.concurrent--;
     return { results: ['ok'] };

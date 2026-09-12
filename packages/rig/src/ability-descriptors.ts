@@ -15,6 +15,7 @@ import type {
   AbilityRegistry,
   AbilityConfigStore,
   AbilityFactory,
+  AbilityManifest,
 } from '@lloyal-labs/lloyal-agents';
 
 export interface AbilityDescriptor {
@@ -24,7 +25,10 @@ export interface AbilityDescriptor {
   title: string;
   /** manifest.hints?.description ?? protocol.useWhen */
   description: string;
-  /** catalog metadata.iconUrl (apps.lloyal.ai asset) — else undefined → glyph. */
+  /** manifest.hints?.iconUrl — the mark the ability declares for itself. A
+   *  catalog entry carries its own, worker-resolved icon in its signed
+   *  metadata block; that join is not made here. Absent → the surface falls
+   *  back to a glyph. */
   iconUrl?: string;
   /** manifest.protocol.tools — the protocol's tool-name list. */
   tools: string[];
@@ -61,15 +65,8 @@ export function* buildAbilityDescriptors(
   return descriptors;
 }
 
-type ManifestLike = {
-  name: string;
-  hints?: { shortName?: string; description?: string };
-  protocol: { name: string; useWhen: string; tools: readonly string[] };
-  configSchema?: unknown;
-};
-
 function describe(
-  manifest: ManifestLike,
+  manifest: AbilityManifest,
   config: Record<string, unknown>,
   enabled: boolean,
 ): AbilityDescriptor {
@@ -77,7 +74,7 @@ function describe(
     name: manifest.name,
     title: manifest.hints?.shortName ?? manifest.protocol.name,
     description: manifest.hints?.description ?? manifest.protocol.useWhen,
-    iconUrl: undefined,
+    iconUrl: manifest.hints?.iconUrl,
     tools: [...manifest.protocol.tools],
     entitlements: [],
     configSchema: manifest.configSchema,

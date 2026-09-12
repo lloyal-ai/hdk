@@ -22,7 +22,7 @@ import { Source } from '@lloyal-labs/lloyal-agents';
 import type { Ability } from '@lloyal-labs/lloyal-agents';
 import { defineAbility } from '../src/define-ability';
 import type { AbilitySetup } from '../src/define-ability';
-import type { AbilityManifest } from '../src/ability-types';
+import type { AbilityManifest } from '@lloyal-labs/lloyal-agents';
 
 // ── Test fixtures ────────────────────────────────────────────────
 
@@ -42,7 +42,7 @@ class FakeTool extends Tool<Record<string, unknown>> {
   }
 }
 
-class FakeSource extends Source<unknown, unknown> {
+class FakeSource extends Source {
   readonly name = 'fake';
   readonly tools = [];
   *bind(_ctx: unknown): Operation<void> {}

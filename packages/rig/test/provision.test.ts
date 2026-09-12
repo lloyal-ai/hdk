@@ -22,7 +22,7 @@ const { resolveModel, createReranker, fakeReranker } = vi.hoisted(() => {
   const fakeReranker = { id: 'fake-reranker' } as unknown as Reranker;
   return {
     fakeReranker,
-    resolveModel: vi.fn(async () => '/fake/models/reranker/qwen3-reranker-0.6b-q8.gguf'),
+    resolveModel: vi.fn(async (_spec?: unknown, _opts?: unknown) => '/fake/models/reranker/qwen3-reranker-0.6b-q8.gguf'),
     createReranker: vi.fn(() =>
       (function* () {
         return fakeReranker;

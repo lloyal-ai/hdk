@@ -9,17 +9,28 @@
  * transitions, trace events, event emissions, ToolContext fields, recovery.
  */
 import { describe, it, expect } from 'vitest';
+import { MediaTool, RootTool, imageRoot, documentRoot, PNG_BYTES, MEDIA_TEST_NCTX, mediaFailures } from './helpers/media';
+import type { Attachment } from '@lloyal-labs/media';
 import { run, createChannel, createSignal, spawn, each, scoped, call } from 'effection';
 import type { Operation, Channel } from 'effection';
-import { MockSessionContext, createMockSdk } from '../../sdk/test/MockSessionContext';
+import { MockSessionContext, createMockSdk } from '../../sdk/src/testing.js';
 import type { ChatFormat, ParseChatOutputOptions, ParseChatOutputResult } from '@lloyal-labs/sdk';
 import { useAgentPool } from '../src/agent-pool';
 import { parallel } from '../src/orchestrators';
-import { Ctx, Store, Events, Trace, WindDown } from '../src/context';
-import { Tool } from '../src/Tool';
+import { agentPool } from '../src/create-agent-pool';
+import { Ctx, Store, Events, Trace, WindDown, Attachments, Ingress, CallingAgent } from '../src/context';
+import { MemoryAttachmentStore } from './helpers/memory-store';
+import { rawIngress } from './helpers/raw-ingress';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Tool, TOOL_IMAGE_ERROR_KEY } from '../src/Tool';
+import type { ToolLifecycleHooks } from '../src/Tool';
 import type { AgentPolicy } from '../src/AgentPolicy';
-import type { AgentPoolResult, AgentEvent, ToolContext } from '../src/types';
-import type { Agent } from '../src/Agent';
+import type { AgentPoolResult, AgentEvent, ToolContext, JsonSchema } from '../src/types';
+import { Agent } from '../src/Agent';
+import { createMockBranch } from './helpers/mock-branch';
+import { FMT } from './helpers/format-config';
 import { CapturingTraceWriter } from './helpers/capturing-trace';
 import { MockTool } from './helpers/mock-tool';
 
@@ -50,11 +61,19 @@ async function runPool(opts: {
   windDownOn?: (ev: AgentEvent) => boolean;
   /** Last-chance ctx mutation hook — runs after fork/sample wiring, before the pool. */
   mutateCtx?: (ctx: MockSessionContext) => void;
+  /** Install an ingress that refuses everything, to exercise the barrier. */
+  refusingIngress?: boolean;
+  /** Assets available to the run from the start — what a host stages the pool with. */
+  attachments?: readonly Attachment[];
+  /** A content store the test committed roots into beforehand. */
+  contentStore?: MemoryAttachmentStore;
 }): Promise<{
   result: AgentPoolResult;
   events: AgentEvent[];
   trace: CapturingTraceWriter;
   ctx: MockSessionContext;
+  /** How many times a tool result went through the ingress door. */
+  ingressCalls: number;
 }> {
   const { ctx, store, root } = createMockSdk({
     nCtx: opts.nCtx ?? 16384,
@@ -95,6 +114,7 @@ async function runPool(opts: {
 
   const traceWriter = new CapturingTraceWriter();
   const collectedEvents: AgentEvent[] = [];
+  let ingressCalls = 0;
 
   // Prefill root to simulate withSpine system prompt
   const rootTokens = ctx.tokenizeSync('system prompt');
@@ -106,6 +126,21 @@ async function runPool(opts: {
     const events: Channel<AgentEvent, void> = createChannel();
     yield* Events.set(events as any);
     yield* Trace.set(traceWriter);
+    // A real store: media paths now REFUSE to run without one, because
+    // unaddressed media makes a run unreplayable. Tests that exercise them
+    // must be configured the way a real harness is.
+    const contentStore = opts.contentStore ?? new MemoryAttachmentStore();
+    yield* Attachments.set(contentStore);
+    // Media now refuses to run without an ingress, because unnormalized,
+    // unaddressed bytes make a run unreplayable. Tests use a raw one — they
+    // exercise the rail, not the normalizer.
+    const raw = rawIngress(contentStore);
+    yield* Ingress.set(
+      opts.refusingIngress
+        ? { ingest: () => Promise.reject(new Error('ingress refused')) }
+        : { ingest: (bytes, signal) => { ingressCalls++; return raw.ingest(bytes, signal); } },
+    );
+
     const windDownSignal = createSignal<void, void>();
     if (opts.windDownOn) yield* WindDown.set(windDownSignal);
 
@@ -127,9 +162,10 @@ async function runPool(opts: {
         tools: opts.tools ?? new Map(),
         policy: opts.policy,
         maxTurns: opts.maxTurns ?? 100,
-        terminalToolName: opts.terminalToolName,
+        terminalToolName: opts.terminalTool,
         trace: opts.trace ?? false,
         pruneOnReturn: opts.pruneOnReturn ?? false,
+        attachments: opts.attachments,
       });
       // Drain Subscription — collect events, return close value
       let windDownFired = false;
@@ -146,21 +182,23 @@ async function runPool(opts: {
     });
   });
 
-  return { result, events: collectedEvents, trace: traceWriter, ctx };
+  return { result, events: collectedEvents, trace: traceWriter, ctx, ingressCalls };
 }
 
-/** Minimal policy stub — every method overridable */
+/** Minimal policy stub — every member overridable */
+// `onProduced` stays required — it is the reason to build a stub at all. The
+// rest are optional on the interface: a stub with no `hooks` gets the frame's
+// defaults (drop, one retry, no follow-up), exactly as a harness would.
 function stubPolicy(overrides: Partial<AgentPolicy> & {
   onProduced: AgentPolicy['onProduced'];
-  onSettleReject: AgentPolicy['onSettleReject'];
 }): AgentPolicy {
   return {
     onProduced: overrides.onProduced,
-    onSettleReject: overrides.onSettleReject,
+    hooks: overrides.hooks,
+    guardOverrides: overrides.guardOverrides,
     shouldExplore: overrides.shouldExplore,
     shouldExit: overrides.shouldExit,
     onRecovery: overrides.onRecovery,
-    onToolRetry: overrides.onToolRetry,
     pressureThresholds: overrides.pressureThresholds,
     resetTick: overrides.resetTick,
   };
@@ -192,8 +230,8 @@ describe('shouldExit execution', () => {
       forkTokenQueues: [[1, STOP]], // never reached — shouldExit fires first
       policy: stubPolicy({
         shouldExit: () => true,
-        onProduced: () => ({ type: 'idle', reason: 'pressure_critical' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -211,7 +249,7 @@ describe('shouldExit execution', () => {
       policy: stubPolicy({
         shouldExit: () => false,
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -228,8 +266,8 @@ describe('shouldExit execution', () => {
       cellsUsed: 16300, // remaining = 84 < hardLimit 128 → critical
       forkTokenQueues: [[1, STOP]],
       policy: stubPolicy({
-        onProduced: () => ({ type: 'idle', reason: 'pressure_critical' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -255,7 +293,7 @@ describe('nudge execution', () => {
         }
         return { type: 'idle', reason: 'free_text_stop' };
       },
-      onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
     });
   }
 
@@ -318,7 +356,7 @@ describe('nudge execution', () => {
           }
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -367,7 +405,7 @@ describe('settle reject execution', () => {
           if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'nudge', message: 'Too large, report now.' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'nudge', message: 'Too large, report now.' }) }],
       }),
     });
 
@@ -397,7 +435,7 @@ describe('settle reject execution', () => {
           if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'nudge', message: 'Report now.' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'nudge', message: 'Report now.' }) }],
       }),
     });
 
@@ -432,7 +470,7 @@ describe('settle reject execution', () => {
           if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -473,7 +511,7 @@ describe('dispatch context assembly', () => {
             if (parsed.toolCalls.length > 0) return { type: 'tool_call' as const, tc: parsed.toolCalls[0] };
             return { type: 'idle' as const, reason: 'free_text_stop' as const };
           },
-          onSettleReject: () => ({ type: 'idle' as const, reason: 'pressure_settle_reject' as const }),
+          hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         }),
       },
     };
@@ -525,7 +563,7 @@ describe('recovery loop', () => {
       policy: stubPolicy({
         shouldExit: () => false,
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         onRecovery: () => ({
           type: 'extract',
           prompt: { system: 'Extract findings from above.', user: 'Report.' },
@@ -548,7 +586,7 @@ describe('recovery loop', () => {
       policy: stubPolicy({
         shouldExit: () => false,
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         onRecovery: () => ({ type: 'skip' }),
       }),
     });
@@ -571,7 +609,7 @@ describe('recovery loop', () => {
           if (parsed.content) return { type: 'free_text_return', content: parsed.content };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         onRecovery: () => ({
           type: 'extract',
           prompt: { system: 'x', user: 'y' },
@@ -600,7 +638,7 @@ describe('recovery loop', () => {
           if (parsed.content) return { type: 'free_text_return', content: parsed.content };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         onRecovery: () => {
           recoveryCount++;
           if (recoveryCount <= 1) {
@@ -629,7 +667,7 @@ describe('pressure thresholds propagation', () => {
       policy: stubPolicy({
         shouldExit: () => false,
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         pressureThresholds: { softLimit: 256, hardLimit: 512 },
       }),
     });
@@ -648,7 +686,7 @@ describe('pressure thresholds propagation', () => {
       policy: stubPolicy({
         shouldExit: () => false,
         onProduced: () => ({ type: 'idle', reason: 'pressure_softcut' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -691,7 +729,7 @@ describe('multi-agent interactions', () => {
             }
             return { type: 'idle', reason: 'free_text_stop' };
           },
-          onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+          hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         });
         return p;
       })(),
@@ -723,7 +761,7 @@ describe('multi-agent interactions', () => {
           if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -755,7 +793,7 @@ describe('multi-agent interactions', () => {
           if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -775,7 +813,7 @@ describe('multi-agent interactions', () => {
           if (parsed.content) return { type: 'free_text_return', content: parsed.content };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
       pruneOnReturn: true,
     });
@@ -801,7 +839,7 @@ describe('multi-agent interactions', () => {
           return true;
         },
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         pressureThresholds: { softLimit: 64, hardLimit: 512 },
       }),
     });
@@ -836,7 +874,7 @@ describe('multi-agent interactions', () => {
           if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -867,7 +905,7 @@ describe('multi-agent interactions', () => {
           if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -885,7 +923,7 @@ describe('recovery edge cases', () => {
     // Agent spawns with room to produce, but by the time recovery runs,
     // cellsUsed has grown enough that the extraction prompt doesn't fit.
     // Use a very large recovery prompt to ensure it exceeds remaining.
-    const { result } = await runPool({
+    const { result, trace } = await runPool({
       nCtx: 16384,
       cellsUsed: 14000,  // remaining=2384, headroom=2384-128=2256 — room to spawn
       forkTokenQueues: [[STOP]],
@@ -893,7 +931,7 @@ describe('recovery edge cases', () => {
       policy: stubPolicy({
         shouldExit: () => false,
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         onRecovery: () => ({
           type: 'extract',
           // Very long prompt that won't fit in remaining KV
@@ -903,9 +941,12 @@ describe('recovery edge cases', () => {
       }),
     });
 
-    // Agent spawned but recovery skipped — no result
+    // Agent spawned but recovery skipped — no result, and the oversized
+    // prompt was never handed to the store: no recovery prefill exists.
     expect(result.agents.length).toBeGreaterThanOrEqual(1);
     expect(result.agents[0].result).toBeNull();
+    expect(trace.ofType('branch:prefill').filter(e => e.role === 'recovery')).toHaveLength(0);
+    expect(trace.ofType('pool:recoveryFailed').map(e => e.reason)).toEqual(['recovery_skipped']);
   });
 
   it('T10: recovery with empty prompt completes without crash', async () => {
@@ -915,7 +956,7 @@ describe('recovery edge cases', () => {
       policy: stubPolicy({
         shouldExit: () => false,
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         onRecovery: () => ({
           type: 'extract',
           prompt: { system: '', user: '' },
@@ -927,37 +968,43 @@ describe('recovery edge cases', () => {
   });
 });
 
-// ── Group 7: Tool probe lifecycle hook ──────────────────────────
+// ── Group 7: the follow-up (`hooks.afterAdmit`) ──────────────────
+// A tool's `afterAdmit` may answer an admitted item — its result, or a nudge
+// in its place — with a follow-up the agent reads next. On the wire the
+// placement is `branch:prefill role: 'probe'`.
 
-describe('tool probe lifecycle hook', () => {
-  /** Tool with a probe — returns "Wait, " after result settles */
+describe('tool follow-up (hooks.afterAdmit)', () => {
+  /** A tool that follows every admitted item with "Wait, ". */
   class ProbeTool extends Tool<{ query: string }> {
     readonly name = 'web_search';
-    readonly description = 'search with probe';
+    readonly description = 'search with follow-up';
     readonly parameters = { type: 'object' as const, properties: { query: { type: 'string' as const } } };
-    probe() { return 'Wait, '; }
+    readonly hooks: ToolLifecycleHooks = { afterAdmit: () => ({ type: 'followUp', message: 'Wait, ' }) };
     *execute(): Operation<unknown> { return { results: ['result'] }; }
   }
 
-  /** Tool without a probe — default null */
+  /** A tool that declares nothing — no follow-up. */
   class NoProbeTool extends Tool<{ query: string }> {
     readonly name = 'web_search';
-    readonly description = 'search without probe';
+    readonly description = 'search without follow-up';
     readonly parameters = { type: 'object' as const, properties: { query: { type: 'string' as const } } };
     *execute(): Operation<unknown> { return { results: ['result'] }; }
   }
 
-  /** Tool with conditional probe — only fires on nudge errors */
+  /** The follow-up a report nudge earns. */
+  const REPORT_NOW = 'Wait, the result says I need to call report now with my findings.';
+  const isReportNudge = (result: unknown): boolean => {
+    const err = result && typeof result === 'object' && (result as Record<string, unknown>).error;
+    return typeof err === 'string' && err.toLowerCase().includes('report your findings now');
+  };
+  /** A tool whose follow-up answers only a nudge that tells the agent to report. */
   class ConditionalProbeTool extends Tool<{ query: string }> {
     readonly name = 'web_search';
-    readonly description = 'search with conditional probe';
+    readonly description = 'search with conditional follow-up';
     readonly parameters = { type: 'object' as const, properties: { query: { type: 'string' as const } } };
-    probe(result: unknown) {
-      const err = result && typeof result === 'object' && (result as Record<string, unknown>).error;
-      if (typeof err === 'string' && err.toLowerCase().includes('report your findings now'))
-        return 'Wait, the result says I need to call report now with my findings.';
-      return null;
-    }
+    readonly hooks: ToolLifecycleHooks = {
+      afterAdmit: ({ result }) => (isReportNudge(result) ? { type: 'followUp', message: REPORT_NOW } : undefined),
+    };
     *execute(): Operation<unknown> { return { results: ['result'] }; }
   }
 
@@ -968,7 +1015,7 @@ describe('tool probe lifecycle hook', () => {
         if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
         return { type: 'idle', reason: 'free_text_stop' };
       },
-      onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+      hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
     });
   }
 
@@ -1108,9 +1155,9 @@ describe('tool probe lifecycle hook', () => {
     expect(prefillCallCount).toBe(2);
   });
 
-  it('7c: default Tool.probe returns null', () => {
+  it('7c: a tool that declares no hooks has none — the frame default is no follow-up', () => {
     const tool = new NoProbeTool();
-    expect(tool.probe({})).toBeNull();
+    expect(tool.hooks).toBeUndefined();
   });
 
   it('7d: probe fires on nudge when tool returns probe for error result', async () => {
@@ -1136,33 +1183,29 @@ describe('tool probe lifecycle hook', () => {
             }
             return { type: 'idle', reason: 'free_text_stop' };
           },
-          onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+          hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         });
       })(),
     });
 
-    // Agent was nudged — probe should fire because tool.probe() receives nudge error
+    // The nudge was booked, so the tool's afterAdmit saw its `{ error }` and followed up.
     expect(result.agents[0]).toBeDefined();
   });
 
-  it('7e: conditional probe fires only on nudge error, not on normal results', () => {
+  it('7e: a conditional follow-up abstains on a normal result and answers a report nudge', () => {
     const tool = new ConditionalProbeTool();
+    const agent = new Agent({ id: 1, parentId: 0, branch: createMockBranch() as never, fmt: FMT });
+    const ask = (result: unknown) => tool.hooks!.afterAdmit!({ agent, tool: 'web_search', args: {}, outcome: 'toolResult', result });
+    const followUp = { type: 'followUp', message: REPORT_NOW };
 
-    // Normal result — no probe
-    expect(tool.probe({ results: ['data'] })).toBeNull();
+    // A normal result, a generic error: the hook abstains.
+    expect(ask({ results: ['data'] })).toBeUndefined();
+    expect(ask({ error: 'Network timeout' })).toBeUndefined();
 
-    // Generic error — no probe
-    expect(tool.probe({ error: 'Network timeout' })).toBeNull();
-
-    // Nudge error — probe fires
-    expect(tool.probe({ error: 'KV memory pressure — report your findings now.' }))
-      .toBe('Wait, the result says I need to call report now with my findings.');
-
-    // Other nudge variants — probe fires
-    expect(tool.probe({ error: 'Turn limit reached — report your findings now.' }))
-      .toBe('Wait, the result says I need to call report now with my findings.');
-    expect(tool.probe({ error: 'Time limit reached — report your findings now.' }))
-      .toBe('Wait, the result says I need to call report now with my findings.');
+    // A nudge that tells the agent to report: the follow-up, whatever the reason given.
+    expect(ask({ error: 'KV memory pressure — report your findings now.' })).toEqual(followUp);
+    expect(ask({ error: 'Turn limit reached — report your findings now.' })).toEqual(followUp);
+    expect(ask({ error: 'Time limit reached — report your findings now.' })).toEqual(followUp);
   });
 
   it('7f: conditional probe integrates with pool nudge path without error', async () => {
@@ -1187,7 +1230,7 @@ describe('tool probe lifecycle hook', () => {
             }
             return { type: 'idle', reason: 'free_text_stop' };
           },
-          onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+          hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         });
       })(),
     });
@@ -1280,7 +1323,7 @@ describe('tool probe lifecycle hook', () => {
                 }
                 return { type: 'tool_call', tc: parsed.toolCalls[0] };
               },
-              onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+              hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
             });
           })(),
           maxTurns: 10,
@@ -1291,11 +1334,9 @@ describe('tool probe lifecycle hook', () => {
       });
     });
 
-    // The probe text should have been prefilled somewhere in allPrefills.
-    // ConditionalProbeTool.probe() returns "Wait, the result says I need to
-    // call report now with my findings." for nudge errors.
-    // Tokenize it to know what to look for.
-    const probeTokens = ctx.tokenizeSync('Wait, the result says I need to call report now with my findings.');
+    // The follow-up should have been prefilled somewhere in allPrefills:
+    // ConditionalProbeTool answers a report nudge with REPORT_NOW.
+    const probeTokens = ctx.tokenizeSync(REPORT_NOW);
 
     // At least one prefill should contain the probe tokens
     const probeWasPrefilled = allPrefills.some(arr =>
@@ -1336,7 +1377,7 @@ describe('SPLIT-SEMANTICS GATE: voluntary vs recovery emission', () => {
           if (parsed.content) return { type: 'free_text_return', content: parsed.content };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -1350,7 +1391,7 @@ describe('SPLIT-SEMANTICS GATE: voluntary vs recovery emission', () => {
     expect(recovered.length).toBe(0);
   });
 
-  it('recovery extraction (recoverInline path) emits agent:recovered only', async () => {
+  it('recovery extraction (serial recovery path) emits agent:recovered only', async () => {
     // To trigger recovery's successful-extraction path we need:
     //   - agent stops without producing a voluntary result (initial STOP)
     //   - recovery's grammar-constrained generation produces tokens whose
@@ -1380,7 +1421,7 @@ describe('SPLIT-SEMANTICS GATE: voluntary vs recovery emission', () => {
     // Token sequence for the single agent's branch:
     //   [STOP, 100, STOP]
     //   - first STOP: agent's PRODUCE phase hits stop; the main turn's parse goes
-    //     through onProduced → idle (free_text_stop) → agent killed → recoverInline
+    //     through onProduced → idle (free_text_stop) → its serial recovery, decided at the drop
     //   - 100, STOP: recovery's produce/commit loop generates token 100, then STOP →
     //     finishRecovery parses the recovery output via parseChatOutput, which (below)
     //     returns the terminal `report` call → agent.setResult → agent:recovered
@@ -1419,7 +1460,7 @@ describe('SPLIT-SEMANTICS GATE: voluntary vs recovery emission', () => {
           policy: stubPolicy({
             shouldExit: () => false,
             onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-            onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+            hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
             onRecovery: () => ({
               type: 'extract',
               prompt: { system: 'Extract findings.', user: 'Report.' },
@@ -1468,7 +1509,7 @@ describe('no-tool agent seams', () => {
       if (parsed.content) return { type: 'free_text_return', content: parsed.content };
       return { type: 'idle', reason: 'free_text_stop' };
     },
-    onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+    hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
   });
 
   it('7a: dangling <tool_call> fragment stripped from free-text result capture', async () => {
@@ -1544,7 +1585,7 @@ describe('no-tool agent seams', () => {
         ...orig(msgs, fmtOpts),
         grammar: 'root ::= toolcall',
         grammarLazy: true,
-        grammarTriggers: [{ type: 1, value: '<tool_call>' }],
+        grammarTriggers: [{ type: 1, value: '<tool_call>', token: -1 }],
       });
     };
 
@@ -1579,11 +1620,373 @@ describe('no-tool agent seams', () => {
   });
 });
 
+describe('follow-up prefill — buffered emission still writes on success', () => {
+  // The follow-up's `branch:prefill` (role `probe`) is success-only: buffered
+  // through the batched dispatch and written after it lands. This pins the
+  // success half — the event survives the buffering with its cells and text.
+  // (The failure half is structural: the writes are lexically after the
+  // `yield* call(...)`, so a rejected dispatch cannot reach them.)
+  class ProbingTool extends SpyTool {
+    readonly hooks: ToolLifecycleHooks = { afterAdmit: () => ({ type: 'followUp', message: 'probe reflection' }) };
+  }
+
+  const probePolicy = () => stubPolicy({
+    shouldExit: () => false,
+    onProduced: (_a, parsed) => {
+      if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
+      if (parsed.content) return { type: 'free_text_return', content: parsed.content };
+      return { type: 'idle', reason: 'free_text_stop' };
+    },
+  });
+
+  it('emits branch:prefill role=probe after the dispatch, with the probe text', async () => {
+    const tools = new Map<string, Tool>();
+    tools.set('web_search', new ProbingTool());
+
+    const { trace } = await runPool({
+      forkTokenQueues: [[1, STOP]],
+      // Keyed off the RAW text, not a call counter: the pool parses partials
+      // during produce, so counting calls hands the tool call to a partial
+      // parse and the final parse ends the turn without it. Turn 1 produced
+      // token 1 ('t1'); turn 2 produced nothing.
+      parseChatOutputFn: (raw) =>
+        raw.includes('t1')
+          ? { content: '', reasoningContent: '', toolCalls: [{ name: 'web_search', arguments: '{}', id: 'c1' }] }
+          : { content: 'done', reasoningContent: '', toolCalls: [] },
+      policy: probePolicy(),
+      tools,
+      trace: true,
+    });
+
+    const probes = trace.events.filter(
+      (e) => e.type === 'branch:prefill' && e.role === 'probe',
+    );
+    expect(probes).toHaveLength(1);
+    expect((probes[0] as { probeText?: string }).probeText).toBe('probe reflection');
+    expect((probes[0] as { cells: number }).cells).toBeGreaterThan(0);
+  });
+});
+
+// ── Self-healing ladder: the rc classifies the settle outcome ──
+// docs/self-healing.md. llama_decode's contract: rc 1 and -1 restore state
+// (the branch is INTACT); only 2 / < -1 leave partial ubatches (poisoned).
+// The ladder answers each class with the cheapest response that preserves
+// the run: defer / drop-item / terminal.
+describe('self-healing ladder', () => {
+  const ladderPolicy = () => stubPolicy({
+    shouldExit: () => false,
+    onProduced: (_a, parsed) => {
+      if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
+      if (parsed.content) return { type: 'free_text_return', content: parsed.content };
+      return { type: 'idle', reason: 'free_text_stop' };
+    },
+  });
+  /** Turn 1 (raw contains 't1') calls the tool; later turns finish. Keyed
+   *  off raw because the pool parses partials — a call counter misfires. */
+  const callTool = (name: string) => ({
+    parseChatOutputFn: (raw: string) =>
+      raw.includes('t1')
+        ? { content: '', reasoningContent: '', toolCalls: [{ name, arguments: '{}', id: 'c1' }] }
+        : { content: 'done', reasoningContent: '', toolCalls: [] },
+    policy: ladderPolicy(),
+  });
+  const rcError = (msg: string, rc: number): Error => Object.assign(new Error(msg), { rc });
+  const ladderFailures = (events: AgentEvent[]) =>
+    events.filter(e => e.type === 'agent:failed' &&
+      ((e as { reason?: string }).reason === 'tool_result_failed' ||
+       (e as { reason?: string }).reason === 'media_prefill_failed'));
+
+  it('token rail rc 1: defers intact and lands on retry — this used to kill the pool', async () => {
+    // Armed by the tool's own execution: the first _storePrefill AFTER the
+    // tool ran is the settle dispatch (call-counting would hit the harness's
+    // root prefill and the spawn suffix instead).
+    const spy = new SpyTool();
+    const tools = new Map<string, Tool>([['web_search', spy]]);
+    const { events, trace } = await runPool({
+      forkTokenQueues: [[1, STOP, STOP]],
+      ...callTool('web_search'),
+      tools, trace: true,
+      mutateCtx: (ctx) => {
+        let thrown = 0;
+        const orig = ctx._storePrefill.bind(ctx);
+        ctx._storePrefill = async (h, t) => {
+          if (spy.capturedContexts.length > 0 && thrown === 0) {
+            thrown++;
+            throw rcError('find_slot: no KV slot for the batch', 1);
+          }
+          return orig(h, t);
+        };
+      },
+    });
+    const defers = trace.events.filter(e => e.type === 'pool:agentDefer');
+    expect(defers).toHaveLength(1);
+    expect((defers[0] as { rc: number }).rc).toBe(1);
+    expect((defers[0] as { attempt: number }).attempt).toBe(1);
+    expect(ladderFailures(events)).toHaveLength(0);
+    // The retried settle actually prefilled — success-only, so its event exists.
+    expect(trace.events.some(e => e.type === 'branch:prefill'
+      && (e as { role?: string }).role === 'toolResult')).toBe(true);
+  });
+
+  it('deferral exhausts into a PER-AGENT terminal, never pool death', async () => {
+    const spy = new SpyTool();
+    const tools = new Map<string, Tool>([['web_search', spy]]);
+    const { events, trace } = await runPool({
+      forkTokenQueues: [[1, STOP, STOP]],
+      ...callTool('web_search'),
+      tools, trace: true,
+      mutateCtx: (ctx) => {
+        const orig = ctx._storePrefill.bind(ctx);
+        ctx._storePrefill = async (h, t) => {
+          // Every settle dispatch after the tool ran hits capacity, forever.
+          if (spy.capturedContexts.length > 0) {
+            throw rcError('find_slot: no KV slot for the batch', 1);
+          }
+          return orig(h, t);
+        };
+      },
+    });
+    // MAX_DEFER_ATTEMPTS defers, then the escalation — and the run RETURNED,
+    // which is the property: a capacity storm costs one agent, not the pool.
+    const defers = trace.events.filter(e => e.type === 'pool:agentDefer');
+    expect(defers).toHaveLength(3);
+    const failures = ladderFailures(events);
+    expect(failures).toHaveLength(1);
+    expect((failures[0] as { reason: string }).reason).toBe('tool_result_failed');
+    const settleFailed = trace.events.find(e => e.type === 'pool:settleFailed');
+    expect((settleFailed as { rc?: number }).rc).toBe(1);
+  });
+
+  it('token rail rc 1 + partial: an earlier chunk was prefilled, so nothing is re-queued', async () => {
+    // The kernel's rule (liblloyal DecodeError): intact ⇔ rc == 1 && !partial.
+    // With `partial` set, some branches in the cohort advanced and the error
+    // does not say which; re-queuing the cohort whole would decode the prefilled
+    // ones twice onto advanced positions. The cohort fails and heals instead.
+    const spy = new SpyTool();
+    const tools = new Map<string, Tool>([['web_search', spy]]);
+    const { events, trace } = await runPool({
+      forkTokenQueues: [[1, STOP, STOP]],
+      ...callTool('web_search'),
+      tools, trace: true,
+      mutateCtx: (ctx) => {
+        let thrown = 0;
+        const orig = ctx._storePrefill.bind(ctx);
+        ctx._storePrefill = async (h, t) => {
+          if (spy.capturedContexts.length > 0 && thrown === 0) {
+            thrown++;
+            throw Object.assign(rcError('find_slot: no KV slot for the batch', 1), { partial: true });
+          }
+          return orig(h, t);
+        };
+      },
+    });
+    expect(trace.events.filter(e => e.type === 'pool:agentDefer')).toHaveLength(0);
+    const failures = ladderFailures(events);
+    expect(failures).toHaveLength(1);
+    expect((failures[0] as { reason: string }).reason).toBe('tool_result_failed');
+    const settleFailed = trace.events.find(e => e.type === 'pool:settleFailed');
+    expect((settleFailed as { rc?: number }).rc).toBe(1);
+  });
+
+  it('media rc 1 + partial: an earlier chunk was prefilled — not intact, so no deferral', async () => {
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { events, trace } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      forkTokenQueues: [[1, STOP, STOP]],
+      ...callTool('rasterize'),
+      tools: toolMap, trace: true,
+      mutateCtx: (c) => {
+        let seen = 0;
+        c.mockMultimodalError = () =>
+          (seen++ === 0 ? { message: 'no KV slot', rc: 1, partial: true } : null);
+      },
+    });
+    expect(trace.events.filter(e => e.type === 'pool:agentDefer')).toHaveLength(0);
+    expect(mediaFailures(events)).toHaveLength(1);
+    const settleFailed = trace.events.find(e => e.type === 'pool:settleFailed');
+    expect((settleFailed as { rc?: number }).rc).toBe(1);
+  });
+
+  it('invalid media keeps the tool text beside the error key — "work from the text" has text', async () => {
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const toolTurns: string[] = [];
+    await runPool({
+      nCtx: MEDIA_TEST_NCTX, forkTokenQueues: [[1, STOP, STOP]],
+      ...callTool('rasterize'), tools: toolMap,
+      mutateCtx: (c) => {
+        c.mockMultimodalError = () => ({ message: 'invalid input', rc: -1, partial: false });
+        const target = c as unknown as { formatChatSync: (m: string, o?: unknown) => unknown };
+        const orig = target.formatChatSync.bind(c);
+        target.formatChatSync = (messages: string, o?: unknown) => {
+          for (const m of JSON.parse(messages) as Array<{ role: string; content: string }>) {
+            if (m.role === 'tool') toolTurns.push(m.content);
+          }
+          return orig(messages, o);
+        };
+      },
+    });
+    const note = toolTurns.find(t => t.includes(TOOL_IMAGE_ERROR_KEY));
+    expect(note).toBeDefined();
+    const parsed = JSON.parse(note!) as Record<string, unknown>;
+    expect(parsed.page).toBe('p1');                        // the tool's text survived
+    expect(typeof parsed[TOOL_IMAGE_ERROR_KEY]).toBe('string');
+  });
+
+  it('the tool:result trace records media cost as CELLS, never under a token name', async () => {
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { trace } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      forkTokenQueues: [[1, STOP, STOP]],
+      ...callTool('rasterize'),
+      tools: toolMap, trace: true,
+    });
+    const ev = trace.events.find(e => e.type === 'tool:result') as Record<string, unknown> | undefined;
+    expect(ev).toBeDefined();
+    // Image cells are not tokens (M-RoPE makes the units differ); one unit, one name.
+    expect(typeof ev!.cells).toBe('number');
+    expect('prefillTokenCount' in ev!).toBe(false);
+  });
+
+  it('media rc -1: the item is dropped, the note lands, the agent continues', async () => {
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { events, trace } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      forkTokenQueues: [[1, STOP, STOP]],
+      ...callTool('rasterize'),
+      tools: toolMap, trace: true,
+      mutateCtx: (c) => {
+        c.mockMultimodalError = () => ({ message: 'invalid bitmap geometry', rc: -1 });
+      },
+    });
+    // State was restored: nothing died, nothing was pruned for this.
+    expect(ladderFailures(events)).toHaveLength(0);
+    expect(trace.events.some(e => e.type === 'pool:settleFailed')).toBe(false);
+    // The substitute note prefilled as tokens — a prefilled toolResult event.
+    expect(trace.events.some(e => e.type === 'branch:prefill'
+      && (e as { role?: string }).role === 'toolResult'
+      && (e as { cells: number }).cells > 0)).toBe(true);
+    expect(events.some(e => e.type === 'agent:done')).toBe(true);
+  });
+
+  it('media rc 1: the cohort entry defers and settles on a later tick', async () => {
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { events, trace } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      forkTokenQueues: [[1, STOP, STOP]],
+      ...callTool('rasterize'),
+      tools: toolMap, trace: true,
+      mutateCtx: (c) => {
+        let seen = 0;
+        c.mockMultimodalError = () => (seen++ === 0 ? { message: 'no KV slot', rc: 1 } : null);
+      },
+    });
+    const defers = trace.events.filter(e => e.type === 'pool:agentDefer');
+    expect(defers).toHaveLength(1);
+    expect(ladderFailures(events)).toHaveLength(0);
+    expect(trace.events.some(e => e.type === 'branch:prefill'
+      && (e as { role?: string }).role === 'toolResult')).toBe(true);
+  });
+
+  it('media fatal rc: today\'s poison path, with the rc on the record', async () => {
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { events, trace } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      forkTokenQueues: [[1, STOP, STOP]],
+      ...callTool('rasterize'),
+      tools: toolMap, trace: true,
+      mutateCtx: (c) => {
+        let seen = 0;
+        c.mockMultimodalError = () => (seen++ === 0 ? { message: 'compute failed', rc: -3 } : null);
+      },
+    });
+    expect(mediaFailures(events)).toHaveLength(1);
+    const settleFailed = trace.events.find(e => e.type === 'pool:settleFailed');
+    expect((settleFailed as { rc?: number }).rc).toBe(-3);
+  });
+
+  it('the tripwire: consecutive fatals mark the backend suspect', async () => {
+    // Three agents, three fatal decodes in one cohort — a workload does not
+    // do that, a dead backend does. The third failure names it.
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { events, trace } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      taskCount: 3,
+      forkTokenQueues: [[1, STOP, STOP], [1, STOP, STOP], [1, STOP, STOP]],
+      ...callTool('rasterize'),
+      tools: toolMap, trace: true,
+      mutateCtx: (c) => {
+        c.mockMultimodalError = () => ({ message: 'command buffer failed', rc: -3 });
+      },
+    });
+    expect(mediaFailures(events)).toHaveLength(3);
+    const details = trace.events
+      .filter(e => e.type === 'pool:settleFailed')
+      .map(e => (e as { detail: string }).detail);
+    expect(details.some(d => d.includes('backend suspect'))).toBe(true);
+  });
+
+  it('heal: a poisoned agent is warm-respawned from its record', async () => {
+    // Fatal rc poisons the original; the ladder queues a heal. The
+    // replacement forks the spine, replays the record (the original's
+    // turn-1 text), and runs to its own terminal — the original's
+    // agent:failed stands, the lineage rides pool:agentHeal.
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { events, trace } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      forkTokenQueues: [[1, STOP, STOP], [STOP]],
+      ...callTool('rasterize'),
+      tools: toolMap, trace: true,
+      mutateCtx: (c) => {
+        let seen = 0;
+        c.mockMultimodalError = () =>
+          (seen++ === 0 ? { message: 'compute failed', rc: -3 } : null);
+      },
+    });
+    expect(mediaFailures(events)).toHaveLength(1);
+    const heals = trace.events.filter(e => e.type === 'pool:agentHeal');
+    expect(heals).toHaveLength(1);
+    const heal = heals[0] as { of: number; agentId: number; rc?: number; attempt: number };
+    expect(heal.rc).toBe(-3);
+    expect(heal.attempt).toBe(1);
+    expect(heal.agentId).not.toBe(heal.of);
+    // The replacement is a real agent: it spawned and reached a terminal.
+    const spawns = events.filter(e => e.type === 'agent:spawn');
+    expect(spawns).toHaveLength(2);
+    expect(events.some(e => e.type === 'agent:done'
+      && (e as { agentId: number }).agentId === heal.agentId)).toBe(true);
+    // The record replayed: the replacement's fork got prefills beyond its
+    // suffix (the assistant turn), visible as its agentSuffix prompt:format
+    // carrying the SAME task as the original's.
+    const suffixes = trace.events.filter(e => e.type === 'prompt:format'
+      && (e as { role?: string }).role === 'agentSuffix');
+    expect(suffixes).toHaveLength(2);
+  });
+
+  it('heal budget: a replacement that poisons again goes terminal, no third agent', async () => {
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { events, trace } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      forkTokenQueues: [[1, STOP, STOP], [1, STOP, STOP]],
+      ...callTool('rasterize'),
+      tools: toolMap, trace: true,
+      mutateCtx: (c) => {
+        c.mockMultimodalError = () => ({ message: 'compute failed', rc: -3 });
+      },
+    });
+    // Two poisons (original + replacement), ONE heal — the second failure on
+    // replayed state is evidence, not bad luck.
+    expect(mediaFailures(events)).toHaveLength(2);
+    expect(trace.events.filter(e => e.type === 'pool:agentHeal')).toHaveLength(1);
+    expect(events.filter(e => e.type === 'agent:spawn')).toHaveLength(2);
+  });
+});
+
 // ── Group 8: transient tool failure — park + retry (ToolRetryError) ──
 // A tool throwing ToolRetryError parks its agent (awaiting_tool, skipped by
 // PRODUCE — no turns/tokens/KV) and re-executes after the delay. Strategy
-// (retry count, delay override, fail message) is the policy's via
-// onToolRetry; the pool is pure mechanism. Observability: agent:tool_retry
+// (retry count, delay override, fail message) is an `afterExecute`
+// contributor's — the tool's, the policy's, else the frame's default of one
+// retry; the pool is pure mechanism. Observability: agent:tool_retry
 // event + tool:retry trace, so a waiting agent never reads as hung.
 
 import { ToolRetryError } from '../src/Tool';
@@ -1608,7 +2011,7 @@ describe('transient tool failure (park + retry)', () => {
       if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
       return { type: 'idle', reason: 'free_text_stop' };
     },
-    onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+    hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
     ...overrides,
   });
   const callOnFirstTurn = (raw: string) => raw.includes('t1')
@@ -1670,7 +2073,8 @@ describe('transient tool failure (park + retry)', () => {
       forkTokenQueues: [[1, STOP]],
       parseChatOutputFn: callOnFirstTurn,
       policy: toolCallPolicy({
-        onToolRetry: () => ({ type: 'fail', message: 'no time to wait — pivot now' }),
+        hooks: [{ afterExecute: ({ completion }) =>
+          completion.kind === 'threw' ? { type: 'fail', message: 'no time to wait — pivot now' } : undefined }],
       }),
       tools,
     });
@@ -1688,8 +2092,8 @@ describe('transient tool failure (park + retry)', () => {
       forkTokenQueues: [[1, STOP]],
       parseChatOutputFn: callOnFirstTurn,
       policy: toolCallPolicy({
-        onToolRetry: (_a, _t, _e, attempt) =>
-          attempt <= 1 ? { type: 'retry', afterMs: 20 } : { type: 'fail' },
+        hooks: [{ afterExecute: ({ attempt, completion }) =>
+          completion.kind !== 'threw' ? undefined : attempt <= 1 ? { type: 'retry', afterMs: 20 } : { type: 'fail' } }],
       }),
       tools,
     });
@@ -1745,7 +2149,7 @@ describe('trace fidelity: pool:tick, agent span, harvested ppl', () => {
       policy: stubPolicy({
         shouldExit: () => false,
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -1769,7 +2173,7 @@ describe('trace fidelity: pool:tick, agent span, harvested ppl', () => {
           if (parsed.content) return { type: 'free_text_return', content: parsed.content };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -1791,7 +2195,7 @@ describe('trace fidelity: pool:tick, agent span, harvested ppl', () => {
       policy: stubPolicy({
         shouldExit: () => true,
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -1824,7 +2228,7 @@ describe('trace fidelity: pool:tick, agent span, harvested ppl', () => {
           if (parsed.toolCalls.length > 0) return { type: 'return', result: 'done' };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -1861,7 +2265,7 @@ describe('branch:prune traced at every in-run free (#104)', () => {
           if (parsed.toolCalls.length > 0) return { type: 'return', result: 'done' };
           return { type: 'idle', reason: 'free_text_stop' };
         },
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -1884,7 +2288,7 @@ describe('branch:prune traced at every in-run free (#104)', () => {
       policy: stubPolicy({
         shouldExit: () => true,
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -1908,7 +2312,7 @@ describe('unlimited-context pressure serialization', () => {
       policy: stubPolicy({
         shouldExit: () => false,
         onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-        onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
       }),
     });
 
@@ -1920,5 +2324,490 @@ describe('unlimited-context pressure serialization', () => {
     expect(ticks[0].pressure.remaining).toBeNull();
     expect(ticks[0].pressure.headroom).toBeNull();
     expect(ticks[0].pressure.nCtx).toBe(0); // finite fields stay numbers
+  });
+});
+
+// ── The tool-result media ingress (PR-2) ────────────────────────────
+//
+// A tool that returns image bytes is the third way media enters KV. The
+// failure this guards is not an exception: `JSON.stringify` turns a 180 KB
+// image into ~700k characters of digits, which prefills "successfully" and
+// destroys the agent's context. Everything below asserts the bytes took the
+// embedding rail instead, and that one bad image costs only its own agent.
+
+
+/** Every agent calls the media tool once, then stops. */
+const oneToolCall = (toolName: string) => ({
+  parseChatOutputFn: (raw: string) => {
+    if (!raw || raw === '') return { content: '', reasoningContent: '', toolCalls: [] };
+    return {
+      content: '', reasoningContent: '',
+      toolCalls: [{ name: toolName, arguments: '{"q":"x"}', id: 'c1' }],
+    };
+  },
+  policy: stubPolicy({
+    shouldExit: () => false,
+    onProduced: (_a: Agent, parsed: ParseChatOutputResult) =>
+      parsed.toolCalls.length > 0
+        ? { type: 'tool_call' as const, tc: parsed.toolCalls[0] }
+        : { type: 'idle' as const, reason: 'free_text_stop' },
+  }),
+});
+
+describe('tool results carrying images', () => {
+  it('sends the bytes down the embedding rail, never through JSON', async () => {
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { ctx, events } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      forkTokenQueues: [[1, STOP, STOP]],
+      tools: toolMap,
+      ...oneToolCall('rasterize'),
+    });
+
+    // The rail: one multimodal prefill carrying one image.
+    expect(ctx.multimodalPrefills).toHaveLength(1);
+    expect(ctx.multimodalPrefills[0].bitmapCounts).toEqual([1]);
+
+    // And the bytes are NOT in the text the model was handed. `137,80,78,71`
+    // is what this PNG's header serializes to as JSON digits — the exact
+    // corruption this ingress exists to prevent.
+    const shown = events.filter(e => e.type === 'agent:tool_result')
+      .map(e => (e as { result: string }).result).join('');
+    expect(shown).not.toContain('137,80,78,71');
+    expect(shown).not.toContain('_attachments');
+    expect(shown).toContain('p1');
+  });
+
+  it('fails only the agent whose image was bad', async () => {
+    // Two agents settle images in the same tick; the cohort call reports one
+    // failure. The sibling must still land — losing it would be the rejected-
+    // promise behaviour this ingress deliberately does not have.
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { events, ctx } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      taskCount: 2,
+      forkTokenQueues: [[1, STOP, STOP], [1, STOP, STOP]],
+      tools: toolMap,
+      mutateCtx: (c) => {
+        let seen = 0;
+        c.mockMultimodalError = () => (seen++ === 0 ? 'corrupt image data' : null);
+      },
+      ...oneToolCall('rasterize'),
+    });
+
+    // Exactly one agent fails FOR THIS REASON — the sibling's own terminal
+    // (`recovery_skipped`, the stub policy's normal end) is not a media failure.
+    const failures = mediaFailures(events);
+    expect(failures).toHaveLength(1);
+
+    // And that agent is really finished: its branch was pruned as poisoned, so
+    // waking it again would have it sample from a disposed branch. Nothing it
+    // emits may come after the failure.
+    // ...and the SURVIVOR still finishes. This is the property, stated as the
+    // run sees it: waking the poisoned agent — whose branch was pruned a few
+    // lines earlier — takes the whole run down with it, and the sibling that
+    // had nothing wrong with its image never reaches a terminal event at all.
+    const deadId = (failures[0] as { agentId: number }).agentId;
+    const survivorId = events
+      .filter(e => e.type === 'agent:spawn')
+      .map(e => (e as { agentId: number }).agentId)
+      .find(id => id !== deadId);
+    expect(survivorId).toBeDefined();
+    expect(events.some(e => (e as { agentId?: number }).agentId === survivorId
+      && (e.type === 'agent:done' || e.type === 'agent:failed'))).toBe(true);
+    // The cohort was issued as ONE call with both entries — the sibling was
+    // not re-dispatched or lost.
+    expect(ctx.multimodalPrefills[0].bitmapCounts).toEqual([1, 1]);
+  });
+
+  it('re-activates an agent on a tick where ONLY media settled', async () => {
+    // The token-prefill list is empty on such a tick. An agent left parked
+    // here would sit in awaiting_tool with its result already in KV, and
+    // nothing would ever wake it.
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { events } = await runPool({
+      forkTokenQueues: [[1, STOP, STOP]],
+      tools: toolMap,
+      ...oneToolCall('rasterize'),
+    });
+    // `recovery_skipped` is the stub policy's normal terminal (it defines no
+    // onRecovery) — the media path must not add a failure of its own.
+    expect(mediaFailures(events)).toHaveLength(0);
+    expect(events.some(e => e.type === 'agent:tool_result')).toBe(true);
+    expect(events.some(e => e.type === 'agent:done')).toBe(true);
+  });
+
+  it('charges admission the MEASURED cells, so an oversized image defers', async () => {
+    // The sharp case for the cost expression: a media item's `prefillTokens`
+    // is empty (mtmd tokenizes downstream), so a cost read from it would be
+    // ZERO and every image would be admitted regardless of headroom —
+    // over-committing KV silently. It must be charged the measured cells.
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { ctx, events } = await runPool({
+      // The scaffold's real default (harness.yml `context: 32768`), not a
+      // number squeezed until something breaks: starving nCtx to force the
+      // refusal stops the agent spawning at all, and then the test passes
+      // because NOTHING happened. The image price is the only lever here.
+      nCtx: MEDIA_TEST_NCTX,
+      forkTokenQueues: [[1, STOP, STOP]],
+      tools: toolMap,
+      // One image priced well past what is left.
+      mutateCtx: (c) => { c.mockImageCells = 100_000; },
+      ...oneToolCall('rasterize'),
+    });
+
+    // The agent really ran and really called the tool...
+    expect(events.some(e => e.type === 'agent:tool_result')).toBe(true);
+    // ...and its image was still refused admission. Charged at zero it would
+    // have sailed through and arrived here.
+    expect(ctx.multimodalPrefills).toHaveLength(0);
+    expect(mediaFailures(events)).toHaveLength(0);
+  });
+
+  it('fails the agent when ingress refuses, without retrying the tool', async () => {
+    // A post-tool ingress failure must NOT become a tool retry: the tool
+    // already ran and may have had an external side effect, so re-running it
+    // is not a neutral act. The agent fails through the normal path and its
+    // branch is pruned — never silently dropped, never repeated.
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { ctx, events } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      forkTokenQueues: [[1, STOP, STOP]],
+      tools: toolMap,
+      // An ingress that refuses stands in for a normalization or commit
+      // failure at the barrier — before admission, before any prefill.
+      refusingIngress: true,
+      ...oneToolCall('rasterize'),
+    });
+    // Nothing reached the embedding rail...
+    expect(ctx.multimodalPrefills).toHaveLength(0);
+    // ...and the tool ran exactly ONCE. A post-tool failure must not be
+    // retried: the tool may already have had an external side effect.
+    expect(events.filter(e => e.type === 'agent:tool_call')).toHaveLength(1);
+
+    // THE ASSERTION THIS TEST WAS MISSING. Both facts above stayed true while
+    // the whole pool was being torn down: the throw escaped `processCompletion`
+    // (called outside any try) into the tick loop's own catch, which closes the
+    // channel with a partial result, no trace and no `agent:failed`. The test
+    // passed for two years' worth of the wrong reason.
+    //
+    // The agent must FAIL — visibly, by name — rather than vanish.
+    expect(mediaFailures(events).length + events.filter(e =>
+      e.type === 'agent:failed'
+      && (e as { reason?: string }).reason === 'tool_result_failed').length,
+    ).toBe(1);
+    // And it must be THIS agent, reported through the bus, not an absence.
+    const failed = events.find(e => e.type === 'agent:failed');
+    expect(failed).toBeDefined();
+    expect((failed as { agentId: number }).agentId).toBeTypeOf('number');
+  });
+
+  it('tells the model when the runtime cannot see images', async () => {
+    // Dropping them silently would leave the agent reasoning about a picture
+    // it was never shown. The note goes where the model will read it.
+    const toolMap = new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]);
+    const { ctx, events } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      forkTokenQueues: [[1, STOP, STOP]],
+      tools: toolMap,
+      mutateCtx: (c) => { c.mockSupportsVision = false; },
+      ...oneToolCall('rasterize'),
+    });
+
+    expect(ctx.multimodalPrefills).toHaveLength(0);
+    const shown = events.filter(e => e.type === 'agent:tool_result')
+      .map(e => (e as { result: string }).result).join('');
+    expect(shown).toContain('cannot see images');
+    expect(shown).not.toContain('137,80,78,71');
+  });
+});
+
+// ── Assets available to the run ─────────────────────────────────
+// Availability is not projection. A root the host stages, or one a tool
+// admits through the key, is readable by every tool call in the run through
+// ToolContext.attachments and costs no KV. Only admission onto a branch
+// projects — and the rail follows what a root MATERIALIZES to, never the
+// fact that a root was there.
+describe('assets available to the run', () => {
+  const policy = () => stubPolicy({
+    shouldExit: () => false,
+    onProduced: (_a, parsed) => {
+      if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
+      if (parsed.content) return { type: 'free_text_return', content: parsed.content };
+      return { type: 'idle', reason: 'free_text_stop' };
+    },
+  });
+  /** A turn whose raw carries 't1' calls `first`; one carrying 't2' calls
+   *  `second`; any other finishes. Keyed off raw, as the ladder tests are. */
+  const calls = (first: string, second: string) => (raw: string) =>
+    raw.includes('t2')
+      ? { content: '', reasoningContent: '', toolCalls: [{ name: second, arguments: '{}', id: 'c2' }] }
+      : raw.includes('t1')
+        ? { content: '', reasoningContent: '', toolCalls: [{ name: first, arguments: '{}', id: 'c1' }] }
+        : { content: 'done', reasoningContent: '', toolCalls: [] };
+  const booked = (trace: CapturingTraceWriter) =>
+    trace.events.filter(e => e.type === 'branch:prefill' && (e as { role: string }).role === 'toolResult') as { attachments?: readonly Attachment[] }[];
+  const shownTo = (events: AgentEvent[]) =>
+    events.filter(e => e.type === 'agent:tool_result').map(e => (e as { result: string }).result).join('');
+  /** The roots each admission announced on the bus — the host's view, which
+   *  the run record books and the UI shows without reading the trace. */
+  const announced = (events: AgentEvent[]) =>
+    events.filter(e => e.type === 'agent:prefilled' && ((e as { attachments?: readonly Attachment[] }).attachments?.length ?? 0) > 0)
+      .map(e => (e as { attachments?: readonly Attachment[] }).attachments);
+
+  it('the first call reads the staged roots, and none of them is projected', async () => {
+    const store = new MemoryAttachmentStore();
+    const img = imageRoot(store);
+    const doc = documentRoot(store);
+    const spy = new SpyTool('look');
+    const { ctx, trace } = await runPool({
+      nCtx: MEDIA_TEST_NCTX, forkTokenQueues: [[1, STOP, STOP]],
+      parseChatOutputFn: calls('look', 'look'), policy: policy(),
+      tools: new Map<string, Tool>([['look', spy]]),
+      contentStore: store, attachments: [img, doc], trace: true,
+    });
+    expect(spy.capturedContexts).toHaveLength(1);
+    expect(spy.capturedContexts[0].attachments).toEqual([img, doc]);
+    // Zero projection from availability — even for the image.
+    expect(ctx.multimodalPrefills).toHaveLength(0);
+    expect(booked(trace).flatMap(p => p.attachments ?? [])).toEqual([]);
+  });
+
+  it('a result carrying a document root rides the token rail, is booked on branch:prefill, and the next call sees it', async () => {
+    const store = new MemoryAttachmentStore();
+    const doc = documentRoot(store);
+    const spy = new SpyTool('look');
+    const { ctx, trace, ingressCalls, events } = await runPool({
+      nCtx: MEDIA_TEST_NCTX, forkTokenQueues: [[1, STOP, 2, STOP, STOP]],
+      parseChatOutputFn: calls('open', 'look'), policy: policy(),
+      tools: new Map<string, Tool>([['open', new RootTool([doc], 'open')], ['look', spy]]),
+      contentStore: store, trace: true,
+    });
+    expect(ingressCalls).toBe(0);
+    expect(ctx.multimodalPrefills).toHaveLength(0);
+    expect(booked(trace)[0]?.attachments).toEqual([doc]);
+    // The same admission rides the bus: one event, the same roots, so a host
+    // books and shows it from the stream it already consumes.
+    expect(announced(events)).toEqual([[doc]]);
+    expect(spy.capturedContexts).toHaveLength(1);
+    expect(spy.capturedContexts[0].attachments).toEqual([doc]);
+    const cost = trace.events.find(e => e.type === 'tool:result') as { cells: number } | undefined;
+    expect(cost?.cells).toBeGreaterThan(0);
+  });
+
+  it('a result carrying a page root rides the media rail through the store — the ingress is never called', async () => {
+    const store = new MemoryAttachmentStore();
+    const page = imageRoot(store);
+    const { ctx, trace, ingressCalls, events } = await runPool({
+      nCtx: MEDIA_TEST_NCTX, forkTokenQueues: [[1, STOP, STOP]],
+      parseChatOutputFn: calls('view', 'view'), policy: policy(),
+      tools: new Map<string, Tool>([['view', new RootTool([page], 'view')]]),
+      contentStore: store, trace: true,
+    });
+    expect(ingressCalls).toBe(0);
+    expect(ctx.multimodalPrefills).toHaveLength(1);
+    expect(ctx.multimodalPrefills[0].bitmapCounts).toEqual([1]);
+    expect(booked(trace)[0]?.attachments).toEqual([page]);
+    expect(announced(events)).toEqual([[page]]);
+  });
+
+  it('a root one agent admits is available to its siblings, and stays so after the admitting agent returns and is pruned', async () => {
+    const store = new MemoryAttachmentStore();
+    const doc = documentRoot(store);
+    const spy = new SpyTool('look');
+    const { result } = await runPool({
+      nCtx: MEDIA_TEST_NCTX, taskCount: 2,
+      // A admits on its first turn and finishes. B generates for a while,
+      // then calls — well after A's result was admitted and A was pruned.
+      forkTokenQueues: [[1, STOP, STOP], [7, 7, 7, 7, 7, 7, 2, STOP, STOP]],
+      parseChatOutputFn: calls('open', 'look'), policy: policy(),
+      tools: new Map<string, Tool>([['open', new RootTool([doc], 'open')], ['look', spy]]),
+      contentStore: store, pruneOnReturn: true, trace: true,
+    });
+    expect(result.agents[0].result).toBe('done');
+    expect(spy.capturedContexts).toHaveLength(1);
+    expect(spy.capturedContexts[0].attachments).toEqual([doc]);
+  });
+
+  it('a settle rejection books the nudge, not the call: the retry lands, and the agent attends over exactly one result', async () => {
+    // The page is priced over a tiny headroom on the first call; the policy
+    // nudges and frees capacity; the agent asks for the same page again.
+    const store = new MemoryAttachmentStore();
+    const page = imageRoot(store);
+    let ctxRef: MockSessionContext | undefined;
+    const pol = stubPolicy({
+      shouldExit: () => false,
+      onProduced: (_a, parsed) => {
+        if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
+        if (parsed.content) return { type: 'free_text_return', content: parsed.content };
+        return { type: 'idle', reason: 'free_text_stop' };
+      },
+      // Capacity made available: the same page now prices within headroom.
+      hooks: [{ beforeAdmit: () => { if (ctxRef) ctxRef.mockImageCells = 16; return { type: 'nudge', message: 'Too large now; try again.' }; } }],
+    });
+    const { ctx, result, events } = await runPool({
+      // Headroom (nCtx − cellsUsed − the 1024 soft limit) is ~2000: far above
+      // the nudge, far below the page. The PAGE is what does not fit, priced by
+      // the projector's geometry. Starving the context instead would leave the
+      // nudge unaffordable too — the pool spends the difference on its own spine
+      // and decodes before the stall, and `scheduler.ts` samples headroom ONCE
+      // per tick — so the agent would be dropped rather than nudged.
+      nCtx: MEDIA_TEST_NCTX, cellsUsed: MEDIA_TEST_NCTX - 1024 - 2000,
+      mutateCtx: (c) => { ctxRef = c; c.mockImageCells = 4000; },
+      forkTokenQueues: [[1, STOP, 2, STOP, STOP]],
+      parseChatOutputFn: calls('view', 'view'), policy: pol,
+      tools: new Map<string, Tool>([['view', new RootTool([page], 'view')]]),
+      contentStore: store, trace: true,
+    });
+    expect(ctx.multimodalPrefills).toHaveLength(1);
+    expect(announced(events)).toEqual([[page]]);
+    // The nudge is booked as a nudge; only the retry is an attended result.
+    const agent = result.agents[0].agent;
+    expect(agent.toolHistory.filter((h) => h.name === 'view')
+      .map((h) => (h as { outcome?: string }).outcome)).toEqual(['nudge', 'toolResult']);
+    expect(agent.attendedResults('view')).toHaveLength(1);
+  });
+
+  it('a heal preserves the receipt ledger: a read attended before the poison is not re-delivered after the respawn', async () => {
+    // The original LANDS a `look`, then a poisoned media call (rc −3) heals it.
+    // The replay restores the read into the replacement's KV; the receipt ledger
+    // must ride with it, or the read tools re-deliver what the branch holds.
+    const store = new MemoryAttachmentStore();
+    const doc = documentRoot(store);
+    const { result, trace } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      // original: look (t1, lands), rasterize (t2, poisons); replacement: done.
+      forkTokenQueues: [[1, STOP, 2, STOP, STOP], [STOP]],
+      parseChatOutputFn: calls('look', 'rasterize'),
+      policy: policy(),
+      tools: new Map<string, Tool>([['look', new RootTool([doc], 'look')], ['rasterize', new MediaTool([PNG_BYTES])]]),
+      contentStore: store, trace: true,
+      mutateCtx: (c) => {
+        let seen = 0;
+        c.mockMultimodalError = () => (seen++ === 0 ? { message: 'compute failed', rc: -3 } : null);
+      },
+    });
+    const heal = trace.events.find((e) => e.type === 'pool:agentHeal') as { of: number; agentId: number } | undefined;
+    expect(heal).toBeDefined();
+    const replacement = result.agents.find((a) => a.agentId === heal!.agentId);
+    expect(replacement).toBeDefined();
+    // The ledger rides on the replacement's OWN history (matching its replayed
+    // KV), and it does not inherit an ambient agent as its lineage parent.
+    expect(replacement!.agent.parent).toBeNull();
+    expect(replacement!.agent.toolHistory.filter((h) => h.name === 'look' && (h as { outcome?: string }).outcome === 'toolResult')).toHaveLength(1);
+    // So it attends over the `look` the original attended, and does not re-deliver.
+    expect(replacement!.agent.attendedResults('look')).toHaveLength(1);
+  });
+
+  it('a heal takes the ORIGINAL\'s ledger, not a sibling\'s: the replacement attends over what its KV holds', async () => {
+    // Two agents run: the one that will heal LANDS `look`; a sibling LANDS a
+    // DIFFERENT read, `peek`. The healer is poisoned and respawned. Its KV was
+    // replayed from ITS OWN records (the `look`), not the sibling's — so the
+    // replacement must attend over `look` and NOT `peek`. If the replacement
+    // inherits the ambient sibling as its lineage parent, it reads `peek`
+    // (which is not in its KV → blinding) and misses `look`.
+    const store = new MemoryAttachmentStore();
+    const look = documentRoot(store, 'Look Paper');
+    const peek = documentRoot(store, 'Peek Paper');
+    const byToken = (raw: string) =>
+      raw.includes('t2') ? { content: '', reasoningContent: '', toolCalls: [{ name: 'rasterize', arguments: '{}', id: 'c2' }] }
+      : raw.includes('t3') ? { content: '', reasoningContent: '', toolCalls: [{ name: 'peek', arguments: '{}', id: 'c3' }] }
+      : raw.includes('t1') ? { content: '', reasoningContent: '', toolCalls: [{ name: 'look', arguments: '{}', id: 'c1' }] }
+      : { content: 'done', reasoningContent: '', toolCalls: [] };
+    const { result, trace } = await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      taskCount: 2,
+      // agent 0: look, rasterize(poison); agent 1 (sibling): peek; replacement: done.
+      forkTokenQueues: [[1, STOP, 2, STOP, STOP], [3, STOP, STOP], [STOP]],
+      parseChatOutputFn: byToken,
+      policy: policy(),
+      tools: new Map<string, Tool>([
+        ['look', new RootTool([look], 'look')],
+        ['peek', new RootTool([peek], 'peek')],
+        ['rasterize', new MediaTool([PNG_BYTES])],
+      ]),
+      contentStore: store, trace: true,
+      mutateCtx: (c) => { let seen = 0; c.mockMultimodalError = () => (seen++ === 0 ? { message: 'compute failed', rc: -3 } : null); },
+    });
+    const heal = trace.events.find((e) => e.type === 'pool:agentHeal') as { of: number; agentId: number } | undefined;
+    expect(heal).toBeDefined();
+    const replacement = result.agents.find((a) => a.agentId === heal!.agentId);
+    expect(replacement).toBeDefined();
+    // The original attended `look`; the replacement's KV holds it, so it attends over it.
+    expect(replacement!.agent.attendedResults('look')).toHaveLength(1);
+    // The sibling's `peek` is NOT in the replacement's KV — it must not be attended over.
+    expect(replacement!.agent.attendedResults('peek')).toHaveLength(0);
+  });
+
+  // Phase 2's red test, on the record now. Each pool copies its own `available`,
+  // so a child's admissions never reach the run that spawned it. `it.fails`
+  // keeps it in the suite and announces itself when the scorer and the asset
+  // list go ambient and a child inherits both by scope.
+  it.fails('a root admitted inside a nested pool is available to the run that spawned it', async () => {
+    // A tool that delegates: it opens a child pool from the calling agent's
+    // branch with the assets it can see. The child admits a document root.
+    // The parent's next call must see that root — assets belong to the run.
+    const store = new MemoryAttachmentStore();
+    const doc = documentRoot(store);
+    const spy = new SpyTool('look');
+    class NestTool extends Tool<Record<string, never>> {
+      readonly name = 'nest';
+      readonly description = 'delegate once';
+      readonly parameters: JsonSchema = { type: 'object', properties: {} };
+      *execute(_args: Record<string, never>, context?: ToolContext): Operation<unknown> {
+        const caller = yield* CallingAgent.get();
+        const child = yield* agentPool({
+          orchestrate: parallel([{ systemPrompt: 'sys', content: 'child task' }]),
+          tools: [new RootTool([doc], 'open')],
+          policy: policy(),
+          parent: caller?.branch,
+          attachments: context?.attachments,
+        });
+        return { agents: child.agents.length };
+      }
+    }
+    const byToken = (raw: string) =>
+      raw.includes('t3') ? { content: '', reasoningContent: '', toolCalls: [{ name: 'open', arguments: '{}', id: 'c3' }] }
+      : raw.includes('t2') ? { content: '', reasoningContent: '', toolCalls: [{ name: 'look', arguments: '{}', id: 'c2' }] }
+      : raw.includes('t1') ? { content: '', reasoningContent: '', toolCalls: [{ name: 'nest', arguments: '{}', id: 'c1' }] }
+      : { content: 'done', reasoningContent: '', toolCalls: [] };
+    await runPool({
+      nCtx: MEDIA_TEST_NCTX,
+      // parent: nest (t1), then look (t2), then done; child: open (t3), then done.
+      forkTokenQueues: [[1, STOP, 2, STOP, STOP], [STOP], [3, STOP, STOP]],
+      parseChatOutputFn: byToken, policy: policy(),
+      tools: new Map<string, Tool>([['nest', new NestTool()], ['look', spy]]),
+      contentStore: store, trace: true,
+    });
+    expect(spy.capturedContexts).toHaveLength(1);
+    expect(spy.capturedContexts[0].attachments).toEqual([doc]);
+  });
+
+  it('without a projector a document root is still admitted, while a page root is refused with the note', async () => {
+    const store = new MemoryAttachmentStore();
+    const doc = documentRoot(store);
+    const page = imageRoot(store);
+    const spy = new SpyTool('look');
+    const text = await runPool({
+      nCtx: MEDIA_TEST_NCTX, forkTokenQueues: [[1, STOP, 2, STOP, STOP]],
+      parseChatOutputFn: calls('open', 'look'), policy: policy(),
+      tools: new Map<string, Tool>([['open', new RootTool([doc], 'open')], ['look', spy]]),
+      contentStore: store, trace: true,
+      mutateCtx: (c) => { c.mockSupportsVision = false; },
+    });
+    expect(spy.capturedContexts[0]?.attachments).toEqual([doc]);
+    expect(shownTo(text.events)).not.toContain('cannot see images');
+    expect(booked(text.trace)[0]?.attachments).toEqual([doc]);
+
+    const picture = await runPool({
+      nCtx: MEDIA_TEST_NCTX, forkTokenQueues: [[1, STOP, STOP]],
+      parseChatOutputFn: calls('view', 'view'), policy: policy(),
+      tools: new Map<string, Tool>([['view', new RootTool([page], 'view')]]),
+      contentStore: store, trace: true,
+      mutateCtx: (c) => { c.mockSupportsVision = false; },
+    });
+    expect(shownTo(picture.events)).toContain('cannot see images');
+    expect(picture.ctx.multimodalPrefills).toHaveLength(0);
+    expect(booked(picture.trace)[0]?.attachments).toBeUndefined();
   });
 });

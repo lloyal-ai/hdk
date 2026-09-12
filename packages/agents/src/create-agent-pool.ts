@@ -10,6 +10,7 @@ import { Events } from './context';
 import { createToolkit } from './toolkit';
 import { withSpine } from './spine';
 import { useAgentPool } from './agent-pool';
+import type { Attachment } from '@lloyal-labs/media';
 
 // ── CreateAgentPool opts ────────────────────────────────────
 
@@ -56,7 +57,12 @@ export interface CreateAgentPoolOpts {
   session?: Session;
   /** Entailment scorer for semantic coherence across recursive depths. */
   scorer?: EntailmentScorer;
-  /** Echo detection threshold. @default 0.8 */
+  /** Assets available to the run — see {@link AgentPoolOptions.attachments}. */
+  attachments?: readonly Attachment[];
+  /** Echo detection threshold in LOGITS — the unit `scoreSimilarityBatch`
+   *  returns (a reranker log-odds difference, unbounded, centred on zero),
+   *  NOT a 0–1 similarity. Default applied by `DelegateTool`
+   *  (`DEFAULT_ECHO_THRESHOLD_LOGITS`), the one place that holds the number. */
   echoThreshold?: number;
   /** Check ancestor tasks for echo. @default false */
   checkAncestorEcho?: boolean;
@@ -160,6 +166,7 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
         trace: opts.trace,
         policy: opts.policy,
         scorer: opts.scorer,
+        attachments: opts.attachments,
         enableThinking: opts.enableThinking,
       });
 
