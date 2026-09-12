@@ -97,9 +97,13 @@ export interface ToolHistoryEntry {
 }
 
 /** A history entry's `args` as an object — `{}` when the model emitted
- *  something unparseable. The one reader of that field's encoding. */
+ *  something unparseable, or valid JSON that is not an object (`null`, an
+ *  array, a scalar), so a reader of `args.url` never throws. The one reader
+ *  of that field's encoding. */
 export function parseHistoryArgs(argsStr: string): Record<string, unknown> {
-  try { return JSON.parse(argsStr) as Record<string, unknown>; } catch { return {}; }
+  let v: unknown;
+  try { v = JSON.parse(argsStr); } catch { return {}; }
+  return v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 }
 
 /** Whether the entry's result is attended: the tool's result was prefilled

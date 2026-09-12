@@ -41,6 +41,19 @@ describe('tool-lifecycle contract (real pool)', () => {
     expect(settled(r).map((s) => s.kind)).toEqual(['nudge']);
   });
 
+  it('a model that emits `arguments: null` does not take the run down: the gate sees an empty record, the call proceeds', async () => {
+    const readsUrl: ToolGuard = { name: 'url', reject: ({ args }) => typeof args.url === 'string', message: 'no' };
+    const t = new OpenTool('t', { ok: true }, gate(readsUrl));
+    const r = await runPool({
+      scripts: [{ tokens: FIRST }], policy: literalPolicy(), tools: only(t), trace: true,
+      instrument: parse({ t1: { name: 't', arguments: 'null' } }),
+    });
+    expect(r.error).toBeUndefined();
+    expect(r.traceEvents.some((e) => e.type === 'pool:close')).toBe(true);
+    expect(nudges(r)).toEqual([]);
+    expect(t.calls).toHaveLength(1);
+  });
+
   it('the off switch: guardOverrides { g: false } admits the call', async () => {
     const t = new OpenTool('t', { ok: true }, gate(always('g')));
     const r = await runPool({
@@ -114,6 +127,20 @@ describe('tool-lifecycle contract (real pool)', () => {
     expect(n.map((x) => x.guard)).toEqual(['same_q']);
     expect(n[0].message).not.toContain('Turn limit');
     expect(outcomesOf(r, 0, 't')).toEqual(['toolResult', 'nudge']);
+  });
+
+  it('a `fail` with no message on a returned value settles a neutral failure, not a rate-limit diagnosis', async () => {
+    const t = new OpenTool('t');
+    const r = await runPool({
+      scripts: [{ tokens: FIRST }],
+      policy: literalPolicy({ hooks: [{ afterExecute: ({ completion }) => (completion.kind === 'returned' ? { type: 'fail' } : undefined) }] }),
+      tools: only(t), trace: true, instrument: parse({ t1: call('x') }),
+    });
+    const shown = (r.channelEvents.filter((e) => e.type === 'agent:tool_result') as Array<{ result: string }>).map((e) => e.result);
+    expect(shown).toHaveLength(1);
+    expect(shown[0]).not.toContain('rate-limited');
+    expect(shown[0]).toContain('t failed');
+    expect(outcomesOf(r, 0, 't')).toEqual(['toolResult']);
   });
 
   it("afterAdmit precedence: the tool's follow-up is prefilled, not the policy's", async () => {

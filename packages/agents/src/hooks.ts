@@ -44,15 +44,21 @@ export type Resolved<T> = { decision: T; by: 'frame' | 'tool' | 'policy' };
 
 /**
  * A retry budget as an `afterExecute` contributor: park a transient failure
- * up to `n` times at the delay the tool asked for, then fail. Abstains on any
- * other completion. The one place the framework recognizes a transient failure.
+ * up to `n` times at the delay the tool asked for, then fail, saying why —
+ * the decision that knows the failure was a rate limit carries the message
+ * the model reads. Abstains on any other completion. The one place the
+ * framework recognizes a transient failure.
  */
 export function retryUpTo(n: number): NonNullable<ToolLifecycleHooks['afterExecute']> {
-  return ({ completion, attempt }) => {
+  return ({ tool, completion, attempt }) => {
     if (completion.kind !== 'threw' || !(completion.error instanceof ToolRetryError)) return undefined;
     return attempt <= n
       ? { type: 'retry', afterMs: completion.error.retryAfterMs }
-      : { type: 'fail' };
+      : {
+          type: 'fail',
+          message: `${tool} is currently unavailable (rate-limited; retry failed). ` +
+            `Do not call ${tool} again — use other sources or proceed with your current findings.`,
+        };
   };
 }
 

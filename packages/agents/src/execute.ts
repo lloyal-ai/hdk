@@ -640,10 +640,12 @@ export class Executor {
       return;
     }
     if (decision.type === 'fail') {
+      // A contributor that knows why says so (`retryUpTo` names the rate
+      // limit); the fallback diagnoses nothing.
       const exhausted = {
         error: decision.message
-          ?? `${tc.name} is currently unavailable (rate-limited; retry failed). ` +
-            `Do not call ${tc.name} again — use other sources or proceed with your current findings.`,
+          ?? `${tc.name} failed and will not be retried. ` +
+            `Do not call ${tc.name} again with these arguments — use other sources or proceed with your current findings.`,
       };
       const resultStr = JSON.stringify(exhausted);
       yield* d.emit.emit({ kind: 'toolTold', agent, tool: tc.name, resultStr });

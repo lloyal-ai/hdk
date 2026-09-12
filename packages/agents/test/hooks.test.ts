@@ -166,10 +166,15 @@ describe('beforeDispatch: the gates', () => {
     });
   });
 
-  it('malformed arguments reach a gate as an empty record, not a throw', () => {
-    const readsUrl = gate('url', ({ args }) => typeof args.url === 'string');
-    const tc: ParsedToolCall = { name: 't', arguments: 'not json', id: 'c' };
-    expect(gateOn(tc, { tool: new Stub('t', { beforeDispatch: [readsUrl] }) })).toBeUndefined();
+  it('malformed, null or non-object arguments reach a gate as an empty record, not a throw', () => {
+    const readsUrl = gate('url', ({ args, attended }) => typeof args.url === 'string' || attended().some((a) => typeof a.url === 'string'));
+    const a = agent();
+    a.recordToolResult(entry('t', {} as object));
+    a.toolHistory[0].args = 'null';   // a booked call whose arguments were the JSON scalar `null`
+    for (const raw of ['not json', 'null', '[]', '5', '"x"', 'true']) {
+      const tc: ParsedToolCall = { name: 't', arguments: raw, id: 'c' };
+      expect(gateOn(tc, { tool: new Stub('t', { beforeDispatch: [readsUrl] }), agent: a }), raw).toBeUndefined();
+    }
   });
 });
 
@@ -187,10 +192,13 @@ describe('afterExecute: the completion', () => {
     expect(decideAfterExecute(input(transient()), { frame: open, tool: new Stub('t'), policy: literal() })).toEqual({ decision: { type: 'retry', afterMs: 30 }, by: 'frame' });
   });
 
-  it(`the frame default retries a transient failure ${DEFAULT_MAX_TOOL_RETRIES} time(s) at the tool's delay, then fails`, () => {
+  it(`the frame default retries a transient failure ${DEFAULT_MAX_TOOL_RETRIES} time(s) at the tool's delay, then fails saying why`, () => {
     const c = { frame: open, tool: undefined, policy: literal() };
     expect(decideAfterExecute(input(transient(), DEFAULT_MAX_TOOL_RETRIES), c)).toEqual({ decision: { type: 'retry', afterMs: 30 }, by: 'frame' });
-    expect(decideAfterExecute(input(transient(), DEFAULT_MAX_TOOL_RETRIES + 1), c)).toEqual({ decision: { type: 'fail' }, by: 'frame' });
+    // The decision that knows why carries the message: the rate-limit text names the tool.
+    expect(decideAfterExecute(input(transient(), DEFAULT_MAX_TOOL_RETRIES + 1), c)).toEqual({
+      decision: { type: 'fail', message: expect.stringMatching(/^t is currently unavailable \(rate-limited; retry failed\)/) }, by: 'frame',
+    });
   });
 
   it('the frame default counts any other throw, and a return, as an attempt', () => {
@@ -202,7 +210,7 @@ describe('afterExecute: the completion', () => {
   it("the default policy's entry is its retry budget: retryUpTo(maxToolRetries)", () => {
     const c = { frame: open, tool: undefined, policy: new DefaultAgentPolicy({ maxToolRetries: 3 }) };
     expect(decideAfterExecute(input(transient(), 3), c)).toEqual({ decision: { type: 'retry', afterMs: 30 }, by: 'policy' });
-    expect(decideAfterExecute(input(transient(), 4), c)).toEqual({ decision: { type: 'fail' }, by: 'policy' });
+    expect(decideAfterExecute(input(transient(), 4), c)).toMatchObject({ decision: { type: 'fail', message: expect.stringContaining('rate-limited') }, by: 'policy' });
     expect(decideAfterExecute(input(returned()), c)).toEqual({ decision: { type: 'attempt' }, by: 'frame' });
   });
 });
