@@ -203,17 +203,21 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
      * prefix under it must be the one the original had. A parent that is gone
      * or has moved since cannot give that prefix, and the heal stands down
      * (the throw below, caught where heals are forged) rather than report a
-     * reconstruction onto a different context. Every fork made here is the
-     * pool's (`forged`) until it enters the roster.
+     * reconstruction onto a different context. That check sits AFTER the
+     * pricing and immediately before the fork: pricing a media-bearing lineage
+     * suspends on a native call, long enough for whoever owns an explicit
+     * parent to advance it, and nothing between the check and `forkSync`
+     * yields to another fiber. Every fork made here is the pool's (`forged`)
+     * until it enters the roster.
      */
     function* forge(task: AgentTaskSpec, lineage?: Lineage): Operation<Omit<SpawnRequest, 'resolve' | 'reject' | 'discarded'>> {
+      const replay = lineage ? yield* prepareReplay(lineage.records, { enableThinking }) : null;
       const parent = task.parent ?? spine;
       if (lineage && (parent.disposed || parent.position !== lineage.forkHead)) {
         throw new Error(parent.disposed
           ? 'heal: the original\'s parent is gone'
           : `heal: the original's parent has moved (forked at ${lineage.forkHead}, now at ${parent.position})`);
       }
-      const replay = lineage ? yield* prepareReplay(lineage.records, { enableThinking }) : null;
       // A heal forges off the loop fiber, where no tool call is active, so
       // setupAgent reads CallingAgent as null — the replacement is nobody's
       // live child. A delegate's forge runs inside its call, so it reads the caller.

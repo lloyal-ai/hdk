@@ -16,6 +16,7 @@
  * stands down — the original's failure stands, no `pool:agentHeal`, no fork.
  */
 import { describe, it, expect } from 'vitest';
+import { spawn, until } from 'effection';
 import type { Operation } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import type { AgentPolicy } from '../../../src/AgentPolicy';
@@ -100,4 +101,91 @@ describe('scenario: a heal reproduces the original prefix or stands down', () =>
     held.P!.pruneSync();
     expect(formatResult('I42', I42_noLeakedBranches(run))).toBe('I42: ok');
   });
+
+  it('stands down when the parent moves WHILE the replay is being priced: the check sits at the fork, not before the pricing', async () => {
+    // A media-bearing lineage is priced through a native call, and the loop
+    // fiber suspends on it. Whoever owns an explicit parent can advance it in
+    // that window; a check that passed before the pricing would then let the
+    // forge fork the moved branch. Two image calls, the second poisoned, so the
+    // lineage carries one priced image; the mock holds that pricing while a
+    // mover fiber advances `P`. The original is given a live child at the poison
+    // so it is not reclaimed before its heal is priced (the orchestrator keeps
+    // waiting on it, and the pool stays open for the heal); the mover releases
+    // that child once P has moved.
+    const pricing = deferred();
+    const moved = deferred();
+    let heldPricing = false;
+    let child = -1;
+    const held: { P: Branch | null; ctx: { _branchPrune(h: number): void } | null } = { P: null, ctx: null };
+    const orchestrate = function* (ctx: PoolContext): Operation<void> {
+      const P = ctx.spine.forkSync();
+      held.P = P;
+      yield* waitUntilSettled(P.prefill([7, 7, 7, 7, 7, 7, 7, 7]));
+      const mover = yield* spawn(function* () {
+        yield* until(pricing.promise);
+        yield* waitUntilSettled(P.prefill([9, 9, 9]));   // the prefix the original forked from is gone
+        held.ctx!._branchPrune(child);                    // the original may be reclaimed now
+        moved.resolve();
+      });
+      const a = yield* ctx.spawn({ content: 'Task 0', systemPrompt: 'You are an agent.', seed: 0, parent: P });
+      yield* ctx.waitFor(a);
+      yield* mover;
+    };
+    const run = await runPool({
+      nCtx: MEDIA_TEST_NCTX, cellsUsed: 0,
+      captureError: true,
+      // Fork order: P, the original, the original's held child (never samples), the replacement.
+      scripts: [
+        { tokens: [STOP] },
+        { tokens: [1, STOP], toolCall: { name: 'rasterize', arguments: '{}' } },   // rasterize every turn: the second is poisoned
+        { tokens: [STOP] },
+        { tokens: [1, STOP], content: 'healed' },
+      ],
+      tools: new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]),
+      policy,
+      orchestrate,
+      instrument: (ctx) => {
+        held.ctx = ctx;
+        let images = 0;
+        let poisoned = false;
+        const innerMM = ctx._storePrefillMultimodal.bind(ctx);
+        ctx._storePrefillMultimodal = async (handles, sep, prompts, bitmaps) => {
+          const n = ++images;
+          if (n === 2) {
+            poisoned = true;
+            ctx.mockMultimodalError = () => ({ message: 'compute failed', rc: -3, partial: false });
+            child = ctx._branchFork(handles[0]);   // a live child: the original waits for its heal
+          }
+          const out = innerMM(handles, sep, prompts, bitmaps);
+          // The poison is the second call's alone: a replacement's replay of the
+          // first image must land, or no heal could ever be reported here.
+          if (n === 2) out.then(() => {}, () => {}).then(() => { delete (ctx as { mockMultimodalError?: unknown }).mockMultimodalError; });
+          return out;
+        };
+        const innerCells = ctx._cellsMultimodal.bind(ctx);
+        ctx._cellsMultimodal = async (sep, prompt, bitmaps) => {
+          // The first pricing after the poison is the heal's: hold it until P has moved.
+          if (poisoned && !heldPricing) {
+            heldPricing = true;
+            pricing.resolve();
+            await moved.promise;
+          }
+          return innerCells(sep, prompt, bitmaps);
+        };
+      },
+    });
+    expect(heldPricing, 'the heal\'s pricing was never held — the scenario did not exercise the window').toBe(true);
+    expect(mediaFailures(run.channelEvents), 'the second image prefill must have been poisoned').toHaveLength(1);
+    expect(run.error, `the pool threw: ${String((run.error as Error)?.message ?? run.error)}`).toBeUndefined();
+    expect(run.traceEvents.some(e => e.type === 'pool:agentHeal'), 'a heal was forked from a parent that moved during pricing').toBe(false);
+    expect(run.traceEvents.filter(e => e.type === 'agent:spawn'), 'a second fork was announced').toHaveLength(1);
+    held.P!.pruneSync();
+    expect(formatResult('I42', I42_noLeakedBranches(run))).toBe('I42: ok');
+  });
 });
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>(r => { resolve = r; });
+  return { promise, resolve };
+}
