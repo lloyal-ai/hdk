@@ -9,7 +9,7 @@
  * code in the path, so "close enough" is indistinguishable from broken.
  */
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, existsSync, readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FileAttachmentStore } from '../src/file-store';
@@ -168,7 +168,12 @@ describe('FileAttachmentStore — an OCI Image Layout', () => {
     // representation write fails, `putAttachment` never runs, so no manifest
     // exists and replay has nothing to refuse. The run would simply carry on
     // with media in the cache and no record of it.
-    expect(() => new FileAttachmentStore('/proc/nonexistent/nope').putBlob(JPEG, 'image/jpeg'))
+    // A store rooted under a regular FILE: the first write's mkdir fails
+    // ENOTDIR on every platform. (`/proc/...` used to stand in for this, and
+    // on Linux a recursive mkdir beneath /proc spins instead of failing.)
+    const notADir = join(mkdtempSync(join(tmpdir(), 'file-store-')), 'not-a-dir');
+    writeFileSync(notADir, '');
+    expect(() => new FileAttachmentStore(join(notADir, 'nope')).putBlob(JPEG, 'image/jpeg'))
       .toThrow(/ENOENT|ENOTDIR|EACCES|EROFS/);
   });
 
