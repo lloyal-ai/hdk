@@ -165,6 +165,11 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
      *  by one consumer, the loop. A signal is for callbacks only. */
     const wake = createQueue<void, never>();
     let windingDown = false;
+    /** Set the moment the loop decides to close, on either path, before
+     *  anything is released: a producer that wakes afterwards is refused at
+     *  once instead of forging a branch and suspending on an admission nobody
+     *  will run. */
+    let closed = false;
     let orchestratorDone = false;
     let orchestratorError: unknown = null;
 
@@ -202,26 +207,22 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
      * fork point: its replay carries only what came after the fork, so the
      * prefix under it must be the one the original had. A parent that is gone
      * or has moved since cannot give that prefix, and the heal stands down
-     * (the throw below, caught where heals are forged) rather than report a
-     * reconstruction onto a different context. That check sits AFTER the
-     * pricing and immediately before the fork: pricing a media-bearing lineage
-     * suspends on a native call, long enough for whoever owns an explicit
-     * parent to advance it, and nothing between the check and `forkSync`
-     * yields to another fiber. Every fork made here is the pool's (`forged`)
-     * until it enters the roster.
+     * (setupAgent throws at the fork; the forge site catches) rather than
+     * report a reconstruction onto a different context. The check is
+     * setupAgent's, adjacent to the fork: every suspension before it — the
+     * pricing's native call, the context reads — is a point where whoever
+     * owns the parent may run. A pool that has closed while a spawn was being
+     * priced makes no fork either. Every fork made here is the pool's
+     * (`forged`) until it enters the roster.
      */
     function* forge(task: AgentTaskSpec, lineage?: Lineage): Operation<Omit<SpawnRequest, 'resolve' | 'reject' | 'discarded'>> {
       const replay = lineage ? yield* prepareReplay(lineage.records, { enableThinking }) : null;
+      if (closed) throw new Error('useAgentPool: the pool has closed');
       const parent = task.parent ?? spine;
-      if (lineage && (parent.disposed || parent.position !== lineage.forkHead)) {
-        throw new Error(parent.disposed
-          ? 'heal: the original\'s parent is gone'
-          : `heal: the original's parent has moved (forked at ${lineage.forkHead}, now at ${parent.position})`);
-      }
       // A heal forges off the loop fiber, where no tool call is active, so
       // setupAgent reads CallingAgent as null — the replacement is nobody's
       // live child. A delegate's forge runs inside its call, so it reads the caller.
-      const { agent, suffixTokens, formattedPrompt } = yield* setupAgent(parent, task, ctx, enableThinking, runNow);
+      const { agent, suffixTokens, formattedPrompt } = yield* setupAgent(parent, task, ctx, enableThinking, runNow, lineage?.forkHead);
       forged.add(agent);
       if (!lineage || !replay) return { agent, suffixTokens, formattedPrompt, task };
       return { agent, suffixTokens, formattedPrompt, task, replay: { ...replay, of: lineage.of, rc: lineage.rc, attempt: lineage.attempt, history: lineage.history } };
@@ -244,6 +245,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       spine,
 
       *spawn(spec) {
+        if (closed) throw new Error('useAgentPool: the pool has closed');
         const parent = spec.parent ?? spine;
         const task: AgentTaskSpec = {
           systemPrompt: spec.systemPrompt, content: spec.content, tools: toolsJson, seed: spec.seed,
@@ -271,6 +273,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       },
 
       *extendSpine(userContent, assistantContent) {
+        if (closed) throw new Error('useAgentPool: the pool has closed');
         if (!assistantContent) return 0;
         const tokens = buildTurnDelta(ctx, userContent, assistantContent);
         return yield* action<number>((resolve, reject) => {
@@ -432,13 +435,17 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           idleTicks = ran === 0 ? idleTicks + 1 : 0;
         }
 
+        closed = true;
         releaseUnadmitted();
         emit.trace({ kind: 'closed', agents, steps: totals.steps, durationMs: performance.now() - poolT0 });
         yield* poolChannel.close(result());
       } catch {
         // A decode failed beyond the ladder, or the orchestrator threw: close
-        // with what exists — the unadmitted forks given back now, not at scope
-        // exit. No `pool:close` — its absence is the signal.
+        // with what exists. Closing is terminal for new work FIRST, then the
+        // producer is stopped, then the unadmitted forks are given back — now,
+        // not at scope exit. No `pool:close` — its absence is the signal.
+        closed = true;
+        yield* orchestratorTask.halt();
         releaseUnadmitted();
         yield* poolChannel.close(result());
       }

@@ -12,7 +12,7 @@
  * 2026-09-12 release review, R3).
  */
 import { describe, it, expect } from 'vitest';
-import { run, createChannel, spawn, all, until } from 'effection';
+import { run, createChannel, spawn, all, until, sleep } from 'effection';
 import type { Channel, Operation } from 'effection';
 import { createMockSdk } from '../../sdk/src/testing.js';
 import type { MockSessionContext } from '../../sdk/src/testing.js';
@@ -147,5 +147,55 @@ describe('a fork queued while the loop is held', () => {
     expect(rosterA, 'a entered the roster before its activation failed').toBeGreaterThan(0);
     expect(liveAtClose.sort(), 'the queued fork was not released at the partial close').toEqual([root.handle, rosterA].sort());
     expect(live(ctx), 'after the scope: nothing but the root').toEqual([root.handle]);
+  });
+});
+
+describe('a pool that has closed', () => {
+  it('refuses new work at once: the producer is stopped, and a spawn or extend after the partial close rejects with no fork made', async () => {
+    // The exception path closes the subscription. Before this, the orchestrator
+    // lived on: a producer that woke after the close forged a branch and
+    // suspended on an admission nobody would ever run, and the fork lived until
+    // the enclosing scope exited. Closing is terminal for new work: the state
+    // flips before anything is released, the orchestrator is halted (its late
+    // child never gets its turn), and anyone still holding the PoolContext —
+    // here the test, standing in for a stray producer — is refused outright.
+    const { ctx, store, root, started, release } = await fixture();
+    ctx._branchSetGrammar = () => { throw new Error('grammar install failed'); };
+    let pc!: PoolContext;
+    let orchestratorChildRan = false;
+    let lateSpawn = 'not refused';
+    let lateExtend = 'not refused';
+    let liveAfterLateSpawn: number[] = [];
+    await run(function* () {
+      yield* contexts(ctx, store);
+      const sub = yield* useAgentPool({
+        spine: root,
+        orchestrate: function* (ctx: PoolContext) {
+          pc = ctx;
+          yield* all([
+            ctx.spawn({ content: 'a', systemPrompt: 'You are an agent.', seed: 0 }),
+            (function* () { yield* sleep(1_000); orchestratorChildRan = true; })(),   // a child that would outlive the close
+          ]);
+        },
+        toolsJson: '', tools: new Map(), policy, maxTurns: 10,
+        eagerGrammar: 'root ::= "x"',
+      });
+      yield* spawn(function* () { yield* until(started.promise); release.resolve(); });
+      for (;;) {
+        const n = yield* sub.next();
+        if (n.done) break;
+      }
+      // The pool has closed; the scope is still open. New work is refused, not queued.
+      try { yield* pc.spawn({ content: 'b', systemPrompt: 'You are an agent.', seed: 1 }); lateSpawn = 'admitted'; }
+      catch (e) { lateSpawn = (e as Error).message; }
+      try { yield* pc.extendSpine('u', 'a'); lateExtend = 'admitted'; }
+      catch (e) { lateExtend = (e as Error).message; }
+      liveAfterLateSpawn = live(ctx);
+    });
+    expect(lateSpawn).toMatch(/closed/);
+    expect(lateExtend).toMatch(/closed/);
+    expect(orchestratorChildRan, 'the producer was not stopped at the close').toBe(false);
+    expect(liveAfterLateSpawn.length, 'a spawn after the close forged a branch').toBe(2);   // root and a (roster), nothing else
+    expect(live(ctx)).toEqual([root.handle]);
   });
 });

@@ -24,6 +24,7 @@ import type { PoolContext } from '../../../src/orchestrators';
 import type { Tool } from '../../../src/Tool';
 import { waitUntilSettled } from '../../../src/combinators';
 import { runPool, STOP } from '../harness';
+import type { PoolSpec } from '../harness';
 import { MediaTool, PNG_BYTES, MEDIA_TEST_NCTX, mediaFailures } from '../../helpers/media';
 import { I42_noLeakedBranches, formatResult } from '../predicates';
 
@@ -50,9 +51,9 @@ function withParent(after?: (P: Branch) => Operation<void>) {
   return { held, orchestrate };
 }
 
-const spec = (orchestrate: (ctx: PoolContext) => Operation<void>) => ({
+const spec = (orchestrate: (ctx: PoolContext) => Operation<void>): PoolSpec => ({
   nCtx: MEDIA_TEST_NCTX, cellsUsed: 0,
-  captureError: true as const,
+  captureError: true,
   // Fork order: P (never samples), the original, the replacement.
   scripts: [
     { tokens: [STOP] },
@@ -62,7 +63,7 @@ const spec = (orchestrate: (ctx: PoolContext) => Operation<void>) => ({
   tools: new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]),
   policy,
   orchestrate,
-  instrument: (ctx: { mockMultimodalError?: () => { message: string; rc: number; partial: boolean } }) => {
+  instrument: (ctx) => {
     ctx.mockMultimodalError = () => ({ message: 'compute failed', rc: -3, partial: false });
   },
 });
@@ -179,6 +180,55 @@ describe('scenario: a heal reproduces the original prefix or stands down', () =>
     expect(run.error, `the pool threw: ${String((run.error as Error)?.message ?? run.error)}`).toBeUndefined();
     expect(run.traceEvents.some(e => e.type === 'pool:agentHeal'), 'a heal was forked from a parent that moved during pricing').toBe(false);
     expect(run.traceEvents.filter(e => e.type === 'agent:spawn'), 'a second fork was announced').toHaveLength(1);
+    held.P!.pruneSync();
+    expect(formatResult('I42', I42_noLeakedBranches(run))).toBe('I42: ok');
+  });
+});
+
+describe('scenario: the guard sits at the fork itself', () => {
+  it('stands down when the parent moves between the check and the fork: an orchestrator already enqueued runs at the loop\'s next yield', async () => {
+    // `failSettled` moves the poisoned original to `idle`, which resolves its
+    // `final` and ENQUEUES the waiting orchestrator at the loop's own
+    // generation. When nothing yields between that and the heal's forge — the
+    // original keeps a live child, so the prune pass reclaims nothing and emits
+    // nothing; a text-only lineage prices without suspending — a guard placed
+    // before the fork's context reads sees the parent where the original left
+    // it, and at the first of those reads the reducer runs the orchestrator,
+    // which advances the parent. The fork must not follow.
+    const held: { P: Branch | null } = { P: null };
+    let child = -1;
+    const orchestrate = function* (ctx: PoolContext): Operation<void> {
+      const P = ctx.spine.forkSync();
+      held.P = P;
+      yield* waitUntilSettled(P.prefill([7, 7, 7, 7, 7, 7, 7, 7]));
+      const a = yield* ctx.spawn({ content: 'Task 0', systemPrompt: 'You are an agent.', seed: 0, parent: P });
+      yield* ctx.waitFor(a);
+      yield* waitUntilSettled(P.prefill([9, 9, 9]));   // the moment the original is gone, its parent moves on
+    };
+    const run = await runPool({
+      ...spec(orchestrate),
+      instrument: (ctx) => {
+        ctx.mockMultimodalError = () => ({ message: 'compute failed', rc: -3, partial: false });
+        const innerMM = ctx._storePrefillMultimodal.bind(ctx);
+        ctx._storePrefillMultimodal = async (handles, sep, prompts, bitmaps) => {
+          if (child < 0) child = ctx._branchFork(handles[0]);   // a live child: the original is not reclaimed, and the prune pass has nothing to say
+          return innerMM(handles, sep, prompts, bitmaps);
+        };
+      },
+    });
+    expect(mediaFailures(run.channelEvents), 'the image prefill must have been poisoned').toHaveLength(1);
+    expect(run.error, `the pool threw: ${String((run.error as Error)?.message ?? run.error)}`).toBeUndefined();
+    const original = (mediaFailures(run.channelEvents)[0] as { agentId: number }).agentId;
+    const creates = run.traceEvents.filter(e => e.type === 'branch:create' && (e as { role?: string }).role === 'agentFork') as { branchHandle: number; position: number }[];
+    const originalFork = creates.find(c => c.branchHandle === original)!.position;
+    // Either no heal, or a heal that forked exactly where the original did. Never a heal onto the moved prefix.
+    for (const c of creates) {
+      expect(c.position, `fork ${c.branchHandle} sits on the moved prefix, not the original's`).toBe(originalFork);
+    }
+    expect(run.traceEvents.some(e => e.type === 'pool:agentHeal'), 'a heal was forked onto the moved prefix').toBe(false);
+    // The scenario's own branches: the held child, the original it kept alive, and P.
+    run.ctx._branchPrune(child);
+    run.ctx._branchPrune(original);
     held.P!.pruneSync();
     expect(formatResult('I42', I42_noLeakedBranches(run))).toBe('I42: ok');
   });

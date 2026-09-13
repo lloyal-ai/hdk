@@ -107,6 +107,9 @@ function toError(err: unknown): Error {
  */
 export function* setupAgent(
   parent: Branch, task: AgentTaskSpec, ctx: SessionContext, enableThinking: boolean, clock?: () => number,
+  /** A heal's requirement: the parent must still stand exactly where the
+   *  original forked it. Checked at the fork itself — see below. */
+  forkAt?: number,
 ): Operation<{ agent: Agent; suffixTokens: number[]; formattedPrompt: string }> {
   // Shared mode: the spine already carries the [system + tools] header; the
   // agent inherits parser/grammar/format/triggers and contributes a user turn.
@@ -137,6 +140,18 @@ export function* setupAgent(
     parser: src.parser, grammar: src.grammar, grammarLazy: src.grammarLazy, grammarTriggers: src.grammarTriggers,
     enableThinking,
   };
+  // A replacement's replay carries only what came after the original's fork,
+  // so its parent must be the original's, at the original's fork point. The
+  // check sits HERE, adjacent to the fork: every `yield*` above re-enters the
+  // scheduler, where another fiber that owns the parent may run and move it;
+  // nothing between this line and `forkSync` does. A parent that is gone or
+  // has moved cannot give the original's prefix, and the heal stands down
+  // (the caller catches and reports nothing).
+  if (forkAt !== undefined && (parent.disposed || parent.position !== forkAt)) {
+    throw new Error(parent.disposed
+      ? 'heal: the original\'s parent is gone'
+      : `heal: the original's parent has moved (forked at ${forkAt}, now at ${parent.position})`);
+  }
   // The fork is the last fallible step: a failure above leaves no lease
   // behind, and the one native call after it gives the lease back on failure.
   const branch = parent.forkSync();
