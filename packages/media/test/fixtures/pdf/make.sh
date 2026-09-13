@@ -180,3 +180,55 @@ bigform = stream(b"<< /Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resourc
 pdf('bigform.pdf', [CAT, PAGES, page(100, None, b"/Fx1 5 0 R"), stream(b"<<", b"q /Fx1 Do Q"), bigform, big])
 PY
 ls -la clipped.pdf form.pdf bigimage.pdf bigform.pdf
+
+# Inspection-limit fixtures, hand-written: the walk's caps and what lies just
+# past them. A document the reader cannot finish inspecting is refused; these
+# pin both sides of each cap.
+#  form8.pdf       — a 2×2 green image behind exactly eight nested Form XObjects:
+#                    the image sits at walk depth 8 and is inspected.
+#  deepform.pdf    — the 10001×10000 image behind nine: the ninth form sits at
+#                    depth 8 and is not descended, so the image is never seen.
+#  paths19999.pdf  — 19,999 path objects then a 2×2 image, the 20,000th object.
+#  manypaths.pdf   — 20,000 path objects then the 10001×10000 image as the 20,001st.
+#  nodim.pdf       — an /Image XObject with no /Width or /Height.
+python3 - <<'PY'
+import io
+def pdf(path, objs):
+    out = io.BytesIO(); out.write(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n"); offsets = []
+    for i, o in enumerate(objs, 1):
+        offsets.append(out.tell()); out.write(f"{i} 0 obj\n".encode() + o + b"\nendobj\n")
+    xref = out.tell()
+    out.write(f"xref\n0 {len(objs)+1}\n".encode() + b"0000000000 65535 f \n")
+    for off in offsets: out.write(f"{off:010d} 00000 n \n".encode())
+    out.write(f"trailer\n<< /Size {len(objs)+1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
+    open(path, 'wb').write(out.getvalue())
+def stream(dict_head, data): return dict_head + b" /Length " + str(len(data)).encode() + b" >>\nstream\n" + data + b"\nendstream"
+def image(w, h, rgb, data=None):
+    data = data if data is not None else bytes(rgb) * (w * h)
+    return stream(b"<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceRGB /BitsPerComponent 8" % (w, h), data)
+def page(box, content, xobjects):
+    return b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %d %d] /Resources << /XObject << %s >> >> /Contents 4 0 R >>" % (box, box, xobjects)
+CAT = b"<< /Type /Catalog /Pages 2 0 R >>"; PAGES = b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"
+small = image(2, 2, (0, 170, 119))
+big = image(10001, 10000, (0, 0, 0), data=b"\x00\x00\x00")
+# n Form XObjects nested one inside the next (objects 5..4+n), the innermost painting the image (object 5+n).
+def nested(name, n, img):
+    forms = []
+    for k in range(n):
+        inner = (b"/Fx %d 0 R" % (6 + k)) if k < n - 1 else (b"/Im1 %d 0 R" % (5 + n))
+        paint = b"q /Fx Do Q" if k < n - 1 else b"q 100 0 0 100 0 0 cm /Im1 Do Q"
+        forms.append(stream(b"<< /Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resources << /XObject << " + inner + b" >> >>", paint))
+    pdf(name, [CAT, PAGES, page(100, None, b"/Fx1 5 0 R"), stream(b"<<", b"q /Fx1 Do Q"), *forms, img])
+nested('form8.pdf', 8, small)      # the image sits at walk depth 8: inspected
+nested('deepform.pdf', 9, big)     # the ninth form sits at depth 8: past the cap
+# N path objects, then the image as object N+1.
+def paths(name, n, img):
+    content = b"0 0 1 1 re f\n" * n + b"q 100 0 0 100 0 0 cm /Im1 Do Q"
+    pdf(name, [CAT, PAGES, page(100, None, b"/Im1 5 0 R"), stream(b"<<", content), img])
+paths('paths19999.pdf', 19999, small)   # the image is the 20,000th object: inspected
+paths('manypaths.pdf', 20000, big)      # the image is the 20,001st: past the cap
+# An image whose dictionary names no size at all.
+nodim = stream(b"<< /Type /XObject /Subtype /Image /ColorSpace /DeviceRGB /BitsPerComponent 8", b"\x00\x00\x00")
+pdf('nodim.pdf', [CAT, PAGES, page(100, None, b"/Im1 5 0 R"), stream(b"<<", b"q 100 0 0 100 0 0 cm /Im1 Do Q"), nodim])
+PY
+ls -la form8.pdf deepform.pdf paths19999.pdf manypaths.pdf nodim.pdf

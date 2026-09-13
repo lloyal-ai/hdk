@@ -4,7 +4,7 @@
  *
  * @category Testing
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { readFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -165,3 +165,58 @@ describe('the bounds on figures', () => {
   }, 90_000);
 });
 
+describe('the inspection caps', () => {
+  /**
+   * Arm every renderer entry point to throw the moment it is reached. The codec
+   * instantiates the wasm module through its own `instantiateWasm` hook, which
+   * calls `WebAssembly.instantiate` — so the spy sits at the true boundary and
+   * hands the glue an instance whose renderers are traps. A test under this
+   * trap that renders anything fails loud, so "refused before anything renders"
+   * is observed, not inferred from the order of the source.
+   */
+  function armRenderTrap(): void {
+    const original = WebAssembly.instantiate;
+    vi.spyOn(WebAssembly, 'instantiate').mockImplementation((async (...args: unknown[]) => {
+      const result = await (original as (...a: unknown[]) => Promise<unknown>).apply(WebAssembly, args);
+      const instance = (result instanceof WebAssembly.Instance ? result : (result as { instance: WebAssembly.Instance }).instance);
+      const trap = (name: string) => () => { throw new Error(`render reached: ${name}`); };
+      const exports = {
+        ...instance.exports,
+        FPDF_RenderPageBitmap_Start: trap('FPDF_RenderPageBitmap_Start'),
+        FPDF_RenderPageBitmapWithMatrix: trap('FPDF_RenderPageBitmapWithMatrix'),
+      };
+      return result instanceof WebAssembly.Instance
+        ? { exports }
+        : { module: (result as { module: WebAssembly.Module }).module, instance: { exports } };
+    }) as never);
+  }
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('the trap bites: a document that renders fails under it', async () => {
+    armRenderTrap();
+    await expect(ingest('scanned.pdf')).rejects.toThrow(/render reached/);
+  }, 60_000);
+
+  it('an image behind nine nested forms is refused because inspection could not finish — before any renderer runs', async () => {
+    armRenderTrap();
+    await expect(ingest('deepform.pdf')).rejects.toThrow(/could not be fully inspected.*nested deeper/);
+  }, 60_000);
+
+  it('the 20,001st object is refused for the same reason — before any renderer runs', async () => {
+    armRenderTrap();
+    await expect(ingest('manypaths.pdf')).rejects.toThrow(/could not be fully inspected.*more than/);
+  }, 60_000);
+
+  it('an image whose pixel size cannot be read is refused — before any renderer runs', async () => {
+    armRenderTrap();
+    await expect(ingest('nodim.pdf')).rejects.toThrow(/could not be fully inspected.*pixel size/);
+  }, 60_000);
+
+  it('the caps are boundaries, not margins: eight nested forms and 20,000 objects are inspected and commit', async () => {
+    const eight = await ingest('form8.pdf');
+    expect(eight.meta.pages[0].imageObjects).toBe(1);
+    const many = await ingest('paths19999.pdf');
+    expect(many.meta.pages[0].imageObjects).toBe(1);
+    expect(many.meta.pages[0].pathObjects).toBe(19_999);
+  }, 120_000);
+});
