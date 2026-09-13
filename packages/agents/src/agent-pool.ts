@@ -146,6 +146,11 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
 
     // ── The pool's state ─────────────────────────────────────────
     const agents: Agent[] = [];
+    /** Forks forged and not yet admitted. A fork is the pool's from the forge
+     *  until it enters the roster (the executor removes it there) or is given
+     *  back (`discardSpawn` removes it); whatever is left is released at every
+     *  close and at teardown — the one owner between forge and roster. */
+    const forged = new Set<Agent>();
     const config: PolicyConfig = { maxTurns, terminalToolName, hasNonTerminalTools };
     const pending: Pending = emptyPending();
     const ladder: Ladder = { consecutiveFatalRc: 0, backendSuspect: false };
@@ -163,8 +168,21 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     let orchestratorDone = false;
     let orchestratorError: unknown = null;
 
-    // Teardown frees every leaf branch, children first.
-    yield* ensure(() => { pruneAll(agents, emit); });
+    /** Give back every fork that was forged and never admitted. Runs after the
+     *  native work has settled (the executor's `waitUntilSettled` ensure runs as
+     *  its operation unwinds), and BEFORE the roster prune: a forged fork under
+     *  a roster agent would make that agent a non-leaf the leaf-only prune
+     *  skips. Both calls are no-ops on a fork already given back. */
+    function releaseUnadmitted(): void {
+      for (const a of forged) {
+        if (!a.branch.disposed) a.branch.pruneSync();
+        a.dispose();
+      }
+      forged.clear();
+    }
+
+    // Teardown gives back the unadmitted forks, then frees every leaf branch, children first.
+    yield* ensure(() => { releaseUnadmitted(); pruneAll(agents, emit); });
 
     emit.trace({ kind: 'opened', pressure: new ContextPressure(ctx, pressureOpts) });
 
@@ -180,26 +198,37 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
      * lineage the replacement will replay is built and priced FIRST, so
      * admission sees everything the request will prefill, and a lineage that
      * cannot be rebuilt (its content gone from the store) fails before any
-     * fork exists. A replacement forks the spine, as the original's replay
-     * carries what came after the fork.
+     * fork exists. A replacement forks the ORIGINAL'S parent at the original's
+     * fork point: its replay carries only what came after the fork, so the
+     * prefix under it must be the one the original had. A parent that is gone
+     * or has moved since cannot give that prefix, and the heal stands down
+     * (the throw below, caught where heals are forged) rather than report a
+     * reconstruction onto a different context. Every fork made here is the
+     * pool's (`forged`) until it enters the roster.
      */
     function* forge(task: AgentTaskSpec, lineage?: Lineage): Operation<Omit<SpawnRequest, 'resolve' | 'reject' | 'discarded'>> {
+      const parent = task.parent ?? spine;
+      if (lineage && (parent.disposed || parent.position !== lineage.forkHead)) {
+        throw new Error(parent.disposed
+          ? 'heal: the original\'s parent is gone'
+          : `heal: the original's parent has moved (forked at ${lineage.forkHead}, now at ${parent.position})`);
+      }
       const replay = lineage ? yield* prepareReplay(lineage.records, { enableThinking }) : null;
-      const parent = lineage ? spine : (task.parent ?? spine);
       // A heal forges off the loop fiber, where no tool call is active, so
       // setupAgent reads CallingAgent as null — the replacement is nobody's
       // live child. A delegate's forge runs inside its call, so it reads the caller.
       const { agent, suffixTokens, formattedPrompt } = yield* setupAgent(parent, task, ctx, enableThinking, runNow);
+      forged.add(agent);
       if (!lineage || !replay) return { agent, suffixTokens, formattedPrompt, task };
       return { agent, suffixTokens, formattedPrompt, task, replay: { ...replay, of: lineage.of, rc: lineage.rc, attempt: lineage.attempt, history: lineage.history } };
     }
 
     const applier = new Applier({
-      ctx, policy, config, tools, frame, emit, pending, ladder,
+      ctx, policy, config, tools, frame, emit, pending, forged, ladder,
       recoveryBudget: policy.recoveryBudget, terminalToolName, pruneOnReturn, pressureOpts, totals,
     });
     const executor = new Executor({
-      ctx, store, tools, emit, tw, pending, agents, inflight,
+      ctx, store, tools, emit, tw, pending, agents, forged, inflight,
       permits: makePermits(opts.maxConcurrentTools ?? DEFAULT_MAX_CONCURRENT_TOOLS),
       completed, wake, progress, scorer: opts.scorer, toolIndexMap, toolkitSize: tools.size,
       terminalGrammar, eagerGrammar, enableThinking, spine, runNow, counters, totals, policy, frame,
@@ -320,13 +349,14 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             yield* emit.emit({ kind: 'kvTick', pressure: new ContextPressure(ctx, pressureOpts) });
           }
           // Heals the ladder decided are forged here, after the prune pass has
-          // reclaimed what it could: a replacement forks the spine and needs a
-          // lease, and the poisoned branch is the one that just gave one back.
-          // An original with live children is not reclaimed yet; its heal is
-          // forged all the same — once, now — and admitted or refused by fit
-          // like any spawn, never held for a reclamation that may not come.
-          // A forge that throws (lineage content gone, no lease) stands down:
-          // the original's failure already stands, and nothing else goes with it.
+          // reclaimed what it could: a replacement forks the original's parent
+          // and needs a lease, and the poisoned branch is the one that just gave
+          // one back. An original with live children is not reclaimed yet; its
+          // heal is forged all the same — once, now — and admitted or refused by
+          // fit like any spawn, never held for a reclamation that may not come.
+          // A forge that throws (lineage content gone, no lease, the parent gone
+          // or moved since the fork) stands down: the original's failure already
+          // stands, and nothing else goes with it.
           for (const a of agents) {
             const lineage = a.heal;
             if (!lineage) continue;
@@ -398,11 +428,14 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           idleTicks = ran === 0 ? idleTicks + 1 : 0;
         }
 
+        releaseUnadmitted();
         emit.trace({ kind: 'closed', agents, steps: totals.steps, durationMs: performance.now() - poolT0 });
         yield* poolChannel.close(result());
       } catch {
         // A decode failed beyond the ladder, or the orchestrator threw: close
-        // with what exists. No `pool:close` — its absence is the signal.
+        // with what exists — the unadmitted forks given back now, not at scope
+        // exit. No `pool:close` — its absence is the signal.
+        releaseUnadmitted();
         yield* poolChannel.close(result());
       }
     });

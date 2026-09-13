@@ -97,6 +97,10 @@ export interface SpawnReplay {
 /** What a heal hands to the pool to forge its replacement from. */
 export interface Lineage {
   records: readonly AgentTurnRecord[];
+  /** The parent's position at the original's fork — the replacement forks the
+   *  same parent (the spec's, or the spine) at exactly this position, or the
+   *  heal stands down: the records carry only what came after the fork. */
+  forkHead: number;
   /** The original's attended tool history — carried onto the replacement (see {@link SpawnReplay.history}). */
   history: readonly ToolHistoryEntry[];
   of: number; rc?: number; attempt: number;
