@@ -129,6 +129,7 @@ export function include(alphas, names) {
   if (names.length === 0) {
     throw new Error(`--include <name> is required (one or more of: ${Object.keys(alphas).join(', ')})`);
   }
+  /** @type {Record<string, string>} */
   const kept = {};
   for (const n of names) {
     if (!(n in alphas)) {
@@ -184,7 +185,11 @@ export function unclosed(alphas, packages, manifestOf) {
  *  so its peer admits both (`^5.0.0 || >=6.0.0-0 <7.0.0`) and no cut may
  *  write the set's pin over it. A member outside the cut keeps its version:
  *  the npm loop skips already-published versions, and the catalog release
- *  moves an ability's. Returns whether anything changed. */
+ *  moves an ability's. Returns whether anything changed.
+ *  @param {Record<string, any>} pkg  the manifest object, rewritten in place
+ *  @param {{ version?: string, alphas: Record<string, string> }} set  this package's own alpha when it is in the
+ *    cut (absent when it is not), and the set's pins
+ *  @returns {boolean} */
 export function rewriteManifest(pkg, { version, alphas }) {
   let changed = false;
   if (version !== undefined && pkg.version !== version) { pkg.version = version; changed = true; }

@@ -349,16 +349,25 @@ function readPage(codec: Codec, doc: OpenDocument, index: number, opts: { text: 
     // space through the form matrices, and clipped to the page: an object may
     // extend far past the page and the renderer clips it, so the visible part
     // is the figure.
+    //
+    // The walk either completes or refuses the document. A cap that is hit, a
+    // form nested past the depth, an image whose size cannot be read: each is
+    // a part of the page the renderer would decode and this pass did not see,
+    // so the document is refused here, before any renderer runs — never
+    // inspected as far as convenient and rendered whole.
     const images: PageImage[] = [];
     let pathObjects = 0;
     let walked = 0;
     const matrixBuf = codec.malloc(24);
+    const refuse = (why: string): never => {
+      throw new PdfError(`readPage: page ${index + 1} could not be fully inspected: ${why}`);
+    };
     const walk = (obj: number, depth: number, m: Matrix): void => {
-      if (++walked > MAX_WALKED_OBJECTS) return;
+      if (++walked > MAX_WALKED_OBJECTS) refuse(`more than ${MAX_WALKED_OBJECTS} objects`);
       const type = pdfium.FPDFPageObj_GetType(obj);
       if (type === PAGEOBJ_PATH) { pathObjects++; return; }
       if (type === PAGEOBJ_FORM) {
-        if (depth >= MAX_FORM_DEPTH) return;
+        if (depth >= MAX_FORM_DEPTH) refuse(`Form XObjects nested deeper than ${MAX_FORM_DEPTH}`);
         let fm: Matrix = IDENTITY;
         if (pdfium.FPDFPageObj_GetMatrix(obj, matrixBuf)) {
           fm = [0, 1, 2, 3, 4, 5].map((k) => pdfium.pdfium.getValue(matrixBuf + k * 4, 'float')) as Matrix;
@@ -369,12 +378,12 @@ function readPage(codec: Codec, doc: OpenDocument, index: number, opts: { text: 
         return;
       }
       if (type !== PAGEOBJ_IMAGE) return;
-      if (pdfium.FPDFImageObj_GetImagePixelSize(obj, scratch, scratch + 4)) {
-        const w = pdfium.pdfium.getValue(scratch, 'i32');
-        const h = pdfium.pdfium.getValue(scratch + 4, 'i32');
-        if (w * h > MAX_INPUT_PIXELS) {
-          throw new PdfError(`readPage: page ${index + 1} embeds a ${w}×${h} image, over the ${MAX_INPUT_PIXELS}-pixel ceiling`);
-        }
+      if (!pdfium.FPDFImageObj_GetImagePixelSize(obj, scratch, scratch + 4)) refuse('an image whose pixel size cannot be read');
+      const w = pdfium.pdfium.getValue(scratch, 'i32');
+      const h = pdfium.pdfium.getValue(scratch + 4, 'i32');
+      if (w <= 0 || h <= 0) refuse(`an image whose pixel size cannot be read (${w}×${h})`);
+      if (w * h > MAX_INPUT_PIXELS) {
+        throw new PdfError(`readPage: page ${index + 1} embeds a ${w}×${h} image, over the ${MAX_INPUT_PIXELS}-pixel ceiling`);
       }
       if (!pdfium.FPDFPageObj_GetBounds(obj, scratch, scratch + 4, scratch + 8, scratch + 12)) return;
       const own: PageImage['bbox'] = [

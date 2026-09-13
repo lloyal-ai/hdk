@@ -38,6 +38,9 @@ export interface ApplyDeps {
   frame: Frame;
   emit: Emitter;
   pending: Pending;
+  /** The forks the pool has forged and not yet admitted — owned by the pool
+   *  until they enter the roster or are discarded (see `discardSpawn`). */
+  forged: Set<Agent>;
   ladder: Ladder;
   recoveryBudget?: number;
   terminalToolName?: string;
@@ -103,7 +106,7 @@ export class Applier {
     }
     for (const req of S.rejectedSpawns) {
       if (!req.discarded) this.d.emit.trace({ kind: 'drop', agent: req.agent, reason: 'pressure_init', done: false });
-      discardSpawn(req, new Error(`useAgentPool: cannot fit agent suffix (${req.suffixTokens.length} tokens) under current pressure`));
+      discardSpawn(this.d.forged, req, new Error(`useAgentPool: cannot fit agent suffix (${req.suffixTokens.length} tokens) under current pressure`));
     }
     for (const e of S.rejectedExtends) {
       if (!e.discarded) e.reject(new Error(`useAgentPool: cannot fit spine extension (${e.tokens.length} tokens) — nothing left to free KV`));
@@ -391,7 +394,11 @@ export class Applier {
       // Carry the attended entries so the replacement's ledger matches the KV
       // its records replay — a nudge or recovery turn delivered nothing.
       const history = a.toolHistory.filter(isAttended);
-      a.heal = { records, history, of: a.id, ...(o.rc !== undefined ? { rc: o.rc } : {}), attempt };
+      // The fork point is read here, while the branch is live (the prune pass
+      // runs at the next observe); a branch already gone gives a position no
+      // parent can be at, and the forge stands the heal down.
+      const forkHead = a.branch.disposed ? -1 : a.forkHead;
+      a.heal = { records, history, forkHead, of: a.id, ...(o.rc !== undefined ? { rc: o.rc } : {}), attempt };
     }
   }
 
@@ -421,7 +428,8 @@ export class Applier {
  * without it (a pool being halted, whose orchestrator is being halted with
  * it) the fork simply goes back.
  */
-export function discardSpawn(req: SpawnRequest, err?: Error): void {
+export function discardSpawn(forged: Set<Agent>, req: SpawnRequest, err?: Error): void {
+  forged.delete(req.agent);
   req.agent.branch.pruneSync();
   req.agent.dispose();
   if (err && !req.discarded) req.reject(err);

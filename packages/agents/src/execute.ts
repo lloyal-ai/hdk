@@ -107,6 +107,9 @@ function toError(err: unknown): Error {
  */
 export function* setupAgent(
   parent: Branch, task: AgentTaskSpec, ctx: SessionContext, enableThinking: boolean, clock?: () => number,
+  /** A heal's requirement: the parent must still stand exactly where the
+   *  original forked it. Checked at the fork itself — see below. */
+  forkAt?: number,
 ): Operation<{ agent: Agent; suffixTokens: number[]; formattedPrompt: string }> {
   // Shared mode: the spine already carries the [system + tools] header; the
   // agent inherits parser/grammar/format/triggers and contributes a user turn.
@@ -137,6 +140,18 @@ export function* setupAgent(
     parser: src.parser, grammar: src.grammar, grammarLazy: src.grammarLazy, grammarTriggers: src.grammarTriggers,
     enableThinking,
   };
+  // A replacement's replay carries only what came after the original's fork,
+  // so its parent must be the original's, at the original's fork point. The
+  // check sits HERE, adjacent to the fork: every `yield*` above re-enters the
+  // scheduler, where another fiber that owns the parent may run and move it;
+  // nothing between this line and `forkSync` does. A parent that is gone or
+  // has moved cannot give the original's prefix, and the heal stands down
+  // (the caller catches and reports nothing).
+  if (forkAt !== undefined && (parent.disposed || parent.position !== forkAt)) {
+    throw new Error(parent.disposed
+      ? 'heal: the original\'s parent is gone'
+      : `heal: the original's parent has moved (forked at ${forkAt}, now at ${parent.position})`);
+  }
   // The fork is the last fallible step: a failure above leaves no lease
   // behind, and the one native call after it gives the lease back on failure.
   const branch = parent.forkSync();
@@ -160,6 +175,11 @@ export interface ExecDeps {
   tw: TraceWriter;
   pending: Pending;
   agents: Agent[];
+  /** Forks forged and not yet admitted: the pool's until roster entry. The
+   *  executor removes a fork from it when the fork enters the roster, and
+   *  `discardSpawn` when it is given back; the pool releases what is left at
+   *  every close and at teardown. */
+  forged: Set<Agent>;
   inflight: Map<number, Task<void>>;
   permits: Permits;
   completed: ToolCompletion[];
@@ -382,67 +402,58 @@ export class Executor {
     const d = this.d;
     const born: Agent[] = [];
     if (S.spawns.length === 0 && S.extends.length === 0) return born;
-    const self = this;
 
-    // The batch's forks are owned HERE until they enter the roster. The prefill
-    // is a native call the loop suspends on, and the window between admission
-    // and activation is open to everything that can happen during a yield: the
-    // orchestrator halted by wind-down or by its own failure (its requests
-    // become `discarded`), or the pool itself halted (teardown), which unwinds
-    // this operation without visiting any catch. A fork not handed over by the
-    // time this scope exits goes back, its lease with it — the same cleanup on
-    // return, error and halt.
-    const handed = new Set<SpawnRequest>();
-    return yield* scoped(function* () {
-      yield* ensure(() => {
-        // Reached with forks still unhanded only on a halt: the pool is going,
-        // and its orchestrator with it, so the forks go back without a word.
-        for (const s of S.spawns) if (!handed.has(s)) discardSpawn(s);
-      });
+    // The batch's forks belong to the pool until they enter the roster
+    // (`d.forged`, added at the forge). The prefill is a native call the loop
+    // suspends on, and everything that can happen during a yield can happen
+    // here: the orchestrator halted (its requests become `discarded`), the pool
+    // halted (teardown), a throw after the prefill. None of it needs a window
+    // of its own — a fork still in `d.forged` is released by the pool at its
+    // next close or at teardown, after the native work has settled
+    // (`waitUntilSettled`), never before.
 
-      // One batch never carries a handle twice (`require_distinct_handles`), so
-      // every admitted extend rides as ONE pair on the spine, in request order.
-      const extendTokens = S.extends.flatMap(e => e.tokens);
-      const pairs: [Branch, number[]][] = [
-        ...S.spawns.map(s => [s.agent.branch, s.suffixTokens] as [Branch, number[]]),
-        ...(extendTokens.length > 0 ? [[d.spine, extendTokens] as [Branch, number[]]] : []),
-      ];
-      try {
-        if (pairs.length > 0) yield* prefill(d.store, pairs);
-      } catch (err) {
-        // Nothing in this batch entered the pool, so nothing may outlive it: the
-        // forks go back (their KV leases with them) and every waiter hears why.
-        const e = toError(err);
-        for (const x of S.extends) x.reject(e);
-        for (const s of S.spawns) { discardSpawn(s, e); handed.add(s); }
-        out.fatal = { phase: 'prefill', err };
-        return born;
-      }
-
-      // Each request is answered with its own delta; its record carries the
-      // spine position as of ITS landing, the pair having advanced in order.
-      let positionAfter = d.spine.position - extendTokens.length;
-      for (const e of S.extends) {
-        positionAfter += e.tokens.length;
-        d.emit.trace({ kind: 'extended', userContent: e.userContent, assistantContent: e.assistantContent,
-          deltaTokens: e.tokens.length, positionAfter });
-        e.resolve(e.tokens.length);
-      }
-      for (const s of S.spawns) {
-        // Discarded while the batch was in flight: its suffix was prefilled, but nobody
-        // awaits it and the pool is draining or its orchestrator is gone. The
-        // fork goes back rather than into a roster that would only reap it.
-        if (s.discarded) { discardSpawn(s); handed.add(s); continue; }
-        const a = s.agent;
-        a.spec = s.task;
-        d.agents.push(a);
-        handed.add(s);   // in the roster: teardown owns it from here
-        if (!(yield* self.activate(s))) continue;
-        s.resolve(a);
-        born.push(a);
-      }
+    // One batch never carries a handle twice (`require_distinct_handles`), so
+    // every admitted extend rides as ONE pair on the spine, in request order.
+    const extendTokens = S.extends.flatMap(e => e.tokens);
+    const pairs: [Branch, number[]][] = [
+      ...S.spawns.map(s => [s.agent.branch, s.suffixTokens] as [Branch, number[]]),
+      ...(extendTokens.length > 0 ? [[d.spine, extendTokens] as [Branch, number[]]] : []),
+    ];
+    try {
+      if (pairs.length > 0) yield* prefill(d.store, pairs);
+    } catch (err) {
+      // Nothing in this batch entered the pool, so nothing may outlive it: the
+      // forks go back (their KV leases with them) and every waiter hears why.
+      const e = toError(err);
+      for (const x of S.extends) x.reject(e);
+      for (const s of S.spawns) discardSpawn(d.forged, s, e);
+      out.fatal = { phase: 'prefill', err };
       return born;
-    });
+    }
+
+    // Each request is answered with its own delta; its record carries the
+    // spine position as of ITS landing, the pair having advanced in order.
+    let positionAfter = d.spine.position - extendTokens.length;
+    for (const e of S.extends) {
+      positionAfter += e.tokens.length;
+      d.emit.trace({ kind: 'extended', userContent: e.userContent, assistantContent: e.assistantContent,
+        deltaTokens: e.tokens.length, positionAfter });
+      e.resolve(e.tokens.length);
+    }
+    for (const s of S.spawns) {
+      // Discarded while the batch was in flight: its suffix was prefilled, but nobody
+      // awaits it and the pool is draining or its orchestrator is gone. The
+      // fork goes back rather than into a roster that would only reap it.
+      if (s.discarded) { discardSpawn(d.forged, s); continue; }
+      const a = s.agent;
+      a.spec = s.task;
+      d.forged.delete(a);
+      d.agents.push(a);   // in the roster: teardown owns it from here
+      if (!(yield* this.activate(s))) continue;
+      s.resolve(a);
+      born.push(a);
+    }
+    return born;
   }
 
   /** Announce the fork, replay its lineage if it has one, and activate it.
