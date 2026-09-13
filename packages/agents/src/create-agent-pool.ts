@@ -3,10 +3,10 @@ import type { Branch } from '@lloyal-labs/sdk';
 import type { Session } from '@lloyal-labs/sdk';
 import { Tool } from './Tool';
 import type { AgentPoolResult } from './types';
-import type { AgentPolicy } from './AgentPolicy';
+import type { AgentPolicy, Budget, GuardOverrides } from './AgentPolicy';
 import type { EntailmentScorer } from './source';
 import type { Orchestrator } from './orchestrators';
-import { Events } from './context';
+import { Events, PoolDefaults } from './context';
 import { createToolkit } from './toolkit';
 import { withSpine } from './spine';
 import { useAgentPool } from './agent-pool';
@@ -27,7 +27,7 @@ export interface CreateAgentPoolOpts {
    */
   orchestrate: Orchestrator;
   /** Data access tools (array, createToolkit called internally). Optional — pool degenerates cleanly without tools. */
-  tools?: Tool[];
+  tools?: readonly Tool[];
   /**
    * The tool that ends an agent's turn — `report`, `email`, whatever the
    * harness designates. Passed by reference; the framework merges it into
@@ -36,13 +36,23 @@ export interface CreateAgentPoolOpts {
    * return value. Omit for pools that end on free-text/stop.
    */
   terminal?: Tool;
-  /** Max tool-use turns per agent before hard cut. @default 100 */
+  /**
+   * Every number an agent's turn obeys, as one row of the harness's table
+   * ({@link Budget}): the turn cap, the reserves, recovery, when retrieval
+   * tightens. The pool derives its policy from it. Give this or `policy`.
+   */
+  budget?: Budget;
+  /** The harness's overrides of the abilities' declared gates ({@link GuardOverrides}),
+   *  from its config, on the policy the budget derives. */
+  guards?: GuardOverrides;
+  /** Max tool-use turns per agent before hard cut. Wins over the row's. @default the row's, else 100 */
   maxTurns?: number;
-  /** Prune agent branches immediately when they voluntarily return, freeing KV mid-pool. */
+  /** Prune agent branches immediately when they voluntarily return, freeing KV mid-pool.
+   *  @default the {@link PoolDefaults} context's, else false */
   pruneOnReturn?: boolean;
-  /** Custom agent policy. @default DefaultAgentPolicy */
+  /** A policy of your own, in place of the one the budget derives. Never with `budget` or `guards`. */
   policy?: AgentPolicy;
-  /** Enable structured trace events. */
+  /** Per-token entropy/surprisal on `agent:produce`. @default the {@link PoolDefaults} context's, else false */
   trace?: boolean;
   /**
    * Explicit parent branch for warm path (Continuous Context).
@@ -69,7 +79,7 @@ export interface CreateAgentPoolOpts {
   /**
    * Whether the chat template delimits `<think>` blocks for this pool's agents.
    * See {@link AgentPoolOptions.enableThinking}.
-   * @default true
+   * @default the {@link PoolDefaults} context's, else true
    */
   enableThinking?: boolean;
   /**
@@ -103,12 +113,13 @@ export interface CreateAgentPoolOpts {
  * events to the broadcast Channel. Returns `AgentPoolResult` with
  * branches pruned.
  *
- * @example Research harness
+ * @example Parallel agents over one spine, ending on a terminal tool, on one budget row
  * ```typescript
  * const pool = yield* agentPool({
  *   tools: [delegateTool, ...source.tools],
- *   orchestrate: parallel(questions.map(q => ({ content: q, systemPrompt: RESEARCH_PROMPT }))),
+ *   orchestrate: parallel(questions.map(q => ({ content: q, systemPrompt: WORKER }))),
  *   terminal: reportTool,
+ *   budget: BUDGETS.worker,
  * });
  * ```
  *
@@ -123,6 +134,8 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
   const warmParent = opts.parent ?? opts.session?.trunk ?? undefined;
 
   const sharedMode = opts.systemPrompt !== undefined;
+  // Resolved once, here, so the spine's header format and every agent's suffix agree.
+  const enableThinking = opts.enableThinking ?? (yield* PoolDefaults.expect()).enableThinking;
 
   return yield* withSpine(
     {
@@ -137,7 +150,7 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
       // SpineFmt FormatConfig (parser/grammar/triggers) match what the
       // per-agent suffixes get further down. Otherwise a caller passing
       // enableThinking:true gets divergent grammar between spine + suffix.
-      enableThinking: opts.enableThinking,
+      enableThinking,
     },
     function* (innerSpine) {
       // SHARED mode (systemPrompt set): the inner spine carries the
@@ -152,7 +165,7 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
       // that fork from the same parent. The inner spine is just a
       // separator-prefilled fork of parent — its extensions would be
       // discarded at pool close, breaking the multi-task spine pattern
-      // (research → synth over shared spine). On cold path, the inner
+      // (one pool's findings extending the spine a later pool forks from). On cold path, the inner
       // spine IS the persistent spine.
       const spine = sharedMode ? innerSpine : (warmParent ?? innerSpine);
       const sub = yield* useAgentPool({
@@ -165,9 +178,11 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
         maxTurns: opts.maxTurns,
         trace: opts.trace,
         policy: opts.policy,
+        budget: opts.budget,
+        guards: opts.guards,
         scorer: opts.scorer,
         attachments: opts.attachments,
-        enableThinking: opts.enableThinking,
+        enableThinking,
       });
 
       // Drain Subscription inside body — before withSpine's finally fires

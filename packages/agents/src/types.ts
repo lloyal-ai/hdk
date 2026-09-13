@@ -1,7 +1,7 @@
 import type { Operation } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
-import type { AgentPolicy } from './AgentPolicy';
+import type { AgentPolicy, Budget, GuardOverrides } from './AgentPolicy';
 import type { EntailmentScorer } from './source';
 import type { TraceEvent } from './trace-types';
 import type { Attachment } from '@lloyal-labs/media';
@@ -251,8 +251,18 @@ export interface AgentPoolOptions {
   tools: Map<string, import('./Tool').Tool>;
   /** Sampling parameters applied to all agents */
   params?: SamplingParams;
-  /** Maximum tool-call turns per agent before forced termination */
+  /** Maximum tool-call turns per agent before forced termination. Wins over
+   *  the budget row's `maxTurns`. @default the row's, else 100 */
   maxTurns?: number;
+  /**
+   * Every number an agent's turn obeys, as one row ({@link Budget}); the pool
+   * derives its policy from it and the harness's `guards`, with the pool's
+   * terminal. Give this or `policy`, never both.
+   */
+  budget?: Budget;
+  /** The harness's overrides of declared gates ({@link GuardOverrides}), on the
+   *  policy the budget derives. Not with `policy`, which carries its own. */
+  guards?: GuardOverrides;
   /** Max concurrent fan-out tool executions across the pool. Fan-out tools
    *  ({@link Tool.fanout}) run off the loop fiber; this FIFO-gates how many
    *  execute at once. Inline tools are unaffected — the loop fiber already
@@ -265,16 +275,17 @@ export interface AgentPoolOptions {
    *  omitted, agents complete only via stop token, free-text return, or
    *  hard-cut. */
   terminalToolName?: string;
-  /** Enable per-token entropy/surprisal on `agent:produce` events */
+  /** Enable per-token entropy/surprisal on `agent:produce` events.
+   *  @default the {@link PoolDefaults} context's, else false */
   trace?: boolean;
   /** Prune agent branches immediately when they voluntarily return via the
    *  terminal tool. Frees KV for remaining agents mid-pool. Only agents
    *  that voluntarily returned are pruned — hard-cut agents keep their
-   *  branches for recovery extraction. @default false */
+   *  branches for recovery extraction. @default the {@link PoolDefaults} context's, else false */
   pruneOnReturn?: boolean;
-  /** Custom agent policy. Configure recovery (recovery-prompt extraction),
-   *  time limits, explore/exploit threshold, and tool guards via
-   *  {@link DefaultAgentPolicyOpts}. @default DefaultAgentPolicy with default opts */
+  /** A policy of your own, in place of the one a `budget` derives: recovery,
+   *  time limits, explore/exploit threshold and tool guards via
+   *  {@link DefaultAgentPolicyOpts}. @default the policy an empty budget row derives */
   policy?: AgentPolicy;
   /**
    * Whether the chat template delimits `<think>` blocks for this pool's
@@ -289,7 +300,7 @@ export interface AgentPoolOptions {
    * into visible content — so leave this `true` (the default) for thinking
    * models, and only set `false` for non-thinking `-Instruct` models or
    * deliberate agent-side suppression (shared spine, session trunk, reranker).
-   * @default true
+   * @default the {@link PoolDefaults} context's, else true
    */
   enableThinking?: boolean;
   /** Entailment scorer for semantic coherence across recursive depths.

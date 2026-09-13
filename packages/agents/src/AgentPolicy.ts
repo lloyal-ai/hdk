@@ -256,6 +256,67 @@ export interface PolicyConfig {
   hasNonTerminalTools: boolean;
 }
 
+// ── A budget row ────────────────────────────────────────────
+
+/**
+ * Every number one agent's turn obeys, as one row of data: the turn cap, the
+ * context and time reserves, how a reaped agent recovers, when retrieval
+ * tightens. A harness keeps its rows in one table and hands one to a pool
+ * (`agentPool({ budget })`) or a single agent (`useAgent({ budget })`); the
+ * framework derives the policy ({@link policyFromBudget}). Every field is
+ * optional: the framework's defaults stand where a row is silent, and a row
+ * may carry numbers of the harness's own beside these.
+ *
+ * @category Agents
+ */
+export interface Budget {
+  /** Tool-use turns before the hard cut. @default 100 */
+  maxTurns?: number;
+  /** Context reserve, in tokens remaining: `softLimit` nudges, `hardLimit` kills.
+   *  See {@link DefaultAgentPolicyOpts.budget} for the coupling with recovery. */
+  context?: { softLimit?: number; hardLimit?: number };
+  /** Wall time since the agent started, in ms: `softLimit` nudges, `hardLimit` kills. */
+  time?: { softLimit?: number; hardLimit?: number };
+  /** Recovery for an agent reaped without reporting: what it is told, and the
+   *  floors below which it is not worth asking. Absent: a reaped agent is pruned. */
+  recovery?: DefaultAgentPolicyOpts['recovery'];
+  /** How a cohort recovers — see {@link AgentPolicy.recoveryShape}. @default 'staggered' */
+  recoveryShape?: 'staggered' | 'parallel';
+  /** The recovery report's token cap — see {@link AgentPolicy.recoveryBudget}. */
+  recoveryBudget?: number;
+  /** When retrieval tightens from explore to exploit — see {@link DefaultAgentPolicyOpts.shouldExplore}. */
+  shouldExplore?: DefaultAgentPolicyOpts['shouldExplore'];
+  /** Tool calls before a report is accepted without a nudge. @default 2 */
+  minToolCallsBeforeReturn?: number;
+  /** Retries of a transient tool failure before the call fails. @default 1 */
+  maxToolRetries?: number;
+}
+
+/**
+ * The policy a budget row derives: the row's numbers on the default policy,
+ * with the pool's terminal (so an agent mid-report is protected from the exit
+ * the way a harness used to restate) and the harness's guard overrides. The
+ * one place a row becomes a policy; `maxTurns` is the pool's and is not read here.
+ *
+ * @category Agents
+ */
+export function policyFromBudget(
+  budget: Budget,
+  pool: { terminalToolName?: string; guardOverrides?: GuardOverrides },
+): DefaultAgentPolicy {
+  return new DefaultAgentPolicy({
+    budget: { context: budget.context, time: budget.time },
+    recovery: budget.recovery,
+    recoveryShape: budget.recoveryShape,
+    recoveryBudget: budget.recoveryBudget,
+    shouldExplore: budget.shouldExplore,
+    minToolCallsBeforeReturn: budget.minToolCallsBeforeReturn,
+    maxToolRetries: budget.maxToolRetries,
+    terminalToolName: pool.terminalToolName,
+    guardOverrides: pool.guardOverrides,
+  });
+}
+
 // ── Default policy ──────────────────────────────────────────
 
 /**
@@ -305,7 +366,7 @@ export interface DefaultAgentPolicyOpts {
      *  The recovery budget `b` and the admission of an extracting agent's recovery turn draw
      *  from `remaining − hardLimit` (see {@link AgentPolicy.onRecovery} + the scheduler's
      *  `recoveryFor`), so recovery may decode the soft reserve down to `hardLimit`. `softLimit`
-     *  is the model NUDGE floor, reserved for downstream work (synth) — raising it nudges
+     *  is the model NUDGE floor, reserved for downstream work (a later pool on the same spine) — raising it nudges
      *  EARLIER but does NOT shorten recovery reports. (`softLimit` is advisory: it gates the
      *  wrap-up nudge + tool-result deferral, never a kill; `hardLimit` is the only mechanical
      *  floor.) */

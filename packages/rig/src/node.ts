@@ -60,12 +60,27 @@ export type {
 // boundary path resolution. The per-template LAYERING stays in the scaffold.
 export {
   resolvePath,
+  isPathShaped,
   resolveAppConfigPaths,
   readJsonOverlay,
   readJsonForWrite,
   writeJsonAtomic,
   maybeAppendGitignore,
 } from './config-node';
+
+// Node-only: a library's folder mechanics — a name minted and its folder reserved
+// exclusively, a client path confined by its real location, a listing held to the
+// same rule, removal. What a folder holds is the app's.
+export { reserveFolder, confined, listFolders, removeFolder } from './folders';
+
+// Node-only: the layering a `defineConfig` table describes — harness.yml read loud,
+// the rungs layered with provenance, harness.json written back, the Runner's plumbing.
+export { loadYml, loadConfig, saveLocalConfig, runnerConfig } from './config-layering';
+export type { ConfigSource } from './config-layering';
+
+// Node-only: the one rig default — the Runner's knobs as a command group.
+export { settings } from './settings';
+export type { SettingsDeps } from './settings';
 
 export { provisionAbilityModels } from './provision';
 export type { ProvisionAbilityModelsOpts } from './provision';

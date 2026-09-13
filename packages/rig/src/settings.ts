@@ -1,0 +1,121 @@
+/**
+ * `settings`, the one rig default: a command group over the Runner's knobs,
+ * assuming nothing about a product. Three commands in place of a template's
+ * eight (`set_config`, `set_ability_config`, `reload_runtime`); write your own
+ * group to change any of it. Node-only: ability config carries paths, checked
+ * for existence before anything persists.
+ *
+ * An ability's configuration persists FIRST, then enables: a save the disk
+ * refuses leaves the live session untouched, and an enable that fails restores
+ * every surface the command touched — the store, the live instance that was
+ * disabled to make room, the saved config — and says why. Nothing about an
+ * ability changes while a run is live: the run holds the abilities' tools and
+ * their reranker.
+ *
+ * @category Rig
+ */
+import * as fs from 'node:fs';
+import type { Operation } from 'effection';
+import type { AbilityConfigStore, AbilityFactory, AbilityRegistry } from '@lloyal-labs/lloyal-agents';
+import type { ConfigTable } from './config';
+import { isPathShaped, resolveAppConfigPaths, resolvePath } from './config-node';
+import { buildAbilityDescriptors } from './ability-descriptors';
+import { abilityRequiresConfig } from './registry';
+import type { BaseHarnessConfig, ConfigOriginValue, ConfigPatch, Runner } from './runner';
+import type { Handlers } from './serve-commands';
+import { configUpdated } from './settings-protocol';
+import type { SettingsCommand, SettingsEvent } from './settings-protocol';
+
+/** What the group is handed: what `initializeHarness` returned, the owner, and the app's declarations. */
+export interface SettingsDeps<C extends BaseHarnessConfig, O extends Record<string, ConfigOriginValue>> {
+  runner: Runner<C, O>;
+  registry: AbilityRegistry;
+  store: AbilityConfigStore;
+  wire: { send(event: SettingsEvent<C, O>): Operation<void> };
+  run: { readonly busy: boolean };
+  /** The installed factories, so a reconfigured ability can be re-enabled by name. */
+  abilities: readonly AbilityFactory[];
+  /** The app's `defineConfig` table: which keys of a patch are paths. */
+  config: ConfigTable;
+}
+
+const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+/** A patch with its declared path keys resolved (`~` expanded, made absolute); `""` stays a clear. */
+function resolvePatchPaths<C>(table: ConfigTable, patch: ConfigPatch<C>): ConfigPatch<C> {
+  const out = { ...(patch as Record<string, Record<string, unknown> | unknown>) } as Record<string, unknown>;
+  for (const [key, decl] of Object.entries(table)) {
+    if (!decl.path) continue;
+    const [family, leaf, ...rest] = key.split('.');
+    if (rest.length > 0 || !leaf) continue;
+    const fam = out[family];
+    if (fam === null || typeof fam !== 'object') continue;
+    const v = (fam as Record<string, unknown>)[leaf];
+    if (typeof v === 'string' && v !== '') out[family] = { ...(fam as Record<string, unknown>), [leaf]: resolvePath(v) };
+  }
+  return out as ConfigPatch<C>;
+}
+
+export function settings<C extends BaseHarnessConfig, O extends Record<string, ConfigOriginValue>>(
+  deps: SettingsDeps<C, O>,
+): { handlers: Handlers<SettingsCommand<C>> } {
+  const { runner, registry, store, wire, run, abilities, config } = deps;
+  const toast = (text: string): Operation<void> => wire.send({ type: 'ui:error', message: text });
+  const announce = function* (): Operation<void> {
+    yield* wire.send({ type: 'abilities:state', abilities: yield* buildAbilityDescriptors(registry, store, abilities) });
+  };
+  const abilityPatch = (name: string, values: Record<string, unknown>): ConfigPatch<C> =>
+    ({ abilities: { [name]: values } }) as unknown as ConfigPatch<C>;
+
+  return {
+    handlers: {
+      *set_config({ patch }) {
+        yield* wire.send(configUpdated(runner.saveConfig(resolvePatchPaths(config, patch))));
+      },
+
+      *set_ability_config({ name, values }) {
+        if (run.busy) return yield* toast("Wait for the run to finish before changing an ability's settings.");
+        const resolved = resolveAppConfigPaths(values);
+        const clear = Object.keys(resolved).length === 0;
+        // A path must exist before anything persists or enables: a factory handed a
+        // bad path can take the process down, and a persisted one would do so at every boot.
+        const missing = Object.entries(resolved).find(([k, v]) => isPathShaped(k, v) && !fs.existsSync(v));
+        if (missing) return yield* toast(`${missing[0]}: path does not exist — ${String(missing[1])}`);
+
+        // Persist first: a save the disk refuses throws to `onError` with the session untouched.
+        const prior = (yield* store.get(name)) ?? null;
+        const saved = runner.saveConfig(abilityPatch(name, resolved));
+        yield* store.set(name, resolved);
+
+        const factory = abilities.find((f) => f.manifest?.name === name);
+        if (factory) {
+          if (registry.byName(name)) yield* registry.disable(name);
+          if (clear && abilityRequiresConfig(factory)) {
+            yield* store.clear(name);
+          } else {
+            try {
+              yield* registry.enable(factory);
+            } catch (err) {
+              // The new config failed to enable: restore every surface this command touched.
+              if (prior && Object.keys(prior).length > 0) {
+                yield* store.set(name, prior);
+                try { yield* registry.enable(factory); } catch { yield* store.clear(name); }
+              } else {
+                yield* store.clear(name);
+              }
+              try { runner.saveConfig(abilityPatch(name, prior ?? {})); } catch { /* the toast reports the enable error */ }
+              return yield* toast(`Cannot configure ${name}: ${message(err)}`);
+            }
+          }
+        }
+        yield* wire.send(configUpdated(saved));
+        yield* announce();
+      },
+
+      *reload_runtime({ patch }) {
+        runner.reloadRuntime(resolvePatchPaths(config, patch));
+        return 'exit';
+      },
+    },
+  };
+}

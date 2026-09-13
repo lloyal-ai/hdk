@@ -10,7 +10,7 @@ export {
   GrantStoreCtx,
   WindDown,
   CancelAgent, Pause,
-  Attachments, Ingress,
+  Attachments, Ingress, PoolDefaults, NSeqMax,
 } from './context';
 export { Tool, ToolRetryError } from './Tool';
 export type {
@@ -18,8 +18,8 @@ export type {
 } from './Tool';
 export { Agent } from './Agent';
 export type { AgentStatus, ResultSource, FormatConfig, ToolHistoryEntry } from './Agent';
-export { DefaultAgentPolicy, isGuardOverrides } from './AgentPolicy';
-export type { AgentPolicy, ProduceAction, RecoveryAction, IdleReason, PolicyConfig, DefaultAgentPolicyOpts, GuardScope, GuardOverrides } from './AgentPolicy';
+export { DefaultAgentPolicy, isGuardOverrides, policyFromBudget } from './AgentPolicy';
+export type { AgentPolicy, ProduceAction, RecoveryAction, IdleReason, PolicyConfig, DefaultAgentPolicyOpts, GuardScope, GuardOverrides, Budget } from './AgentPolicy';
 export { defaultAfterExecute, defaultBeforeAdmit, defaultAfterAdmit, retryUpTo } from './hooks';
 export { CallingAgent } from './context';
 export { Source, NULL_SCORER } from './source';

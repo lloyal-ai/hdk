@@ -82,7 +82,7 @@ export type Orchestrator = (ctx: PoolContext) => Operation<void>;
  * ```ts
  * yield* agentPool({
  *   tools: [...],
- *   orchestrate: parallel(questions.map(q => ({ content: q, systemPrompt: RESEARCH_PROMPT }))),
+ *   orchestrate: parallel(questions.map(q => ({ content: q, systemPrompt: WORKER }))),
  * });
  * ```
  *
@@ -108,7 +108,7 @@ export const parallel = (tasks: SpawnSpec[]): Orchestrator =>
  */
 export interface ChainStep {
   task: SpawnSpec;
-  /** User content recorded on the spine (e.g., "Research task: ..."). Omit to skip extension. */
+  /** User content recorded on the spine — the step's task, as the spine will remember it. Omit to skip extension. */
   userContent?: string;
   /** Fires BEFORE `ctx.spawn` for this step. Use for "task starting" events. */
   beforeSpawn?: () => Operation<void>;
@@ -134,9 +134,9 @@ export interface ChainStep {
  * yield* agentPool({
  *   tools: [...],
  *   parent: querySpine,
- *   orchestrate: chain(researchTasks, (task, i) => ({
- *     task: { content: taskToContent(task), systemPrompt: renderWorker({ taskIndex: i }) },
- *     userContent: `Research task: ${task.description}`,
+ *   orchestrate: chain(steps, (step, i) => ({
+ *     task: { content: step.description, systemPrompt: renderWorker({ taskIndex: i }) },
+ *     userContent: `Task: ${step.description}`,
  *   })),
  * });
  * ```

@@ -95,6 +95,7 @@ export class Session {
   private _trunk: Branch | null;
   private _onPrefill?: TrunkPrefillObserver;
   private _onRelease?: TrunkReleaseObserver;
+  private _userSidePending = false;
 
   constructor({ ctx, store, onPrefill, onRelease }: { ctx: SessionContext; store: BranchStore; onPrefill?: TrunkPrefillObserver; onRelease?: TrunkReleaseObserver }) {
     this._ctx = ctx;
@@ -112,6 +113,18 @@ export class Session {
   /** Assign initial trunk (no promote) */
   set trunk(branch: Branch | null) {
     this._trunk = branch;
+    this._userSidePending = false;
+  }
+
+  /**
+   * Whether the trunk's last turn is a user side awaiting its answer — the
+   * turn {@link prefillAssistant} closes. Recorded here, where the native call
+   * resolves, so it is right whether or not the operation that issued the
+   * call is still running: a consumer's own flag, assigned after it awaited
+   * the call, is skipped when that consumer is halted while the prefill lands.
+   */
+  get userSidePending(): boolean {
+    return this._userSidePending;
   }
 
   /**
@@ -141,6 +154,7 @@ export class Session {
       this._onRelease?.(released);
     }
     this._trunk = null;
+    this._userSidePending = false;
   }
 
   /**
@@ -152,6 +166,7 @@ export class Session {
   async prefillUser(content: string, opts: { tools?: string } = {}): Promise<void> {
     const tokens = buildUserDelta(this._ctx, content, opts);
     await this._trunk!.prefill(tokens);
+    this._userSidePending = true;
     this._onPrefill?.({ role: 'user', content, cells: tokens.length, branchHandle: this._trunk!.handle });
   }
 
@@ -198,6 +213,7 @@ export class Session {
       const trunk = this._trunk;
       try {
         const { tokensDecoded } = await trunk.prefillMultimodal(prompt, bitmaps, sep);
+        this._userSidePending = true;
         this._onPrefill?.({ role: 'user', content, cells: tokensDecoded, branchHandle: trunk.handle, ...(attachments ? { attachments } : {}) });
       } catch (e) {
         // A failed multimodal prefill POISONS the branch — decode_segments
@@ -209,6 +225,7 @@ export class Session {
         const released = { branchHandle: trunk.handle, position: trunk.position };
         trunk.pruneSubtreeSync();
         this._trunk = null;
+        this._userSidePending = false;
         this._onRelease?.(released);
         throw e;
       }
@@ -217,6 +234,7 @@ export class Session {
       try {
         const { tokensDecoded } = await trunk.prefillMultimodal(prompt, bitmaps, []);
         await this.promote(trunk);
+        this._userSidePending = true;
         this._onPrefill?.({ role: 'user', content, cells: tokensDecoded, branchHandle: trunk.handle, ...(attachments ? { attachments } : {}) });
       } catch (e) {
         // Never promoted — prune so the failed cold bootstrap does not leak
@@ -245,6 +263,7 @@ export class Session {
   async prefillAssistant(content: string, opts: { enableThinking?: boolean } = {}): Promise<void> {
     const tokens = buildAssistantDelta(this._ctx, content, opts);
     await this._trunk!.prefill(tokens);
+    this._userSidePending = false;
     this._onPrefill?.({ role: 'assistant', content, cells: tokens.length, branchHandle: this._trunk!.handle });
   }
 
@@ -277,6 +296,7 @@ export class Session {
       // conversations; no thinking blocks should be embedded.
       const tokens = buildTurnDelta(this._ctx, query, response, { enableThinking: false });
       await this._trunk.prefill(tokens);
+      this._userSidePending = false;
       this._onPrefill?.({ role: 'turn', content: `${query}\n\n${response}`, query, response, cells: tokens.length, branchHandle: this._trunk.handle });
     } else {
       // Cold path: create trunk at position 0, prefill without separator
@@ -292,6 +312,7 @@ export class Session {
       const trunk = Branch.create(this._ctx, 0, {});
       await trunk.prefill(tokens);
       await this.promote(trunk);
+      this._userSidePending = false;
       this._onPrefill?.({ role: 'turn', content: `${query}\n\n${response}`, query, response, cells: tokens.length, branchHandle: trunk.handle });
     }
   }
@@ -319,5 +340,6 @@ export class Session {
       ...experts.map(e => [e, tokens] as [Branch, number[]]),
     ];
     await this._store.prefill(entries);
+    this._userSidePending = true;
   }
 }

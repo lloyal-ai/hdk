@@ -3,10 +3,10 @@ import type { Operation, Subscription, Task, Signal } from 'effection';
 import type { SessionContext, BranchStore } from '@lloyal-labs/sdk';
 import type { Attachment } from '@lloyal-labs/media';
 import { buildTurnDelta } from '@lloyal-labs/sdk';
-import { Ctx, Store, Trace, TraceParent, GrantStoreCtx, WindDown, CancelAgent, Pause, Attachments, Ingress } from './context';
+import { Ctx, Store, Trace, TraceParent, GrantStoreCtx, WindDown, CancelAgent, Pause, Attachments, Ingress, PoolDefaults } from './context';
 import { useTraceScope } from './trace-scope';
 import type { Agent } from './Agent';
-import { DefaultAgentPolicy } from './AgentPolicy';
+import { policyFromBudget } from './AgentPolicy';
 import type { PolicyConfig } from './AgentPolicy';
 import { ContextPressure } from './pressure';
 import { Emitter } from './emit';
@@ -81,7 +81,13 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     // tool result that admits a root. One list, owned here — it outlives any
     // agent, so a root agent A admitted stays available after A is pruned.
     const available: Attachment[] = [...(opts.attachments ?? [])];
-    const { spine, orchestrate, toolsJson, tools, maxTurns = 100, terminalToolName, trace = false, pruneOnReturn = false, enableThinking = true, eagerGrammar } = opts;
+    const { spine, orchestrate, toolsJson, tools, terminalToolName, eagerGrammar } = opts;
+    // The knobs a harness fixes once come from the context; the call's own option wins.
+    const defaults = yield* PoolDefaults.expect();
+    const maxTurns = opts.maxTurns ?? opts.budget?.maxTurns ?? 100;
+    const trace = opts.trace ?? defaults.trace ?? false;
+    const pruneOnReturn = opts.pruneOnReturn ?? defaults.pruneOnReturn ?? false;
+    const enableThinking = opts.enableThinking ?? defaults.enableThinking ?? true;
 
     const toolIndexMap = new Map([...tools.keys()].map((name, i) => [name, i]));
     const poolT0 = performance.now();
@@ -103,7 +109,12 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     const hasNonTerminalTools = terminalToolName ? [...tools.keys()].some(k => k !== terminalToolName) : tools.size > 0;
     const terminalTool = terminalToolName ? tools.get(terminalToolName) : undefined;
     const terminalGrammar = terminalTool ? buildTerminalGrammar(ctx, terminalTool) : null;
-    const policy = opts.policy ?? new DefaultAgentPolicy();
+    // One policy per pool: the caller's own, or the one its budget row derives —
+    // with this pool's terminal and the harness's guard overrides on it.
+    if (opts.policy && (opts.budget || opts.guards)) {
+      throw new Error('useAgentPool: pass `budget` and `guards`, or a `policy` — not both: a policy carries its own budget and guard overrides');
+    }
+    const policy = opts.policy ?? policyFromBudget(opts.budget ?? {}, { terminalToolName, guardOverrides: opts.guards });
 
     // The run clock: wall time minus paused spans. Policy budgets and
     // `agent.startedAt` read it; trace `ts` and retry parks stay on the wall.
