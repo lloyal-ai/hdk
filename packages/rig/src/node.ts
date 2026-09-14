@@ -84,3 +84,18 @@ export type { SettingsDeps } from './settings';
 
 export { provisionAbilityModels } from './provision';
 export type { ProvisionAbilityModelsOpts } from './provision';
+
+// Node-only: the host-resources sampler a dev boot runs beside the trace writer.
+export { startHostResources } from './host-resources';
+
+// Node-only: the engine's half of a desktop shell's ingress, over the utilityProcess channel.
+export { serveIngest } from './ingest-responder';
+export type { IngestRequest, IngestReply } from './ingest-responder';
+
+// Node-only: the resident context, the served host's per-connection seam, and the two boots a target entry is one call to.
+export { createResidentContext, residentContextOptions, applyGpuEnv, DEFAULT_N_SEQ_MAX, DEFAULT_N_CTX } from './resident-context';
+export type { ResidentModel } from './resident-context';
+export { createServedChannels, createServedHostDriver } from './served-host';
+export type { ServedChannels, ServedHostDriver, ServedHostDriverOpts } from './served-host';
+export { bootEdge, bootServed } from './boot';
+export type { HarnessApp, BootEdgeOpts, BootServedOpts } from './boot';

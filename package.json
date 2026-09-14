@@ -9,12 +9,14 @@
     "packages/relay",
     "packages/host",
     "packages/dev-tools",
+    "packages/ui",
+    "packages/desktop",
     "packages/media",
     "packages/abilities/*"
   ],
   "scripts": {
     "build": "npm run build --workspaces",
-    "typecheck": "tsc -b packages/media packages/sdk packages/agents packages/rig packages/channel-verify && tsc -p tsconfig.test.json",
+    "typecheck": "tsc -b packages/media packages/sdk packages/agents packages/rig packages/host packages/desktop packages/channel-verify && npm run build -w packages/ui && tsc -p tsconfig.test.json",
     "verify:packed": "bash scripts/verify-packed-install.sh",
     "clean": "rm -rf packages/*/dist packages/abilities/*/dist packages/*/tsconfig.tsbuildinfo packages/abilities/*/tsconfig.tsbuildinfo",
     "docs": "npx typedoc",
@@ -26,10 +28,12 @@
   "devDependencies": {
     "@types/node": "^25.3.0",
     "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.3.0",
     "@types/semver": "^7.7.1",
     "fast-check": "^4.7.0",
     "ink": "^7.1.1",
     "react": "^19.2.0",
+    "react-dom": "^19.3.0",
     "tsx": "^4.21.0",
     "typedoc": "^0.28.0",
     "typedoc-rhineai-theme": "^1.0.0",

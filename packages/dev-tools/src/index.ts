@@ -116,26 +116,11 @@ export interface AgentLane {
   nllCount: number;
 }
 
-/** One per-token epistemics sample, stamped at fold time. */
-/** One host-resources sample on the wire — produced by the node entry's
- *  sampler (`@lloyal-labs/dev-tools/node`), folded into {@link PaneModel.host}.
- *  Declared here so a node-free protocol can name it type-only. */
-export interface HostResourcesEvent {
-  type: 'host:resources';
-  /** The harness process's CPU use since the last sample, as % of the
-   *  whole machine (all cores). */
-  cpuPct: number;
-  /** The process's resident set, MB — on a model host this is effectively
-   *  weights + KV + runtime. */
-  rssMb: number;
-  /** System-wide memory in use, MB — honest per-platform accounting
-   *  (darwin: vm_stat active+wired+compressed; linux: total − MemAvailable).
-   *  Absent where no honest read exists. */
-  sysMemUsedMb?: number;
-  /** Total machine memory, MB. */
-  sysMemTotalMb?: number;
-}
+/** One host-resources sample on the wire — rig's, produced by its sampler
+ *  (`startHostResources` in `@lloyal-labs/rig/node`), folded into {@link PaneModel.host}. */
+export type { HostResourcesEvent } from '@lloyal-labs/rig';
 
+/** One per-token epistemics sample, stamped at fold time. */
 export interface EpiSample {
   at: number;
   h: number;

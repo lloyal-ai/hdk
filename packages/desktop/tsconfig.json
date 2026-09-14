@@ -3,13 +3,17 @@
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": "src",
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
     "baseUrl": ".",
     "paths": {
+      "@lloyal-labs/rig/node": [
+        "../rig/dist/node.d.ts"
+      ],
       "@lloyal-labs/media/node": [
         "../media/dist/node.d.ts"
-      ],
-      "@lloyal-labs/binding/node": [
-        "../binding/dist/node.d.ts"
       ]
     }
   },
@@ -18,22 +22,13 @@
   ],
   "references": [
     {
-      "path": "../sdk"
-    },
-    {
-      "path": "../agents"
-    },
-    {
-      "path": "../channel-verify"
+      "path": "../binding"
     },
     {
       "path": "../media"
     },
     {
-      "path": "../binding"
-    },
-    {
-      "path": "../host"
+      "path": "../rig"
     }
   ]
 }

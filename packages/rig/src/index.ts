@@ -132,3 +132,6 @@ export { coverage } from './coverage';
 export type { CoverageOptions, Coverage } from './coverage';
 export { buildAbilityDescriptors, redactAbilityConfig } from './ability-descriptors';
 export type { AbilityDescriptor } from './ability-descriptors';
+export type { HostResourcesEvent } from './host-resources';
+export { bufferedCommandSignal } from './buffered-command-signal';
+export { HarnessExit } from './harness-exit';

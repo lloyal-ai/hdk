@@ -40,7 +40,9 @@
     "build": "tsc -b"
   },
   "dependencies": {
+    "@lloyal-labs/binding": "^0.1.0",
     "@lloyal-labs/channel-verify": "^0.3.1",
+    "@lloyal-labs/host": "^0.1.0",
     "@lloyal-labs/lloyal-agents": "6.0.0-alpha.4",
     "@lloyal-labs/media": "0.2.0-alpha.4",
     "@lloyal-labs/sdk": "4.0.0-alpha.4",
@@ -49,6 +51,7 @@
     "ignore": "^7.0.5",
     "linkedom": "^0.18.12",
     "semver": "^7.8.1",
+    "ws": "^8.18.0",
     "yaml": "^2.9.0",
     "zod": "^4.6.5"
   },
@@ -59,5 +62,8 @@
     "dist/",
     "LICENSE",
     "LICENSE-FAQ.md"
-  ]
+  ],
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
+  }
 }

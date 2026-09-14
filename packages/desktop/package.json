@@ -1,0 +1,55 @@
+{
+  "name": "@lloyal-labs/desktop",
+  "version": "0.1.0",
+  "description": "A harness in a native window: the Electron shell's main-process pieces — the engine over the project's own cli bin, the content scheme, the preload bridge and the window",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./preload": {
+      "types": "./dist/preload.d.ts",
+      "default": "./dist/preload.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lloyal-ai/hdk.git",
+    "directory": "packages/desktop"
+  },
+  "homepage": "https://github.com/lloyal-ai/hdk/tree/main/packages/desktop#readme",
+  "bugs": {
+    "url": "https://github.com/lloyal-ai/hdk/issues"
+  },
+  "keywords": [
+    "desktop",
+    "electron",
+    "harness",
+    "shell"
+  ],
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@lloyal-labs/binding": "^0.1.0",
+    "@lloyal-labs/media": "0.2.0-alpha.4",
+    "@lloyal-labs/rig": "5.6.0-alpha.5"
+  },
+  "peerDependencies": {
+    "electron": ">=38"
+  },
+  "devDependencies": {
+    "electron": "^44.0.0"
+  },
+  "files": [
+    "dist/",
+    "LICENSE"
+  ]
+}

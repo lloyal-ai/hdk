@@ -13,6 +13,7 @@
  */
 
 import type { RoutedBindingFrame, SessionState } from "./index";
+import type { Bridge, Frame, Snapshot, WireStatus } from "./projection";
 
 /** The minimal browser WebSocket surface the client uses (structural). */
 interface BrowserWebSocket {
@@ -113,6 +114,89 @@ export function connectWss<E, C>(
     },
     close(): void {
       ws.close();
+    },
+  };
+}
+
+export interface CreateBridgeOpts<E, S> {
+  /** The view's fold, seeded with `initialState`: the bridge folds every event
+   *  it delivers, so a late subscriber's snapshot is what the stream folded to. */
+  initialState: S;
+  reduce: (state: S, ev: E) => S;
+  /** The content plane's origin, when this host serves one. `""` is a
+   *  same-origin plane (a dev proxy); absent means no plane. */
+  contentOrigin?: string;
+  /** Called with the client-visible Session lifecycle the host relays. */
+  onSession?: (state: SessionState) => void;
+}
+
+/**
+ * The browser's bridge over one `wss` connection — what a view holds. It owns a
+ * fold: every event is numbered (`seq`, within this connection's `epoch`) and
+ * folded before it reaches a subscriber, so `requestSnapshot` answers from the
+ * fold and a view that mounts after the stream began — a remount, a late
+ * component — seeds correctly, with no history kept and no cap to fall off.
+ * Commands queue until the host says ready. The socket's fate is the wire's
+ * status: 'connecting' until ready, 'connected' after, 'lost' when it closes.
+ */
+export function createBridge<E, C, S>(url: string, opts: CreateBridgeOpts<E, S>): Bridge<E, C, S> & { close(): void } {
+  const epoch = Date.now();
+  let seq = 0;
+  let state = opts.initialState;
+  let status: WireStatus = "connecting";
+  let ready = false;
+  let queued: C[] = [];
+  const frameListeners = new Set<(frame: Frame<E>) => void>();
+  const statusListeners = new Set<(status: WireStatus) => void>();
+  const setStatus = (next: WireStatus): void => {
+    if (next === status) return;
+    status = next;
+    for (const cb of statusListeners) cb(status);
+  };
+  const client = connectWss<E, C>(url, {
+    onEvent: (ev) => {
+      seq += 1;
+      state = opts.reduce(state, ev);
+      const frame = { epoch, seq, ev };
+      for (const cb of frameListeners) cb(frame);
+    },
+    onReady: () => {
+      ready = true;
+      setStatus("connected");
+      const drained = queued;
+      queued = [];
+      for (const c of drained) client.send(c);
+    },
+    onClose: () => {
+      ready = false;
+      setStatus("lost");
+    },
+    ...(opts.onSession ? { onSession: opts.onSession } : {}),
+  });
+  return {
+    onEvent(cb) {
+      frameListeners.add(cb);
+      return () => {
+        frameListeners.delete(cb);
+      };
+    },
+    send(command) {
+      if (ready) client.send(command);
+      else queued.push(command);
+    },
+    requestSnapshot(): Promise<Snapshot<S>> {
+      return Promise.resolve({ state, epoch, seq });
+    },
+    onStatus(cb) {
+      statusListeners.add(cb);
+      cb(status);
+      return () => {
+        statusListeners.delete(cb);
+      };
+    },
+    ...(opts.contentOrigin !== undefined ? { contentOrigin: () => opts.contentOrigin! } : {}),
+    close() {
+      client.close();
     },
   };
 }

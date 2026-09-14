@@ -1,0 +1,57 @@
+{
+  "name": "@lloyal-labs/ui",
+  "version": "0.1.0",
+  "description": "The view side of a harness: the projection provider and hooks over a bridge, the generic agent fold, and the prose and figure primitives",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./fold": {
+      "types": "./dist/fold.d.ts",
+      "default": "./dist/fold.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lloyal-ai/hdk.git",
+    "directory": "packages/ui"
+  },
+  "homepage": "https://github.com/lloyal-ai/hdk/tree/main/packages/ui#readme",
+  "bugs": {
+    "url": "https://github.com/lloyal-ai/hdk/issues"
+  },
+  "keywords": [
+    "ui",
+    "react",
+    "harness",
+    "projection",
+    "markdown"
+  ],
+  "license": "SEE LICENSE IN LICENSE",
+  "files": [
+    "dist/",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@lloyal-labs/binding": "^0.1.0",
+    "@lloyal-labs/media": "0.2.0-alpha.4",
+    "katex": "^0.16.22",
+    "react-markdown": "^10.1.0",
+    "rehype-katex": "^7.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0"
+  },
+  "peerDependencies": {
+    "react": "^18.3.0 || ^19.0.0"
+  }
+}

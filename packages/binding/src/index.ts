@@ -6,9 +6,13 @@
  * harness's headless interface; a *binding* is a transport of it — in-process
  * (Ink), one-way JSONL, the `parentPort`-else-`fork` bridge, or (later) wss.
  *
- * This module is the isomorphic core: the event bus and the wire frame. The Node
- * transports live in `@lloyal-labs/binding/node`.
+ * This module is the isomorphic core: the event bus, the wire frame, and the
+ * projection a view folds over a bridge. The Node transports live in
+ * `@lloyal-labs/binding/node`; the browser side of `wss` in `@lloyal-labs/binding/web`.
  */
+
+export { connectProjection } from "./projection";
+export type { Bridge, Frame, Snapshot, Projection, WireStatus } from "./projection";
 
 export interface EventBus<T> {
   send(event: T): void;
