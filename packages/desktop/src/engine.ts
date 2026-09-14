@@ -15,6 +15,8 @@
  *
  * @category Desktop
  */
+import { existsSync } from 'node:fs';
+import { utilityProcess } from 'electron';
 import type { Descriptor } from '@lloyal-labs/media';
 import type { Frame, Snapshot } from '@lloyal-labs/binding';
 
@@ -29,14 +31,25 @@ export interface EngineProcess {
 }
 
 export interface CreateEngineOpts<E, S> {
-  /** Fork the process: `utilityProcess.fork(bin, [], { env: { ...process.env, RR_BRIDGE: '1' } })` in the shell; a fake in a test. */
-  fork: () => EngineProcess;
+  /** The engine binary — this project's own built cli boot, e.g. `join(process.cwd(), 'bin', 'run.js')`. */
+  bin: string;
+  /** Added to the engine's environment. `RR_BRIDGE` is set for you: it is what makes the cli boot mount the ipc binding. */
+  env?: Record<string, string>;
   initialState: S;
   reduce: (state: S, ev: E) => S;
   /** Where a frame goes: the renderer, when its window is alive. */
   forward: (frame: Frame<E>) => void;
   /** The engine's own stdout/stderr lines. */
   log?: (stream: 'stdout' | 'stderr' | 'exit', text: string) => void;
+  /** Fork it yourself. The default forks `bin` as an Electron utility process; a test hands in a fake. */
+  fork?: (bin: string, env: NodeJS.ProcessEnv) => EngineProcess;
+}
+
+/** The default: this project's cli boot as a utility process, with the bridge flag set and its output piped. */
+function forkUtilityProcess(bin: string, env: NodeJS.ProcessEnv): EngineProcess {
+  // A missing binary is the one failure worth naming: the window would otherwise open onto an engine that never speaks.
+  if (!existsSync(bin)) throw new Error(`engine not built: ${bin} not found — build the cli target first.`);
+  return utilityProcess.fork(bin, [], { serviceName: 'harness-engine', stdio: 'pipe', env }) as unknown as EngineProcess;
 }
 
 export interface Engine<C, S> {
@@ -69,7 +82,7 @@ export function createEngine<E, C, S>(opts: CreateEngineOpts<E, S>): Engine<C, S
     }
   };
 
-  const proc = opts.fork();
+  const proc = (opts.fork ?? forkUtilityProcess)(opts.bin, { ...process.env, ...opts.env, RR_BRIDGE: '1' });
   child = proc;
   proc.stdout?.on('data', (d) => opts.log?.('stdout', d.toString().trimEnd()));
   proc.stderr?.on('data', (d) => opts.log?.('stderr', d.toString().trimEnd()));

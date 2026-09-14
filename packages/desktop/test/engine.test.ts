@@ -31,7 +31,7 @@ describe('createEngine', () => {
   it('numbers and forwards every event within one epoch, and answers the snapshot from its own fold', () => {
     const proc = fakeProcess();
     const forwarded: Frame<Ev>[] = [];
-    const engine = createEngine<Ev, { type: 'x' }, S>({ fork: () => proc, initialState: { sum: 0 }, reduce: (s, ev) => ({ sum: s.sum + ev.n }), forward: (f) => forwarded.push(f) });
+    const engine = createEngine<Ev, { type: 'x' }, S>({ bin: 'engine-not-forked-in-this-test', fork: () => proc, initialState: { sum: 0 }, reduce: (s, ev) => ({ sum: s.sum + ev.n }), forward: (f) => forwarded.push(f) });
     proc.say({ t: 'event', payload: { type: 'n', n: 2 } });
     proc.say({ t: 'event', payload: { type: 'n', n: 3 } });
     proc.say({ t: 'ready' });
@@ -44,7 +44,7 @@ describe('createEngine', () => {
 
   it('relays an upload and settles it by the engine\'s answer, by a cancel, or by the engine\'s death', async () => {
     const proc = fakeProcess();
-    const engine = createEngine<Ev, never, S>({ fork: () => proc, initialState: { sum: 0 }, reduce: (s) => s, forward: () => {} });
+    const engine = createEngine<Ev, never, S>({ bin: 'engine-not-forked-in-this-test', fork: () => proc, initialState: { sum: 0 }, reduce: (s) => s, forward: () => {} });
     const root = { mediaType: 'm', digest: 'sha256:' + '0'.repeat(64), size: 1 };
     const ok = engine.ingest(new Uint8Array([1]), new AbortController().signal);
     const sent = proc.posted.at(-1) as { t: string; id: number };
