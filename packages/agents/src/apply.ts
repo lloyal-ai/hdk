@@ -175,10 +175,17 @@ export class Applier {
     // Read the way the voluntary path reads: with a terminal tool designated
     // the report MUST be that tool's call; without one, whatever the model
     // produced — a call's result if it made one, else its prose (the twin of
-    // `free_text_return`).
+    // `free_text_return`). A terminal call passes through the return position
+    // like a voluntary one, so whatever output ends the turn captures it the
+    // same way; a rejection cannot be issued here — the agent is being reaped
+    // and has no turn left — so the first accept stands, else the policy's capture.
     const terminal = this.d.terminalToolName;
     const call = terminal ? parsed.toolCalls.find(c => c.name === terminal) : parsed.toolCalls[0];
-    const result = call ? extractTerminalResult(call.arguments)
+    const result = call ? (decideOnReturn(
+        { agent: a, tool: call.name, args: parseHistoryArgs(call.arguments), raw: call.arguments, result: extractTerminalResult(call.arguments) },
+        { frame: this.d.frame, tool: this.d.tools.get(call.name), policy: this.d.policy },
+        { mayReject: false },
+      ).decision as { type: 'accept'; result: string }).result
       : !terminal && parsed.content ? parsed.content : '';
     if (result) {
       a.setResult(stripDanglingToolCall(result), 'recovery');

@@ -12,6 +12,9 @@ export function fakeAbility(opts: {
   refuse?: (config: Record<string, unknown> | undefined) => string | undefined;
   /** Called with the config the factory saw, each time it runs. */
   saw?: (config: Record<string, unknown> | undefined) => void;
+  /** What the source advertises for a run's assets; absent: no `toc` datum at all. */
+  toc?: (attachments: readonly unknown[]) => string;
+  tools?: Ability['tools'];
 }): AbilityFactory {
   const manifest: AbilityManifest = {
     name: opts.name,
@@ -29,8 +32,8 @@ export function fakeAbility(opts: {
       return {
         name: opts.name,
         manifest,
-        source: { name: opts.name } as Ability['source'],
-        tools: [],
+        source: { name: opts.name, promptData: (attachments: readonly unknown[] = []) => (opts.toc ? { toc: opts.toc(attachments) } : {}) } as unknown as Ability['source'],
+        tools: opts.tools ?? [],
         skill: 'a fake skill',
         configSchema: opts.configSchema,
       };

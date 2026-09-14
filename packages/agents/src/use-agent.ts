@@ -169,8 +169,15 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
       next = yield* sub.next();
     }
     const pool = next.value;
+    // One spawn, one seat. A pool that ended on a failure hands it on; a spawn it could not seat (no sequence, no
+    // room) fails by its reason. The caller hears why, never a missing roster entry.
+    const seated = pool.agents[0];
+    if (!seated) {
+      if (pool.failure) throw pool.failure;
+      throw new Error(`useAgent: the agent was not seated (${pool.outcomes[0]?.failed ?? 'the pool closed before it was seated'})`);
+    }
 
-    yield* provide(pool.agents[0].agent);
+    yield* provide(seated.agent);
     // Resource stays alive — branch alive for caller to fork from
     // ensure() prunes root on scope exit
   });

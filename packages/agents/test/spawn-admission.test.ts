@@ -224,6 +224,7 @@ describe('outcomes and keys', () => {
     });
     expect(partial.outcomes.map((o) => o.key)).toEqual(['k']);
     expect(w.trace.ofType('pool:close')).toEqual([]);
+    expect(partial.failure?.message).toMatch(/spawn key "k" is already taken/);
 
     const w2 = await world();
     const result = await run(function* () {

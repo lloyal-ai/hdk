@@ -311,7 +311,21 @@ export function policyFromBudget(
   budget: Budget,
   pool: { terminalToolName?: string; guardOverrides?: GuardOverrides; acceptFreeText?: boolean; hooks?: readonly ToolLifecycleHooks[] },
 ): DefaultAgentPolicy {
-  return new DefaultAgentPolicy({
+  return new DefaultAgentPolicy(budgetPolicyOpts(budget, pool));
+}
+
+/**
+ * The row's numbers as the default policy's options — the one mapping, so a
+ * policy that extends the default (a probe with a firm turn cap) derives from
+ * a row the same way {@link policyFromBudget} does.
+ *
+ * @category Agents
+ */
+export function budgetPolicyOpts(
+  budget: Budget,
+  pool: { terminalToolName?: string; guardOverrides?: GuardOverrides; acceptFreeText?: boolean; hooks?: readonly ToolLifecycleHooks[] },
+): DefaultAgentPolicyOpts {
+  return {
     acceptFreeText: pool.acceptFreeText,
     hooks: pool.hooks,
     budget: { context: budget.context, time: budget.time },
@@ -322,7 +336,7 @@ export function policyFromBudget(
     maxToolRetries: budget.maxToolRetries,
     terminalToolName: pool.terminalToolName,
     guardOverrides: pool.guardOverrides,
-  });
+  };
 }
 
 // ── Default policy ──────────────────────────────────────────

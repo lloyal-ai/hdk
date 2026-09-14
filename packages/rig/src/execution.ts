@@ -17,6 +17,11 @@
  * halt whose teardown throws is not ordinary: nothing may run again on that
  * model state, so the owner is `poisoned`, the accepted operation's future
  * rejects with the teardown error, and `replace` and `stop` throw from then on.
+ * An error the operation raises while it is being halted is a teardown error
+ * too — a cleanup that fails inside a `scoped()` boundary the operation holds
+ * is thrown through the operation's own frames as they unwind, and nothing
+ * else can throw into an operation being unwound — so it poisons the same way,
+ * whatever the operation's own handlers made of it on the way out.
  * The application decides what a poisoned owner means — for a harness, ending
  * the session.
  *
@@ -89,6 +94,8 @@ export function useExecution(): Operation<Execution> {
     // handlers' operations, read by the loop alone.
     const wake = createQueue<void, never>();
     let running: { id: string; task: Task<void>; accepted: Accepted } | null = null;
+    /** The operation being halted right now: an error it raises meanwhile is its teardown's. */
+    let halting: Task<void> | null = null;
     let pending: Accepted | null = null;
     let stopRequested = false;
     let poison: Error | null = null;
@@ -118,6 +125,7 @@ export function useExecution(): Operation<Execution> {
         // a stop already took effect — and must not halt what runs now.
         if (running && (pending || stopRequested)) {
           const r = running;
+          halting = r.task;
           try {
             yield* r.task.halt();
           } catch (err) {
@@ -131,9 +139,11 @@ export function useExecution(): Operation<Execution> {
               pending.reject(poison);
               pending = null;
             }
+            halting = null;
             idle();
             continue;
           }
+          halting = null;
           running = null;
           r.accepted.resolve(); // stopped: its future settles once the halt has completed
         }
@@ -151,6 +161,7 @@ export function useExecution(): Operation<Execution> {
             yield* next.op();
             next.resolve();
           } catch (err) {
+            if (halting === task) throw err;   // raised while being halted: the teardown's, and the halt's to fail with
             next.reject(toError(err));
           } finally {
             // The operation ended on its own. Unless a replacement is already

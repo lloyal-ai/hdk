@@ -123,6 +123,23 @@ describe('the return action', () => {
 });
 
 describe('onReturn: the terminal tool decides its capture', () => {
+  it('a recovered report passes through the return position: the output that ends the turn captures it the same way', async () => {
+    const submit = new Submit();
+    // The agent is reaped before it reports (a time hard limit already spent), recovers with a forced
+    // report turn, and that report is the terminal call the output reads.
+    const w = await world(() => ({ content: '', toolCalls: [call('submit', { city: 'Oslo' })] }));
+    const result = await run(function* () {
+      yield* contexts(w);
+      return yield* pool(w, {
+        tools: new Map([['submit', submit]]), toolsJson: JSON.stringify([submit.schema]), terminalToolName: 'submit',
+        budget: { time: { hardLimit: 0 }, recovery: { prompt: { system: 's', user: 'report now' }, minToolCalls: 0, minTokens: 0 } },
+      });
+    });
+    expect(w.events.some((e) => e.type === 'agent:recovered')).toBe(true);
+    expect(result.agents[0].agent.resultSource).toBe('recovery');
+    expect(result.outcomes[0].result).toBe(`city=Oslo (${JSON.stringify({ city: 'Oslo' }).length} bytes)`);
+  });
+
   it('a harness floor is an onReturn contribution on the policy: it refuses a first-action terminal call once, before the typed output\'s accept; the accept then stands', async () => {
     const submit = new Submit();
     const floor: ToolLifecycleHooks = { onReturn: ({ agent }) => (agent.toolCallCount < 1 ? { type: 'reject', message: 'use a tool first' } : undefined) };

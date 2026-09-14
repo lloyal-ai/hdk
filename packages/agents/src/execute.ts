@@ -117,7 +117,9 @@ export function* priceSpawn(task: AgentTaskSpec, ctx: SessionContext, enableThin
   let sharedFmt: FormatConfig | null = null;
   try { sharedFmt = (yield* SpineFmt.get()) ?? null; } catch { /* not in shared mode */ }
 
-  const messages = sharedFmt && task.systemPrompt === ''
+  // An empty system prompt is NO system message: in shared mode the spine carries the header; outside
+  // it, a turn on a fork of the trunk (a passthrough answer) reads as the trunk's own next turn would.
+  const messages = task.systemPrompt === ''
     ? [{ role: 'user', content: task.content }]
     : [
         { role: 'system', content: task.systemPrompt },

@@ -413,6 +413,9 @@ export interface SpawnOutcome {
  * @category Agents
  */
 export interface AgentPoolResult {
+  /** What ended the pool before its own close — a decode beyond the ladder, an orchestrator that threw — or `null`
+   *  when it closed on its own. A pool that failed still carries every outcome it had; no `pool:close` is recorded. */
+  failure: Error | null;
   /** One outcome per spawn, in spawn order, across heals — the logical roster. */
   outcomes: SpawnOutcome[];
   /** The outcome of the spawn that carried `key`, if any. */

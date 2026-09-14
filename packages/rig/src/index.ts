@@ -126,5 +126,9 @@ export { serveCommands } from './serve-commands';
 export type { CommandGroup, Handlers, Flow, ServeCommandsOptions } from './serve-commands';
 export { renderSpine, renderAgentPreamble } from './spine-render';
 export type { RenderSpineOptions } from './spine-render';
+// The sources a run can research with, what each advertises, and what each covers for a question.
+export { participating, abilityToc } from './participating';
+export { coverage } from './coverage';
+export type { CoverageOptions, Coverage } from './coverage';
 export { buildAbilityDescriptors, redactAbilityConfig } from './ability-descriptors';
 export type { AbilityDescriptor } from './ability-descriptors';

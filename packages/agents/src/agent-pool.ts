@@ -467,23 +467,25 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         closed = true;
         releaseUnadmitted();
         emit.trace({ kind: 'closed', agents, steps: totals.steps, durationMs: performance.now() - poolT0 });
-        yield* poolChannel.close(result());
-      } catch {
+        yield* poolChannel.close(result(null));
+      } catch (err) {
         // A decode failed beyond the ladder, or the orchestrator threw: close
-        // with what exists. Closing is terminal for new work FIRST, then the
-        // producer is stopped, then the unadmitted forks are given back — now,
-        // not at scope exit. No `pool:close` — its absence is the signal.
+        // with what exists, and say what ended it. Closing is terminal for new
+        // work FIRST, then the producer is stopped, then the unadmitted forks
+        // are given back — now, not at scope exit. No `pool:close` is recorded;
+        // the result carries the failure.
         closed = true;
         yield* orchestratorTask.halt();
         releaseUnadmitted();
-        yield* poolChannel.close(result());
+        yield* poolChannel.close(result(err instanceof Error ? err : new Error(String(err))));
       }
     });
 
-    /** The per-agent results — the same record on the normal and partial paths. */
-    function result(): AgentPoolResult {
+    /** The per-agent results — the same record on the normal and partial paths, the partial one naming what ended it. */
+    function result(failure: Error | null): AgentPoolResult {
       spawns.settlePass();
       return {
+        failure,
         outcomes: spawns.outcomes(),
         byKey: (key: string) => spawns.byKey(key),
         agents: agents.map(a => ({

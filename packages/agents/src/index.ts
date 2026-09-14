@@ -18,7 +18,7 @@ export type {
 } from './Tool';
 export { Agent } from './Agent';
 export type { AgentStatus, ResultSource, FormatConfig, ToolHistoryEntry } from './Agent';
-export { DefaultAgentPolicy, isGuardOverrides, policyFromBudget } from './AgentPolicy';
+export { DefaultAgentPolicy, isGuardOverrides, policyFromBudget, budgetPolicyOpts } from './AgentPolicy';
 export type { AgentPolicy, ProduceAction, RecoveryAction, IdleReason, PolicyConfig, DefaultAgentPolicyOpts, GuardScope, GuardOverrides, Budget } from './AgentPolicy';
 export { defaultAfterExecute, defaultBeforeAdmit, defaultAfterAdmit, retryUpTo } from './hooks';
 export { CallingAgent } from './context';

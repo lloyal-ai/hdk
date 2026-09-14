@@ -16,11 +16,14 @@
  *      when it throws; an ordinary failure does not poison the owner.
  *   5. A halt whose teardown throws poisons the owner: the pending operation's
  *      future rejects with that error, and `replace`/`stop` throw from then on.
+ *      A cleanup that fails inside a `scoped()` boundary the operation holds is
+ *      thrown through the operation's frames as they unwind; caught and rethrown
+ *      by the operation's own handler, it poisons the same way.
  *   6. `busy` holds from acceptance until the halt completes; `current` names
  *      what runs or is accepted.
  */
 import { describe, it, expect } from 'vitest';
-import { run, ensure, sleep, suspend, until, createSignal, spawn, each } from 'effection';
+import { run, ensure, sleep, suspend, until, createSignal, spawn, each, scoped } from 'effection';
 import type { Operation } from 'effection';
 import { WindDown, CancelAgent, Pause } from '@lloyal-labs/lloyal-agents';
 import { useExecution } from '../src/execution';
@@ -141,6 +144,46 @@ describe('useExecution', () => {
       let refusedStop: unknown = null;
       try { yield* exec.stop(); } catch (e) { refusedStop = e; }
       expect(refusedStop).toBeInstanceOf(Error);
+    });
+  });
+
+  it("a cleanup failing inside the operation's boundary during the halt poisons the owner, through the operation's own catch", async () => {
+    const log: string[] = [];
+    await run(function* () {
+      const exec = yield* useExecution();
+      yield* exec.replace('e', function* () {
+        try {
+          yield* scoped(function* () {
+            yield* ensure(() => { throw new Error('the branch would not release'); });
+            yield* suspend();
+          });
+        } catch (err) {
+          log.push(`caught:${(err as Error).message}`);   // the operation reports and rethrows, as a harness does
+          throw err;
+        }
+      });
+      yield* sleep(0);
+      const ff = yield* exec.replace('f', function* () { log.push('f:start'); });
+      let caught: unknown = null;
+      try { yield* ff; } catch (e) { caught = e; }
+      expect((caught as Error).message).toContain('would not release');
+      expect(log).toEqual(['caught:the branch would not release']);
+      expect(exec.poisoned).toBe(true);
+    });
+  });
+
+  it("an ordinary failure raised while nothing is halting does not poison, even a child's at the operation's boundary", async () => {
+    await run(function* () {
+      const exec = yield* useExecution();
+      const fe = yield* exec.replace('e', () => scoped(function* () {
+        yield* spawn(function* () { throw new Error('a child failed'); });
+        yield* suspend();
+      }));
+      let caught: unknown = null;
+      try { yield* fe; } catch (e) { caught = e; }
+      expect((caught as Error).message).toBe('a child failed');
+      expect(exec.poisoned).toBe(false);
+      expect(exec.busy).toBe(false);
     });
   });
 

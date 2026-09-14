@@ -47,6 +47,8 @@ import type {
   ExamplesRenderCtx,
   ExamplesTemplateFn,
 } from '@lloyal-labs/lloyal-agents';
+import type { Attachment } from '@lloyal-labs/media';
+import { abilityToc } from './participating';
 import {
   BOUNDARY_MARKER,
   CATALOG_ENTRY,
@@ -66,6 +68,15 @@ export interface RenderSpineOptions {
    * subset/ordering the harness wants reflected in the spine.
    */
   abilities: readonly Ability[];
+  /**
+   * The run's reference material: each ability's content advert for these
+   * assets (`abilityToc`) is appended to the catalog as one block per
+   * ability, rendered once and prefix-shared by every fork instead of
+   * repeated in each spawn's suffix. Trusting an ability's advert into the
+   * shared prefix is the harness's call, made by passing this. Absent: no
+   * ability prose reaches the spine.
+   */
+  reference?: readonly Attachment[];
 }
 
 /**
@@ -91,12 +102,20 @@ export function renderSpine(opts: RenderSpineOptions): string {
     )
     .join('\n');
 
+  const reference = opts.reference
+    ? opts.abilities
+        .map((ability) => ({ name: ability.manifest.protocol.name, toc: abilityToc(ability, opts.reference) }))
+        .filter((b): b is { name: string; toc: string } => !!b.toc && b.toc.trim() !== '')
+        .map((b) => `\n\n# ${b.name} — available files\n${b.toc}`)
+        .join('')
+    : '';
   return (
     FRAMEWORK_INTRO +
     '\n\n# Protocols\n\n' +
     catalogBlocks +
     '\n' +
-    TOOL_SELECTION_RULE
+    TOOL_SELECTION_RULE +
+    reference
   );
 }
 
