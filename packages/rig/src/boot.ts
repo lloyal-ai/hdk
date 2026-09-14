@@ -20,7 +20,7 @@
  *
  * @category Runtime
  */
-import { main, call, ensure, suspend } from 'effection';
+import { main, call, ensure, exit, suspend } from 'effection';
 import type { Operation, Signal } from 'effection';
 import { createServer } from 'node:http';
 import { parseArgs } from 'node:util';
@@ -177,9 +177,10 @@ export function bootEdge<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>, 
       yield* app.harness(ctx, events, commands);
     } catch (err) {
       if (err instanceof HarnessExit) {
-        process.stderr.write(`${err.message}\n`);
-        process.exitCode = err.exitCode;
-        return;
+        // `process.exitCode` would be discarded here: Effection's `main` runs `exit(0)` when this body
+        // returns, then hard-exits with THAT status. `exit` is its documented way out and unwinds every
+        // `ensure` on the way — the resident context included, so the process still ends clean.
+        yield* exit(err.exitCode, err.message);
       }
       throw err;
     }
