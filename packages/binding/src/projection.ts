@@ -13,6 +13,9 @@
  * fold the buffered frames newer than the cut; drop a frame at or below the
  * seen `seq`. A frame from another `epoch` — a new stream behind the same
  * bridge — asks for the snapshot again, so the fold never mixes two streams.
+ * The bridge's answer is what separates a stream it has moved TO from one it
+ * has already LEFT: an epoch it declines to answer at is behind us, and its
+ * frames are history from then on, so one straggler costs one ask, not a loop.
  * An unreachable snapshot seeds from `initialState`, so a stream never stalls
  * on a bridge that cannot answer.
  *
@@ -88,41 +91,50 @@ export function connectProjection<E, C, S>(
     notify();
   };
 
-  /** Ask the bridge where the stream stands; seed from its answer and fold
-   *  what arrived meanwhile. Each request settles at most once, and only
-   *  the newest request may settle: a frame from a later epoch supersedes it. */
+  /** Epochs the bridge has told us it is no longer on. Their frames are
+   *  history — a replay, a straggler from a stream that has ended — so they
+   *  never prompt another ask. */
+  const superseded = new Set<number>();
+
+  /** Ask the bridge where the stream stands; seed from its answer and fold what
+   *  arrived meanwhile. Each request settles at most once, and only the newest
+   *  request may settle. `want` is the epoch a frame announced, when a frame is
+   *  what prompted the ask: the bridge either confirms that stream, or names
+   *  another — and then `want` is behind us, whatever its identifier says. */
   let request = 0;
-  const seedFrom = (): void => {
+  const seedFrom = (want: number | null): void => {
     const mine = ++request;
     seeded = false;
-    bridge.requestSnapshot().then(
-      (snap) => seed(mine, snap.state, snap.epoch, snap.seq),
-      () => seed(mine, initialState, epoch, -1),
-    );
-  };
-
-  const seed = (mine: number, base: S, baseEpoch: number, baseSeq: number): void => {
-    if (disposed || mine !== request) return;
-    seeded = true;
-    state = base;
-    epoch = baseEpoch;
-    seq = baseSeq;
-    const buffered = pending;
-    pending = [];
-    for (const frame of buffered) {
-      if (frame.epoch !== epoch) {
-        // The stream moved on while the snapshot was in flight: this frame and
-        // the ones after it belong to the new stream. Seed again from there.
-        pending = buffered.slice(buffered.indexOf(frame));
-        epoch = frame.epoch;
-        seedFrom();
-        return;
+    const settle = (base: S, baseEpoch: number, baseSeq: number): void => {
+      if (disposed || mine !== request) return;
+      if (want !== null && want !== baseEpoch) superseded.add(want);
+      seeded = true;
+      state = base;
+      epoch = baseEpoch;
+      seq = baseSeq;
+      const buffered = pending;
+      pending = [];
+      for (let i = 0; i < buffered.length; i++) {
+        const frame = buffered[i]!;
+        if (frame.epoch !== epoch) {
+          if (superseded.has(frame.epoch)) continue;
+          // The stream may have moved on while the snapshot was in flight: this
+          // frame and the ones after it belong to another. Ask the bridge which.
+          pending = buffered.slice(i);
+          seedFrom(frame.epoch);
+          return;
+        }
+        if (frame.seq <= seq) continue;
+        seq = frame.seq;
+        state = reduce(state, frame.ev);
       }
-      if (frame.seq <= seq) continue;
-      seq = frame.seq;
-      state = reduce(state, frame.ev);
-    }
-    notify();
+      notify();
+    };
+    bridge.requestSnapshot().then(
+      (snap) => settle(snap.state, snap.epoch, snap.seq),
+      // Nothing to correct us: believe the epoch the frame announced, or stay put.
+      () => settle(initialState, want ?? epoch, -1),
+    );
   };
 
   // Subscribe FIRST so no frame is missed between the snapshot's cut and now.
@@ -133,15 +145,15 @@ export function connectProjection<E, C, S>(
       return;
     }
     if (frame.epoch !== epoch) {
-      // A new stream: what was folded is another epoch's. Seed again.
-      epoch = frame.epoch;
+      if (superseded.has(frame.epoch)) return;
+      // A new stream: what was folded is another epoch's. Seed again, for it.
       pending = [frame];
-      seedFrom();
+      seedFrom(frame.epoch);
       return;
     }
     fold(frame);
   });
-  seedFrom();
+  seedFrom(null);
 
   return {
     getSnapshot: () => state,

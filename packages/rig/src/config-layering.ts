@@ -37,6 +37,9 @@ const YML_NAME = 'harness.yml';
 
 type Bag = Record<string, unknown>;
 
+/** A family holds keys; a scalar — or an array — is one value, however deep the table goes. */
+const isFamily = (v: unknown): v is Bag => v !== null && typeof v === 'object' && !Array.isArray(v);
+
 /** Where the rungs are read from. */
 export interface ConfigSource<T extends ConfigTable> {
   cli?: CliOf<T>;
@@ -180,9 +183,10 @@ export function loadConfig<T extends ConfigTable>(
 
 /**
  * Write a patch into `harness.json`, atomically, 0600. Each family the patch
- * touches is merged one level deep over the file's; a key set to `""` is
- * cleared; a named ability is whole-replaced and the others kept. A file the
- * writer cannot understand is never rebuilt over (`readJsonForWrite`).
+ * touches is merged one level deep over the file's; a top-level key that is a
+ * value rather than a family is replaced whole; a key set to `""` is cleared;
+ * a named ability is whole-replaced and the others kept. A file the writer
+ * cannot understand is never rebuilt over (`readJsonForWrite`).
  *
  * @category Rig
  */
@@ -193,15 +197,22 @@ export function saveLocalConfig<C>(patch: ConfigPatch<C>, cwd: string = process.
   const families = new Set([...Object.keys(current), ...Object.keys(patch as Bag)]);
   families.delete('version');
   for (const family of families) {
-    const before = (current[family] ?? {}) as Bag;
-    const change = (patch as Bag)[family] as Bag | undefined;
+    const before = current[family];
+    const change = (patch as Bag)[family];
     if (family === 'abilities') {
-      const merged: Bag = { ...before };
-      for (const [name, cfg] of Object.entries(change ?? {})) merged[name] = { ...(cfg as Bag) };
+      const merged: Bag = { ...(isFamily(before) ? before : {}) };
+      for (const [name, cfg] of Object.entries((change ?? {}) as Bag)) merged[name] = { ...(cfg as Bag) };
       next.abilities = merged;
       continue;
     }
-    const merged: Bag = { ...before, ...(change ?? {}) };
+    // A top-level key may be a family of keys or a value of its own. Only a family
+    // merges; a leaf REPLACES what is there, because spreading a scalar yields `{}`.
+    const top = change !== undefined ? change : before;
+    if (!isFamily(top)) {
+      if (top !== undefined && top !== '') next[family] = top;
+      continue;
+    }
+    const merged: Bag = { ...(isFamily(before) ? before : {}), ...(isFamily(change) ? change : {}) };
     for (const [k, v] of Object.entries(merged)) if (v === '') delete merged[k];
     next[family] = merged;
   }

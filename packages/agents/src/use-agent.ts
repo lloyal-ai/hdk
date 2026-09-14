@@ -171,10 +171,16 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
     const pool = next.value;
     // One spawn, one seat. A pool that ended on a failure hands it on; a spawn it could not seat (no sequence, no
     // room) fails by its reason. The caller hears why, never a missing roster entry.
-    const seated = pool.agents[0];
+    // A pool that ended on a failure hands it on, whether or not a seat was taken: a fatal error
+    // AFTER seating leaves a roster entry behind, and reading the roster first would return the
+    // agent and swallow the reason.
+    if (pool.failure) throw pool.failure;
+    // One spawn, one outcome — and the outcome names the lineage's FINAL agent, so a successful
+    // heal returns the replacement rather than the disposed original the roster still holds.
+    const outcome = pool.outcomes[0];
+    const seated = pool.agents.find(a => a.agentId === outcome?.agentId) ?? pool.agents[0];
     if (!seated) {
-      if (pool.failure) throw pool.failure;
-      throw new Error(`useAgent: the agent was not seated (${pool.outcomes[0]?.failed ?? 'the pool closed before it was seated'})`);
+      throw new Error(`useAgent: the agent was not seated (${outcome?.failed ?? 'the pool closed before it was seated'})`);
     }
 
     yield* provide(seated.agent);

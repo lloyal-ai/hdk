@@ -7,7 +7,8 @@ import type { ChatFormat, ParseChatOutputOptions, ParseChatOutputResult, Multimo
 import { useAgentPool } from '../../src/agent-pool';
 import type { Orchestrator } from '../../src/orchestrators';
 import { parallel, chain } from '../../src/orchestrators';
-import { Ctx, Store, Events, Trace, WindDown, CancelAgent, Pause, Attachments, Ingress, GrantStoreCtx } from '../../src/context';
+import { Ctx, Store, Events, Trace, WindDown, CancelAgent, Pause, Attachments, Ingress, GrantStoreCtx, CallingAgent } from '../../src/context';
+import type { Agent } from '../../src/Agent';
 import type { GrantStore } from '../../src/grant-store';
 import type { AttachmentStore } from '@lloyal-labs/media';
 import type { ContentIngress } from '@lloyal-labs/media';
@@ -165,6 +166,15 @@ export interface PoolSpec {
   maxTurns?: number;
   maxConcurrentTools?: number;
   taskCount?: number;
+  /** See `AgentPoolOptions.capacity`: how many spawns may be alive at once. */
+  capacity?: number;
+  /**
+   * The agent whose tool opened this pool, published on `CallingAgent` — what a
+   * real nested pool (a Delegate) has and a bare `runPool` does not. The pool
+   * reads it once, at spawn, and hangs it on every agent as `Agent.parent`; the
+   * receipts a lineage attends over walk that chain.
+   */
+  callingAgent?: Agent;
   orchestrate?: Orchestrator;
   trace?: boolean;
   pruneOnReturn?: boolean;
@@ -331,6 +341,7 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
     const events: Channel<AgentEvent, void> = createChannel();
     yield* Events.set(events as any);
     yield* Trace.set(trace);
+    if (spec.callingAgent) yield* CallingAgent.set(spec.callingAgent);
     // Media contexts, always installed. A real harness that accepts media wires
     // both; a harness that does not never reaches them, and an in-memory store
     // costs a text-only run nothing.
@@ -366,6 +377,7 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
         terminalToolName: spec.terminalToolName,
         trace: spec.trace ?? false,
         pruneOnReturn: spec.pruneOnReturn ?? false,
+        capacity: spec.capacity,
         enableThinking: spec.enableThinking,
       });
       let next = yield* sub.next();

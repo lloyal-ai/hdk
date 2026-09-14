@@ -78,15 +78,46 @@ export function useSend<C>(): (command: C) => void {
   return bridge.send;
 }
 
+interface WireStore {
+  subscribe: (notify: () => void) => () => void;
+  getSnapshot: () => WireStatus;
+}
+
+/** One status per bridge, for the life of the page. React reads `getSnapshot`
+ *  during render, so the status it reads must outlive the render that reads it:
+ *  the bridge is told once, here, and every renderer of it shares that one
+ *  answer. A bridge without `onStatus` (in-process) never leaves 'connected'. */
+const statuses = new WeakMap<object, WireStore>();
+
+function statusFor(bridge: Bridge<unknown, unknown, unknown>): WireStore {
+  let store = statuses.get(bridge);
+  if (!store) {
+    let status: WireStatus = 'connected';
+    const listeners = new Set<() => void>();
+    bridge.onStatus?.((next) => {
+      status = next;
+      for (const notify of listeners) notify();
+    });
+    store = {
+      subscribe(notify) {
+        listeners.add(notify);
+        return () => { listeners.delete(notify); };
+      },
+      getSnapshot: () => status,
+    };
+    statuses.set(bridge, store);
+  }
+  return store;
+}
+
+/** The status a server render reads: no wire has been asked yet. */
+const connected = (): WireStatus => 'connected';
+
 /** The wire's status. A bridge without `onStatus` (in-process) reads 'connected' forever. */
 export function useConnection(): WireStatus {
   const { bridge } = useHarness();
-  let last: WireStatus = 'connected';
-  return useSyncExternalStore(
-    (notify) => bridge.onStatus?.((s) => { last = s; notify(); }) ?? (() => {}),
-    () => last,
-    () => 'connected',
-  );
+  const wire = statusFor(bridge);
+  return useSyncExternalStore(wire.subscribe, wire.getSnapshot, connected);
 }
 
 /** The content plane's origin, or null on a bridge without one. */

@@ -77,7 +77,9 @@ export function defineOutput<S extends ZodType>(name: string, schema: S, opts?: 
 export function defineOutput<S extends ZodType>(name: string, schema: S, opts: OutputOptions<z.output<S>> = {}): Output<unknown> {
   const tool = new OutputTool(name, opts.description ?? `Submit your ${name}.`, schema, opts.capture);
   if (opts.capture) {
-    return { tool, read: (o) => o.result ?? '' };
+    // Absence is `null` here as it is everywhere else: `''` is text the capture
+    // can legitimately make, so it cannot also stand for "no outcome".
+    return { tool, read: (o) => o.result };
   }
   return {
     tool,

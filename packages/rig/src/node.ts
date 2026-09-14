@@ -82,8 +82,8 @@ export type { ConfigSource } from './config-layering';
 export { settings } from './settings';
 export type { SettingsDeps } from './settings';
 
-export { provisionAbilityModels } from './provision';
-export type { ProvisionAbilityModelsOpts } from './provision';
+export { provisionAbilityModels, resolveAbilityModels } from './provision';
+export type { ProvisionAbilityModelsOpts, AbilityModels } from './provision';
 
 // Node-only: the host-resources sampler a dev boot runs beside the trace writer.
 export { startHostResources } from './host-resources';

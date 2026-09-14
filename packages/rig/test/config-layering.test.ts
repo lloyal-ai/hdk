@@ -181,6 +181,28 @@ describe('saveLocalConfig', () => {
   });
 });
 
+// A generic app's table is not all dotted families. A scalar declared at the top level must
+// persist as itself: the writer merges object families, and a leaf replaces.
+describe('saveLocalConfig: a top-level scalar key', () => {
+  const scalarApp = defineConfig({ ...modelSettings, maxRows: { yml: 'maxRows', integer: true, default: 10 } });
+
+  it('persists as its value, not as an empty family', () => {
+    const cfg = runnerConfig(scalarApp, {}, { env: {}, cwd });
+    const runner = makeEdgeRunner(cfg.config, cfg);
+    runner.saveConfig({ maxRows: 25 } as never);
+    expect(readJson().maxRows).toBe(25);
+    expect((runner.config() as { maxRows: number }).maxRows).toBe(25);
+  });
+
+  it('survives the next boot\'s re-layering', () => {
+    const cfg = runnerConfig(scalarApp, {}, { env: {}, cwd });
+    makeEdgeRunner(cfg.config, cfg).saveConfig({ maxRows: 25 } as never);
+    const next = runnerConfig(scalarApp, {}, { env: {}, cwd });
+    expect((next.config as { maxRows: number }).maxRows).toBe(25);
+    expect(next.origin.maxRows).toBe('file');
+  });
+});
+
 describe('runnerConfig: what a boot hands the Runner', () => {
   it('a save persists, re-layers value and provenance together, and leaves the model block boot-frozen', () => {
     const yml = { model: { llm: { id: 'qwen3.5-4b', context: 32768 } }, defaults: { guards: GUARDS } };

@@ -54,12 +54,14 @@ describe('defineOutput', () => {
     expect(submit.read({ result: null })).toBeNull();
   });
 
-  it('with a capture, the result is the captured text and read returns it as is', () => {
+  it('with a capture, the result is the captured text and read returns it as is; absence reads null, never empty text', () => {
     const shout = defineOutput('shout', z.object({ result: z.string() }), { capture: ({ result }) => result.toUpperCase() });
     const raw = JSON.stringify({ result: 'quiet' });
     expect(shout.tool.hooks!.onReturn!({ agent, tool: 'shout', args: { result: 'quiet' }, raw, result: 'quiet' })).toEqual({ type: 'accept', result: 'QUIET' });
     expect(shout.read({ result: 'QUIET' })).toBe('QUIET');
-    expect(shout.read({ result: null })).toBe('');
+    // No outcome is not an empty one: `''` is a value the capture can legitimately make.
+    expect(shout.read({ result: null })).toBeNull();
+    expect(shout.read({ result: '' })).toBe('');
   });
 });
 

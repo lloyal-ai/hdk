@@ -255,6 +255,40 @@ describe('useExecution', () => {
     });
   });
 
+  // The owner's docblock promises that a replacement waits for the previous operation's
+  // teardown — "every `ensure`, `waitUntilSettled`'s settle barrier included" — before it
+  // touches the model. The halt path keeps that promise. These two pin it for the operation
+  // that simply RETURNS, which is the path an ordinary `ensure` takes.
+  it('the accepted future settles only after the operation\'s own cleanup has run', async () => {
+    const order: string[] = [];
+    await run(function* () {
+      const exec = yield* useExecution();
+      const a = yield* exec.replace('a', function* () {
+        yield* ensure(function* () { order.push('cleanup:start'); yield* sleep(20); order.push('cleanup:end'); });
+        order.push('body:return');
+      });
+      yield* a;
+      order.push(`awaited:busy=${exec.busy}`);
+      yield* sleep(60);
+    });
+    expect(order).toEqual(['body:return', 'cleanup:start', 'cleanup:end', 'awaited:busy=false']);
+  });
+
+  it('a replacement starts only after the returned operation has finished cleaning up', async () => {
+    const order: string[] = [];
+    await run(function* () {
+      const exec = yield* useExecution();
+      const a = yield* exec.replace('a', function* () {
+        yield* ensure(function* () { order.push('a:cleanup:start'); yield* sleep(20); order.push('a:cleanup:end'); });
+        order.push('a:return');
+      });
+      yield* a;
+      yield* exec.replace('b', function* () { order.push('b:start'); });
+      yield* sleep(80);
+    });
+    expect(order.indexOf('b:start')).toBeGreaterThan(order.indexOf('a:cleanup:end'));
+  });
+
   it('without the signals in context the controls are no-ops', async () => {
     await run(function* () {
       const exec = yield* useExecution();

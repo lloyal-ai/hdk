@@ -395,7 +395,11 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
               spawns.healing(entry);
               pending.spawns.push({
                 index: entry.index, key: entry.key, task: a.spec, ...priced,
-                parent: a.spec.parent ?? spine, caller: null,
+                // The replacement inherits the original's caller, not nothing: the branch parent
+                // carries the attention, and this carries the RECEIPTS — `Agent.attendedResults`
+                // walks this chain, so a heal that dropped it would re-attend evidence the lineage
+                // had already seen, and a receipt-keyed guard would read it as unseen.
+                parent: a.spec.parent ?? spine, caller: a.parent,
                 resolve: () => {}, reject: () => {}, discarded: false,
               });
             } catch { /* the heal stands down; the entry settles on the original */ }

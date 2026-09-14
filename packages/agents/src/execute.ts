@@ -774,9 +774,18 @@ export class Executor {
    *  instead of relying on the order. */
   prunePass(): number {
     let total = 0;
+    // A request that has not forked yet holds nothing native — that is what lets admission weigh
+    // it before any lease is taken — so nothing else tells this pass that a branch is still owed
+    // to someone, and a childless leaf can be exactly the parent a queued spawn named. Pending
+    // work retains what it will need: the parent stands until its request is admitted (it leaves
+    // this queue), withdrawn (`discarded`) or refused (it leaves too). Recomputed per pass, so
+    // each of those three releases it without a second bookkeeping path to keep in step.
+    const owed = new Set<number>();
+    for (const req of this.d.pending.spawns) if (!req.discarded) owed.add(req.parent.handle);
     for (;;) {
       let n = 0;
       for (const a of this.d.agents) {
+        if (owed.has(a.branch.handle)) continue;
         if (!prunable(a)) { if (a.pruneRequested && a.branch.disposed) a.pruneRequested = false; continue; }
         a.harvestMetrics();
         if (a.branch.children.length > 0) continue;

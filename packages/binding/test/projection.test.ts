@@ -137,3 +137,37 @@ describe.each([
     expect(p.getSnapshot()).toBe(p.getSnapshot());
   });
 });
+
+/**
+ * A buffered frame whose epoch is not the snapshot's is one of two things, and
+ * the projection must tell them apart: a stream the bridge has already LEFT —
+ * history, to drop — or one it has since MOVED TO — to seed from. Both arrive
+ * the same way, so only the bridge's own answer separates them.
+ */
+describe('a buffered frame from an epoch the snapshot does not name', () => {
+  const settle = () => new Promise<void>((r) => setTimeout(r, 60));
+
+  it('is history when the bridge names a different stream: the fold notifies and the asks stay bounded', async () => {
+    const b = fakeBridge({ asyncSnapshot: true });
+    b.newEpoch();                                               // the bridge is on its second stream
+    const p = connectProjection(b.bridge, initial, reduce);      // its answer will name that stream
+    b.deliver({ epoch: 1, seq: 1, ev: { type: 'n', n: 1 } });    // a frame from the stream it has left
+    b.emit({ type: 'n', n: 2 });                                 // and one from the stream it is on
+    const seen: S[] = [];
+    p.subscribe((s) => seen.push(s));
+    await settle();
+    expect(p.getSnapshot()).toEqual({ sum: 2, seen: [2] });
+    expect(seen).not.toEqual([]);                               // the view was told, not left frozen
+    expect(b.snapshots).toBeLessThanOrEqual(2);                 // asked about it once, not forever
+  });
+
+  it('is a new stream when the bridge names it on the next ask: the fold seeds from there', async () => {
+    const b = fakeBridge({ asyncSnapshot: true });
+    const p = connectProjection(b.bridge, initial, reduce);      // this answer names epoch 1
+    b.newEpoch();                                               // the stream restarts while it is in flight
+    b.emit({ type: 'n', n: 9 });                                 // buffered, and the bridge folds it
+    await settle();
+    expect(p.getSnapshot()).toEqual({ sum: 9, seen: [9] });
+    expect(b.snapshots).toBe(2);
+  });
+});

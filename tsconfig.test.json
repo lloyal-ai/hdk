@@ -57,7 +57,11 @@
       "@lloyal-labs/corpus-ability": ["packages/abilities/corpus/src/index.ts"],
       "@lloyal-labs/web-ability": ["packages/abilities/web/src/index.ts"],
       "@lloyal-labs/wikipedia-ability": ["packages/abilities/wikipedia/src/index.ts"],
-      "@lloyal-labs/documents-ability": ["packages/abilities/documents/src/index.ts"]
+      "@lloyal-labs/documents-ability": ["packages/abilities/documents/src/index.ts"],
+      // Not a workspace package: ink declares only an `exports` map, which
+      // `moduleResolution: "Node"` cannot read. The ui suite renders through it
+      // to reach a client reconciler, the only place `useSyncExternalStore` runs.
+      "ink": ["node_modules/ink/build/index.d.ts"]
     }
   },
   "include": [

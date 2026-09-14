@@ -35,9 +35,10 @@ import type { Binding, WsServerSocket } from '@lloyal-labs/binding/node';
 import { createContentIngress, MAX_DOCUMENT_BYTES, DOCUMENT_UPLOAD_TIMEOUT_MS } from '@lloyal-labs/media/node';
 import type { ConfigTable, ConfigOf, OriginOf } from './config';
 import { loadYml, runnerConfig } from './config-layering';
-import { resolveModel, resolveRuntimeModels } from './models';
-import type { ModelRole } from './models';
-import { provisionAbilityModels } from './provision';
+import { resolveRuntimeModels } from './models';
+import type { ModelRole, ModelSpec, RuntimeModels } from './models';
+import { provisionAbilityModels, resolveAbilityModels } from './provision';
+import type { AbilityModels } from './provision';
 import { useTraceWriter } from './trace-sink';
 import { createProjectMediaStore } from './media-store';
 import { createContentRoutes } from './content-routes';
@@ -76,6 +77,11 @@ type ModelBlock = ConfigOf<ConfigTable>['model'] & {
   path?: string; nCtx?: number; branches?: number; kvCache?: string; gpu?: string;
   imageMinTokens?: number; imageMaxTokens?: number; reranker?: string; rerankerId?: string; id?: string; mmproj?: string;
 };
+
+/** The model an operator named for an auxiliary service — which model, never whether:
+ *  what a service is needed for is the abilities' to declare, in both boots. */
+const rerankerSpec = (m: ModelBlock): ModelSpec | undefined =>
+  m.reranker ? { path: m.reranker } : m.rerankerId ? { id: m.rerankerId } : undefined;
 
 export interface BootEdgeOpts<E, C> {
   /** Where `harness.yml` is — the project. Default: the process's cwd. */
@@ -132,7 +138,7 @@ export function bootEdge<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>, 
     try {
       yield* provisionAbilityModels({
         abilities: app.abilities, projectRoot,
-        reranker: model.reranker ? { path: model.reranker } : model.rerankerId ? { id: model.rerankerId } : undefined,
+        reranker: rerankerSpec(model),
         rerankerLoad: { nSeqMax: 10, nCtx: 16384 },
         onProgress: (got, total) => { fetchingReranker = true; progress('reranker')(got, total); },
       });
@@ -213,17 +219,34 @@ export function bootServed<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>
   const model = loaded.config.model as ModelBlock;
 
   main(function* () {
-    const models = yield* call(() =>
-      resolveRuntimeModels({ projectRoot, config: model, llmId: model.id, onProgress: (role: ModelRole, g, t) => progress(role)(g, t) }),
-    );
-    const rerankerPath = yield* call(() =>
-      resolveModel({
-        projectRoot, role: 'reranker',
-        spec: model.reranker ? { path: model.reranker } : { id: model.rerankerId },
-        onProgress: progress('reranker'),
-      }),
-    );
-    const resident = { ...model, path: models.modelPath, reranker: rerankerPath, nCtx: model.nCtx ?? DEFAULT_N_CTX };
+    let models: RuntimeModels;
+    let aux: AbilityModels;
+    let fetching = false;
+    try {
+      models = yield* call(() =>
+        resolveRuntimeModels({
+          projectRoot, config: model, llmId: model.id,
+          onProgress: (role: ModelRole, g, t) => { fetching = true; progress(role)(g, t); },
+        }),
+      );
+      // The auxiliary services are the installed abilities' to declare — the same
+      // question the edge boot asks. A host whose abilities need no reranker fetches
+      // none; one that does fails HERE, with its reason, rather than at the port.
+      aux = yield* resolveAbilityModels({
+        abilities: app.abilities, projectRoot,
+        reranker: rerankerSpec(model),
+        onProgress: (g, t) => { fetching = true; progress('reranker')(g, t); },
+      });
+    } catch (err) {
+      process.stderr.write(`\n${message(err)}\n`);
+      process.exit(1);
+    }
+    if (fetching) process.stderr.write('\n');
+
+    const resident = {
+      ...model, path: models.modelPath, nCtx: model.nCtx ?? DEFAULT_N_CTX,
+      ...(aux.reranker ? { reranker: aux.reranker } : {}),
+    };
     const cfg = { ...loaded.config, model: resident } as ConfigOf<T>;
     const port = opts.port ?? envInt('PORT', 8787);
     const maxNativeSessions = opts.maxSessions ?? envInt('MAX_SESSIONS', 8);
@@ -240,9 +263,11 @@ export function bootServed<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>
       *run(m) {
         applyGpuEnv(resident);
         yield* NSeqMax.set(resident.branches ?? DEFAULT_N_SEQ_MAX);
+        // Per session, off the paths the boot already fetched: the requirement is
+        // read again from the same abilities, so nothing loads that nothing asked for.
         yield* provisionAbilityModels({
           abilities: app.abilities, projectRoot,
-          reranker: { path: rerankerPath },
+          reranker: aux.reranker ? { path: aux.reranker } : undefined,
           rerankerLoad: { nSeqMax: 10, nCtx: 16384 },
         });
         if (dev) yield* ensure(startHostResources((ev) => m.uiChannel.send(ev as unknown as E)));

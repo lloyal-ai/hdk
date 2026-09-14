@@ -33,7 +33,7 @@
  *
  * @category Rig
  */
-import { resource, spawn, createQueue, withResolvers } from 'effection';
+import { resource, scoped, spawn, createQueue, withResolvers } from 'effection';
 import type { Operation, Task, Signal } from 'effection';
 import { Pause, WindDown, CancelAgent } from '@lloyal-labs/lloyal-agents';
 
@@ -158,7 +158,12 @@ export function useExecution(): Operation<Execution> {
         windingDown = false;
         const task: Task<void> = yield* spawn(function* () {
           try {
-            yield* next.op();
+            // The owner's own boundary, so the barrier it promises is the owner's to keep and not
+            // the caller's to remember: `scoped` returns only once the operation's frame has closed
+            // and every `ensure` it registered has run. Without it a natural return settles the
+            // future — and frees `busy` — while the operation is still tearing down, and a
+            // replacement could touch the model underneath it. A halt already waited (`task.halt()`).
+            yield* scoped(() => next.op());
             next.resolve();
           } catch (err) {
             if (halting === task) throw err;   // raised while being halted: the teardown's, and the halt's to fail with

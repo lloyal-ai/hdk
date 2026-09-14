@@ -373,9 +373,9 @@ export interface RuntimeModels {
  * pairing, `mmprojPath` comes back undefined, and `createContext` then reports
  * `supportsVision() === false` rather than failing.
  *
- * Not the reranker: the CLI provisions it through the abilities that declare
- * it (`provisionAbilityModels`) while a served host resolves it directly, so
- * it is genuinely each boot's own business.
+ * Not the reranker: every boot reaches it through the abilities that declare
+ * it (`resolveAbilityModels`), so no boot decides on its own that a harness
+ * needs one.
  *
  * @param opts.config - The layered config's model block. A saved `path`
  *                      outranks the manifest's catalog id, matching how the

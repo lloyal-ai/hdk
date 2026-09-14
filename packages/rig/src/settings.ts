@@ -94,21 +94,27 @@ export function settings<C extends BaseHarnessConfig, O extends Record<string, C
 
         const factory = abilities.find((f) => f.manifest?.name === name);
         if (factory) {
-          if (registry.byName(name)) yield* registry.disable(name);
+          // Whether it was running is a fact of its own, read before the disable: an
+          // ability enabled on its defaults has no stored config to infer it from.
+          const wasEnabled = registry.stateOf(name) === 'enabled';
+          if (wasEnabled) yield* registry.disable(name);
           if (clear && abilityRequiresConfig(factory)) {
             yield* store.clear(name);
           } else {
             try {
               yield* registry.enable(factory);
             } catch (err) {
-              // The new config failed to enable: restore every surface this command touched.
-              if (prior && Object.keys(prior).length > 0) {
-                yield* store.set(name, prior);
-                try { yield* registry.enable(factory); } catch { yield* store.clear(name); }
-              } else {
-                yield* store.clear(name);
-              }
+              // The new config failed to enable: restore every surface this command
+              // touched — the stored config, the live instance, the saved config —
+              // and announce the restored state, or the interface keeps the roster
+              // it was last told.
+              if (prior && Object.keys(prior).length > 0) yield* store.set(name, prior);
+              else yield* store.clear(name);
+              // The prior config enabled before, so this is expected to hold; if it
+              // cannot, the stored config is what fails and must not outlive the run.
+              if (wasEnabled) { try { yield* registry.enable(factory); } catch { yield* store.clear(name); } }
               try { runner.saveConfig(abilityPatch(name, prior ?? {})); } catch { /* the toast reports the enable error */ }
+              yield* announce();
               return yield* toast(`Cannot configure ${name}: ${message(err)}`);
             }
           }

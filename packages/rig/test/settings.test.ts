@@ -110,7 +110,40 @@ describe('set_ability_config', () => {
       expect(yield* w2.store.get('corpus')).toEqual({ corpusPath: good });
       expect(w2.registry.stateOf('corpus')).toBe('enabled');
       expect(w2.runner.config().abilities.corpus).toEqual({ corpusPath: good });
-      expect(w2.sent).toEqual([{ type: 'ui:error', message: 'Cannot configure corpus: no index there' }]);
+      expect(w2.sent).toEqual([
+        { type: 'abilities:state', abilities: [expect.objectContaining({ name: 'corpus', enabled: true, config: { corpusPath: true } })] },
+        { type: 'ui:error', message: 'Cannot configure corpus: no index there' },
+      ]);
+    });
+  });
+
+  // A restore the interface never hears about is not a restore: the renderer holds the
+  // roster it was last told, so the surfaces the command put back must be announced.
+  it('a failed enable announces the restored state, not only the error', async () => {
+    await run(function* () {
+      const flaky = fakeAbility({ name: 'web', refuse: (c) => (c?.tavilyKey === 'bad' ? 'that key is refused' : undefined) });
+      const w = yield* world({ abilities: [flaky], config: base(), enable: ['web'] });
+      yield* dispatch(w, { type: 'set_ability_config', name: 'web', values: { tavilyKey: 'bad' } });
+      expect(w.sent.map((e) => e.type)).toEqual(['abilities:state', 'ui:error']);
+      const state = w.sent[0] as Extract<SettingsEvent, { type: 'abilities:state' }>;
+      expect(state.abilities).toEqual([expect.objectContaining({ name: 'web', enabled: true, config: {} })]);
+    });
+  });
+
+  // The restore above is conditional on a prior NONEMPTY config. An ability enabled on its
+  // defaults has nothing stored, so a failed reconfiguration must not be able to leave it
+  // disabled: prior enablement is a fact of its own, independent of config presence.
+  it('an enable that fails restores an ability that had NO stored config', async () => {
+    await run(function* () {
+      const flaky = fakeAbility({ name: 'web', refuse: (c) => (c?.tavilyKey === 'bad' ? 'that key is refused' : undefined) });
+      const w = yield* world({ abilities: [flaky], config: base(), enable: ['web'] });
+      expect(w.registry.stateOf('web')).toBe('enabled');
+      yield* dispatch(w, { type: 'set_ability_config', name: 'web', values: { tavilyKey: 'bad' } });
+      expect(w.sent).toEqual([
+        { type: 'abilities:state', abilities: [expect.objectContaining({ name: 'web', enabled: true })] },
+        { type: 'ui:error', message: 'Cannot configure web: that key is refused' },
+      ]);
+      expect(w.registry.stateOf('web')).toBe('enabled');
     });
   });
 
