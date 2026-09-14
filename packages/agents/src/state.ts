@@ -2,7 +2,8 @@ import type { ParsedToolCall, MultimodalDelta } from '@lloyal-labs/sdk';
 // `ToolRetryError` is no longer named here: a completion carries how the call
 // ended; recognising a transient failure is the frame's (`hooks.ts`).
 import type { Attachment } from '@lloyal-labs/media';
-import type { Agent, ToolHistoryEntry } from './Agent';
+import type { Branch } from '@lloyal-labs/sdk';
+import type { Agent, ToolHistoryEntry, FormatConfig } from './Agent';
 import type { ContextPressure } from './pressure';
 import type { RecoveryAction } from './AgentPolicy';
 import type { Outcome, Completion } from './Tool';
@@ -73,15 +74,23 @@ export interface DispatchRequest {
   agent: Agent; tc: ParsedToolCall; retryAttempt?: number; retryCallId?: string;
 }
 
-/** An orchestrator's `spawn`: the agent is forked and its suffix tokenized;
- *  the suffix prefill and the activation are scheduler work. The
- *  orchestrator suspends on `resolve`/`reject` until then. */
+/** An orchestrator's `spawn`, priced and waiting: its suffix is tokenized and
+ *  its format fixed, but no branch exists yet. The scheduler admits it when the
+ *  KV fits, a sequence is free and the pool has a seat; the executor forks it
+ *  then, prefills the suffix and activates it. The orchestrator suspends on
+ *  `resolve`/`reject` until then. `index` is its place in the pool's ledger of
+ *  spawns, where its outcome is kept. */
 export interface SpawnRequest {
-  agent: Agent; suffixTokens: number[]; formattedPrompt: string; task: AgentTaskSpec;
+  index: number; key?: string; task: AgentTaskSpec;
+  suffixTokens: number[]; formattedPrompt: string; fmt: FormatConfig;
+  /** The branch to fork: the spec's parent, else the spine. */
+  parent: Branch;
+  /** The agent whose tool call made the request, read where the request was made; null off the loop. */
+  caller: Agent | null;
   resolve: (agent: Agent) => void; reject: (err: Error) => void; discarded: boolean;
   /** A heal is a spawn wearing a lineage: the original's record, replayed onto
    *  the fork once its suffix has been prefilled. Nobody awaits it (`resolve`/`reject`
-   *  are no-ops) and a rejection drops it with `pressure_init`. */
+   *  are no-ops); the ledger entry it belongs to is the original's. */
   replay?: SpawnReplay;
 }
 export interface SpawnReplay {
@@ -92,7 +101,14 @@ export interface SpawnReplay {
    *  receipt ledger matches the KV the steps replay. The replay restores content,
    *  not history; without this a healed read tool re-delivers what its branch holds. */
   history: readonly ToolHistoryEntry[];
+  /** The parent's position at the original's fork — the replacement forks there or the heal stands down. */
+  forkHead: number;
 }
+
+/** Why a spawn was not seated. */
+export type SpawnRefusal = 'pressure_init' | 'no_sequence';
+/** A spawn the scheduler refused, or one whose fork failed at admission. */
+export interface RefusedSpawn { req: SpawnRequest; reason: SpawnRefusal; detail?: string }
 
 /** What a heal hands to the pool to forge its replacement from. */
 export interface Lineage {
@@ -155,6 +171,8 @@ export interface TickState {
   };
   /** Agents with a fan-out tool child still running. */
   inflight: ReadonlySet<number>;
+  /** Vacant sequences in the store, sampled with the pressure: what a fork needs one of. */
+  sequences: number;
 }
 
 /**
@@ -206,8 +224,10 @@ export interface Schedule {
   drops: Drop[];
   /** Extracting agents whose report hit its token-stop: finish without sampling. */
   finishes: Agent[];
+  /** Spawns admitted this tick: the executor forks, prefills and activates them. */
   spawns: SpawnRequest[];
-  rejectedSpawns: SpawnRequest[];
+  /** Spawns that can never be seated: nothing alive or prunable is left to free what they need. */
+  refusedSpawns: RefusedSpawn[];
   /** Extends admitted against headroom; they land as ONE pair on the spine. */
   extends: ExtendRequest[];
   /** Extends that can never fit: nothing alive or prunable is left to free KV. */
@@ -264,6 +284,9 @@ export interface Outputs {
    *  `parsed` is the strict parse taken at the sample (null for an extracting
    *  agent, whose report is parsed by the recovery path). */
   produced: { agent: Agent; token: number; text: string; isStop: boolean; parsed: import('@lloyal-labs/sdk').ParseChatOutputResult | null }[];
+  /** Admitted spawns whose fork failed at admission — the store said a sequence was
+   *  vacant and the fork found none. Refused like a scheduler refusal. */
+  spawnRefused: RefusedSpawn[];
   /** The commit succeeded (`steps` counts these), with the reading taken as it did. */
   committed: boolean;
   commitPressure: ContextPressure | null;
@@ -305,3 +328,5 @@ export interface Ladder { consecutiveFatalRc: number; backendSuspect: boolean }
 export const MAX_DEFER_ATTEMPTS = 3;
 export const BACKEND_TRIPWIRE_N = 3;
 export const MAX_HEAL_ATTEMPTS = 1;
+/** Returns that may be rejected for one agent — by the terminal tool, a harness floor, anyone at `onReturn` — before the next is accepted as it stands. */
+export const MAX_RETURNS_REJECTED = 1;

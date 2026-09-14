@@ -7,6 +7,8 @@ export function createMockBranch(opts?: {
   forkHead?: number;
   disposed?: boolean;
   handle?: number;
+  /** Live children, for the reclaim rule (a leaf is reclaimable; a parent with children is not). */
+  children?: unknown[];
 }) {
   let disposed = opts?.disposed ?? false;
   let position = opts?.position ?? 0;
@@ -17,6 +19,7 @@ export function createMockBranch(opts?: {
     set position(v: number) { position = v; },
     forkHead: opts?.forkHead ?? 0,
     get disposed() { return disposed; },
+    children: opts?.children ?? ([] as unknown[]),
     perplexity: 1.0,
     samplingPerplexity: 1.0,
     modelEntropy: () => 0.5,

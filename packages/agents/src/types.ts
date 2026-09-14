@@ -5,7 +5,7 @@ import type { AgentPolicy, Budget, GuardOverrides } from './AgentPolicy';
 import type { EntailmentScorer } from './source';
 import type { TraceEvent } from './trace-types';
 import type { Attachment } from '@lloyal-labs/media';
-import type { Outcome } from './Tool';
+import type { Outcome, ToolLifecycleHooks } from './Tool';
 
 // ── Tool base class types ──────────────────────────────────────
 
@@ -148,6 +148,8 @@ export interface AgentTaskSpec {
    * harness-internal spawns.
    */
   assignedAbility?: string;
+  /** The application's label for this spawn — see {@link SpawnSpec.key}. */
+  key?: string;
 }
 
 /**
@@ -263,6 +265,20 @@ export interface AgentPoolOptions {
   /** The harness's overrides of declared gates ({@link GuardOverrides}), on the
    *  policy the budget derives. Not with `policy`, which carries its own. */
   guards?: GuardOverrides;
+  /** Accept prose as an agent's result when it makes no tool call (a passthrough
+   *  answer, a settling pass). On the policy the budget derives; not with `policy`. */
+  acceptFreeText?: boolean;
+  /** The harness's part of the tool lifecycle, as data ({@link ToolLifecycleHooks}): walked after the
+   *  called tool's own hooks and before the framework's defaults — a floor on the return, a follow-up.
+   *  On the policy the budget derives; not with `policy`. */
+  hooks?: readonly ToolLifecycleHooks[];
+  /**
+   * How many agents the pool seats at once. Spawns beyond it wait, in request
+   * order, and are admitted as seats free — every topology runs in waves under
+   * it. Unbounded by default: the pool seats what the context and its
+   * sequences can hold.
+   */
+  capacity?: number;
   /** Max concurrent fan-out tool executions across the pool. Fan-out tools
    *  ({@link Tool.fanout}) run off the loop fiber; this FIFO-gates how many
    *  execute at once. Inline tools are unaffected — the loop fiber already
@@ -370,6 +386,25 @@ export interface AgentResult {
 }
 
 /**
+ * One spawn's final outcome: the agent that finally carried it (a heal's
+ * replacement, when there was one), what it returned, and how it ended. A
+ * spawn the pool could not seat has no agent and names the refusal.
+ *
+ * @category Agents
+ */
+export interface SpawnOutcome {
+  /** The application's label, when the spawn carried one. */
+  key?: string;
+  /** The final agent's id; `null` for a refused spawn. */
+  agentId: number | null;
+  /** The final agent's result, or `null`. */
+  result: string | null;
+  exitReason?: AgentExitReason;
+  /** Why it ended without a result on its own terms: a refusal (`no_sequence`, `pressure_init`) or the agent's terminal failure; `null` otherwise. */
+  failed: string | null;
+}
+
+/**
  * Aggregate result from a completed agent pool run
  *
  * Returned by {@link useAgentPool}. Contains
@@ -378,7 +413,11 @@ export interface AgentResult {
  * @category Agents
  */
 export interface AgentPoolResult {
-  /** Per-agent results in task order */
+  /** One outcome per spawn, in spawn order, across heals — the logical roster. */
+  outcomes: SpawnOutcome[];
+  /** The outcome of the spawn that carried `key`, if any. */
+  byKey(key: string): SpawnOutcome | undefined;
+  /** Per-agent results in roster order — the physical roster, a heal's replacement beside its original. */
   agents: AgentResult[];
   /** Sum of all agent token counts */
   totalTokens: number;
@@ -410,7 +449,7 @@ export type AgentEvent =
   /** `after`: agent ids whose completion gated this spawn (DAG dependency
    *  edges, resolved by the orchestrator — never inferred). Absent outside
    *  DAG pools. */
-  | { type: 'agent:spawn'; agentId: number; parentAgentId: number; after?: number[] }
+  | { type: 'agent:spawn'; agentId: number; parentAgentId: number; after?: number[]; key?: string }
   | { type: 'agent:produce'; agentId: number; text: string; tokenCount: number; entropy?: number; surprisal?: number }
   | { type: 'agent:tool_call'; agentId: number; tool: string; args: string }
   | { type: 'agent:tool_result'; agentId: number; tool: string; result: string; contextAvailablePercent?: number }

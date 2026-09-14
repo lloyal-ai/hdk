@@ -9,7 +9,7 @@ import { useAgentPool } from './agent-pool';
 import { createToolkit } from './toolkit';
 import { useTraceScope } from './trace-scope';
 import { parallel } from './orchestrators';
-import type { Tool } from './Tool';
+import type { Tool, ToolLifecycleHooks } from './Tool';
 import type { AgentPolicy, Budget, GuardOverrides } from './AgentPolicy';
 import type { JsonSchema, SamplingParams, AgentEvent } from './types';
 
@@ -38,6 +38,12 @@ export interface UseAgentOpts {
   budget?: Budget;
   /** The harness's overrides of declared gates ({@link GuardOverrides}), on the policy the budget derives. */
   guards?: GuardOverrides;
+  /** Accept the agent's prose as its result when it makes no tool call — a passthrough answer, a settling pass. On the policy the budget derives; not with `policy`. */
+  acceptFreeText?: boolean;
+  /** The harness's part of the tool lifecycle, as data ({@link ToolLifecycleHooks}): walked after the
+   *  called tool's own hooks and before the framework's defaults — a floor on the return, a follow-up.
+   *  On the policy the budget derives; not with `policy`. */
+  hooks?: readonly ToolLifecycleHooks[];
   /** JSON Schema for eager grammar constraint (deferred: Zod support). */
   schema?: JsonSchema;
   /**
@@ -146,6 +152,8 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
       policy: opts.policy,
       budget: opts.budget,
       guards: opts.guards,
+      acceptFreeText: opts.acceptFreeText,
+      hooks: opts.hooks,
       trace: opts.trace,
       eagerGrammar,
       enableThinking: opts.enableThinking,

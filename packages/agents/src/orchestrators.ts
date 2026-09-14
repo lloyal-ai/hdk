@@ -2,6 +2,8 @@ import { all, spawn } from 'effection';
 import type { Operation, Task } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import type { Agent } from './Agent';
+import { SpawnRefused, outcomeOfAgent } from './spawns';
+import type { SpawnOutcome } from './types';
 
 /**
  * Spec for spawning a single agent under a {@link PoolContext}.
@@ -31,6 +33,12 @@ export interface SpawnSpec {
    * session grants (the authGuard), not by ability membership.
    */
   assignedAbility?: string;
+  /**
+   * The application's label for this spawn — a row, a task index — carried on
+   * `agent:spawn` and read back through `AgentPoolResult.byKey`. Optional and
+   * non-enforcing; refused when repeated within one pool.
+   */
+  key?: string;
 }
 
 /**
@@ -46,10 +54,14 @@ export interface PoolContext {
   /** The pool's spine branch. Orchestrator-provided spawns fork from here by default. */
   readonly spine: Branch;
 
-  /** Fork an agent branch, prefill its suffix, transition to active. Tick loop picks it up. */
+  /**
+   * Request an agent: priced now, forked and activated when the pool seats it
+   * (KV, a vacant sequence, `capacity`), which may be several ticks later.
+   * Throws {@link SpawnRefused} when it can never be seated.
+   */
   spawn(spec: SpawnSpec): Operation<Agent>;
 
-  /** Suspend until the agent is final (`idle` after it lived, or `disposed`) — its one `final` future. Returns the agent for chaining. */
+  /** Suspend until the spawn is final, across heals; returns the lineage's final agent — a replacement when there was one. */
   waitFor(agent: Agent): Operation<Agent>;
 
   /**
@@ -75,8 +87,24 @@ export type Orchestrator = (ctx: PoolContext) => Operation<void>;
 // ── Factories ──────────────────────────────────────────────────
 
 /**
- * Parallel orchestrator — spawn all tasks upfront, wait for all to complete.
- * This is the default shape that `useAgentPool` used to provide implicitly.
+ * What {@link parallel} takes beside its specs.
+ *
+ * @category Agents
+ */
+export interface ParallelOptions {
+  /**
+   * Fires once per spec, as its spawn settles — the final outcome across heals,
+   * a refused spawn included as a failed outcome carrying the pool's reason.
+   * The hook `ChainStep.beforeSpawn` and `afterExtend` already are: a caller
+   * instruments each item without dropping down to an inline orchestrator.
+   */
+  afterDone?: (index: number, outcome: SpawnOutcome) => Operation<void>;
+}
+
+/**
+ * Parallel orchestrator — every task requested at once, all siblings off the
+ * spine; the pool seats them as it can, so a wide list runs in waves. A spawn
+ * the pool refuses is one failed outcome, not the end of its siblings.
  *
  * @example
  * ```ts
@@ -88,10 +116,20 @@ export type Orchestrator = (ctx: PoolContext) => Operation<void>;
  *
  * @category Agents
  */
-export const parallel = (tasks: SpawnSpec[]): Orchestrator =>
+export const parallel = (tasks: SpawnSpec[], opts: ParallelOptions = {}): Orchestrator =>
   function* (ctx) {
-    const agents = yield* all(tasks.map(t => ctx.spawn({ ...t, parent: t.parent ?? ctx.spine })));
-    yield* all(agents.map(a => ctx.waitFor(a)));
+    yield* all(tasks.map((t, i) => (function* (): Operation<void> {
+      let agent: Agent;
+      try {
+        agent = yield* ctx.spawn({ ...t, parent: t.parent ?? ctx.spine });
+      } catch (e) {
+        if (!(e instanceof SpawnRefused)) throw e;
+        if (opts.afterDone) yield* opts.afterDone(i, e.outcome);
+        return;
+      }
+      const final = yield* ctx.waitFor(agent);
+      if (opts.afterDone) yield* opts.afterDone(i, outcomeOfAgent(final, t.key));
+    })()));
   };
 
 /**
@@ -151,10 +189,15 @@ export const chain = <T>(
     for (const [i, item] of items.entries()) {
       const step = toStep(item, i);
       if (step.beforeSpawn) yield* step.beforeSpawn();
-      const agent = yield* ctx.waitFor(
-        yield* ctx.spawn({ ...step.task, parent: step.task.parent ?? ctx.spine }),
-      );
-      const delta = agent.result && step.userContent
+      // A step the pool refuses contributes nothing to the spine; the chain goes on.
+      let requested: Agent | null = null;
+      try {
+        requested = yield* ctx.spawn({ ...step.task, parent: step.task.parent ?? ctx.spine });
+      } catch (e) {
+        if (!(e instanceof SpawnRefused)) throw e;
+      }
+      const agent = requested ? yield* ctx.waitFor(requested) : null;
+      const delta = agent?.result && step.userContent
         ? yield* ctx.extendSpine(step.userContent, agent.result)
         : 0;
       if (step.afterExtend) yield* step.afterExtend(delta, ctx.spine.position);
@@ -183,17 +226,17 @@ export const chain = <T>(
  */
 export const fanout = (landscape: ChainStep, domains: SpawnSpec[]): Orchestrator =>
   function* (ctx) {
-    const l = yield* ctx.waitFor(
-      yield* ctx.spawn({ ...landscape.task, parent: landscape.task.parent ?? ctx.spine }),
-    );
-    if (l.result && landscape.userContent) {
+    // A refused landscape extends nothing; the domains fork from the spine as it is.
+    let l: Agent | null = null;
+    try {
+      l = yield* ctx.waitFor(yield* ctx.spawn({ ...landscape.task, parent: landscape.task.parent ?? ctx.spine }));
+    } catch (e) {
+      if (!(e instanceof SpawnRefused)) throw e;
+    }
+    if (l?.result && landscape.userContent) {
       yield* ctx.extendSpine(landscape.userContent, l.result);
     }
-
-    const agents = yield* all(
-      domains.map(d => ctx.spawn({ ...d, parent: d.parent ?? ctx.spine })),
-    );
-    yield* all(agents.map(a => ctx.waitFor(a)));
+    yield* parallel(domains)(ctx);
   };
 
 /**

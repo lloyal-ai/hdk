@@ -26,7 +26,7 @@ import * as path from 'node:path';
  * input returns ''. Idempotent. Apply at the boundary between user input and
  * persisted/live state; persisted form is always absolute.
  */
-export function resolvePath(input: string): string {
+export function resolvePath(input: string, base: string = process.cwd()): string {
   if (!input) return '';
   const expanded =
     input === '~'
@@ -34,7 +34,7 @@ export function resolvePath(input: string): string {
       : input.startsWith('~/')
         ? path.join(os.homedir(), input.slice(2))
         : input;
-  return path.resolve(expanded);
+  return path.resolve(base, expanded);
 }
 
 /** The ONE definition of "this ability config value is a path", with no
@@ -46,13 +46,14 @@ export function isPathShaped(key: string, value: unknown): value is string {
   return typeof value === 'string' && value !== '' && (/path$/i.test(key) || /^[~/.]/.test(value));
 }
 
-/** Resolve path-shaped string values in one ability's config object, by {@link isPathShaped}. */
+/** Resolve path-shaped string values in one ability's config object, by {@link isPathShaped}, against `base`. */
 export function resolveAppConfigPaths(
   cfg: Record<string, unknown>,
+  base: string = process.cwd(),
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(cfg)) {
-    out[key] = isPathShaped(key, value) ? resolvePath(value) : value;
+    out[key] = isPathShaped(key, value) ? resolvePath(value, base) : value;
   }
   return out;
 }

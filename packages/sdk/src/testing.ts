@@ -75,6 +75,10 @@ export interface MockSessionContextOpts {
   cellsUsed?: number;
   /** Token ID treated as stop token. Default: 999 */
   stopToken?: number;
+  /** Sequence leases, one per live branch (the root's included): what
+   *  `BranchStore.available` counts down and a fork fails without. Default:
+   *  unbudgeted — every fork succeeds and `available` stays large. */
+  nSeqMax?: number;
 }
 
 /**
@@ -102,6 +106,8 @@ export class MockSessionContext implements SessionContext {
 
   /** Token ID that isStopToken returns true for */
   readonly stopToken: number;
+  /** The sequence budget, or undefined when unbudgeted. */
+  readonly nSeqMax: number | undefined;
 
   // ── Branch state machine ──────────────────────────────────────
   /** @internal exposed for subclass access */
@@ -117,11 +123,25 @@ export class MockSessionContext implements SessionContext {
     this.nCtx = opts?.nCtx ?? 16384;
     this.cellsUsed = opts?.cellsUsed ?? 0;
     this.stopToken = opts?.stopToken ?? 999;
+    this.nSeqMax = opts?.nSeqMax;
+  }
+
+  /** Live branches — each holds one sequence lease. */
+  private _live(): number {
+    let n = 0;
+    for (const b of this._branches.values()) if (!b.disposed) n++;
+    return n;
+  }
+
+  /** The binding's refusal when no sequence is vacant: one message for create and fork alike. */
+  private _lease(what: string): void {
+    if (this.nSeqMax !== undefined && this._live() >= this.nSeqMax) throw new Error(`Failed to ${what} branch`);
   }
 
   // ── Branch lifecycle ──────────────────────────────────────────
 
   _branchCreate(position: number, _params?: SamplingParams, _nBatch?: number, _grammar?: string): number {
+    this._lease('create');
     const handle = this._nextHandle++;
     this._branches.set(handle, {
       position,
@@ -137,6 +157,7 @@ export class MockSessionContext implements SessionContext {
   _branchFork(parentHandle: number): number {
     const parent = this._branches.get(parentHandle);
     if (!parent) throw new Error(`MockSessionContext._branchFork: unknown handle ${parentHandle}`);
+    this._lease('fork');
 
     const handle = this._nextHandle++;
     parent.children.add(handle);
@@ -397,7 +418,8 @@ export class MockSessionContext implements SessionContext {
   }
 
   _storeRetainOnly(_handle: number): void {}
-  _storeAvailable(): number { return 15; }
+  /** Vacant sequences: the budget less the live branches; unbudgeted ⇒ effectively unbounded. */
+  _storeAvailable(): number { return this.nSeqMax === undefined ? Number.MAX_SAFE_INTEGER : Math.max(0, this.nSeqMax - this._live()); }
 
   // ── Sampler / grammar (no-ops) ────────────────────────────────
 

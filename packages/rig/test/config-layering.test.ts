@@ -91,7 +91,7 @@ describe('the rungs, and the provenance that falls out of them', () => {
     expect(c.config.model.nCtx).toBe(1024);
     expect(c.origin['model.nCtx']).toBe('yml');
     const d = loadConfig(app, {}, { env: {}, cwd });
-    expect(d.config.sources.outputDir).toBe(path.resolve('reports'));
+    expect(d.config.sources.outputDir).toBe(path.join(cwd, 'reports')); // the default is the app's: relative to its project
     expect(d.origin['sources.outputDir']).toBe('default');
     expect(d.config.defaults.effort).toBe('high');
     expect(d.origin['defaults.effort']).toBe('default');
@@ -121,7 +121,18 @@ describe('the rungs, and the provenance that falls out of them', () => {
   it('a path key is expanded and made absolute at the boundary', () => {
     const { config } = loadConfig(app, { sources: { outputDir: '~/briefs' }, model: { llm: { path: './m.gguf' } } }, { env: {}, cwd });
     expect(config.sources.outputDir).toBe(path.join(os.homedir(), 'briefs'));
-    expect(config.model.path).toBe(path.resolve('./m.gguf'));
+    expect(config.model.path).toBe(path.join(cwd, 'm.gguf'));
+  });
+
+  it('a relative path from a file, an ability block or the default resolves against the project; one typed at the cli or set in the environment, against the process', () => {
+    const yml = { model: { llm: { path: './m.gguf' } }, abilities: { corpus: { corpusPath: './docs' } } } as never;
+    const { config } = loadConfig(app, yml, { env: {}, cwd });
+    expect(config.model.path).toBe(path.join(cwd, 'm.gguf'));
+    expect(config.sources.outputDir).toBe(path.join(cwd, 'reports'));
+    expect((config.abilities as Record<string, Record<string, unknown>>).corpus.corpusPath).toBe(path.join(cwd, 'docs'));
+    writeJson({ version: 1, sources: { outputDir: './local' } });
+    expect(loadConfig(app, {}, { env: {}, cwd }).config.sources.outputDir).toBe(path.join(cwd, 'local'));
+    expect(loadConfig(app, {}, { env: {}, cwd, cli: { outputDir: './typed' } }).config.sources.outputDir).toBe(path.resolve('./typed'));
   });
 
   it('the committed rung fails loud, naming the yml path and what it takes', () => {
@@ -143,7 +154,7 @@ describe('the abilities family, layered for every app', () => {
   it('committed entries, then the local overlay whole-replacing a named ability, paths resolved', () => {
     writeJson({ version: 1, sources: {}, abilities: { web: { tavilyKey: 'k' } } });
     const { config } = loadConfig(modelSettings, { abilities: { corpus: { corpusPath: './docs' }, web: { tavilyKey: 'committed', region: 'eu' } } }, { env: {}, cwd });
-    expect(config.abilities).toEqual({ corpus: { corpusPath: path.resolve('./docs') }, web: { tavilyKey: 'k' } });
+    expect(config.abilities).toEqual({ corpus: { corpusPath: path.join(cwd, 'docs') }, web: { tavilyKey: 'k' } });
   });
 });
 

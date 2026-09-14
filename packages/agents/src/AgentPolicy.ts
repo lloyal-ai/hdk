@@ -5,6 +5,7 @@ import type { ParsedToolCall } from '@lloyal-labs/sdk';
 import type { PressureThresholds } from './types';
 import { renderTemplate } from './prompt';
 import { retryUpTo } from './hooks';
+import { extractTerminalResult } from './capture';
 
 // Recovery-phase accounting constants. These size the reserve a recovery turn
 // needs out of the hard limit: the recovery prompt's own cost, plus room for
@@ -47,7 +48,9 @@ export type IdleReason =
  */
 export type ProduceAction =
   | { type: 'tool_call'; tc: ParsedToolCall }
-  | { type: 'return'; result: string }
+  /** The terminal call ended the turn. `result` is the policy's capture, through the one
+   *  extractor; `call` is the call itself, which the tool that ends the turn reads at `onReturn`. */
+  | { type: 'return'; result: string; call?: ParsedToolCall }
   /** Replace the call with `message`, which the model reads in the result's place. */
   | { type: 'nudge'; message: string }
   | { type: 'idle'; reason: IdleReason }
@@ -191,6 +194,13 @@ export interface AgentPolicy {
   bindClock?(clock: () => number): void;
 
   /**
+   * Bind the pool's terminal tool — the one place its identity is decided.
+   * Called once at pool boot; a policy that protects an agent mid-report from
+   * the exit reads it here rather than being told a second time in its options.
+   */
+  bindTerminal?(name: string | undefined): void;
+
+  /**
    * Recovery: should we force a report from this reaped agent (no result)?
    *
    * Called when an agent is reaped without a voluntary result. Return
@@ -246,14 +256,12 @@ export interface AgentPolicy {
 }
 
 /**
- * Pool-level facts handed to `onProduced`: the turn cap, the terminal tool
- * (if any), and whether the pool has tools besides it.
+ * Pool-level facts handed to `onProduced`: the turn cap and the terminal tool (if any).
  * @category Agents
  */
 export interface PolicyConfig {
   maxTurns: number;
   terminalToolName?: string;
-  hasNonTerminalTools: boolean;
 }
 
 // ── A budget row ────────────────────────────────────────────
@@ -286,8 +294,6 @@ export interface Budget {
   recoveryBudget?: number;
   /** When retrieval tightens from explore to exploit — see {@link DefaultAgentPolicyOpts.shouldExplore}. */
   shouldExplore?: DefaultAgentPolicyOpts['shouldExplore'];
-  /** Tool calls before a report is accepted without a nudge. @default 2 */
-  minToolCallsBeforeReturn?: number;
   /** Retries of a transient tool failure before the call fails. @default 1 */
   maxToolRetries?: number;
 }
@@ -295,22 +301,24 @@ export interface Budget {
 /**
  * The policy a budget row derives: the row's numbers on the default policy,
  * with the pool's terminal (so an agent mid-report is protected from the exit
- * the way a harness used to restate) and the harness's guard overrides. The
- * one place a row becomes a policy; `maxTurns` is the pool's and is not read here.
+ * the way a harness used to restate), the harness's guard overrides and its
+ * tool-lifecycle contributions. The one place a row becomes a policy;
+ * `maxTurns` is the pool's and is not read here.
  *
  * @category Agents
  */
 export function policyFromBudget(
   budget: Budget,
-  pool: { terminalToolName?: string; guardOverrides?: GuardOverrides },
+  pool: { terminalToolName?: string; guardOverrides?: GuardOverrides; acceptFreeText?: boolean; hooks?: readonly ToolLifecycleHooks[] },
 ): DefaultAgentPolicy {
   return new DefaultAgentPolicy({
+    acceptFreeText: pool.acceptFreeText,
+    hooks: pool.hooks,
     budget: { context: budget.context, time: budget.time },
     recovery: budget.recovery,
     recoveryShape: budget.recoveryShape,
     recoveryBudget: budget.recoveryBudget,
     shouldExplore: budget.shouldExplore,
-    minToolCallsBeforeReturn: budget.minToolCallsBeforeReturn,
     maxToolRetries: budget.maxToolRetries,
     terminalToolName: pool.terminalToolName,
     guardOverrides: pool.guardOverrides,
@@ -324,8 +332,6 @@ export function policyFromBudget(
  * @category Agents
  */
 export interface DefaultAgentPolicyOpts {
-  /** Min non-terminal tool calls before a return is accepted without nudge. @default 2 */
-  minToolCallsBeforeReturn?: number;
   /**
    * Explore/exploit thresholds — both axes checked independently.
    * Either falling below its threshold flips the policy into exploit mode
@@ -374,10 +380,15 @@ export interface DefaultAgentPolicyOpts {
     /** Wall-time budget (ms since policy creation). */
     time?: { softLimit?: number; hardLimit?: number };
   };
-  /** Terminal tool name. When set, agents mid-generation of this tool are
-   *  protected from shouldExit — the hard limit is deferred until the tool
-   *  call completes naturally or pressure forces a kill. */
+  /** Terminal tool name: agents mid-generation of this tool are protected from
+   *  shouldExit — the hard limit is deferred until the tool call completes
+   *  naturally or pressure forces a kill. The pool binds its own
+   *  ({@link AgentPolicy.bindTerminal}); this stands only where no pool does. */
   terminalToolName?: string;
+  /** Accept the agent's prose as its result with no tool calls — a passthrough
+   *  answer, a settling pass. Without it, prose before any tool call is an idle
+   *  stop, which keeps an agent with tools from answering without evidence. @default false */
+  acceptFreeText?: boolean;
   /** How many times a transient tool failure is retried before the call fails
    *  with a directive result — this policy's `afterExecute` entry. @default 1 */
   maxToolRetries?: number;
@@ -390,15 +401,14 @@ export interface DefaultAgentPolicyOpts {
 
 /**
  * The default policy: routes a finished turn (no call → free text or idle;
- * the terminal tool → return, or a nudge to use tools first; over budget → a
- * report-now nudge, once per tick; else dispatch), exits on critical pressure
+ * the terminal tool → return; over budget → a report-now nudge, once per
+ * tick; else dispatch), exits on critical pressure
  * or a time hard limit, recovers by extraction, and contributes one entry to
  * the tool lifecycle: its retry budget and its settle nudge.
  *
  * @category Agents
  */
 export class DefaultAgentPolicy implements AgentPolicy {
-  private _minToolCalls: number;
   private _exploreContext: number;
   private _exploreTime: number;
   private _forceExploit = false;
@@ -407,6 +417,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
   private _recoveryBudget: number | null;
   private _budget: DefaultAgentPolicyOpts['budget'] | null;
   private _terminalToolName: string | null;
+  private _acceptFreeText: boolean;
   private _maxToolRetries: number;
   private _startTime: number;
   private _clock: () => number = () => performance.now();
@@ -422,7 +433,6 @@ export class DefaultAgentPolicy implements AgentPolicy {
   readonly guardOverrides: GuardOverrides | undefined;
 
   constructor(opts?: DefaultAgentPolicyOpts) {
-    this._minToolCalls = opts?.minToolCallsBeforeReturn ?? 2;
     this._exploreContext = opts?.shouldExplore?.context ?? 0.4;
     this._exploreTime = opts?.shouldExplore?.time ?? 0.5;
     this._recovery = opts?.recovery ?? null;
@@ -430,6 +440,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
     this._recoveryBudget = opts?.recoveryBudget ?? null;
     this._budget = opts?.budget ?? null;
     this._terminalToolName = opts?.terminalToolName ?? null;
+    this._acceptFreeText = opts?.acceptFreeText ?? false;
     this._maxToolRetries = opts?.maxToolRetries ?? 1;
     this._startTime = performance.now();
     this.guardOverrides = opts?.guardOverrides;
@@ -473,6 +484,11 @@ export class DefaultAgentPolicy implements AgentPolicy {
     this._clock = clock;
   }
 
+  /** The pool's terminal, bound once at boot: the one place its identity is decided. */
+  bindTerminal(name: string | undefined): void {
+    this._terminalToolName = name ?? null;
+  }
+
   /** Pressure thresholds for `ContextPressure`. The pool reads this once at setup. */
   get pressureThresholds(): PressureThresholds {
     return {
@@ -504,7 +520,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
   ): ProduceAction {
     const tc = parsed.toolCalls[0];
     if (!tc) return this._handleNoToolCall(agent, parsed);
-    if (this._isTerminalTool(tc, config)) return this._handleTerminalTool(tc, agent, config, pressure);
+    if (this._isTerminalTool(tc, config)) return this._handleTerminalTool(tc);
     // Gates ran before this was called (the pool's applier, `hooks.ts`), so a
     // refused call never reaches the budget: its specific message beats a
     // generic "report now within N words" nudge (trace-1776819196054 agent 65539).
@@ -518,7 +534,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
   private _handleNoToolCall(
     agent: Agent, parsed: { content: string | null },
   ): ProduceAction {
-    if (!agent.result && agent.toolCallCount > 0 && parsed.content) {
+    if (parsed.content && (this._acceptFreeText || (!agent.result && agent.toolCallCount > 0))) {
       return { type: 'free_text_return', content: parsed.content };
     }
     return { type: 'idle', reason: 'free_text_stop' };
@@ -528,16 +544,11 @@ export class DefaultAgentPolicy implements AgentPolicy {
     return !!(config.terminalToolName && tc.name === config.terminalToolName);
   }
 
-  private _handleTerminalTool(
-    tc: ParsedToolCall, agent: Agent, config: PolicyConfig, pressure: ContextPressure,
-  ): ProduceAction {
-    const underPressure = this._isUnderPressure(agent, pressure, config);
-    if (agent.toolCallCount < this._minToolCalls && config.hasNonTerminalTools && !underPressure) {
-      return { type: 'nudge', message: 'You must use tools before submitting results.' };
-    }
-    let result: string;
-    try { result = JSON.parse(tc.arguments).result; } catch { result = tc.arguments; }
-    return { type: 'return', result };
+  /** The terminal call is a return. Whether it may end the turn is decided at the return
+   *  position (`onReturn`): the tool's own check, a harness's floor, the frame's bound —
+   *  never a number here. The one extractor, shared with the applier's salvage and recovery paths. */
+  private _handleTerminalTool(tc: ParsedToolCall): ProduceAction {
+    return { type: 'return', result: extractTerminalResult(tc.arguments), call: tc };
   }
 
   private _isUnderPressure(agent: Agent, pressure: ContextPressure, config: PolicyConfig): boolean {

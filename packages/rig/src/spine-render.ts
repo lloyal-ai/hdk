@@ -124,14 +124,25 @@ export function renderSpine(opts: RenderSpineOptions): string {
  * standard {@link AgentRenderCtx} fields, allowing discipline content
  * to reference the protocol identity directly.
  *
- * `params` accepts ability-specific render data beyond {@link AgentRenderCtx}
- * (e.g. a corpus ability merges its `source.promptData()` to supply `it.toc`).
- * Extra keys are spread into the Eta render data unchanged.
+ * The render context defaults to one agent on its own task, today, under the
+ * pool's default turn cap; pass any {@link AgentRenderCtx} field to say
+ * otherwise, and ability-specific render data beyond it (e.g. a corpus ability
+ * merges its `source.promptData()` to supply `it.toc`). Extra keys are spread
+ * into the Eta render data unchanged.
  */
 export function renderAgentPreamble(
   ability: Ability,
-  params: AgentRenderCtx & Record<string, unknown>,
+  given: Partial<AgentRenderCtx> & Record<string, unknown> = {},
 ): string {
+  // One agent on its own task, today, under the pool's default turn cap — unless told otherwise.
+  const params: AgentRenderCtx & Record<string, unknown> = {
+    agentCount: 1,
+    siblingTasks: [],
+    maxTurns: 100,
+    date: new Date().toISOString().slice(0, 10),
+    taskIndex: 0,
+    ...given,
+  };
   const marker = BOUNDARY_MARKER(ability.manifest.protocol.name);
   const body = renderSkillBody(ability.skill, params);
 

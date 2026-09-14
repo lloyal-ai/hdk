@@ -19,6 +19,7 @@ export {
   TavilyProvider, createKeylessSearchProvider,
   DelegateTool,
   PlanTool, taskToContent, singleTaskPlan,
+  defineOutput, citedReport, weaveSourcesIntoResult,
 } from './tools';
 export type {
   DelegateToolOpts,
@@ -28,6 +29,7 @@ export type {
   PlanResult, PlanIntent, ResearchTask,
   SearchProvider, SearchResult,
   Reranker, ScoredChunk, ScoredResult,
+  Output, OutputOptions, WeaveSource,
 } from './tools';
 
 // Cross-ability Source type re-export (platform-agnostic)

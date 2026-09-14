@@ -271,8 +271,10 @@ describe('shouldExit execution', () => {
       }),
     });
 
+    // At critical pressure the spawn cannot be seated at all: it is refused before any fork.
     const drops = trace.ofType('pool:agentDrop');
-    const hasCritical = drops.some(d => d.reason === 'pressure_critical' || d.reason === 'pressure_init');
+    const hasCritical = drops.some(d => d.reason === 'pressure_critical')
+      || trace.ofType('pool:spawnRefused').some(r => r.reason === 'pressure_init');
     expect(hasCritical).toBe(true);
   });
 });
@@ -697,7 +699,8 @@ describe('pressure thresholds propagation', () => {
       );
       expect(softcutDrops.length + drops.length).toBeGreaterThan(0);
     } else {
-      expect(drops.some(d => d.reason === 'pressure_init')).toBe(true);
+      // Nothing fit at all: the spawn was refused before any fork was made.
+      expect(trace.ofType('pool:spawnRefused').some(r => r.reason === 'pressure_init')).toBe(true);
     }
   });
 });
@@ -770,7 +773,7 @@ describe('multi-agent interactions', () => {
     expect(settleRejects.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('T6: tool execution throws — agent gets tool_error, pool completes', async () => {
+  it('T6: tool execution throws — the agent fails with tool_error, the pool completes', async () => {
     class ThrowingTool extends Tool<Record<string, unknown>> {
       readonly name = 'explode';
       readonly description = 'throws';
@@ -780,7 +783,7 @@ describe('multi-agent interactions', () => {
     const tool = new ThrowingTool();
     const toolMap = new Map<string, Tool>([['explode', tool]]);
 
-    const { result } = await runPool({
+    const { result, events } = await runPool({
       forkTokenQueues: [[1, STOP]],
       parseChatOutputFn: () => ({
         content: '', reasoningContent: '',
@@ -798,7 +801,8 @@ describe('multi-agent interactions', () => {
     });
 
     expect(result.agents).toHaveLength(1);
-    expect(result.agents[0].result).toContain('boom');
+    expect(result.agents[0].result).toBeNull();
+    expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'agent:failed', reason: 'tool_error' })]));
   });
 
   it('T14: pruneOnReturn with free_text_return — branch pruned', async () => {

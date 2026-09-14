@@ -141,6 +141,22 @@ describe('set_ability_config', () => {
   });
 });
 
+describe('set_ability_config merges over what is stored', () => {
+  it('a key the renderer never saw (a redacted secret) survives a save of its siblings; "" clears one key; {} clears all', async () => {
+    await run(function* () {
+      const web = fakeAbility({ name: 'web' });
+      const w = yield* world({ abilities: [web], config: base({ web: { tavilyKey: 'secret', region: 'eu' } }), enable: ['web'] });
+      yield* dispatch(w, { type: 'set_ability_config', name: 'web', values: { region: 'us' } });
+      expect(yield* w.store.get('web')).toEqual({ tavilyKey: 'secret', region: 'us' });
+      expect(w.runner.config().abilities.web).toEqual({ tavilyKey: 'secret', region: 'us' });
+      yield* dispatch(w, { type: 'set_ability_config', name: 'web', values: { tavilyKey: '' } });
+      expect(yield* w.store.get('web')).toEqual({ region: 'us' });
+      yield* dispatch(w, { type: 'set_ability_config', name: 'web', values: {} });
+      expect(yield* w.store.get('web')).toEqual({});
+    });
+  });
+});
+
 describe('reload_runtime', () => {
   it('persists the patch and ends the loop', async () => {
     await run(function* () {

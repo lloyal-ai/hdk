@@ -251,9 +251,10 @@ export type TraceEvent =
   | TraceEventBase & {
       type: 'pool:settleFailed';
       agentId: number;
-      /** `media_prefill_failed` (the embedding rail, branch poisoned) or
-       *  `tool_result_failed` (the result could not be processed). */
-      reason: 'media_prefill_failed' | 'tool_result_failed';
+      /** `media_prefill_failed` (the embedding rail, branch poisoned),
+       *  `tool_result_failed` (the result could not be processed), or
+       *  `tool_error` (the tool threw: the agent fails, the error is not its findings). */
+      reason: 'media_prefill_failed' | 'tool_result_failed' | 'tool_error';
       /** Why it failed, from the failure itself — a native decode message or a
        *  thrown error. NOT the model's output. */
       detail: string;
@@ -309,7 +310,13 @@ export type TraceEvent =
   // consumer that wants the recovery tail extends to the last such event.
   | TraceEventBase & { type: 'agent:spawn'; agentId: number; parentAgentId: number;
       /** DAG dependency edges the spec declared (`AgentTaskSpec.after`); absent when none. */
-      after?: number[] }
+      after?: number[];
+      /** The application's label for the spawn (`SpawnSpec.key`); absent when none. */
+      key?: string }
+  /** A spawn the pool could not seat: no fork was made. `pressure_init` — its
+   *  suffix (and a heal's lineage) never fit the headroom; `no_sequence` — no
+   *  sequence was free and nothing could free one. `of` names a heal's original. */
+  | TraceEventBase & { type: 'pool:spawnRefused'; index: number; key?: string; reason: 'pressure_init' | 'no_sequence'; cells: number; of?: number }
   | TraceEventBase & { type: 'agent:done'; agentId: number }
 
   // ── Agent per-turn output ────────────────────

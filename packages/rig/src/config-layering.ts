@@ -85,13 +85,15 @@ function expectation(key: ConfigKey): string {
   return 'is not valid';
 }
 
-/** A rung's value, accepted or fallen through. The env rung arrives as text and is parsed for an integer key. */
-function accept(key: ConfigKey, raw: unknown, fromEnv = false): unknown {
+/** A rung's value, accepted or fallen through. The env rung arrives as text and is parsed for an integer key. A
+ *  relative path resolves against `base`: the project for a value from its files or its default, the process for one
+ *  typed at the cli or set in the environment. */
+function accept(key: ConfigKey, raw: unknown, base: string, fromEnv = false): unknown {
   let v = present(typeof raw === 'string' ? raw.trim() : raw);
   if (v === undefined) return undefined;
   if (fromEnv && key.integer) v = typeof v === 'string' && /^\d+$/.test(v) ? parseInt(v, 10) : undefined;
   if (v === undefined || !takes(key, v)) return undefined;
-  return key.path && typeof v === 'string' ? resolvePath(v) : v;
+  return key.path && typeof v === 'string' ? resolvePath(v, base) : v;
 }
 
 /** Every committed value a key cannot take, loud, in yml order. */
@@ -153,23 +155,23 @@ export function loadConfig<T extends ConfigTable>(
   const config: Bag = { version: 1, sources: {}, abilities: {}, model: {} };
   const origin: Record<string, ConfigOriginValue> = {};
   for (const [name, key] of Object.entries(table)) {
-    const c = key.cli ? accept(key, cli[key.cli]) : undefined;
-    const e = key.env ? accept(key, env[key.env], true) : undefined;
-    const l = accept(key, getPath(local, name));
-    const y = key.yml ? accept(key, getPath(yml, key.yml)) : undefined;
+    const c = key.cli ? accept(key, cli[key.cli], process.cwd()) : undefined;
+    const e = key.env ? accept(key, env[key.env], process.cwd(), true) : undefined;
+    const l = accept(key, getPath(local, name), cwd);
+    const y = key.yml ? accept(key, getPath(yml, key.yml), cwd) : undefined;
     const chosen = c ?? e ?? l ?? y ?? key.default;
     origin[name] = rung(c, e, l, y);
     if (chosen !== undefined) {
-      setPath(config, name, key.path && typeof chosen === 'string' ? resolvePath(chosen) : chosen);
+      setPath(config, name, key.path && typeof chosen === 'string' ? resolvePath(chosen, cwd) : chosen);
     }
   }
 
   const abilities: Record<string, Bag> = {};
   for (const [name, cfg] of Object.entries((yml as { abilities?: Record<string, Bag> }).abilities ?? {})) {
-    abilities[name] = resolveAppConfigPaths(cfg);
+    abilities[name] = resolveAppConfigPaths(cfg, cwd);
   }
   for (const [name, cfg] of Object.entries((local?.abilities as Record<string, Bag> | undefined) ?? {})) {
-    abilities[name] = resolveAppConfigPaths(cfg);
+    abilities[name] = resolveAppConfigPaths(cfg, cwd);
   }
   config.abilities = abilities;
 

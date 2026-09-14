@@ -1,4 +1,5 @@
 import type { Operation } from 'effection';
+import type { ToolLifecycleHooks } from './Tool';
 import type { Branch } from '@lloyal-labs/sdk';
 import type { Session } from '@lloyal-labs/sdk';
 import { Tool } from './Tool';
@@ -45,6 +46,18 @@ export interface CreateAgentPoolOpts {
   /** The harness's overrides of the abilities' declared gates ({@link GuardOverrides}),
    *  from its config, on the policy the budget derives. */
   guards?: GuardOverrides;
+  /** Accept prose as an agent's result when it makes no tool call. On the policy the budget derives; not with `policy`. */
+  acceptFreeText?: boolean;
+  /** The harness's part of the tool lifecycle, as data ({@link ToolLifecycleHooks}): walked after the
+   *  called tool's own hooks and before the framework's defaults — a floor on the return, a follow-up.
+   *  On the policy the budget derives; not with `policy`. */
+  hooks?: readonly ToolLifecycleHooks[];
+  /**
+   * How many agents the pool seats at once. Spawns beyond it wait in request
+   * order and are admitted as seats free, so any shape runs in waves under it.
+   * Unbounded by default: the pool seats what the context and its sequences hold.
+   */
+  capacity?: number;
   /** Max tool-use turns per agent before hard cut. Wins over the row's. @default the row's, else 100 */
   maxTurns?: number;
   /** Prune agent branches immediately when they voluntarily return, freeing KV mid-pool.
@@ -176,10 +189,13 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
         terminalToolName: toolkit.terminalName,
         pruneOnReturn: opts.pruneOnReturn,
         maxTurns: opts.maxTurns,
+        capacity: opts.capacity,
         trace: opts.trace,
         policy: opts.policy,
         budget: opts.budget,
         guards: opts.guards,
+        acceptFreeText: opts.acceptFreeText,
+        hooks: opts.hooks,
         scorer: opts.scorer,
         attachments: opts.attachments,
         enableThinking,

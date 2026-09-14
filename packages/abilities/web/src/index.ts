@@ -15,6 +15,7 @@ import type { AbilityManifest, Tool } from "@lloyal-labs/lloyal-agents";
 import { defineAbility, TavilyProvider, createKeylessSearchProvider } from "@lloyal-labs/rig";
 import type { Reranker, SearchProvider } from "@lloyal-labs/rig";
 import { WebSource } from "./source";
+import type { WebSourceOpts } from "./source";
 
 export { WebSource } from "./source";
 export type { WebSourceOpts } from "./source";
@@ -35,7 +36,7 @@ const skill = readFileSync(join(dir, "skill.eta"), "utf8");
  */
 export const createWebAbility = defineAbility(manifest, function* () {
   const cfgStore = yield* AbilityConfigStoreCtx.expect();
-  const cfg = (yield* cfgStore.get("web")) ?? {};
+  const cfg = (yield* cfgStore.get(manifest.name)) ?? {};
   const tavilyKey =
     typeof cfg.tavilyKey === "string" ? cfg.tavilyKey : process.env.TAVILY_API_KEY;
 
@@ -50,7 +51,10 @@ export const createWebAbility = defineAbility(manifest, function* () {
     ? new TavilyProvider(tavilyKey)
     : yield* createKeylessSearchProvider();
 
-  const source = new WebSource(provider, { reranker });
+  // The source's knobs, when the stored config carries them; the source's defaults otherwise.
+  const topN = typeof cfg.topN === "number" ? cfg.topN : undefined;
+  const fetch = cfg.fetch && typeof cfg.fetch === "object" && !Array.isArray(cfg.fetch) ? (cfg.fetch as WebSourceOpts["fetch"]) : undefined;
+  const source = new WebSource(provider, { reranker, topN, fetch });
   const tools: Record<string, Tool> = {};
   for (const t of source.tools) tools[t.name] = t;
 

@@ -75,15 +75,20 @@ export function settings<C extends BaseHarnessConfig, O extends Record<string, C
 
       *set_ability_config({ name, values }) {
         if (run.busy) return yield* toast("Wait for the run to finish before changing an ability's settings.");
-        const resolved = resolveAppConfigPaths(values);
-        const clear = Object.keys(resolved).length === 0;
+        const patch = resolveAppConfigPaths(values);
         // A path must exist before anything persists or enables: a factory handed a
         // bad path can take the process down, and a persisted one would do so at every boot.
-        const missing = Object.entries(resolved).find(([k, v]) => isPathShaped(k, v) && !fs.existsSync(v));
+        const missing = Object.entries(patch).find(([k, v]) => isPathShaped(k, v) && !fs.existsSync(v));
         if (missing) return yield* toast(`${missing[0]}: path does not exist — ${String(missing[1])}`);
 
-        // Persist first: a save the disk refuses throws to `onError` with the session untouched.
+        // The values merge over what is stored: the interface sees config redacted to
+        // key presence, so a save of the keys it knows must not drop the secret beside
+        // them. `""` clears one key; `{}` clears the ability's config.
         const prior = (yield* store.get(name)) ?? null;
+        const resolved: Record<string, unknown> = Object.keys(patch).length === 0 ? {} : { ...(prior ?? {}), ...patch };
+        for (const [k, v] of Object.entries(resolved)) if (v === '') delete resolved[k];
+        const clear = Object.keys(resolved).length === 0;
+        // Persist first: a save the disk refuses throws to `onError` with the session untouched.
         const saved = runner.saveConfig(abilityPatch(name, resolved));
         yield* store.set(name, resolved);
 

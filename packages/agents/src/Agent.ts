@@ -34,8 +34,7 @@ export type AgentStatus = 'idle' | 'active' | 'awaiting_tool' | 'disposed';
 export type ResultSource =
   | 'voluntary_return' // agent voluntarily returned via the terminal tool
   | 'free_text'        // agent emitted prose without tool call
-  | 'recovery'         // extracted by a forced recovery turn after a drop
-  | 'tool_error';      // tool threw, error captured as findings
+  | 'recovery';        // extracted by a forced recovery turn after a drop
 
 // ── Format config ───────────────────────────────────────────
 
@@ -241,6 +240,8 @@ export class Agent {
   heal: Lineage | null = null;
   /** rc==1 deferrals of this agent's pending item; cleared when one lands. */
   deferAttempts = 0;
+  /** Returns of this agent that were rejected at `onReturn` and sent back as a nudge. Bounded to `MAX_RETURNS_REJECTED`. */
+  returnsRejected = 0;
   /** Serial recovery: the report is uncapped and one runs at a time. */
   recoverySerial = false;
 

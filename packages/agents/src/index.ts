@@ -14,7 +14,7 @@ export {
 } from './context';
 export { Tool, ToolRetryError } from './Tool';
 export type {
-  Outcome, GuardInput, ToolGuard, Completion, ExecuteDecision, AdmitDecision, FollowUp, ToolLifecycleHooks,
+  Outcome, GuardInput, ToolGuard, Completion, ExecuteDecision, AdmitDecision, FollowUp, ToolLifecycleHooks, ReturnDecision,
 } from './Tool';
 export { Agent } from './Agent';
 export type { AgentStatus, ResultSource, FormatConfig, ToolHistoryEntry } from './Agent';
@@ -29,6 +29,8 @@ export { useAgent, agent } from './use-agent';
 export type { UseAgentOpts } from './use-agent';
 export { agentPool } from './create-agent-pool';
 export type { CreateAgentPoolOpts } from './create-agent-pool';
+export { SpawnRefused } from './spawns';
+export type { ParallelOptions } from './orchestrators';
 export { useAgentPool } from './agent-pool';
 export { ContextPressure } from './pressure';
 export { createToolkit } from './toolkit';
@@ -70,6 +72,7 @@ export type {
   PressureThresholds,
   AgentTaskSpec,
   AgentPoolOptions,
+  SpawnOutcome,
   AgentResult,
   AgentPoolResult,
   AgentEvent,

@@ -42,7 +42,9 @@ export type Transition =
   | { kind: 'drop'; agent: Agent; reason: DropReason | null; done: boolean }
   | { kind: 'returned'; agent: Agent; via: { tool: string; args: string } | 'free_text' }
   | { kind: 'cancelled'; agent: Agent }
-  | { kind: 'spawned'; agent: Agent; after?: number[] }
+  | { kind: 'spawned'; agent: Agent; after?: number[]; key?: string }
+  /** A spawn the pool could not seat: no fork, no agent — the ledger's record. */
+  | { kind: 'spawnRefused'; index: number; key?: string; reason: 'pressure_init' | 'no_sequence'; cells: number; of?: number }
   | { kind: 'created'; agent: Agent }
   | { kind: 'formatted'; agent: Agent; promptText: string; taskContent: string; tokenCount: number; systemPrompt: string; tools?: string }
   | { kind: 'turn'; agent: Agent; parsed: ParseChatOutputResult }
@@ -52,7 +54,7 @@ export type Transition =
   | { kind: 'recovered'; agent: Agent; result: string }
   | { kind: 'recoveryFailed'; agent: Agent; reason: string; outputExcerpt: string }
   // ── admission and the ladder ──
-  | { kind: 'settleFailed'; agent: Agent; reason: 'media_prefill_failed' | 'tool_result_failed'; detail: string; rc?: number; parentTraceId?: number }
+  | { kind: 'settleFailed'; agent: Agent; reason: 'media_prefill_failed' | 'tool_result_failed' | 'tool_error'; detail: string; rc?: number; parentTraceId?: number }
   | { kind: 'deferred'; agent: Agent; rc: number; attempt: number; pressure: ContextPressure }
   | { kind: 'healed'; of: number; agent: Agent; rc?: number; attempt: number; pressure: ContextPressure }
   | { kind: 'prefilled'; agent: Agent; cells: number; role: Outcome | 'probe'; attachments?: readonly Attachment[]; probeText?: string }
@@ -118,11 +120,17 @@ export function project(t: Transition): Emission[] {
       ];
     case 'spawned': {
       const after = t.after && t.after.length > 0 ? { after: t.after } : {};
+      const key = t.key !== undefined ? { key: t.key } : {};
       return [
-        { trace: { type: 'agent:spawn', agentId: t.agent.id, parentAgentId: t.agent.parentId, ...after } },
-        { bus: { type: 'agent:spawn', agentId: t.agent.id, parentAgentId: t.agent.parentId, ...after } },
+        { trace: { type: 'agent:spawn', agentId: t.agent.id, parentAgentId: t.agent.parentId, ...after, ...key } },
+        { bus: { type: 'agent:spawn', agentId: t.agent.id, parentAgentId: t.agent.parentId, ...after, ...key } },
       ];
     }
+    case 'spawnRefused':
+      return [{ trace: {
+        type: 'pool:spawnRefused', index: t.index, reason: t.reason, cells: t.cells,
+        ...(t.key !== undefined ? { key: t.key } : {}), ...(t.of !== undefined ? { of: t.of } : {}),
+      } }];
     case 'created':
       return [{ trace: { type: 'branch:create', branchHandle: t.agent.id, parentHandle: t.agent.parentId, position: t.agent.forkHead, role: 'agentFork' } }];
     case 'formatted':

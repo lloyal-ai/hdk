@@ -44,7 +44,6 @@ describe('policyFromBudget', () => {
         recoveryShape: 'parallel',
         recoveryBudget: 300,
         shouldExplore: { context: 0.9 },
-        minToolCallsBeforeReturn: 0,
       },
       { terminalToolName: 'report', guardOverrides: { fetch_limit: false } },
     );
@@ -62,10 +61,10 @@ describe('policyFromBudget', () => {
     expect(policy.shouldExit(agentWith({}), pressureAt(85))).toBe(true);
     // the pool's terminal protects an agent mid-report from that exit
     expect(policy.shouldExit(agentWith({ currentTool: 'report' }), pressureAt(85))).toBe(false);
-    // minToolCallsBeforeReturn: 0 — a first-action report is a return, not a nudge
-    const cfg = { maxTurns: 7, terminalToolName: 'report', hasNonTerminalTools: true };
+    // a first-action report is a return: the evidence floor is the harness's hook, not a row number
+    const cfg = { maxTurns: 7, terminalToolName: 'report' };
     expect(policy.onProduced(agentWith({}), { content: null, toolCalls: [call('report', { result: 'r' })] }, pressureAt(85), cfg))
-      .toEqual({ type: 'return', result: 'r' });
+      .toMatchObject({ type: 'return', result: 'r' }); // the call rides beside the result, for the terminal's own capture
     // recovery: the row's floors admit an agent with nothing yet
     expect(policy.onRecovery(agentWith({}), pressureAt(85)).type).toBe('extract');
   });

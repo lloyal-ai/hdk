@@ -7,7 +7,12 @@
  * frame, itself a value of that type. One rule at every position: the first
  * concrete decision wins, `undefined` abstains. The frame's gate runs first
  * (authorization precedes every other gate); the frame's defaults run last,
- * so a call always ends with a decision.
+ * so a call always ends with a decision. The return position asks two things
+ * and keeps them apart: whether the call may end the turn, which any
+ * contributor may reject (a gate, so a harness's floor stands before a typed
+ * output's accept), and what the result becomes, which the first accept
+ * decides; the frame bounds rejected returns to one per agent and none under
+ * an exhausted context.
  *
  * Two places the rule is deliberately not uniform, stated rather than hidden:
  * a harness's `guardOverrides` apply to the tool's and the policy's gates and
@@ -33,6 +38,7 @@ import type {
   ExecuteDecision,
   AdmitDecision,
   FollowUp,
+  ReturnDecision,
 } from './Tool';
 import { ToolRetryError } from './Tool';
 
@@ -66,6 +72,7 @@ export function retryUpTo(n: number): NonNullable<ToolLifecycleHooks['afterExecu
 export type AfterExecuteInput = Parameters<NonNullable<ToolLifecycleHooks['afterExecute']>>[0];
 export type BeforeAdmitInput = Parameters<NonNullable<ToolLifecycleHooks['beforeAdmit']>>[0];
 export type AfterAdmitInput = Parameters<NonNullable<ToolLifecycleHooks['afterAdmit']>>[0];
+export type OnReturnInput = Parameters<NonNullable<ToolLifecycleHooks['onReturn']>>[0];
 
 /** Today's behaviour when no contributor decides: a transient failure is retried once, anything else is an attempt. */
 export const defaultAfterExecute = (i: AfterExecuteInput): ExecuteDecision =>
@@ -76,6 +83,9 @@ export const defaultBeforeAdmit = (_i: BeforeAdmitInput): AdmitDecision => ({ ty
 
 /** Today's behaviour when no contributor decides: no follow-up. */
 export const defaultAfterAdmit = (_i: AfterAdmitInput): FollowUp => ({ type: 'none' });
+
+/** Today's behaviour when no contributor decides: the policy's capture is the result. */
+export const defaultOnReturn = (i: OnReturnInput): ReturnDecision => ({ type: 'accept', result: i.result });
 
 /** The frame's gate, by the name the trace and `tool:authReject` know it by. */
 export const AUTH_REJECT_GUARD = 'auth_reject';
@@ -92,6 +102,7 @@ export interface Frame extends ToolLifecycleHooks {
   afterExecute: (i: AfterExecuteInput) => ExecuteDecision;
   beforeAdmit: (i: BeforeAdmitInput) => AdmitDecision;
   afterAdmit: (i: AfterAdmitInput) => FollowUp;
+  onReturn: (i: OnReturnInput) => ReturnDecision;
 }
 
 /**
@@ -109,6 +120,7 @@ export function makeFrame(auth: { protectedTools: ReadonlySet<string>; grants: R
     afterExecute: defaultAfterExecute,
     beforeAdmit: defaultBeforeAdmit,
     afterAdmit: defaultAfterAdmit,
+    onReturn: defaultOnReturn,
   };
 }
 
@@ -193,4 +205,25 @@ export function decideAfterAdmit(input: AfterAdmitInput, c: Contributors): Resol
     if (decision) return { decision, by };
   }
   return { decision: c.frame.afterAdmit(input), by: 'frame' };
+}
+
+/**
+ * The terminal call ended the turn: may it, and what the agent's result becomes.
+ * A rejection from any contributor refuses the return while the frame's bound
+ * allows one (`mayReject`); otherwise the first accept is the capture, and the
+ * frame's default when nobody accepts. A rejection the bound refuses is
+ * skipped, never turned into a different decision.
+ */
+export function decideOnReturn(input: OnReturnInput, c: Contributors, bound: { mayReject: boolean }): Resolved<ReturnDecision> {
+  let accepted: Resolved<ReturnDecision> | undefined;
+  for (const { by, hooks } of afterwards(c)) {
+    const decision = hooks.onReturn?.(input);
+    if (!decision) continue;
+    if (decision.type === 'reject') {
+      if (bound.mayReject) return { decision, by };
+      continue;
+    }
+    accepted ??= { decision, by };
+  }
+  return accepted ?? { decision: c.frame.onReturn(input), by: 'frame' };
 }
