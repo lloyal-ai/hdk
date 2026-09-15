@@ -101,6 +101,51 @@ describe('useExecution', () => {
     });
   });
 
+  it('an ordinary failure whose cleanup SUCCEEDS does not poison, even when a stop arrives mid-cleanup', async () => {
+    await run(function* () {
+      const exec = yield* useExecution();
+      const gate = deferred();
+      const cleaning = deferred();
+      const log: string[] = [];
+      const bad = yield* exec.replace('bad', function* (): Operation<void> {
+        yield* ensure(function* () { cleaning.resolve(); yield* until(gate.promise); log.push('torn:ok'); });
+        throw new Error('the planner failed');
+      });
+      yield* until(cleaning.promise);   // the body has already thrown; its cleanup is in flight
+      yield* exec.stop();               // Stop arrives while the model is still settling
+      gate.resolve();                   // and the cleanup succeeds
+      // How the future settles is the stop's own contract, pinned above; what matters here is that
+      // a body failure racing a stop is not read as a teardown failure.
+      try { yield* bad; } catch { /* settled either way */ }
+      expect(log).toEqual(['torn:ok']);
+      expect(exec.poisoned, 'an ordinary body failure was booked as a teardown failure because a stop happened to be in flight').toBe(false);
+      // The proof that it is not poisoned: the owner still takes work.
+      const after = yield* exec.replace('after', function* () { log.push('after:ran'); yield* sleep(1); });
+      yield* after;
+      expect(log).toEqual(['torn:ok', 'after:ran']);
+    });
+  });
+
+  it('a replacement accepted during that cleanup still runs: the previous body error is the operation\'s, not the teardown\'s', async () => {
+    await run(function* () {
+      const exec = yield* useExecution();
+      const gate = deferred();
+      const cleaning = deferred();
+      const log: string[] = [];
+      const bad = yield* exec.replace('bad', function* (): Operation<void> {
+        yield* ensure(function* () { cleaning.resolve(); yield* until(gate.promise); log.push('torn:ok'); });
+        throw new Error('the planner failed');
+      });
+      yield* until(cleaning.promise);
+      const next = yield* exec.replace('next', function* () { log.push('next:ran'); yield* sleep(1); });
+      gate.resolve();
+      try { yield* bad; } catch { /* the failed operation's own future */ }
+      yield* next;
+      expect(log).toEqual(['torn:ok', 'next:ran']);
+      expect(exec.poisoned).toBe(false);
+    });
+  });
+
   it('the future resolves on return and rejects on a throw; an ordinary failure does not poison', async () => {
     await run(function* () {
       const exec = yield* useExecution();

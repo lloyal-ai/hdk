@@ -15,6 +15,7 @@ import { run, createChannel, scoped, spawn, until } from 'effection';
 import type { Channel, Operation } from 'effection';
 import { createMockSdk } from '../../sdk/src/testing.js';
 import type { MockSessionContext } from '../../sdk/src/testing.js';
+import type { Branch } from '@lloyal-labs/sdk';
 import { useAgentPool, SpawnRefused } from '../src/agent-pool';
 import { parallel } from '../src/orchestrators';
 import type { PoolContext, SpawnSpec } from '../src/orchestrators';
@@ -201,6 +202,37 @@ describe('admission in waves', () => {
     expect(w.trace.ofType('pool:spawnRefused').map((e) => e.reason)).toEqual(['no_sequence', 'no_sequence']);
     expect(w.trace.ofType('branch:create').filter((e) => e.role === 'agentFork')).toHaveLength(0);
   });
+
+  it('the ancestor a waiting spawn itself retains is not future reclamation: the spawn is refused, not carried forever', async () => {
+    // The executor retains a parent named by a pending spawn, so the parent of a queued child is
+    // never pruned. If the scheduler still counts that same childless, prune-requested parent as
+    // reclamation to come, the child waits for a sequence only its own pin is holding — and the
+    // pool neither seats it nor refuses it. One definition of reclaimable, shared, or this hangs.
+    const w = await world({ nSeqMax: 2 });   // the root and one agent: no spare
+    let refusal: unknown = null;
+    const ran = run(function* () {
+      yield* contexts(w);
+      return yield* pool(w, {
+        capacity: 1,
+        pruneOnReturn: true,
+        *orchestrate(ctx: PoolContext) {
+          const parent = yield* ctx.spawn(spec(0));
+          // Requested while the parent is alive, so it is queued rather than seated; the parent
+          // returns, is prune-requested and childless, and is pinned by THIS request.
+          const child = yield* spawn(function* () {
+            try { yield* ctx.spawn({ ...spec(1), parent: (parent as unknown as { branch: Branch }).branch }); }
+            catch (e) { refusal = e; }
+          });
+          yield* ctx.waitFor(parent);
+          yield* child;
+        },
+      });
+    });
+    const finished = await Promise.race([ran.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), 8000))]);
+    expect(finished, 'the pool never settled the queued child: it waits on a prune its own pin prevents').toBe(true);
+    expect(refusal, 'the child was neither seated nor refused').toBeInstanceOf(SpawnRefused);
+    expect((refusal as SpawnRefused).reason).toBe('no_sequence');
+  }, 20000);
 
   it('a spawn the context can never seat is refused as pressure_init once nothing can free room', async () => {
     const w = await world({ nCtx: 3072, stall: 1 });

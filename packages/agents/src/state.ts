@@ -302,6 +302,32 @@ export function prunable(a: Agent): boolean {
   return a.pruneRequested && !a.branch.disposed;
 }
 
+/**
+ * The branches pending spawns still need. A request carries a priced suffix and NO branch — that is
+ * what lets admission weigh it before any lease is taken — so nothing else records that a parent is
+ * still owed to someone. Derived where it is read, so admission (the request leaves the queue),
+ * withdrawal (`discarded`) and refusal (it leaves too) each release it with no second bookkeeping
+ * path to keep in step.
+ */
+export function owedParents(spawns: readonly SpawnRequest[]): Set<number> {
+  const owed = new Set<number>();
+  for (const req of spawns) if (!req.discarded) owed.add(req.parent.handle);
+  return owed;
+}
+
+/**
+ * Whether the next prune pass will actually take this agent: a childless leaf owed a prune that no
+ * pending spawn retains.
+ *
+ * ONE definition, because the executor's retention and the scheduler's idea of reclamation-to-come
+ * have to be the same sentence. When they drifted apart, a scheduler counting a retained parent as
+ * progress waited for a prune the executor would refuse — and the spawn it was waiting for was the
+ * one holding the pin, so a queued child was neither seated nor refused.
+ */
+export function reclaimable(a: Agent, owed: ReadonlySet<number>): boolean {
+  return prunable(a) && a.branch.children.length === 0 && !owed.has(a.branch.handle);
+}
+
 export function alive(a: Agent): boolean {
   return a.status === 'active' || a.status === 'awaiting_tool';
 }

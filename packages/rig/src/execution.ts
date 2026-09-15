@@ -157,15 +157,32 @@ export function useExecution(): Operation<Execution> {
         paused = false;      // the operation's own facts start clean
         windingDown = false;
         const task: Task<void> = yield* spawn(function* () {
+          // The body's own outcome, recorded WHERE it happens. `scoped` holds an error until the
+          // frame has closed, so by the time one reaches the catch below `halting` says when it
+          // arrived, never where it came from: an ordinary failure racing a stop read as a teardown
+          // failure and poisoned a session whose cleanup had in fact succeeded.
+          const body: { failed: boolean; err?: unknown } = { failed: false };
           try {
             // The owner's own boundary, so the barrier it promises is the owner's to keep and not
             // the caller's to remember: `scoped` returns only once the operation's frame has closed
             // and every `ensure` it registered has run. Without it a natural return settles the
             // future — and frees `busy` — while the operation is still tearing down, and a
             // replacement could touch the model underneath it. A halt already waited (`task.halt()`).
-            yield* scoped(() => next.op());
-            next.resolve();
+            yield* scoped(function* () {
+              try { yield* next.op(); } catch (err) {
+                // The one place the question is still answerable. An error leaving the body while a
+                // halt is under way came from the teardown the halt is running, and is the halt's to
+                // fail with; anything else is the operation's own failure, whatever arrives later.
+                if (halting === task) throw err;
+                body.failed = true;
+                body.err = err;
+              }
+            });
+            // Past the boundary, so the teardown itself succeeded: the body's outcome is the
+            // operation's, whatever else was in flight while it unwound.
+            if (body.failed) next.reject(toError(body.err)); else next.resolve();
           } catch (err) {
+            // Only the teardown — or the halt that ran it — can throw out of `scoped` now.
             if (halting === task) throw err;   // raised while being halted: the teardown's, and the halt's to fail with
             next.reject(toError(err));
           } finally {

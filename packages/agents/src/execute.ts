@@ -24,7 +24,7 @@ import type { TraceWriter } from './trace-writer';
 import type { TraceEvent } from './trace-types';
 import {
   type Schedule, type Outputs, type Pending, type PrefillItem, type ToolCompletion,
-  type DispatchRequest, type Ladder, classifyRc, prunable, type SpawnRequest } from './state';
+  type DispatchRequest, type Ladder, classifyRc, prunable, reclaimable, owedParents, type SpawnRequest } from './state';
 import type { AgentTaskSpec, AgentEvent, ToolContext, PressureThresholds } from './types';
 
 /**
@@ -780,15 +780,13 @@ export class Executor {
     // work retains what it will need: the parent stands until its request is admitted (it leaves
     // this queue), withdrawn (`discarded`) or refused (it leaves too). Recomputed per pass, so
     // each of those three releases it without a second bookkeeping path to keep in step.
-    const owed = new Set<number>();
-    for (const req of this.d.pending.spawns) if (!req.discarded) owed.add(req.parent.handle);
+    const owed = owedParents(this.d.pending.spawns);
     for (;;) {
       let n = 0;
       for (const a of this.d.agents) {
-        if (owed.has(a.branch.handle)) continue;
         if (!prunable(a)) { if (a.pruneRequested && a.branch.disposed) a.pruneRequested = false; continue; }
         a.harvestMetrics();
-        if (a.branch.children.length > 0) continue;
+        if (!reclaimable(a, owed)) continue;   // live children, or a pending spawn named it as parent
         this.d.emit.trace({ kind: 'pruned', agent: a, position: a.branch.position });
         a.branch.pruneSync();
         a.pruneRequested = false;

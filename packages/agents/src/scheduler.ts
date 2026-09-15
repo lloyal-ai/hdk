@@ -9,7 +9,7 @@ import { decideBeforeAdmit, type Frame } from './hooks';
 import { type ContextPressure } from './pressure';
 import {
   type TickState, type Schedule, type Pending, type PrefillItem, type Recovery, type ExtendRequest,
-  type StallOutcome, type Drop, type SpawnRequest, type SpawnRefusal, emptyPending, itemCells, spawnCells, alive, prunable,
+  type StallOutcome, type Drop, type SpawnRequest, type SpawnRefusal, emptyPending, itemCells, spawnCells, alive, prunable, reclaimable, owedParents,
 } from './state';
 
 /**
@@ -289,10 +289,15 @@ export class DefaultScheduler implements Scheduler {
     //    deferred items themselves. An in-flight tool is the one external
     //    liveness dependency here: the close already waits on it. A branch
     //    owed a prune that is already a childless leaf is the exception: the
-    //    next observe reclaims it unconditionally, so its cells and sequence
-    //    are as good as freed.
+    //    next observe reclaims it, so its cells and sequence are as good as
+    //    freed — UNLESS a pending spawn named it as parent, in which case the
+    //    executor retains it and the prune never comes. `reclaimable` is that
+    //    one sentence, shared with the pass it predicts: counting a retained
+    //    parent here would leave the very spawn holding the pin waiting for a
+    //    reclamation its own request prevents.
     const reactivating = S.prefills.length > 0 || S.spawns.length > 0;
-    const reclaiming = state.agents.some(a => prunable(a) && a.branch.children.length === 0);
+    const owed = owedParents(pending.spawns);
+    const reclaiming = state.agents.some(a => reclaimable(a, owed));
     const progress = reactivating || reclaiming || S.decode.length > 0
       || S.dispatch.length > 0 || state.inflight.size > 0 || remaining.retries.length > 0 || S.abandoned.length > 0
       || S.drops.length > 0 || S.finishes.length > 0;
