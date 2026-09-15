@@ -78,9 +78,14 @@ export interface Engine<C, S> {
   onSession(cb: (state: SessionState) => void): () => void;
   /**
    * Replace the engine with a fresh one — the reader's way back from a session
-   * that ended. Idempotent while one is in flight, and the replacement is not
-   * forked until the old process has actually gone: `draining` says work cannot
-   * be taken, never that the model has been freed.
+   * that ended.
+   *
+   * The replacement is not forked until the old process has actually gone:
+   * `draining` says work cannot be taken, never that the model has been freed.
+   * Settles when the replacement is USABLE or has failed to start, and a request
+   * made in the meantime reuses the one in flight — what the reader asked for is
+   * a working harness, and between the fork and `ready` there is not one yet, so
+   * a second press would otherwise kill an engine still loading its model.
    */
   restart(): Promise<void>;
   readonly running: boolean;
@@ -97,6 +102,8 @@ export function createEngine<E, C, S>(opts: CreateEngineOpts<E, S>): Engine<C, S
   let stopping = false;   // we asked it to go
   let replacing = false;  // …and something is taking its place, so its end is not the session's
   let awaitExit: (() => void) | null = null;
+  /** Armed across a replacement's startup: settled when it is usable, or when it failed to start. */
+  let awaitStartup: (() => void) | null = null;
   let restarting: Promise<void> | null = null;
   let session: SessionState = { phase: 'warming' };
   const sessionListeners = new Set<(state: SessionState) => void>();
@@ -105,6 +112,12 @@ export function createEngine<E, C, S>(opts: CreateEngineOpts<E, S>): Engine<C, S
 
   const announce = (next: SessionState): void => {
     session = next;
+    // A startup is over at its first outcome, either way. `warming` is not one.
+    if (next.phase === 'live' || next.phase === 'died') {
+      const up = awaitStartup;
+      awaitStartup = null;
+      up?.();
+    }
     for (const cb of sessionListeners) cb(next);
   };
 
@@ -233,7 +246,14 @@ export function createEngine<E, C, S>(opts: CreateEngineOpts<E, S>): Engine<C, S
         epoch = Math.max(Date.now(), epoch + 1);
         seq = 0;
         state = opts.initialState;
+        // Stay in flight until the replacement is usable or has failed, so a reader who presses
+        // again a moment later REUSES this one. Clearing at the fork would let the second press
+        // kill an engine that is still loading its model, throwing away the wait and starting it
+        // over — and the second press is exactly what an unresponsive-looking startup invites.
+        // It ends at `died` too, so a startup that failed leaves recovery available again.
+        const up = new Promise<void>((resolve) => { awaitStartup = resolve; });
         start();
+        await up;
       })();
       restarting = done;
       void done.finally(() => { if (restarting === done) restarting = null; });

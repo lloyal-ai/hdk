@@ -16,11 +16,12 @@ function fakeProcess() {
   const listeners: Record<string, ((m: unknown) => void)[]> = {};
   const posted: unknown[] = [];
   let alive = true;
-  const proc: EngineProcess & { say(m: unknown): void; exit(code: number): void; posted: unknown[] } = {
+  const proc: EngineProcess & { say(m: unknown): void; exit(code: number): void; posted: unknown[]; killed: boolean } = {
     posted,
+    killed: false,
     postMessage(m: unknown) { if (!alive) throw new Error('dead'); posted.push(m); },
     on(event: string, listener: (m: never) => void) { (listeners[event] ??= []).push(listener as (m: unknown) => void); return proc; },
-    kill() { alive = false; return true; },
+    kill() { alive = false; proc.killed = true; return true; },
     say(m: unknown) { for (const l of listeners['message'] ?? []) l(m); },
     exit(code: number) { alive = false; for (const l of listeners['exit'] ?? []) l(code); },
   } as never;
@@ -145,11 +146,69 @@ describe('the engine publishes its session', () => {
     expect(f.made).toHaveLength(1);           // nothing forked while the old one is still alive
     expect(engine.session().phase).toBe('draining');
     f.made[0].exit(0);
-    await Promise.all([first, second]);
+    await turn();
     expect(f.made, 'two presses forked two engines').toHaveLength(2);
-    expect(phases(seen)).toEqual(['warming', 'live', 'draining', 'warming']);
+    // The promise settles when the replacement is USABLE, not when it was forked: what the reader
+    // asked for is a working harness, and between the fork and `ready` there is not one yet.
     f.made[1].say({ t: 'ready' });
-    expect(phases(seen).at(-1)).toBe('live');
+    await Promise.all([first, second]);
+    expect(phases(seen)).toEqual(['warming', 'live', 'draining', 'warming', 'live']);
+  });
+
+  const turn = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  it('a second recovery while the replacement is starting reuses it, rather than killing it', async () => {
+    // The reader presses it again a moment later — a different IPC turn, not the same tick. The
+    // replacement is forked by then but still loading a model, so restarting it achieves nothing
+    // except throwing away the loading it has done and starting the wait over.
+    const f = forker();
+    const { engine, seen } = start(f);
+    f.made[0].say({ t: 'ready' });
+    const first = engine.restart();
+    f.made[0].exit(0);
+    await turn();
+    expect(f.made, 'the replacement should be forked by now').toHaveLength(2);
+    expect(engine.session().phase).toBe('warming');
+
+    const second = engine.restart();
+    await turn();
+    expect(f.made, 'a third engine was forked while the second was still starting').toHaveLength(2);
+    expect(f.made[1].killed, 'the replacement was killed while it was still coming up').toBe(false);
+
+    f.made[1].say({ t: 'ready' });
+    await Promise.all([first, second]);
+    expect(phases(seen)).toEqual(['warming', 'live', 'draining', 'warming', 'live']);
+  });
+
+  it('a replacement that fails to start leaves recovery available again', async () => {
+    // Coalescing must not become a latch: if the startup died, the next press is the reader's only
+    // way out and has to actually do something.
+    let forks = 0;
+    const made: ReturnType<typeof fakeProcess>[] = [];
+    const seen: SessionState[] = [];
+    const engine = createEngine<Ev, never, S>({
+      bin: 'engine',
+      fork: () => {
+        forks += 1;
+        if (forks === 2) throw new Error('engine not built');
+        const p = fakeProcess();
+        made.push(p);
+        return p;
+      },
+      initialState: { sum: 0 }, reduce: (s) => s, forward: () => {},
+    });
+    engine.onSession((s) => seen.push(s));
+    made[0].say({ t: 'ready' });
+    made[0].exit(0);
+    await engine.restart();                       // fork 2 throws: settles at `died`, not never
+    expect(engine.session().phase).toBe('died');
+    const again = engine.restart();               // fork 3 succeeds
+    await turn();
+    expect(forks).toBe(3);
+    expect(engine.session().phase).toBe('warming');
+    made[1].say({ t: 'ready' });
+    await again;
+    expect(engine.session().phase).toBe('live');
   });
 
   it('a replacement is a new stream: its own epoch and fold, and the old child is ignored', async () => {
@@ -161,6 +220,8 @@ describe('the engine publishes its session', () => {
     expect(before.state).toEqual({ sum: 5 });
     const restarted = engine.restart();
     f.made[0].exit(0);
+    await turn();
+    f.made[1].say({ t: 'ready' });
     await restarted;
     // The dead child speaking after its replacement exists must reach nothing: its listeners are
     // still attached to a process object the shell no longer owns.
