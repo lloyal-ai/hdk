@@ -14,7 +14,7 @@
  * @packageDocumentation
  * @category UI
  */
-export { HarnessProvider, projectionFor, useHarness, useProjection, useSend, useConnection, useContentOrigin } from './provider.js';
+export { HarnessProvider, projectionFor, useHarness, useProjection, useSend, useConnection, useAvailability, useRecover, useContentOrigin } from './provider.js';
 export type { Harness } from './provider.js';
 export { Markdown, admitAttachmentUrls } from './markdown.js';
 export type { MarkdownComponents } from './markdown.js';

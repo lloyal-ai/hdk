@@ -13,8 +13,8 @@
  */
 import { createContext, createElement, useContext, useMemo, useSyncExternalStore } from 'react';
 import type { ReactElement, ReactNode } from 'react';
-import { connectProjection } from '@lloyal-labs/binding';
-import type { Bridge, Projection, WireStatus } from '@lloyal-labs/binding';
+import { connectProjection, availabilityOf } from '@lloyal-labs/binding';
+import type { Availability, Bridge, Projection, SessionState, WireStatus } from '@lloyal-labs/binding';
 
 export interface Harness<E, C, S> {
   bridge: Bridge<E, C, S>;
@@ -118,6 +118,75 @@ export function useConnection(): WireStatus {
   const { bridge } = useHarness();
   const wire = statusFor(bridge);
   return useSyncExternalStore(wire.subscribe, wire.getSnapshot, connected);
+}
+
+interface AvailabilityStore {
+  subscribe: (notify: () => void) => () => void;
+  getSnapshot: () => Availability;
+}
+
+/** One derivation per bridge, for the life of the page — the same reason the status has one. */
+const availabilities = new WeakMap<object, AvailabilityStore>();
+
+function availabilityFor(bridge: Bridge<unknown, unknown, unknown>): AvailabilityStore {
+  let store = availabilities.get(bridge);
+  if (!store) {
+    // A bridge with no droppable link is up, and one with no session plane has a single implicit
+    // session that is live: nothing queues it and nothing reaps it, so "waiting" and "ended" are not
+    // states it can be in. This is the ONE place a placement difference is stated; the derivation
+    // itself knows no placements.
+    let wire: WireStatus = 'connected';
+    let session: SessionState | null = bridge.onSession ? null : { phase: 'live' };
+    let value = availabilityOf(session, wire);
+    const listeners = new Set<() => void>();
+    const settle = (): void => {
+      const next = availabilityOf(session, wire);
+      if (next === value) return;
+      value = next;
+      for (const notify of listeners) notify();
+    };
+    bridge.onStatus?.((next) => { wire = next; settle(); });
+    bridge.onSession?.((next) => { session = next; settle(); });
+    store = {
+      subscribe(notify) {
+        listeners.add(notify);
+        return () => { listeners.delete(notify); };
+      },
+      getSnapshot: () => value,
+    };
+    availabilities.set(bridge, store);
+  }
+  return store;
+}
+
+/** What a server render reads: nothing has been asked of either plane yet. */
+const starting = (): Availability => 'connecting';
+
+/**
+ * Whether this harness can take work, and if not, why — the question a view actually asks.
+ *
+ * Derived from the transport's status and the host's session phase, because neither answers it
+ * alone: a queued reader's socket is healthy, and an ended session is followed by a close that
+ * reads as a network failure. Prefer this to {@link useConnection}, which is the transport fact
+ * on its own.
+ */
+export function useAvailability(): Availability {
+  const { bridge } = useHarness();
+  const store = availabilityFor(bridge);
+  return useSyncExternalStore(store.subscribe, store.getSnapshot, starting);
+}
+
+/**
+ * Ask the placement for a working harness — or null where this bridge cannot provide one.
+ *
+ * A view knows WHEN recovery is wanted and never what it costs: a browser opens a new connection
+ * because a served host cannot re-admit an existing one; a desktop shell starts a new engine while
+ * its renderer's IPC link stays up throughout. Same button, different price, and the view pays
+ * neither.
+ */
+export function useRecover(): (() => void) | null {
+  const { bridge } = useHarness();
+  return useMemo(() => (bridge.recover ? (): void => bridge.recover!() : null), [bridge]);
 }
 
 /** The content plane's origin, or null on a bridge without one. */

@@ -74,6 +74,35 @@ describe('createBridge', () => {
     expect(statuses).toEqual(['connecting', 'connected', 'lost']);
   });
 
+  it('the bridge reads the session plane and reports it, so a waiting reader can be told', () => {
+    // Today these frames arrive and are dropped unless the app passed a callback, so a browser queued
+    // behind other users sits with a connected socket and nothing to show. The bridge holds the last
+    // phase itself: the app gets it whether or not it thought to ask.
+    const bridge = createBridge<Ev, never, S>('ws://h', { initialState: { sum: 0, count: 0 }, reduce });
+    const ws = FakeSocket.last!;
+    const seen: string[] = [];
+    bridge.onSession!((s) => seen.push(s.phase));
+    ws.serverFrame({ t: 'session', payload: { phase: 'queued', position: 1 } });
+    ws.serverFrame({ t: 'ready' });
+    ws.serverFrame({ t: 'session', payload: { phase: 'warming' } });
+    ws.serverFrame({ t: 'session', payload: { phase: 'live' } });
+    expect(seen).toEqual(['queued', 'warming', 'live']);
+    // And a late subscriber is told where things stand, rather than waiting for the next change.
+    const late: string[] = [];
+    bridge.onSession!((s) => late.push(s.phase));
+    expect(late).toEqual(['live']);
+  });
+
+  it('the app still gets the session plane when it asked for it directly', () => {
+    const direct: string[] = [];
+    const bridge = createBridge<Ev, never, S>('ws://h', {
+      initialState: { sum: 0, count: 0 }, reduce, onSession: (s) => direct.push(s.phase),
+    });
+    FakeSocket.last!.serverFrame({ t: 'session', payload: { phase: 'queued', position: 0 } });
+    expect(direct).toEqual(['queued']);
+    expect(bridge.onSession).toBeTypeOf('function');
+  });
+
   it('the content origin is the one given, and absent when none was', () => {
     const with_ = createBridge<Ev, never, S>('ws://h', { initialState: { sum: 0, count: 0 }, reduce, contentOrigin: '' });
     expect(with_.contentOrigin?.()).toBe('');

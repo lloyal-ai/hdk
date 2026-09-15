@@ -128,6 +128,10 @@ export interface CreateBridgeOpts<E, S> {
   contentOrigin?: string;
   /** Called with the client-visible Session lifecycle the host relays. */
   onSession?: (state: SessionState) => void;
+  /** How this page gets a working session. A served host has no way to re-admit an existing
+   *  connection, so it is a new one — which this module cannot start for itself, being
+   *  DOM-lib-free; the app supplies it (typically reloading the page). */
+  recover?: () => void;
 }
 
 /**
@@ -148,6 +152,11 @@ export function createBridge<E, C, S>(url: string, opts: CreateBridgeOpts<E, S>)
   let queued: C[] = [];
   const frameListeners = new Set<(frame: Frame<E>) => void>();
   const statusListeners = new Set<(status: WireStatus) => void>();
+  // The host's word on this session. Held here rather than handed straight past, because the
+  // socket cannot express half of what a reader needs — a queued session's transport is perfectly
+  // healthy, and a session that ended is followed by a close that looks like a network failure.
+  let session: SessionState | null = null;
+  const sessionListeners = new Set<(state: SessionState) => void>();
   const setStatus = (next: WireStatus): void => {
     if (next === status) return;
     status = next;
@@ -171,7 +180,11 @@ export function createBridge<E, C, S>(url: string, opts: CreateBridgeOpts<E, S>)
       ready = false;
       setStatus("lost");
     },
-    ...(opts.onSession ? { onSession: opts.onSession } : {}),
+    onSession: (s) => {
+      session = s;
+      for (const cb of sessionListeners) cb(s);
+      opts.onSession?.(s);
+    },
   });
   return {
     onEvent(cb) {
@@ -194,6 +207,16 @@ export function createBridge<E, C, S>(url: string, opts: CreateBridgeOpts<E, S>)
         statusListeners.delete(cb);
       };
     },
+    onSession(cb) {
+      sessionListeners.add(cb);
+      // A view that mounts mid-session is told where things stand, rather than waiting for the
+      // next change that may never come: `live` is emitted once and a session can sit there for hours.
+      if (session) cb(session);
+      return () => {
+        sessionListeners.delete(cb);
+      };
+    },
+    ...(opts.recover ? { recover: opts.recover } : {}),
     ...(opts.contentOrigin !== undefined ? { contentOrigin: () => opts.contentOrigin! } : {}),
     close() {
       client.close();

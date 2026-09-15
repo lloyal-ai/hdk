@@ -22,10 +22,43 @@
  * @category Binding
  */
 
+import type { SessionState } from "./session";
+
 /** The view's transport link: 'connecting' at load, 'connected' once the host
  *  is ready, 'lost' when the socket dies under a live view. An in-process
  *  bridge never leaves 'connected'. */
 export type WireStatus = "connecting" | "connected" | "lost";
+
+/**
+ * What a view shows about whether its harness can take work — derived, never stored.
+ *
+ * Every word is one the platform already uses: `queued` and `warming` are the session's own,
+ * `connecting` and `lost` the transport's, `ready` the frame a harness sends when its bootstrap
+ * is done, `ended` what a reaped or died session is.
+ */
+export type Availability = "connecting" | "queued" | "warming" | "ready" | "ended" | "lost";
+
+/**
+ * The one derivation, over the two facts that each answer half the question.
+ *
+ * Neither fact suffices. `wss()` routes `ready` when the socket binds — BEFORE the host admits —
+ * so a reader queued behind other users has a perfectly connected transport and no work being done;
+ * the socket can never say "waiting". And the producer announces a terminal phase and then closes,
+ * so a view reading the socket alone turns "your session ended" into "the network dropped", which
+ * is both wrong and a different remedy. Hence: the session's word wins where it is terminal, the
+ * transport's wins where the session is still going.
+ */
+export function availabilityOf(session: SessionState | null, wire: WireStatus): Availability {
+  // A session that is going or gone is the last word: the close that follows is its consequence,
+  // not a new fact. Inlined deliberately — as a named export this test reads like "the resources are
+  // gone", which `draining` is NOT, and the first caller to need a teardown barrier would reuse it.
+  if (session && (session.phase === "draining" || session.phase === "died" || session.phase === "reaped")) return "ended";
+  if (wire === "lost") return "lost";
+  if (!session || session.phase === "parked") return "connecting";
+  if (session.phase === "queued") return "queued";
+  if (session.phase === "warming") return "warming";
+  return wire === "connected" ? "ready" : "connecting";
+}
 
 /** One event as a bridge delivers it: numbered within its stream. `epoch`
  *  names the stream (a connection, an engine's lifetime); `seq` orders frames
@@ -53,6 +86,14 @@ export interface Bridge<E, C, S> {
   /** Transport status, when the bridge has a droppable link. Fires the current
    *  status at once, then on every change. Absent on an in-process bridge. */
   onStatus?(cb: (status: WireStatus) => void): () => void;
+  /** The session plane, when the transport carries one: the host's word on this
+   *  session's own lifecycle. Fires the last phase seen at once, then on every
+   *  change. Absent where there is no host to report one. */
+  onSession?(cb: (state: SessionState) => void): () => void;
+  /** Ask for a working harness. What that costs belongs to the placement — a
+   *  browser opens a new connection, a desktop shell starts a new engine — so a
+   *  view asks and never decides. Absent where the bridge cannot provide one. */
+  recover?(): void;
   /** The origin of the content plane — where bytes live — or absent when the
    *  bridge has no plane. */
   contentOrigin?(): string;
