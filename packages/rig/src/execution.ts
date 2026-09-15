@@ -17,11 +17,18 @@
  * halt whose teardown throws is not ordinary: nothing may run again on that
  * model state, so the owner is `poisoned`, the accepted operation's future
  * rejects with the teardown error, and `replace` and `stop` throw from then on.
- * An error the operation raises while it is being halted is a teardown error
- * too — a cleanup that fails inside a `scoped()` boundary the operation holds
- * is thrown through the operation's own frames as they unwind, and nothing
- * else can throw into an operation being unwound — so it poisons the same way,
- * whatever the operation's own handlers made of it on the way out.
+ * An error the operation raises while it is being halted is READ as its
+ * teardown's and poisons the same way. That is a reading, not a fact the owner
+ * can establish: an operation that owns a `scoped()` boundary holds its own
+ * body's error inside that boundary while its cleanup runs, so a body failure
+ * arrives by the same route, and at the same moment, a cleanup failure would.
+ * Effection offers no channel that separates them — a child task does not
+ * either; both come through the halt. So the fatal reading is the default,
+ * because a cleanup that failed leaves the model's state untrustworthy, and an
+ * operation that KNOWS the difference says so by throwing
+ * {@link OperationFailure}. A cleanup registered without such a boundary needs
+ * none of this: it runs on the owner's own frame and its failure is reported by
+ * the halt itself.
  * The application decides what a poisoned owner means — for a harness, ending
  * the session.
  *
@@ -71,6 +78,26 @@ interface Accepted {
   op: () => Operation<void>;
   resolve: () => void;
   reject: (err: Error) => void;
+}
+
+/**
+ * What an operation throws to say a failure is its OWN, not its teardown's.
+ *
+ * The owner cannot tell the two apart once an operation owns a `scoped()` boundary: a body error is
+ * held inside that boundary while its cleanup runs, so it surfaces at the same place, by the same
+ * route, and at the same moment as a cleanup error would — after a halt may already have begun.
+ * Effection offers no separate channel for them (a child task does not separate them either; both
+ * arrive through the halt). So the fact has to be carried by whoever still knows it, which is the
+ * operation's own handler at the point the body failed.
+ *
+ * Unmarked is the safe reading: an error arriving while the operation is being halted is taken to be
+ * the teardown's and poisons, because a cleanup that failed leaves the model's state untrustworthy.
+ */
+export class OperationFailure extends Error {
+  constructor(readonly reason: unknown) {
+    super(reason instanceof Error ? reason.message : String(reason));
+    this.name = 'OperationFailure';
+  }
 }
 
 const toError = (e: unknown): Error => (e instanceof Error ? e : new Error(String(e)));
@@ -157,11 +184,12 @@ export function useExecution(): Operation<Execution> {
         paused = false;      // the operation's own facts start clean
         windingDown = false;
         const task: Task<void> = yield* spawn(function* () {
-          // The body's own outcome, recorded WHERE it happens. `scoped` holds an error until the
-          // frame has closed, so by the time one reaches the catch below `halting` says when it
-          // arrived, never where it came from: an ordinary failure racing a stop read as a teardown
-          // failure and poisoned a session whose cleanup had in fact succeeded.
+          // Whose failure was it? `halting` answers when the error ARRIVED, never where it came
+          // from, and for an operation that owns a boundary those differ: its body's error waits
+          // inside while the cleanup runs, and lands after a stop has begun. Unmarked stays the
+          // teardown's — the safe reading — and `OperationFailure` is the operation saying otherwise.
           const body: { failed: boolean; err?: unknown } = { failed: false };
+          const reasonOf = (e: unknown): unknown => (e instanceof OperationFailure ? e.reason : e);
           try {
             // The owner's own boundary, so the barrier it promises is the owner's to keep and not
             // the caller's to remember: `scoped` returns only once the operation's frame has closed
@@ -170,21 +198,18 @@ export function useExecution(): Operation<Execution> {
             // replacement could touch the model underneath it. A halt already waited (`task.halt()`).
             yield* scoped(function* () {
               try { yield* next.op(); } catch (err) {
-                // The one place the question is still answerable. An error leaving the body while a
-                // halt is under way came from the teardown the halt is running, and is the halt's to
-                // fail with; anything else is the operation's own failure, whatever arrives later.
-                if (halting === task) throw err;
+                if (!(err instanceof OperationFailure) && halting === task) throw err;
                 body.failed = true;
-                body.err = err;
+                body.err = reasonOf(err);
               }
             });
             // Past the boundary, so the teardown itself succeeded: the body's outcome is the
             // operation's, whatever else was in flight while it unwound.
             if (body.failed) next.reject(toError(body.err)); else next.resolve();
           } catch (err) {
-            // Only the teardown — or the halt that ran it — can throw out of `scoped` now.
-            if (halting === task) throw err;   // raised while being halted: the teardown's, and the halt's to fail with
-            next.reject(toError(err));
+            // The owner's own frame failed to close, or the operation reported past the boundary.
+            if (!(err instanceof OperationFailure) && halting === task) throw err;   // the teardown's, and the halt's to fail with
+            next.reject(toError(reasonOf(err)));
           } finally {
             // The operation ended on its own. Unless a replacement is already
             // accepted (the wake will start it), the owner is free.

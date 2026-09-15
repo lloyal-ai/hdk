@@ -26,7 +26,7 @@ import { describe, it, expect } from 'vitest';
 import { run, ensure, sleep, suspend, until, createSignal, spawn, each, scoped } from 'effection';
 import type { Operation } from 'effection';
 import { WindDown, CancelAgent, Pause } from '@lloyal-labs/lloyal-agents';
-import { useExecution } from '../src/execution';
+import { useExecution, OperationFailure } from '../src/execution';
 
 function deferred<T = void>() {
   let resolve!: (v: T) => void;
@@ -143,6 +143,84 @@ describe('useExecution', () => {
       yield* next;
       expect(log).toEqual(['torn:ok', 'next:ran']);
       expect(exec.poisoned).toBe(false);
+    });
+  });
+
+  it("an operation that owns its boundary is believed about its own failure: a stop mid-cleanup does not poison", async () => {
+    // Field Note's shape: the operation IS a `scoped()`, and its catch sits INSIDE, so it sees only
+    // body errors — the cleanups its body registered run after that catch, on the way out. A body
+    // error is therefore held inside the boundary while its cleanup runs and reaches the owner only
+    // once a halt may have begun. Arrival time cannot tell it from a cleanup failure, so the
+    // operation carries the fact: this one was mine.
+    await run(function* () {
+      const exec = yield* useExecution();
+      const gate = deferred();
+      const cleaning = deferred();
+      const log: string[] = [];
+      const bad = yield* exec.replace('bad', () => scoped(function* (): Operation<void> {
+        try {
+          yield* (function* () {
+            yield* ensure(function* () { cleaning.resolve(); yield* until(gate.promise); log.push('torn:ok'); });
+            throw new Error('the planner failed');
+          })();
+        } catch (err) {
+          log.push('op:caught');
+          throw new OperationFailure(err);   // the body's own, said where it is still known
+        }
+      }));
+      yield* until(cleaning.promise);
+      yield* exec.stop();
+      gate.resolve();
+      try { yield* bad; } catch { /* the stop's contract */ }
+      expect(log).toEqual(['op:caught', 'torn:ok']);
+      expect(exec.poisoned, 'the operation said the failure was its own and the owner poisoned anyway').toBe(false);
+      const after = yield* exec.replace('after', function* () { log.push('after:ran'); yield* sleep(1); });
+      yield* after;
+      expect(log).toEqual(['op:caught', 'torn:ok', 'after:ran']);
+    });
+  });
+
+  it("a replacement accepted during a caller-owned boundary's cleanup still starts", async () => {
+    await run(function* () {
+      const exec = yield* useExecution();
+      const gate = deferred();
+      const cleaning = deferred();
+      const log: string[] = [];
+      const bad = yield* exec.replace('bad', () => scoped(function* (): Operation<void> {
+        try {
+          yield* (function* () {
+            yield* ensure(function* () { cleaning.resolve(); yield* until(gate.promise); log.push('torn:ok'); });
+            throw new Error('the planner failed');
+          })();
+        } catch (err) { throw new OperationFailure(err); }
+      }));
+      yield* until(cleaning.promise);
+      const next = yield* exec.replace('next', function* () { log.push('next:ran'); yield* sleep(1); });
+      gate.resolve();
+      let caught: unknown = null;
+      try { yield* bad; } catch (e) { caught = e; }
+      yield* next;
+      expect((caught as Error).message).toBe('the planner failed');
+      expect(log).toEqual(['torn:ok', 'next:ran']);
+      expect(exec.poisoned).toBe(false);
+    });
+  });
+
+  it("an operation that owns its boundary and does NOT say so keeps the fatal reading", async () => {
+    // Unmarked during a halt stays the teardown's: a cleanup that failed leaves the model untrustworthy,
+    // and the owner has no other way to know.
+    await run(function* () {
+      const exec = yield* useExecution();
+      yield* exec.replace('e', () => scoped(function* () {
+        yield* ensure(() => { throw new Error('the branch would not release'); });
+        yield* suspend();
+      }));
+      yield* sleep(0);
+      const ff = yield* exec.replace('f', function* () {});
+      let caught: unknown = null;
+      try { yield* ff; } catch (e) { caught = e; }
+      expect((caught as Error).message).toContain('would not release');
+      expect(exec.poisoned).toBe(true);
     });
   });
 

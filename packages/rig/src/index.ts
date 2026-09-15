@@ -116,7 +116,7 @@ export { useWire } from './wire';
 export { configLoaded, configUpdated } from './settings-protocol';
 export type { RunCommand, SettingsCommand, SettingsEvent } from './settings-protocol';
 // The execution owner: one live operation per session, accepted at once and sequenced in its loop.
-export { useExecution } from './execution';
+export { useExecution, OperationFailure } from './execution';
 export type { Execution } from './execution';
 // The wire's attachment claims, checked once for every product.
 export { admitted } from './admitted';
