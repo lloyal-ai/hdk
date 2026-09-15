@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import { createEngine } from '../src/engine';
 import type { EngineProcess } from '../src/engine';
-import type { Frame } from '@lloyal-labs/binding';
+import type { Frame, SessionState } from '@lloyal-labs/binding';
 
 type Ev = { type: 'n'; n: number };
 type S = { sum: number };
@@ -68,5 +68,109 @@ describe('createEngine', () => {
     expect(engine.running).toBe(false);
     expect(engine.send({} as never)).toBe(false);
     await expect(engine.ingest(new Uint8Array([5]), new AbortController().signal)).rejects.toThrow(/not running/);
+  });
+});
+
+describe('the engine publishes its session', () => {
+  /** Fresh processes, in the order the engine asked for them. */
+  function forker() {
+    const made: ReturnType<typeof fakeProcess>[] = [];
+    return { made, fork: () => { const p = fakeProcess(); made.push(p); return p; } };
+  }
+  const phases = (seen: SessionState[]): string[] => seen.map((s) => s.phase);
+  function start(f: { fork: () => EngineProcess }, bin = 'engine') {
+    const seen: SessionState[] = [];
+    const forwarded: Frame<Ev>[] = [];
+    const engine = createEngine<Ev, { type: 'x' }, S>({
+      bin, fork: f.fork, initialState: { sum: 0 }, reduce: (s, ev) => ({ sum: s.sum + ev.n }), forward: (fr) => forwarded.push(fr),
+    });
+    engine.onSession((s) => seen.push(s));
+    return { engine, seen, forwarded };
+  }
+
+  it('warming at the fork, live only when the child says it is ready', () => {
+    // A child exists while it is still loading a model. Its `ready` frame is the boundary that
+    // means something — the command channel is attached — so "running" is far too early to
+    // tell a reader their harness can take work.
+    const f = forker();
+    const { engine, seen } = start(f);
+    expect(engine.session().phase).toBe('warming');
+    f.made[0].say({ t: 'event', payload: { type: 'n', n: 1 } });   // events can precede ready
+    expect(engine.session().phase).toBe('warming');
+    f.made[0].say({ t: 'ready' });
+    expect(phases(seen)).toEqual(['warming', 'live']);
+    // A view that mounts now — a renderer reload over a healthy engine — is told where things stand.
+    const late: SessionState[] = [];
+    engine.onSession((s) => late.push(s));
+    expect(phases(late)).toEqual(['live']);
+  });
+
+  it('a stop we asked for drains and reaps; an exit nobody asked for died', () => {
+    const a = forker();
+    const one = start(a);
+    a.made[0].say({ t: 'ready' });
+    one.engine.kill();
+    expect(one.engine.session().phase).toBe('draining');   // asked to go, still there
+    a.made[0].exit(0);
+    expect(phases(one.seen)).toEqual(['warming', 'live', 'draining', 'reaped']);
+
+    const b = forker();
+    const two = start(b);
+    b.made[0].say({ t: 'ready' });
+    b.made[0].exit(1);   // nobody asked: the engine went on its own
+    expect(phases(two.seen)).toEqual(['warming', 'live', 'died']);
+    expect((two.seen.at(-1) as { phase: 'died'; code?: number }).code).toBe(1);
+  });
+
+  it('a fork that fails is a died session, not a crash in the shell', () => {
+    const seen: SessionState[] = [];
+    const engine = createEngine<Ev, never, S>({
+      bin: 'missing', fork: () => { throw new Error('engine not built'); },
+      initialState: { sum: 0 }, reduce: (s) => s, forward: () => {},
+    });
+    engine.onSession((s) => seen.push(s));
+    expect(phases(seen)).toEqual(['died']);
+    expect(engine.running).toBe(false);
+  });
+
+  it('restart waits for the process to actually go before forking its replacement, and is idempotent', async () => {
+    // `draining` means "cannot take work", NOT "the resources are gone": the model is still
+    // resident until the process exits. Forking on the announcement would put two engines on one
+    // machine's memory at once.
+    const f = forker();
+    const { engine, seen } = start(f);
+    f.made[0].say({ t: 'ready' });
+    const first = engine.restart();
+    const second = engine.restart();          // the reader pressed it twice
+    expect(f.made).toHaveLength(1);           // nothing forked while the old one is still alive
+    expect(engine.session().phase).toBe('draining');
+    f.made[0].exit(0);
+    await Promise.all([first, second]);
+    expect(f.made, 'two presses forked two engines').toHaveLength(2);
+    expect(phases(seen)).toEqual(['warming', 'live', 'draining', 'warming']);
+    f.made[1].say({ t: 'ready' });
+    expect(phases(seen).at(-1)).toBe('live');
+  });
+
+  it('a replacement is a new stream: its own epoch and fold, and the old child is ignored', async () => {
+    const f = forker();
+    const { engine, forwarded } = start(f);
+    f.made[0].say({ t: 'ready' });
+    f.made[0].say({ t: 'event', payload: { type: 'n', n: 5 } });
+    const before = engine.snapshot();
+    expect(before.state).toEqual({ sum: 5 });
+    const restarted = engine.restart();
+    f.made[0].exit(0);
+    await restarted;
+    // The dead child speaking after its replacement exists must reach nothing: its listeners are
+    // still attached to a process object the shell no longer owns.
+    f.made[0].say({ t: 'event', payload: { type: 'n', n: 99 } });
+    const after = engine.snapshot();
+    expect(after.state, "the old engine's events were folded into the new one").toEqual({ sum: 0 });
+    expect(after.epoch, 'the replacement reused the epoch, so a renderer cannot tell the streams apart').not.toBe(before.epoch);
+    expect(after.seq).toBe(0);
+    f.made[1].say({ t: 'event', payload: { type: 'n', n: 7 } });
+    expect(engine.snapshot()).toEqual({ state: { sum: 7 }, epoch: after.epoch, seq: 1 });
+    expect(forwarded.filter((fr) => fr.epoch === after.epoch).map((fr) => fr.ev.n)).toEqual([7]);
   });
 });

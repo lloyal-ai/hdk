@@ -13,12 +13,23 @@
  * The shell relays uploads to the engine and waits for the root descriptor it
  * commits: the engine is the store's single writer.
  *
+ * **It also owns the session's life, in the platform's own words.** A desktop
+ * shell has a host in every sense that matters to a reader — something that
+ * starts the harness, knows when it is usable and knows when it is gone — so it
+ * reports {@link SessionState} rather than inventing a second vocabulary for
+ * the same facts. `warming` at the fork, `live` at the child's own `ready`
+ * (which means the command channel is attached, and is the earliest honest
+ * boundary — a child exists while it is still loading a model), `draining`
+ * once a stop is asked for, then `reaped` or `died`. The renderer's IPC link
+ * stays up throughout, which is exactly why the session's state and the
+ * transport's are two facts and not one.
+ *
  * @category Desktop
  */
 import { existsSync } from 'node:fs';
 import { utilityProcess } from 'electron';
 import type { Descriptor } from '@lloyal-labs/media';
-import type { Frame, Snapshot } from '@lloyal-labs/binding';
+import type { Frame, SessionState, Snapshot } from '@lloyal-labs/binding';
 
 /** The slice of Electron's `UtilityProcess` the engine uses, structurally — a test hands in a fake. */
 export interface EngineProcess {
@@ -61,16 +72,41 @@ export interface Engine<C, S> {
   ingest(bytes: Uint8Array, signal: AbortSignal): Promise<Descriptor>;
   /** Stop the engine. */
   kill(): void;
+  /** This session's life, as the renderer's view reads it. */
+  session(): SessionState;
+  /** Subscribe to it: the current state at once, then every change. Returns the unsubscribe. */
+  onSession(cb: (state: SessionState) => void): () => void;
+  /**
+   * Replace the engine with a fresh one — the reader's way back from a session
+   * that ended. Idempotent while one is in flight, and the replacement is not
+   * forked until the old process has actually gone: `draining` says work cannot
+   * be taken, never that the model has been freed.
+   */
+  restart(): Promise<void>;
   readonly running: boolean;
 }
 
 export function createEngine<E, C, S>(opts: CreateEngineOpts<E, S>): Engine<C, S> {
-  const epoch = Date.now();
+  const fork = opts.fork ?? forkUtilityProcess;
+  let epoch = Date.now();
   let seq = 0;
   let state = opts.initialState;
   let child: EngineProcess | null = null;
+  /** Which fork we own. A dead child's listeners stay attached to its own process object. */
+  let generation = 0;
+  let stopping = false;   // we asked it to go
+  let replacing = false;  // …and something is taking its place, so its end is not the session's
+  let awaitExit: (() => void) | null = null;
+  let restarting: Promise<void> | null = null;
+  let session: SessionState = { phase: 'warming' };
+  const sessionListeners = new Set<(state: SessionState) => void>();
   const pending = new Map<number, { resolve: (d: Descriptor) => void; reject: (e: Error) => void }>();
   let ingestId = 0;
+
+  const announce = (next: SessionState): void => {
+    session = next;
+    for (const cb of sessionListeners) cb(next);
+  };
 
   const post = (message: unknown): boolean => {
     if (!child) return false;
@@ -82,37 +118,80 @@ export function createEngine<E, C, S>(opts: CreateEngineOpts<E, S>): Engine<C, S
     }
   };
 
-  const proc = (opts.fork ?? forkUtilityProcess)(opts.bin, { ...process.env, ...opts.env, RR_BRIDGE: '1' });
-  child = proc;
-  proc.stdout?.on('data', (d) => opts.log?.('stdout', d.toString().trimEnd()));
-  proc.stderr?.on('data', (d) => opts.log?.('stderr', d.toString().trimEnd()));
-  proc.on('message', (raw) => {
-    const msg = raw as { t?: string; payload?: E; id?: number; root?: Descriptor; error?: string };
-    if (msg?.t === 'event' && msg.payload !== undefined) {
-      seq += 1;
-      state = opts.reduce(state, msg.payload);
-      opts.forward({ epoch, seq, ev: msg.payload });
+  const failPending = (why: string): void => {
+    for (const [, waiting] of pending) waiting.reject(new Error(why));
+    pending.clear();
+  };
+
+  function start(): void {
+    const mine = ++generation;
+    stopping = false;
+    replacing = false;
+    announce({ phase: 'warming' });
+    let proc: EngineProcess;
+    try {
+      proc = fork(opts.bin, { ...process.env, ...opts.env, RR_BRIDGE: '1' });
+    } catch (err) {
+      // A shell whose engine will not start must still open and say so; throwing here would take
+      // the main process down before the window that could report it exists.
+      child = null;
+      opts.log?.('exit', err instanceof Error ? err.message : String(err));
+      announce({ phase: 'died' });
       return;
     }
-    if (typeof msg?.id !== 'number') return;
-    const waiting = pending.get(msg.id);
-    if (!waiting) return;
-    pending.delete(msg.id);
-    if (msg.t === 'ingested' && msg.root) waiting.resolve(msg.root);
-    else if (msg.t === 'ingestFailed') waiting.reject(new Error(msg.error ?? 'ingest failed'));
-  });
-  proc.on('exit', (code) => {
-    opts.log?.('exit', String(code));
-    // Drop the handle FIRST: a stale one passes `if (!child)`, and a message to a dead process is discarded
-    // silently. An ingest in flight must FAIL, not hang.
-    child = null;
-    for (const [, waiting] of pending) waiting.reject(new Error('the engine stopped before the file was ingested'));
-    pending.clear();
-  });
+    child = proc;
+    proc.stdout?.on('data', (d) => opts.log?.('stdout', d.toString().trimEnd()));
+    proc.stderr?.on('data', (d) => opts.log?.('stderr', d.toString().trimEnd()));
+    proc.on('message', (raw) => {
+      if (mine !== generation) return;   // a child we no longer own, still talking
+      const msg = raw as { t?: string; payload?: E; id?: number; root?: Descriptor; error?: string };
+      if (msg?.t === 'ready') {
+        // The command channel is attached. Not a promise that the harness has finished booting —
+        // it is simply the first moment anything the reader does can reach it.
+        announce({ phase: 'live' });
+        return;
+      }
+      if (msg?.t === 'event' && msg.payload !== undefined) {
+        seq += 1;
+        state = opts.reduce(state, msg.payload);
+        opts.forward({ epoch, seq, ev: msg.payload });
+        return;
+      }
+      if (typeof msg?.id !== 'number') return;
+      const waiting = pending.get(msg.id);
+      if (!waiting) return;
+      pending.delete(msg.id);
+      if (msg.t === 'ingested' && msg.root) waiting.resolve(msg.root);
+      else if (msg.t === 'ingestFailed') waiting.reject(new Error(msg.error ?? 'ingest failed'));
+    });
+    proc.on('exit', (code) => {
+      if (mine !== generation) return;
+      opts.log?.('exit', String(code));
+      // Drop the handle FIRST: a stale one passes `if (!child)`, and a message to a dead process is discarded
+      // silently. An ingest in flight must FAIL, not hang.
+      child = null;
+      failPending('the engine stopped before the file was ingested');
+      const wake = awaitExit;
+      awaitExit = null;
+      // A replacement is coming: the reader is between engines, not without one, so nothing terminal
+      // is said and the banner does not flash "ended" on the way to a working session.
+      if (replacing) return wake?.();
+      announce(stopping ? { phase: 'reaped' } : { phase: 'died', ...(code != null ? { code } : {}) });
+      wake?.();
+    });
+  }
+
+  start();
 
   return {
     send: (command) => post({ t: 'command', payload: command }),
     snapshot: () => ({ state, epoch, seq }),
+    session: () => session,
+    onSession(cb) {
+      sessionListeners.add(cb);
+      cb(session);   // a renderer that loads mid-session is told where things stand
+      return () => { sessionListeners.delete(cb); };
+    },
     ingest(bytes, signal) {
       // An already-aborted signal fires no `abort` event, so the entry would sit in `pending` for the life of the process.
       if (signal.aborted) return Promise.reject(new Error('the ingest was cancelled'));
@@ -133,7 +212,32 @@ export function createEngine<E, C, S>(opts: CreateEngineOpts<E, S>): Engine<C, S
       return answer;
     },
     kill() {
-      child?.kill();
+      if (!child) return;
+      stopping = true;
+      announce({ phase: 'draining' });
+      try { child.kill(); } catch { /* already gone; its exit still arrives */ }
+    },
+    restart() {
+      if (restarting) return restarting;   // the reader pressed it twice; one engine, one promise
+      const done = (async () => {
+        if (child) {
+          stopping = true;
+          replacing = true;
+          announce({ phase: 'draining' });
+          const gone = new Promise<void>((resolve) => { awaitExit = resolve; });
+          try { child.kill(); } catch { /* already gone; its exit still arrives */ }
+          await gone;   // the model is resident until the process is gone: never two at once
+        }
+        // A fresh stream. The renderer compares frames only within an epoch, so the replacement
+        // must not reuse one — `Date.now()` alone can repeat inside a millisecond.
+        epoch = Math.max(Date.now(), epoch + 1);
+        seq = 0;
+        state = opts.initialState;
+        start();
+      })();
+      restarting = done;
+      void done.finally(() => { if (restarting === done) restarting = null; });
+      return done;
     },
     get running() {
       return child !== null;
