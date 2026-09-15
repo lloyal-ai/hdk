@@ -15,7 +15,7 @@
  *
  * @category Rig
  */
-import { each, scoped } from 'effection';
+import { each, race, scoped } from 'effection';
 import type { Operation, Signal } from 'effection';
 
 /** What a handler, or `onError`, may return: `"exit"` ends the loop. */
@@ -34,6 +34,16 @@ export interface CommandGroup<C extends { type: string }> {
 export interface ServeCommandsOptions {
   /** A handler threw, or a command had no handler. Return `"exit"` to end the loop. */
   onError?: (err: unknown) => Operation<Flow>;
+  /**
+   * Ends the loop when it settles — for a fact no command carries.
+   *
+   * The loop suspends on the next command, so without this the only way out is
+   * a command; an execution owner that poisoned is exactly a fact no command
+   * carries, and a reader should not have to ask a question to discover their
+   * session is over. Whatever this operation does before settling — saying why,
+   * on the wire — happens first.
+   */
+  until?: Operation<unknown>;
 }
 
 /**
@@ -53,7 +63,20 @@ export function* serveCommands<C extends { type: string }>(
       table.set(type, handler as (command: C) => Operation<Flow>);
     }
   }
+  // The table is built before either arm starts, so a duplicate is still refused before the first
+  // command is read — and before `until` could end a loop that was never going to run.
+  if (opts.until) {
+    yield* race([dispatch(commands, table, opts), opts.until as Operation<void>]);
+    return;
+  }
+  yield* dispatch(commands, table, opts);
+}
 
+function* dispatch<C extends { type: string }>(
+  commands: Signal<C, void>,
+  table: Map<string, (command: C) => Operation<Flow>>,
+  opts: ServeCommandsOptions,
+): Operation<void> {
   for (const command of yield* each(commands)) {
     if (command.type === 'quit') return;
     let flow: Flow;

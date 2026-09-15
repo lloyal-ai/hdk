@@ -131,10 +131,18 @@ export interface Runner<
    *  patch also lands on disk and provenance re-layers — value and origin
    *  move together in both directions. */
   saveConfig(patch: ConfigPatch<C>): SaveResult & { config: C; origin: O };
-  /** Persist a model/reranker/gpu change. There is no in-process rebuild —
-   *  the harness returns after calling this and the process ends; the next
-   *  launch reads the file and applies it. In-memory (served) ⇒ no-op. */
-  reloadRuntime(patch: ConfigPatch<C>): void;
+  /**
+   * Persist a model/reranker/gpu change, and say whether one can be made here.
+   *
+   * There is no in-process rebuild: the harness returns after calling this and
+   * the process ends; the next launch reads the file and applies it. Returns
+   * the file the next launch will read it from — or **null where this placement
+   * cannot apply one**, which is a served host: it chose its model when it
+   * started and serves every session from that one residency, so nothing a
+   * session does reloads it. A caller that ends the session on a null has taken
+   * a working session away in exchange for no change at all.
+   */
+  reloadRuntime(patch: ConfigPatch<C>): string | null;
   /** Persistent graceful-wind-down signal. */
   windDown: Signal<void, void>;
   /** Persistent per-agent cancel signal. */
@@ -284,8 +292,9 @@ function makeRunner<
       };
     },
     reloadRuntime(patch) {
-      // Persist for the next launch; no in-process rebuild. No-op in-memory.
-      opts.persist?.(patch);
+      // Persist for the next launch; no in-process rebuild. With no `persist` this placement has
+      // no next launch of its own — the null is what tells the caller not to end the session.
+      return opts.persist?.(patch).path ?? null;
     },
     windDown,
     cancelAgent,

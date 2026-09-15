@@ -191,6 +191,20 @@ describe('set_ability_config merges over what is stored', () => {
 });
 
 describe('reload_runtime', () => {
+  it('a served session cannot reload the runtime: refused, and the session is NOT ended', async () => {
+    // The server picks its model when it starts and serves every session from that one residency.
+    // A session's reload persists nothing and rebuilds nothing, so returning "exit" would take a
+    // working session away in exchange for no change at all — and the reader, seeing the page go,
+    // would reasonably read it as the change having taken.
+    await run(function* () {
+      const w = yield* world({ abilities: [] });   // no `persist`: the served runner
+      const flow = yield* dispatch(w, { type: 'reload_runtime', patch: { model: { gpu: 'cuda' } } });
+      expect(flow, 'the session ended for a change that was never applied').toBeUndefined();
+      expect(w.sent.map((e) => e.type)).toEqual(['ui:error']);
+      expect((w.sent[0] as { type: 'ui:error'; message: string }).message).toMatch(/server/i);
+    });
+  });
+
   it('persists the patch and ends the loop', async () => {
     await run(function* () {
       const persist = vi.fn((patch: ConfigPatch<Config>) => ({ path: '/p', gitignored: false, skipped: [], config: base(), origin }));

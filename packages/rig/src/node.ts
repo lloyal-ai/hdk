@@ -96,6 +96,6 @@ export type { IngestRequest, IngestReply } from './ingest-responder';
 export { createResidentContext, residentContextOptions, applyGpuEnv, DEFAULT_N_SEQ_MAX, DEFAULT_N_CTX } from './resident-context';
 export type { ResidentModel } from './resident-context';
 export { createServedChannels, createServedHostDriver } from './served-host';
-export type { ServedChannels, ServedHostDriver, ServedHostDriverOpts } from './served-host';
-export { bootEdge, bootServed } from './boot';
+export type { ServedChannels, ServedHostDriver, ServedHostDriverOpts, OwnedConnection } from './served-host';
+export { bootEdge, bootServed, DEFAULT_MAX_SESSIONS } from './boot';
 export type { HarnessApp, BootEdgeOpts, BootServedOpts } from './boot';

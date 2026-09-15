@@ -31,7 +31,7 @@ import type { AbilityFactory } from '@lloyal-labs/lloyal-agents';
 import { createBus } from '@lloyal-labs/binding';
 import type { EventBus } from '@lloyal-labs/binding';
 import { ipc, ndjson } from '@lloyal-labs/binding/node';
-import type { Binding, WsServerSocket } from '@lloyal-labs/binding/node';
+import type { Binding } from '@lloyal-labs/binding/node';
 import { createContentIngress, MAX_DOCUMENT_BYTES, DOCUMENT_UPLOAD_TIMEOUT_MS } from '@lloyal-labs/media/node';
 import type { ConfigTable, ConfigOf, OriginOf } from './config';
 import { loadYml, runnerConfig } from './config-layering';
@@ -48,6 +48,7 @@ import { serveIngest } from './ingest-responder';
 import { bufferedCommandSignal } from './buffered-command-signal';
 import { applyGpuEnv, createResidentContext, DEFAULT_N_CTX, DEFAULT_N_SEQ_MAX } from './resident-context';
 import { createServedHostDriver } from './served-host';
+import type { OwnedConnection } from './served-host';
 import { HarnessExit } from './harness-exit';
 
 /** What a target entry hands a boot: the app as `app.ts` exports it. */
@@ -195,15 +196,30 @@ export function bootEdge<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>, 
 
 export interface BootServedOpts {
   projectRoot?: string;
-  /** Default: `PORT`, else 8787. */
-  port?: number;
-  /** Default: `HOST`, else loopback — the pilot is no-auth, so an all-interfaces bind is an explicit opt-in. */
-  host?: string;
-  /** Default: `MAX_SESSIONS`, else 8. */
-  maxSessions?: number;
   /** Named in the host's log line. */
   name?: string;
 }
+
+/**
+ * How many browser sessions may be RESIDENT at once, when the box does not say.
+ *
+ * Resident, not working: a session holds its own context, reranker and projector
+ * for as long as its socket is open, so a reader who settles a brief and leaves
+ * the tab open still holds a slot and the next reader queues. Four is a cautious
+ * number for one machine serving one model, not a measurement — size it against
+ * the model, the context length and the vision configuration actually deployed,
+ * with the sessions IDLE, and set `MAX_SESSIONS` on the box.
+ *
+ * The box's own settings — this, `PORT`, `HOST`, `LLOYAL_CONTENT_ORIGIN` — come
+ * from the environment and nowhere else. They describe the machine, not the
+ * harness, and one build serves many machines; a committed manifest would ship
+ * one box's numbers to all of them. A second home here would also mean two
+ * precedences for one value, which is the thing that makes "a validated cap"
+ * unverifiable.
+ */
+export const DEFAULT_MAX_SESSIONS = 4;
+const DEFAULT_PORT = 8787;
+const DEFAULT_HOST = '127.0.0.1';   // no auth on the pilot: serving every interface is an explicit choice
 
 const envInt = (name: string, fallback: number): number => {
   const raw = process.env[name];
@@ -248,9 +264,9 @@ export function bootServed<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>
       ...(aux.reranker ? { reranker: aux.reranker } : {}),
     };
     const cfg = { ...loaded.config, model: resident } as ConfigOf<T>;
-    const port = opts.port ?? envInt('PORT', 8787);
-    const maxNativeSessions = opts.maxSessions ?? envInt('MAX_SESSIONS', 8);
-    const bindHost = opts.host ?? process.env.HOST ?? '127.0.0.1';
+    const port = envInt('PORT', DEFAULT_PORT);
+    const maxNativeSessions = envInt('MAX_SESSIONS', DEFAULT_MAX_SESSIONS);
+    const bindHost = process.env.HOST ?? DEFAULT_HOST;
     const dev = process.env.LLOYAL_DEV === '1';
 
     // ONE content store for the whole host: sessions share it, and the index has a single writer.
@@ -306,8 +322,12 @@ export function bootServed<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>
     });
     http.on('clientError', (_err, socket) => socket.destroy());
     http.listen(port, bindHost);
-    server.on('connection', (socket) => driver.serveConnection(socket as unknown as WsServerSocket));
-    console.log(`\n${opts.name ?? 'harness'} serving on ws://${bindHost}:${port} — up to ${maxNativeSessions} browser session(s) over ${resident.path}`);
+    server.on('connection', (socket) => driver.serveConnection(socket as unknown as OwnedConnection));
+    console.log(
+      `\n${opts.name ?? 'harness'} serving on ws://${bindHost}:${port}` +
+      ` — up to ${maxNativeSessions} resident browser session(s), ${resident.branches ?? DEFAULT_N_SEQ_MAX} branches each` +
+      `\n  ${resident.path}`,
+    );
 
     yield* suspend();
   });

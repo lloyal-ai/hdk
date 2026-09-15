@@ -13,11 +13,14 @@ import type { SessionContext } from '@lloyal-labs/sdk';
 function fakeSocket() {
   const sent: unknown[] = [];
   const handlers: Record<string, ((...a: unknown[]) => void)[]> = {};
+  const state = { closeCalls: 0 };
   return {
     sent,
+    /** How many times anyone called `close()` — the test, or the driver that owns the connection. */
+    get closeCalls() { return state.closeCalls; },
     send(data: string) { sent.push(JSON.parse(data)); },
     on(event: string, listener: (...a: unknown[]) => void) { (handlers[event] ??= []).push(listener); },
-    close() { for (const h of handlers['close'] ?? []) h(); },
+    close() { state.closeCalls += 1; for (const h of handlers['close'] ?? []) h(); },
     message(frame: unknown) { for (const h of handlers['message'] ?? []) h(JSON.stringify({ sessionId: 'x', frame })); },
     phases: () => sent.filter((f) => (f as { frame: { t: string } }).frame.t === 'session').map((f) => (f as { frame: { payload: { phase: string } } }).frame.payload.phase),
   };
@@ -56,6 +59,28 @@ describe('createServedHostDriver', () => {
     expect(ran).toHaveLength(1);
   });
 
+  it('a harness that ends closes the connection it owned, after saying why', async () => {
+    // The connection's owner closes it. `relay` has always done this on its child's exit; the served
+    // driver announces the terminal phase and leaves the socket open, so a browser goes on reporting a
+    // harness that is gone and writes every later command into a socket nobody reads.
+    //
+    // Order is half the law: `wss()` stops routing once the socket closes, so a `reaped` frame that
+    // ARRIVES proves it was sent before the close. Announce, then close — the client learns why.
+    await run(function* () {
+      const driver = yield* createServedHostDriver<{ type: string }, { type: string }>({
+        maxNativeSessions: 2,
+        buildContext: async () => fakeContext(),
+        *run(): Operation<void> { /* the harness returns at once: reload_runtime's exit, a poisoned owner, quit */ },
+        log: () => {},
+      });
+      const socket = fakeSocket();
+      driver.serveConnection(socket as never);
+      yield* sleep(30);
+      expect(socket.phases().at(-1), 'the client was never told its session ended').toBe('reaped');
+      expect(socket.closeCalls, 'the harness is gone and the driver left the socket open').toBeGreaterThan(0);
+    });
+  });
+
   it('a harness that throws dies alone, and the host\'s log says why', async () => {
     const log: string[] = [];
     await run(function* () {
@@ -77,6 +102,9 @@ describe('createServedHostDriver', () => {
       expect(log).toHaveLength(2);
       expect(log[0]).toMatch(/died: Error: two native addon images/);
       expect(driver.occupancy).toBe(0);
+      // `died` is terminal too: neither connection has a harness behind it any more.
+      expect(a.closeCalls, 'a died session left its socket open').toBeGreaterThan(0);
+      expect(b.closeCalls, 'a died session left its socket open').toBeGreaterThan(0);
     });
   });
 });

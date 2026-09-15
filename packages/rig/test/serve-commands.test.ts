@@ -6,7 +6,7 @@
  * or from `onError` ends the loop; `quit` is the dispatcher's own.
  */
 import { describe, it, expect } from 'vitest';
-import { run, createSignal, spawn, sleep, ensure, suspend } from 'effection';
+import { run, createSignal, spawn, sleep, ensure, suspend, withResolvers } from 'effection';
 import type { Operation } from 'effection';
 import { serveCommands } from '../src/serve-commands';
 
@@ -105,6 +105,29 @@ describe('serveCommands', () => {
       yield* served;
     });
     expect(log).toEqual(['linger:returned', 'child:ended', 'ask']);
+  });
+
+  it('`until` ends the loop for a fact no command carries', async () => {
+    // The loop suspends on the next command, so without this there is no way out except a command —
+    // and an execution owner that poisoned is exactly a fact no command carries. The session must be
+    // able to end on its own, so the reader is offered a working one instead of a dead page.
+    const log: string[] = [];
+    await run(function* () {
+      const commands = createSignal<Command, void>();
+      const gate = withResolvers<void>('poisoned');
+      yield* spawn(() => serveCommands(commands, [{ handlers: { *ask() { log.push('ask'); } } }], {
+        until: (function* () { yield* gate.operation; log.push('until'); })(),
+      }));
+      yield* sleep(0);
+      commands.send({ type: 'ask', text: 'a' });
+      yield* sleep(0);
+      expect(log).toEqual(['ask']);
+      gate.resolve();
+      yield* sleep(0);
+      commands.send({ type: 'ask', text: 'b' });
+      yield* sleep(0);
+      expect(log, 'the loop went on dispatching after it was told to end').toEqual(['ask', 'until']);
+    });
   });
 
   it('a command nobody handles reaches onError, naming its type', async () => {

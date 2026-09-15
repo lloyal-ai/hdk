@@ -13,6 +13,15 @@
  * is isolated to its session by the host, and the reason is written to the
  * host's log here, since the host itself swallows it.
  *
+ * **A terminal session takes its connection with it.** The driver owns the
+ * socket, so when the session reaches `reaped` or `died` it announces the
+ * phase and then closes — the order matters, because `wss()` stops routing on
+ * close and a client that only sees the socket go cannot tell a session that
+ * ended from a network that dropped. Leaving it open is what leaves a browser
+ * reporting a harness that is gone and writing every later command into a
+ * socket nobody reads. `@lloyal-labs/relay`, the other implementation of this
+ * seam, has always closed on its child's exit.
+ *
  * @category Runtime
  */
 import { randomUUID } from 'node:crypto';
@@ -47,9 +56,18 @@ export interface ServedHostDriverOpts<E, C> {
   log?: (line: string) => void;
 }
 
+/**
+ * The connection the driver OWNS, and the whole of what owning one requires.
+ *
+ * binding's {@link WsServerSocket} deliberately cannot close: `wss()` may be one of several bindings
+ * on one socket, so it abstains. The owner is the one that can close, which makes it the one that
+ * must — see `serveConnection`.
+ */
+export type OwnedConnection = WsServerSocket & { close(): void };
+
 export interface ServedHostDriver {
   /** Bind one `ws` connection to a fresh Session. Call from `server.on("connection")`. */
-  serveConnection(socket: WsServerSocket): void;
+  serveConnection(socket: OwnedConnection): void;
   /** Live-session occupancy (the host ledger). */
   readonly occupancy: number;
 }
@@ -94,7 +112,7 @@ export function createServedHostDriver<E, C>(opts: ServedHostDriverOpts<E, C>): 
 
     const host = yield* createModelRuntimeHost<SessionContext>({ served, maxNativeSessions: opts.maxNativeSessions });
 
-    function serveConnection(socket: WsServerSocket): void {
+    function serveConnection(socket: OwnedConnection): void {
       const sessionId = randomUUID();
       // An unhandled 'error' on a Node socket throws and would take the whole process down.
       (socket as unknown as { on?: (event: 'error', cb: () => void) => void }).on?.('error', () => {});
@@ -120,6 +138,11 @@ export function createServedHostDriver<E, C>(opts: ServedHostDriverOpts<E, C>): 
             if (s.phase === 'reaped' || s.phase === 'died') {
               pending.delete(sessionId);
               reasons.delete(sessionId);
+              // The session is over, so the connection it was for is over: the owner closes it.
+              // AFTER the phase went out, never before — `wss()` stops routing on close, and a client
+              // left to infer this from a silent disconnect cannot tell a session that ended from a
+              // network that dropped. The two need different words and a different remedy.
+              try { socket.close(); } catch { /* the socket died first; nothing left to close */ }
             }
           },
         });
@@ -127,7 +150,7 @@ export function createServedHostDriver<E, C>(opts: ServedHostDriverOpts<E, C>): 
         // Contain a synchronous setup failure to THIS connection.
         pending.delete(sessionId);
         host.release(sessionId).catch(() => {});
-        (socket as { close?: () => void }).close?.();
+        socket.close();
         log(`[serve] connection setup failed for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }

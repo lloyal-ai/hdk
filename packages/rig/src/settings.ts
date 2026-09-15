@@ -124,7 +124,11 @@ export function settings<C extends BaseHarnessConfig, O extends Record<string, C
       },
 
       *reload_runtime({ patch }) {
-        runner.reloadRuntime(resolvePatchPaths(config, patch));
+        // Only where a next launch will read it: on a served host the model is the server's, chosen
+        // once at startup for every session, so ending this one would apply nothing.
+        if (!runner.reloadRuntime(resolvePatchPaths(config, patch))) {
+          return yield* toast('The model is chosen where this server starts, not per session — this change would apply to nothing.');
+        }
         return 'exit';
       },
     },

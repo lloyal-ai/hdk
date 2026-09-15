@@ -243,6 +243,32 @@ describe('useExecution', () => {
     });
   });
 
+  it('the owner says so the moment it poisons, without waiting to be asked', async () => {
+    // Until it does, NOTHING happens: `poisoned` is read only by the guard on `replace` and `stop`,
+    // so the session is half-dead — browsing, searching and settings all still answer, and the
+    // reader learns the truth when their next question throws. The toast then lands on their
+    // action, which makes their question look like what broke it.
+    const log: string[] = [];
+    await run(function* () {
+      const exec = yield* useExecution();
+      yield* spawn(function* () {
+        const err = yield* exec.whenPoisoned;
+        log.push(`announced:${err.message}`);
+      });
+      yield* exec.replace('e', function* () {
+        yield* ensure(function* () { throw new Error('teardown failed'); });
+        yield* suspend();
+      });
+      yield* sleep(0);
+      const ff = yield* exec.replace('f', function* () {});
+      try { yield* ff; } catch { /* the accepted operation hears it on its own future */ }
+      yield* sleep(0);
+      // No command was sent and nothing asked: the announcement stands on its own.
+      expect(log).toEqual(['announced:teardown failed']);
+      expect(exec.poisoned).toBe(true);
+    });
+  });
+
   it('a halt whose teardown throws poisons the owner', async () => {
     const log: string[] = [];
     await run(function* () {

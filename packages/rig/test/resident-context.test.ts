@@ -5,7 +5,10 @@
  * reranker's sake.
  */
 import { describe, it, expect, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { residentContextOptions, applyGpuEnv, DEFAULT_N_SEQ_MAX, DEFAULT_N_CTX } from '../src/resident-context';
+import { DEFAULT_MAX_SESSIONS } from '../src/boot';
 
 const saved = { gpu: process.env.LLOYAL_GPU, fallback: process.env.LLOYAL_NO_FALLBACK };
 afterEach(() => {
@@ -47,5 +50,22 @@ describe('applyGpuEnv', () => {
     process.env.LLOYAL_GPU = 'cuda';
     applyGpuEnv({});
     expect(process.env.LLOYAL_GPU).toBeUndefined();
+  });
+});
+
+describe('the box says how many sessions it can hold', () => {
+  it('four when it does not, and that number is a decision', () => {
+    // Stated rather than read off the constant: this is a memory judgement, not an internal, and
+    // changing it should be deliberate. Resident, not working — a session holds its context for as
+    // long as its tab is open, so the cap bounds tabs left open, not queries in flight.
+    expect(DEFAULT_MAX_SESSIONS).toBe(4);
+  });
+
+  it('and it is the only place the number lives: no boot option shadows the environment', () => {
+    // Two homes for one value is two precedences, which is what makes "a validated cap"
+    // unverifiable — an operator sets MAX_SESSIONS and an app's own option silently outranks it.
+    const boot = readFileSync(join(new URL('.', import.meta.url).pathname, '..', 'src', 'boot.ts'), 'utf8');
+    expect(boot).not.toMatch(/opts\.(maxSessions|port|host)\b/);
+    expect(/MAX_SESSIONS/.test(boot), 'the environment is still where it comes from').toBe(true);
   });
 });

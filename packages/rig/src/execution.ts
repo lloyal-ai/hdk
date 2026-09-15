@@ -63,6 +63,17 @@ export interface Execution {
   readonly busy: boolean;
   /** A halt's teardown threw: nothing runs on this model state again. */
   readonly poisoned: boolean;
+  /**
+   * Settles with the teardown error the moment the owner poisons, so the
+   * application can say so and end on its own.
+   *
+   * Without it nothing happens at all until the reader's next command trips
+   * over {@link poisoned}: the session is half-dead — browsing, search and
+   * settings all still answer, because only `replace` and `stop` consult the
+   * flag — and the failure is announced on the reader's action, which makes
+   * their question look like its cause. Never settles on a healthy owner.
+   */
+  readonly whenPoisoned: Operation<Error>;
   /** Hold the running operation at the pool's next tick boundary. Nothing while idle, paused or winding down. */
   pause(): void;
   /** Release a held operation. Nothing unless paused. */
@@ -126,6 +137,9 @@ export function useExecution(): Operation<Execution> {
     let pending: Accepted | null = null;
     let stopRequested = false;
     let poison: Error | null = null;
+    // Settled once, from the one place that poisons. A waiter on a healthy owner waits forever,
+    // which is what an application racing it against its command loop wants.
+    const poisoned = withResolvers<Error>('execution.poisoned');
     let current: string | null = null;
     let busy = false;
 
@@ -159,6 +173,7 @@ export function useExecution(): Operation<Execution> {
             // Teardown failed: the model's state cannot be trusted. Nothing
             // starts; the halted and the accepted operation hear why; the owner refuses from now on.
             poison = toError(err);
+            poisoned.resolve(poison);
             running = null;
             stopRequested = false;
             r.accepted.reject(poison);
@@ -247,6 +262,7 @@ export function useExecution(): Operation<Execution> {
       get current() { return current; },
       get busy() { return busy; },
       get poisoned() { return poison !== null; },
+      whenPoisoned: poisoned.operation,
       pause() {
         if (!running || paused || windingDown) return;
         paused = true;
