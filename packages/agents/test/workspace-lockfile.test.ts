@@ -10,9 +10,12 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { CUTS } from '../../../scripts/cut-alpha.lib.mjs';
 
 const ROOT = join(__dirname, '..', '..', '..');
-const CUT = ['packages/media', 'packages/sdk', 'packages/agents', 'packages/rig', 'packages/dev-tools'];
+/** The cutter's own table, imported and never copied. A second list here would go on checking the packages
+ *  it was written with while the cutter moved a different set — silently, since a stale copy still passes. */
+const CUT = Object.keys(CUTS);
 
 describe('workspace lockfile', () => {
   const lock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8')) as {
