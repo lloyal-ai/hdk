@@ -63,11 +63,11 @@ export interface Toolkit {
  *
  * @category Agents
  */
-export function createToolkit(tools: Tool[], terminal?: Tool): Toolkit {
+export function createToolkit(tools: readonly Tool[], terminal?: Tool): Toolkit {
   const merged =
     terminal && !tools.some(t => t.name === terminal.name)
       ? [...tools, terminal]
-      : tools;
+      : [...tools];
   return {
     tools: merged,
     toolMap: new Map(merged.map(t => [t.name, t])),

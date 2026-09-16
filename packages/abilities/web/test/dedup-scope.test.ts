@@ -78,7 +78,7 @@ async function twoAgentsFetchTheSamePage(guardOverrides?: GuardOverrides) {
         orchestrate: parallel([{ content: 'A', systemPrompt: 's', seed: 0 }, { content: 'B', systemPrompt: 's', seed: 1 }]),
         toolsJson: JSON.stringify([fetchPage.schema]),
         tools,
-        policy: new DefaultAgentPolicy({ terminalToolName: 'report', minToolCallsBeforeReturn: 0, guardOverrides }),
+        policy: new DefaultAgentPolicy({ terminalToolName: 'report', guardOverrides }),
         terminalToolName: 'report',
         maxTurns: 10,
       });

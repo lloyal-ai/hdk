@@ -44,8 +44,8 @@ export interface SpineOptions {
    * fmt from the spine.
    *
    * Use this for orchestrators where every agent shares the same role —
-   * chain-mode research pools, fanout-style same-role pools, etc. Mixed-
-   * role workflows (research → compare → synthesize) keep using per-spec
+   * a chain of same-role steps, a same-role fan-out. Mixed-role pools
+   * (one role gathers, another judges, a third writes) keep using per-spec
    * `SpawnSpec.systemPrompt` and don't pass this option.
    */
   systemPrompt?: string;

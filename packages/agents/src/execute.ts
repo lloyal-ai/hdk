@@ -17,13 +17,14 @@ import type { Emitter, Transition, SettleBatch } from './emit';
 import { ContextPressure } from './pressure';
 import { prepareBatch } from './prepare-content';
 import { runReplay } from './replay';
-import { failSettled, discardSpawn } from './apply';
+import { failSettled } from './apply';
+import type { SpawnLedger } from './spawns';
 import type { EntailmentScorer } from './source';
 import type { TraceWriter } from './trace-writer';
 import type { TraceEvent } from './trace-types';
 import {
   type Schedule, type Outputs, type Pending, type PrefillItem, type ToolCompletion,
-  type DispatchRequest, type Ladder, classifyRc, prunable, type SpawnRequest } from './state';
+  type DispatchRequest, type Ladder, classifyRc, prunable, reclaimable, owedParents, type SpawnRequest } from './state';
 import type { AgentTaskSpec, AgentEvent, ToolContext, PressureThresholds } from './types';
 
 /**
@@ -99,24 +100,26 @@ function toError(err: unknown): Error {
   return err instanceof Error ? err : new Error(String(err));
 }
 
-// ── Forking an agent ───────────────────────────────────────────
+// ── Pricing and forking an agent ────────────────────────────────
+
+/** What a spawn request carries from its pricing: the suffix, and the format the fork will keep. */
+export interface PricedSpawn { suffixTokens: number[]; formattedPrompt: string; fmt: FormatConfig }
 
 /**
- * Fork an agent from a parent branch with its own system prompt and task.
- * Metadata only — no decode. The suffix prefill is the executor's.
+ * Price a spawn: format its chat, refuse a model without tool calling, and
+ * tokenize the suffix. No branch, no decode — the request the orchestrator
+ * posts carries this and nothing more, so admission can weigh it before any
+ * lease is taken.
  */
-export function* setupAgent(
-  parent: Branch, task: AgentTaskSpec, ctx: SessionContext, enableThinking: boolean, clock?: () => number,
-  /** A heal's requirement: the parent must still stand exactly where the
-   *  original forked it. Checked at the fork itself — see below. */
-  forkAt?: number,
-): Operation<{ agent: Agent; suffixTokens: number[]; formattedPrompt: string }> {
+export function* priceSpawn(task: AgentTaskSpec, ctx: SessionContext, enableThinking: boolean): Operation<PricedSpawn> {
   // Shared mode: the spine already carries the [system + tools] header; the
   // agent inherits parser/grammar/format/triggers and contributes a user turn.
   let sharedFmt: FormatConfig | null = null;
   try { sharedFmt = (yield* SpineFmt.get()) ?? null; } catch { /* not in shared mode */ }
 
-  const messages = sharedFmt && task.systemPrompt === ''
+  // An empty system prompt is NO system message: in shared mode the spine carries the header; outside
+  // it, a turn on a fork of the trunk (a passthrough answer) reads as the trunk's own next turn would.
+  const messages = task.systemPrompt === ''
     ? [{ role: 'user', content: task.content }]
     : [
         { role: 'system', content: task.systemPrompt },
@@ -130,39 +133,44 @@ export function* setupAgent(
     throw new Error('Model does not support tool calling. Please use a model with native tool support (e.g. Qwen3, Llama 3.x, Mistral).');
   }
   const suffixTokens = [...ctx.getTurnSeparator(), ...ctx.tokenizeSync(fmt.prompt, false)];
-
-  // undefined at the top level (no caller); CallingAgent.get() never throws.
-  const callingAgent = (yield* CallingAgent.get()) ?? null;
-
   const src = sharedFmt ?? fmt;
   const fmtConfig: FormatConfig = {
     format: src.format, reasoningFormat: src.reasoningFormat, generationPrompt: src.generationPrompt,
     parser: src.parser, grammar: src.grammar, grammarLazy: src.grammarLazy, grammarTriggers: src.grammarTriggers,
     enableThinking,
   };
-  // A replacement's replay carries only what came after the original's fork,
-  // so its parent must be the original's, at the original's fork point. The
-  // check sits HERE, adjacent to the fork: every `yield*` above re-enters the
-  // scheduler, where another fiber that owns the parent may run and move it;
-  // nothing between this line and `forkSync` does. A parent that is gone or
-  // has moved cannot give the original's prefix, and the heal stands down
-  // (the caller catches and reports nothing).
-  if (forkAt !== undefined && (parent.disposed || parent.position !== forkAt)) {
+  return { suffixTokens, formattedPrompt: fmt.prompt, fmt: fmtConfig };
+}
+
+/**
+ * Fork an admitted spawn from its parent: metadata only, no decode — the
+ * suffix prefill is the batch's. The one fallible step after admission, and
+ * the one native call after it gives the lease back on failure. A heal's
+ * parent must still stand exactly where the original forked it, or the heal
+ * stands down: its replay carries only what came after the fork.
+ */
+export function forkSpawn(req: SpawnRequest, clock: () => number): Agent {
+  const { parent, task } = req;
+  if (req.replay && (parent.disposed || parent.position !== req.replay.forkHead)) {
     throw new Error(parent.disposed
       ? 'heal: the original\'s parent is gone'
-      : `heal: the original's parent has moved (forked at ${forkAt}, now at ${parent.position})`);
+      : `heal: the original's parent has moved (forked at ${req.replay.forkHead}, now at ${parent.position})`);
   }
-  // The fork is the last fallible step: a failure above leaves no lease
-  // behind, and the one native call after it gives the lease back on failure.
   const branch = parent.forkSync();
   if (task.seed != null) {
     try { branch.reseedSampler(task.seed); } catch (e) { branch.pruneSync(); throw e; }
   }
-  const agent = new Agent({
-    id: branch.handle, parentId: parent.handle, branch, parent: callingAgent,
-    task: task.content, fmt: fmtConfig, assignedAbility: task.assignedAbility ?? null, clock,
+  return new Agent({
+    id: branch.handle, parentId: parent.handle, branch, parent: req.caller,
+    task: task.content, fmt: req.fmt, assignedAbility: task.assignedAbility ?? null, clock,
   });
-  return { agent, suffixTokens, formattedPrompt: fmt.prompt };
+}
+
+/** Give back a fork that never entered the roster: its lease with it. */
+export function discardFork(forged: Set<Agent>, agent: Agent): void {
+  forged.delete(agent);
+  if (!agent.branch.disposed) agent.branch.pruneSync();
+  agent.dispose();
 }
 
 // ── The executor ───────────────────────────────────────────────
@@ -175,11 +183,13 @@ export interface ExecDeps {
   tw: TraceWriter;
   pending: Pending;
   agents: Agent[];
-  /** Forks forged and not yet admitted: the pool's until roster entry. The
-   *  executor removes a fork from it when the fork enters the roster, and
-   *  `discardSpawn` when it is given back; the pool releases what is left at
-   *  every close and at teardown. */
+  /** Forks made at admission and not yet in the roster: the pool's for that
+   *  window. The executor removes a fork when it enters the roster, or gives it
+   *  back (`discardFork`); the pool releases what is left at every close and at
+   *  teardown. */
   forged: Set<Agent>;
+  /** The ledger of spawns: where an admitted fork is recorded against its request's entry. */
+  spawns: SpawnLedger;
   inflight: Map<number, Task<void>>;
   permits: Permits;
   completed: ToolCompletion[];
@@ -214,7 +224,7 @@ export class Executor {
   constructor(private readonly d: ExecDeps) {}
 
   *run(S: Schedule): Operation<Outputs> {
-    const out: Outputs = { tokenRail: null, mediaRail: [], produced: [], committed: false, commitPressure: null, fatal: null };
+    const out: Outputs = { tokenRail: null, mediaRail: [], produced: [], spawnRefused: [], committed: false, commitPressure: null, fatal: null };
     const d = this.d;
 
     // 0. Halts — a cancelled agent's in-flight tool is aborted.
@@ -397,26 +407,41 @@ export class Executor {
     return admitted;
   }
 
-  /** Spawns (heals among them) and extends land as one prefill; the new agents activate. */
+  /** Spawns (heals among them) are forked now that they are admitted, and land
+   *  with the extends as one prefill; the new agents activate. */
   private *spawn(S: Schedule, out: Outputs): Operation<Agent[]> {
     const d = this.d;
     const born: Agent[] = [];
     if (S.spawns.length === 0 && S.extends.length === 0) return born;
 
-    // The batch's forks belong to the pool until they enter the roster
-    // (`d.forged`, added at the forge). The prefill is a native call the loop
-    // suspends on, and everything that can happen during a yield can happen
-    // here: the orchestrator halted (its requests become `discarded`), the pool
-    // halted (teardown), a throw after the prefill. None of it needs a window
-    // of its own — a fork still in `d.forged` is released by the pool at its
-    // next close or at teardown, after the native work has settled
-    // (`waitUntilSettled`), never before.
+    // Fork the admitted requests. Every fork made here is the pool's (`d.forged`)
+    // until it enters the roster: the prefill is a native call the loop suspends
+    // on, and everything that can happen during a yield can happen here — the
+    // orchestrator halted (its requests become `discarded`), the pool halted
+    // (teardown), a throw after the prefill. A fork still in `d.forged` is
+    // released by the pool at its next close or at teardown, after the native
+    // work has settled (`waitUntilSettled`), never before.
+    const forked: { req: SpawnRequest; agent: Agent }[] = [];
+    for (const req of S.spawns) {
+      if (req.discarded) continue;   // nobody awaits it: no fork is made
+      try {
+        const agent = forkSpawn(req, d.runNow);
+        d.forged.add(agent);
+        forked.push({ req, agent });
+      } catch (err) {
+        // A heal whose parent is gone or has moved stands down: the original's failure stands.
+        if (req.replay) { d.spawns.healStoodDown(d.spawns.at(req.index)); continue; }
+        // The store said a sequence was vacant and the fork found none: refused, like the scheduler refuses.
+        if (d.store.available === 0) { out.spawnRefused.push({ req, reason: 'no_sequence', detail: toError(err).message }); continue; }
+        throw err;
+      }
+    }
 
     // One batch never carries a handle twice (`require_distinct_handles`), so
     // every admitted extend rides as ONE pair on the spine, in request order.
     const extendTokens = S.extends.flatMap(e => e.tokens);
     const pairs: [Branch, number[]][] = [
-      ...S.spawns.map(s => [s.agent.branch, s.suffixTokens] as [Branch, number[]]),
+      ...forked.map(f => [f.agent.branch, f.req.suffixTokens] as [Branch, number[]]),
       ...(extendTokens.length > 0 ? [[d.spine, extendTokens] as [Branch, number[]]] : []),
     ];
     try {
@@ -426,7 +451,11 @@ export class Executor {
       // forks go back (their KV leases with them) and every waiter hears why.
       const e = toError(err);
       for (const x of S.extends) x.reject(e);
-      for (const s of S.spawns) discardSpawn(d.forged, s, e);
+      for (const f of forked) {
+        discardFork(d.forged, f.agent);
+        if (f.req.replay) d.spawns.healStoodDown(d.spawns.at(f.req.index));
+        else if (!f.req.discarded) f.req.reject(e);
+      }
       out.fatal = { phase: 'prefill', err };
       return born;
     }
@@ -440,17 +469,21 @@ export class Executor {
         deltaTokens: e.tokens.length, positionAfter });
       e.resolve(e.tokens.length);
     }
-    for (const s of S.spawns) {
+    for (const { req, agent: a } of forked) {
       // Discarded while the batch was in flight: its suffix was prefilled, but nobody
       // awaits it and the pool is draining or its orchestrator is gone. The
       // fork goes back rather than into a roster that would only reap it.
-      if (s.discarded) { discardSpawn(d.forged, s); continue; }
-      const a = s.agent;
-      a.spec = s.task;
+      if (req.discarded) {
+        discardFork(d.forged, a);
+        if (req.replay) d.spawns.healStoodDown(d.spawns.at(req.index));
+        continue;
+      }
+      a.spec = req.task;
       d.forged.delete(a);
       d.agents.push(a);   // in the roster: teardown owns it from here
-      if (!(yield* this.activate(s))) continue;
-      s.resolve(a);
+      d.spawns.admitted(d.spawns.at(req.index), a);   // the entry follows this fork — a heal's replacement included
+      if (!(yield* this.activate(req, a))) continue;
+      req.resolve(a);
       born.push(a);
     }
     return born;
@@ -459,9 +492,8 @@ export class Executor {
   /** Announce the fork, replay its lineage if it has one, and activate it.
    *  False when the replay could not land: the half-built replacement is
    *  discarded and the original's failure stands. */
-  private *activate(s: SpawnRequest): Operation<boolean> {
+  private *activate(s: SpawnRequest, a: Agent): Operation<boolean> {
     const d = this.d;
-    const a = s.agent;
     d.emit.trace({ kind: 'created', agent: a });
     d.emit.trace({ kind: 'formatted', agent: a, promptText: s.formattedPrompt, taskContent: s.task.content,
       tokenCount: s.suffixTokens.length, systemPrompt: s.task.systemPrompt, tools: s.task.tools });
@@ -484,7 +516,7 @@ export class Executor {
     this.applyLazyGrammar(a);
     // A later move into a final status resolves the agent's `final` future — a waiting orchestrator resumes there.
     a.transition('active');
-    yield* d.emit.emit({ kind: 'spawned', agent: a, after: s.task.after });
+    yield* d.emit.emit({ kind: 'spawned', agent: a, after: s.task.after, key: s.key });
     return true;
   }
 
@@ -666,11 +698,11 @@ export class Executor {
       d.pending.items.push({ kind: 'toolResult', rail: 'token', agent, tokens, toolName: tc.name, callId, args: tc.arguments, resultStr, result: exhausted });
       return;
     }
-    // An attempt: one that threw ends the agent; one that returned is admitted.
+    // An attempt: one that threw fails the agent — the error is a failure, not
+    // its findings; one that returned is admitted.
     if (completion.kind === 'threw') {
-      agent.transition('idle');
-      agent.setResult(`Tool error: ${completion.error.message}`, 'tool_error');
       d.emit.trace({ kind: 'toolError', agent, tool: tc.name, error: completion.error.message, parentTraceId: dispatchTraceId });
+      yield* failSettled(d.emit, agent, 'tool_error', completion.error.message, undefined, dispatchTraceId);
       return;
     }
 
@@ -742,12 +774,19 @@ export class Executor {
    *  instead of relying on the order. */
   prunePass(): number {
     let total = 0;
+    // A request that has not forked yet holds nothing native — that is what lets admission weigh
+    // it before any lease is taken — so nothing else tells this pass that a branch is still owed
+    // to someone, and a childless leaf can be exactly the parent a queued spawn named. Pending
+    // work retains what it will need: the parent stands until its request is admitted (it leaves
+    // this queue), withdrawn (`discarded`) or refused (it leaves too). Recomputed per pass, so
+    // each of those three releases it without a second bookkeeping path to keep in step.
+    const owed = owedParents(this.d.pending.spawns);
     for (;;) {
       let n = 0;
       for (const a of this.d.agents) {
         if (!prunable(a)) { if (a.pruneRequested && a.branch.disposed) a.pruneRequested = false; continue; }
         a.harvestMetrics();
-        if (a.branch.children.length > 0) continue;
+        if (!reclaimable(a, owed)) continue;   // live children, or a pending spawn named it as parent
         this.d.emit.trace({ kind: 'pruned', agent: a, position: a.branch.position });
         a.branch.pruneSync();
         a.pruneRequested = false;

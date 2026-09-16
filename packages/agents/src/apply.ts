@@ -1,20 +1,23 @@
 import type { Operation } from 'effection';
 import type { SessionContext, ParsedToolCall, ParseChatOutputResult } from '@lloyal-labs/sdk';
 import { buildToolResultDelta, buildUserDelta, decodeErrorOf } from '@lloyal-labs/sdk';
-import { isAttended } from './Agent';
+import { isAttended, parseHistoryArgs } from './Agent';
 import type { Agent } from './Agent';
 import type { AgentPolicy, PolicyConfig } from './AgentPolicy';
 import type { Tool } from './Tool';
 import { TOOL_IMAGE_ERROR_KEY } from './Tool';
 import type { Emitter } from './emit';
-import { decideBeforeDispatch, AUTH_REJECT_GUARD, type Frame, type Resolved } from './hooks';
+import { decideBeforeDispatch, decideOnReturn, AUTH_REJECT_GUARD, type Frame, type Resolved } from './hooks';
+import { stripDanglingToolCall, extractTerminalResult } from './capture';
 import { ContextPressure } from './pressure';
 import { recoveryFor, nudgeItem } from './scheduler';
 import {
-  type Schedule, type Outputs, type Pending, type Drop, type Recovery, type PrefillItem, type SpawnRequest,
+  type Schedule, type Outputs, type Pending, type Drop, type Recovery, type PrefillItem, type RefusedSpawn,
   type PrefillOutcome, type Ladder, type DropReason,
-  alive, classifyRc, isFatalRc, MAX_DEFER_ATTEMPTS, BACKEND_TRIPWIRE_N, MAX_HEAL_ATTEMPTS,
+  alive, classifyRc, isFatalRc, spawnCells, MAX_DEFER_ATTEMPTS, BACKEND_TRIPWIRE_N, MAX_HEAL_ATTEMPTS, MAX_RETURNS_REJECTED,
 } from './state';
+import { SpawnRefused } from './spawns';
+import type { SpawnLedger } from './spawns';
 import type { PressureThresholds } from './types';
 
 /**
@@ -38,9 +41,8 @@ export interface ApplyDeps {
   frame: Frame;
   emit: Emitter;
   pending: Pending;
-  /** The forks the pool has forged and not yet admitted — owned by the pool
-   *  until they enter the roster or are discarded (see `discardSpawn`). */
-  forged: Set<Agent>;
+  /** The ledger of spawns: a refusal settles the request's entry there. */
+  spawns: SpawnLedger;
   ladder: Ladder;
   recoveryBudget?: number;
   terminalToolName?: string;
@@ -49,29 +51,7 @@ export interface ApplyDeps {
   totals: { toolCalls: number; steps: number };
 }
 
-/** Strip a trailing UNCLOSED `<tool_call>` fragment from text captured as an
- *  agent result — a truncated call must not ride into another agent's prompt
- *  as an in-context demonstration of emitting tool calls. Complete blocks
- *  are left alone. */
-export function stripDanglingToolCall(text: string): string {
-  return text.replace(/<tool_call>(?:(?!<\/tool_call>)[\s\S])*$/, '').trimEnd();
-}
-
-/** Extract the terminal-tool result string from a parsed (possibly TRUNCATED)
- *  tool call: valid JSON → `.result`; a token-stop cuts mid-call, so salvage
- *  the `result` body from the partial and unescape it; else the raw arguments
- *  (a non-`{result}` terminal tool). */
-export function extractTerminalResult(args: string): string {
-  try {
-    const r = JSON.parse(args).result;
-    if (typeof r === 'string') return r;
-  } catch { /* truncated or non-JSON — salvage the partial below */ }
-  const m = args.match(/"result"\s*:\s*"((?:[^"\\]|\\.)*)/);
-  if (m) {
-    try { return JSON.parse(`"${m[1].replace(/\\+$/, '')}"`); } catch { /* fall through to raw */ }
-  }
-  return args;
-}
+export { stripDanglingToolCall, extractTerminalResult } from './capture';
 
 export class Applier {
   constructor(private readonly d: ApplyDeps) {}
@@ -104,12 +84,23 @@ export class Applier {
       this.d.emit.trace({ kind: 'toolResult', agent: r.agent, tool: r.tc.name, result, cells: tokens.length, durationMs: 0 });
       this.d.pending.items.push({ kind: 'toolResult', rail: 'token', agent: r.agent, tokens, toolName: r.tc.name, callId: r.callId, args: r.tc.arguments, result });
     }
-    for (const req of S.rejectedSpawns) {
-      if (!req.discarded) this.d.emit.trace({ kind: 'drop', agent: req.agent, reason: 'pressure_init', done: false });
-      discardSpawn(this.d.forged, req, new Error(`useAgentPool: cannot fit agent suffix (${req.suffixTokens.length} tokens) under current pressure`));
-    }
+    this.refuseSpawns(S.refusedSpawns);
     for (const e of S.rejectedExtends) {
       if (!e.discarded) e.reject(new Error(`useAgentPool: cannot fit spine extension (${e.tokens.length} tokens) — nothing left to free KV`));
+    }
+  }
+
+  /** Spawns the pool could not seat: the record, the entry settled, and the
+   *  spawner told — a heal's refusal leaves the original's failure standing and
+   *  tells nobody, since nobody awaits it. */
+  private refuseSpawns(refused: RefusedSpawn[]): void {
+    for (const { req, reason, detail } of refused) {
+      const entry = this.d.spawns.at(req.index);
+      if (!req.discarded) {
+        this.d.emit.trace({ kind: 'spawnRefused', index: req.index, key: req.key, reason, cells: spawnCells(req), of: req.replay?.of });
+      }
+      const outcome = this.d.spawns.refuse(entry, reason);
+      if (!req.discarded && !req.replay) req.reject(new SpawnRefused(reason, outcome, detail));
     }
   }
 
@@ -184,10 +175,17 @@ export class Applier {
     // Read the way the voluntary path reads: with a terminal tool designated
     // the report MUST be that tool's call; without one, whatever the model
     // produced — a call's result if it made one, else its prose (the twin of
-    // `free_text_return`).
+    // `free_text_return`). A terminal call passes through the return position
+    // like a voluntary one, so whatever output ends the turn captures it the
+    // same way; a rejection cannot be issued here — the agent is being reaped
+    // and has no turn left — so the first accept stands, else the policy's capture.
     const terminal = this.d.terminalToolName;
     const call = terminal ? parsed.toolCalls.find(c => c.name === terminal) : parsed.toolCalls[0];
-    const result = call ? extractTerminalResult(call.arguments)
+    const result = call ? (decideOnReturn(
+        { agent: a, tool: call.name, args: parseHistoryArgs(call.arguments), raw: call.arguments, result: extractTerminalResult(call.arguments) },
+        { frame: this.d.frame, tool: this.d.tools.get(call.name), policy: this.d.policy },
+        { mayReject: false },
+      ).decision as { type: 'accept'; result: string }).result
       : !terminal && parsed.content ? parsed.content : '';
     if (result) {
       a.setResult(stripDanglingToolCall(result), 'recovery');
@@ -203,6 +201,7 @@ export class Applier {
   // ── After the store ran ────────────────────────────────────────
 
   *applyOutputs(out: Outputs, S: Schedule): Operation<void> {
+    this.refuseSpawns(out.spawnRefused);
     if (out.tokenRail && !out.tokenRail.outcome.ok) yield* this.tokenRailFailed(out.tokenRail.items, out.tokenRail.outcome);
     for (const { item, outcome } of out.mediaRail) if (!outcome.ok) yield* this.mediaEntryFailed(item, outcome);
 
@@ -282,8 +281,24 @@ export class Applier {
         yield* this.nudge(a, action.message, emitted);
         return;
       case 'return': {
-        const tc = parsed.toolCalls[0];
-        a.setResult(stripDanglingToolCall(action.result), 'voluntary_return');
+        const tc = action.call ?? parsed.toolCalls[0];
+        // May the call end the turn, and what the result becomes: the tool's own
+        // check, a harness's floor, then the frame. The frame's bound on a
+        // rejection is the framework's: one per agent, and none once the context
+        // or the turn cap is exhausted — a rejected return costs a turn the agent
+        // must have left.
+        const exhausted = a.turns >= this.d.config.maxTurns || S.pressure.headroom < 0 || S.pressure.critical;
+        const { decision } = decideOnReturn(
+          { agent: a, tool: tc.name, args: parseHistoryArgs(tc.arguments), raw: tc.arguments, result: action.result },
+          { frame: this.d.frame, tool: this.d.tools.get(tc.name), policy: this.d.policy },
+          { mayReject: a.returnsRejected < MAX_RETURNS_REJECTED && !exhausted },
+        );
+        if (decision.type === 'reject') {
+          a.returnsRejected++;
+          yield* this.nudge(a, decision.message, tc);
+          return;
+        }
+        a.setResult(stripDanglingToolCall(decision.result), 'voluntary_return');
         a.transition('idle');
         a.incrementToolCalls();
         this.d.totals.toolCalls++;
@@ -410,7 +425,7 @@ export class Applier {
     this.d.pending.items.push(it);
   }
 
-  *failSettled(a: Agent, reason: 'media_prefill_failed' | 'tool_result_failed', detail: string, rc?: number): Operation<void> {
+  *failSettled(a: Agent, reason: 'media_prefill_failed' | 'tool_result_failed' | 'tool_error', detail: string, rc?: number): Operation<void> {
     yield* failSettled(this.d.emit, a, reason, detail, rc);
   }
 }
@@ -418,25 +433,8 @@ export class Applier {
 /** The ladder's bottom rung: the agent is DISCARDED — announced, pruned, never
  *  resumed. Shared with the executor's intake, whose failures carry the
  *  dispatch as their trace parent. */
-
-/**
- * A fork that never entered the pool: free it and, given a reason, tell the
- * orchestrator. Used for a spawn the scheduler could not admit, for one whose
- * suffix prefill failed to land, and for one abandoned while its batch was in
- * flight — either way the branch must not outlive the decision. With `err`, a
- * `spawn()` suspended on the request sees the error rather than hanging;
- * without it (a pool being halted, whose orchestrator is being halted with
- * it) the fork simply goes back.
- */
-export function discardSpawn(forged: Set<Agent>, req: SpawnRequest, err?: Error): void {
-  forged.delete(req.agent);
-  req.agent.branch.pruneSync();
-  req.agent.dispose();
-  if (err && !req.discarded) req.reject(err);
-}
-
 export function* failSettled(
-  emit: Emitter, a: Agent, reason: 'media_prefill_failed' | 'tool_result_failed',
+  emit: Emitter, a: Agent, reason: 'media_prefill_failed' | 'tool_result_failed' | 'tool_error',
   detail: string, rc?: number, parentTraceId?: number,
 ): Operation<void> {
   yield* emit.emit({ kind: 'settleFailed', agent: a, reason, detail, rc, parentTraceId });

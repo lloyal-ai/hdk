@@ -129,6 +129,16 @@ export function* createAbilityRegistry(
       // an ability that reads documents resolves them through it.
       const attachments = yield* Attachments.expect();
 
+      // The stored config is checked against the manifest BEFORE the factory
+      // runs: a factory handed a malformed config must not be the thing that
+      // reports it, and must not have run at all. A factory that declares no
+      // manifest is checked after, against the manifest it returns.
+      const declaredManifest = factory.manifest;
+      if (declaredManifest?.configSchema) {
+        const stored = yield* configStore.get(declaredManifest.name);
+        if (stored !== undefined) validateConfigShape(declaredManifest.name, stored, declaredManifest.configSchema);
+      }
+
       const [scope, destroy] = createScope();
       let added = false;
       return yield* scoped(function* () {
@@ -181,9 +191,11 @@ export function* createAbilityRegistry(
           );
         }
 
-        const existingConfig = yield* configStore.get(ability.manifest.name);
-        if (existingConfig !== undefined && ability.manifest.configSchema) {
-          validateConfigShape(ability.manifest.name, existingConfig, ability.manifest.configSchema);
+        if (!declaredManifest?.configSchema) {
+          const existingConfig = yield* configStore.get(ability.manifest.name);
+          if (existingConfig !== undefined && ability.manifest.configSchema) {
+            validateConfigShape(ability.manifest.name, existingConfig, ability.manifest.configSchema);
+          }
         }
 
         if (entries.has(ability.manifest.name)) {
@@ -278,6 +290,30 @@ export function* createAbilityRegistry(
   });
 
   return registry;
+}
+
+/**
+ * The registry accessor: the enabled ability named, or a refusal that names it.
+ * What `(yield* AbilityRegistryCtx.expect()).byName(name)!` said with a bang.
+ *
+ * @category Rig
+ */
+export function* ability(name: string): Operation<Ability> {
+  const registry = yield* AbilityRegistryCtx.expect();
+  const found = registry.byName(name);
+  if (!found) throw new Error(`ability "${name}" is not enabled`);
+  return found;
+}
+
+/**
+ * Whether an ability needs stored config to enable, read from its manifest's
+ * `configSchema.required` — so a new ability is a list entry and nothing else.
+ *
+ * @category Rig
+ */
+export function abilityRequiresConfig(factory: AbilityFactory): boolean {
+  const schema = factory.manifest?.configSchema as { required?: unknown } | undefined;
+  return Array.isArray(schema?.required) && schema.required.length > 0;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────

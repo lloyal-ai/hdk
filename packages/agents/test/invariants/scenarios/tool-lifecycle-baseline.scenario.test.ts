@@ -44,9 +44,9 @@ class FollowUpTool extends OpenTool {
   }
 }
 
-/** The default policy as a harness ships it: a terminal named `report`, no minimum tool calls. */
+/** The default policy as a harness ships it: a terminal named `report`; an evidence floor would be the harness's hook, absent here. */
 const defaultPolicy = (extra?: { guardOverrides?: GuardOverrides }) =>
-  new DefaultAgentPolicy({ terminalToolName: 'report', minToolCallsBeforeReturn: 0, ...extra });
+  new DefaultAgentPolicy({ terminalToolName: 'report', ...extra });
 
 const URL = { url: 'https://example.test/same-page' };
 const fetchCall: Call = { name: 'fetch_page', arguments: JSON.stringify(URL) };

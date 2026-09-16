@@ -39,6 +39,7 @@ function state(agents: Agent[], remaining = 8000, over: Partial<TickState> = {},
     pending: { ...emptyPending(), ...pending },
     signals: { paused: false, windDown: false, cancelled: [], orchestratorDone: false },
     inflight: new Set(),
+    sequences: Infinity,
     ...over,
   };
 }
@@ -47,6 +48,12 @@ const quiet: AgentPolicy = {
   onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
   shouldExit: () => false,
 };
+
+/** A priced spawn request of `cells` suffix tokens, awaiting admission. */
+const spawnReq = (cells: number) => ({
+  index: 0, task: { systemPrompt: 's', content: 'c' } as AgentTaskSpec, suffixTokens: Array(cells).fill(1), formattedPrompt: '', fmt: FMT,
+  parent: createMockBranch({ handle: 0 }) as never, caller: null, resolve: () => {}, reject: () => {}, discarded: false,
+});
 
 const recoveryItem = (a: Agent, tokens = 3): PrefillItem =>
   ({ kind: 'recovery', rail: 'token', agent: a, tokens: Array(tokens).fill(1), toolName: 'recovery', callId: `recovery:${a.id}`, args: '' });
@@ -150,8 +157,7 @@ describe('DefaultScheduler.schedule', () => {
 
     // Earlier admissions count: at remaining 2000 a 300-cell spawn leaves 1188 for the prompt,
     // and the spawn re-activating keeps the stall-break out of it.
-    const task: AgentTaskSpec = { systemPrompt: 's', content: 'c' };
-    const req = { agent: agent(9, 'idle'), suffixTokens: Array(300).fill(1), formattedPrompt: '', task, resolve: () => {}, reject: () => {}, discarded: false };
+    const req = spawnReq(300);
     S = serial().schedule(state([a], 2000, {}, { spawns: [req], items: [recoveryItem(a, 1200)] }), withRecovery);
     expect(S.spawns).toEqual([req]);
     expect(S.prefills).toEqual([]);
@@ -277,6 +283,7 @@ describe('DefaultScheduler.schedule', () => {
     // The parent cannot be pruned while its children live, and its children are the blocked ones.
     const parent = agent(9, 'idle'); parent.transition('active'); parent.transition('idle'); parent.pruneRequested = true;
     const a = agent(1, 'awaiting_tool'); const b = agent(2, 'awaiting_tool');
+    (parent.branch as unknown as { children: unknown[] }).children.push(a.branch, b.branch);   // its children live: not reclaimable
     let S = scheduler().schedule(state([parent, a, b], 1000, {}, { items: [resultItem(a, 5000), resultItem(b, 5000)] }), withRecovery);
     expect(S.stall.map(o => o.agent), 'a pending prune on a non-leaf suppressed the stall-break').toEqual([a, b]);
 
@@ -393,8 +400,7 @@ describe('DefaultScheduler.schedule', () => {
     const seen: number[] = [];
     const spy: AgentPolicy = { ...quiet, shouldExit: (_a, p) => { seen.push(p.cellsUsed); return false; } };
     const a = agent(1);
-    const task: AgentTaskSpec = { systemPrompt: 's', content: 'c' };
-    const req = { agent: agent(2, 'idle'), suffixTokens: Array(100).fill(1), formattedPrompt: '', task, resolve: () => {}, reject: () => {}, discarded: false };
+    const req = spawnReq(100);
     const st = state([a], 8000, {}, { spawns: [req] });
     const S = scheduler().schedule(st, spy);
     expect(S.spawns).toEqual([req]);
@@ -473,6 +479,34 @@ describe('DefaultScheduler.schedule', () => {
     expect(S.remaining.retries).toEqual([park]);
     S = scheduler().schedule(state([a], 8000, { wall: 10 }, { retries: [park] }), quiet);
     expect(S.dispatch).toEqual([{ agent: a, tc: park.tc, retryAttempt: 1, retryCallId: 'c1' }]);
+  });
+
+  it('a spawn takes KV, a sequence and a seat: what it cannot take, it waits for while progress is possible, and is refused when none is', () => {
+    // Capacity: two seats, one alive — one admitted, the next carried (a seat's holder is alive and will finish).
+    let S = scheduler({ capacity: 2 }).schedule(state([agent(1)], 8000, {}, { spawns: [spawnReq(10), spawnReq(10)] }), quiet);
+    expect(S.spawns).toHaveLength(1);
+    expect(S.remaining.spawns).toHaveLength(1);
+    expect(S.refusedSpawns).toEqual([]);
+
+    // Sequences: one vacant — one admitted; the next waits while the first re-activates, and is refused once nothing can free one.
+    S = scheduler().schedule(state([], 8000, { sequences: 1 }, { spawns: [spawnReq(10), spawnReq(10)] }), quiet);
+    expect(S.spawns).toHaveLength(1);
+    expect(S.remaining.spawns).toHaveLength(1);
+    S = scheduler().schedule(state([], 8000, { sequences: 0 }, { spawns: [spawnReq(10)] }), quiet);
+    expect(S.refusedSpawns.map(r => r.reason)).toEqual(['no_sequence']);
+
+    // KV: a suffix over headroom waits while a sibling decodes, is carried while a finished sibling's leaf awaits its prune, and is refused once nothing can free room.
+    S = scheduler().schedule(state([agent(1)], 2000, {}, { spawns: [spawnReq(1500)] }), quiet);
+    expect(S.remaining.spawns).toHaveLength(1);
+    const returned = agent(2, 'idle'); returned.transition('active'); returned.transition('idle'); returned.pruneRequested = true;
+    S = scheduler().schedule(state([returned], 2000, {}, { spawns: [spawnReq(1500)] }), quiet);
+    expect(S.remaining.spawns, 'a reclaimable leaf was not counted as progress').toHaveLength(1);
+    S = scheduler().schedule(state([], 2000, {}, { spawns: [spawnReq(1500)] }), quiet);
+    expect(S.refusedSpawns.map(r => r.reason)).toEqual(['pressure_init']);
+
+    // A carried spawn keeps the pool open.
+    S = scheduler({ capacity: 1 }).schedule(state([agent(1)], 8000, { signals: { paused: false, windDown: false, cancelled: [], orchestratorDone: true } }, { spawns: [spawnReq(10)] }), quiet);
+    expect(S.close).toBe(false);
   });
 
   it('one drop per agent per schedule: two cancels for the same live agent decide one drop', () => {

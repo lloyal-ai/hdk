@@ -33,3 +33,9 @@ export { PROJECTOR_FORMATS, sniffMediaType, UNKNOWN_MEDIA_TYPE } from './media-t
 // slot. Pure data and a guard; a reader branches on DOCUMENT_CONFIG_TYPE.
 export { DOCUMENT_CONFIG_TYPE, asDocumentMeta, pagesOf } from './document';
 export type { DocumentMeta, SectionOrigin } from './document';
+
+// The client half of the content plane: every door derived from the one origin a
+// bridge reports, and the citation grammar a view resolves against its own roots.
+export {
+  configUrl, ingestMedia, ingressUrl, manifestUrl, parseAttachmentHref, representationUrl, resolvePrefix, sourceUrl,
+} from './content-urls';

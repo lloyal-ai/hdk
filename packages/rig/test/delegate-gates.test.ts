@@ -17,7 +17,7 @@ vi.mock('@lloyal-labs/lloyal-agents', async (importOriginal) => {
     ...actual,
     agentPool: vi.fn(function* (opts: Record<string, unknown>) {
       seen.poolOpts.push(opts);
-      return { agents: [], totalTokens: 0, totalToolCalls: 0 };
+      return { agents: [], outcomes: [], byKey: () => undefined, totalTokens: 0, totalToolCalls: 0 };
     }),
   };
 });

@@ -9,7 +9,7 @@ import { decideBeforeAdmit, type Frame } from './hooks';
 import { type ContextPressure } from './pressure';
 import {
   type TickState, type Schedule, type Pending, type PrefillItem, type Recovery, type ExtendRequest,
-  type StallOutcome, type Drop, emptyPending, itemCells, spawnCells, alive,
+  type StallOutcome, type Drop, type SpawnRequest, type SpawnRefusal, emptyPending, itemCells, spawnCells, alive, prunable, reclaimable, owedParents,
 } from './state';
 
 /**
@@ -46,6 +46,8 @@ export interface SchedulerOptions {
    *  its stop token or when the pressure turns critical. */
   recoveryBudget?: number;
   terminalToolName?: string;
+  /** How many agents the pool seats at once; spawns beyond it wait in request order. Absent: unbounded. */
+  capacity?: number;
 }
 
 export interface Scheduler {
@@ -115,7 +117,7 @@ export class DefaultScheduler implements Scheduler {
     const remaining: Pending = emptyPending();
     const S: Schedule = {
       hold: false, halts: [], drops: [], finishes: [],
-      spawns: [], rejectedSpawns: [], extends: [], rejectedExtends: [],
+      spawns: [], refusedSpawns: [], extends: [], rejectedExtends: [],
       prefills: [], stall: [], abandoned: [], dispatch: [], decode: [],
       pressure: P0, alive: 0, remaining, mode: this.opts.recovery, roster: state.agents, close: false,
     };
@@ -152,18 +154,26 @@ export class DefaultScheduler implements Scheduler {
     S.mode = mode;
     const terminal = this.opts.terminalToolName;
 
-    // 1. Admission — one FIFO ledger for spawns and items.
+    // 1. Admission — one FIFO ledger for spawns and items. A spawn takes three
+    //    things at once: the KV its suffix (and a heal's lineage) will fill, a
+    //    vacant sequence for its fork, and a seat under the pool's capacity. One
+    //    it cannot take now is decided after the stall-break below: carried while
+    //    something can still free what it needs, refused when nothing can. A
+    //    spawn waiting on capacity is always carried — the seats' holders are
+    //    alive, and an alive agent finishes or is decided here.
     let headroom = P0.headroom;
     const band = P0.softLimit - P0.hardLimit;
     let spent = 0;
+    let sequences = state.sequences;
+    let seated = state.agents.filter(alive).length;
+    const waitingSpawns: { req: SpawnRequest; on: SpawnRefusal | 'capacity' }[] = [];
     for (const req of pending.spawns) {
-      if (req.discarded) { S.rejectedSpawns.push(req); continue; }
+      if (req.discarded) continue;   // nobody awaits it, and no fork was made: nothing to give back
       const cost = spawnCells(req);
-      if (cost <= headroom) {
-        S.spawns.push(req); headroom -= cost; spent += cost;
-      } else {
-        S.rejectedSpawns.push(req);
-      }
+      if (cost > headroom) { waitingSpawns.push({ req, on: 'pressure_init' }); continue; }
+      if (sequences <= 0) { waitingSpawns.push({ req, on: 'no_sequence' }); continue; }
+      if (this.opts.capacity !== undefined && seated >= this.opts.capacity) { waitingSpawns.push({ req, on: 'capacity' }); continue; }
+      S.spawns.push(req); headroom -= cost; spent += cost; sequences--; seated++;
     }
     // An extend is admitted like everything else: against headroom. The spine
     // is the one branch that cannot be pruned and replayed, so it is never
@@ -277,9 +287,18 @@ export class DefaultScheduler implements Scheduler {
     //    fits, would suppress the stall for as long as their own dependencies
     //    are blocked — which is forever, when those dependencies are the
     //    deferred items themselves. An in-flight tool is the one external
-    //    liveness dependency here: the close already waits on it.
+    //    liveness dependency here: the close already waits on it. A branch
+    //    owed a prune that is already a childless leaf is the exception: the
+    //    next observe reclaims it, so its cells and sequence are as good as
+    //    freed — UNLESS a pending spawn named it as parent, in which case the
+    //    executor retains it and the prune never comes. `reclaimable` is that
+    //    one sentence, shared with the pass it predicts: counting a retained
+    //    parent here would leave the very spawn holding the pin waiting for a
+    //    reclamation its own request prevents.
     const reactivating = S.prefills.length > 0 || S.spawns.length > 0;
-    const progress = reactivating || S.decode.length > 0
+    const owed = owedParents(pending.spawns);
+    const reclaiming = state.agents.some(a => reclaimable(a, owed));
+    const progress = reactivating || reclaiming || S.decode.length > 0
       || S.dispatch.length > 0 || state.inflight.size > 0 || remaining.retries.length > 0 || S.abandoned.length > 0
       || S.drops.length > 0 || S.finishes.length > 0;
     if (deferred.length > 0 && !progress) {
@@ -329,13 +348,22 @@ export class DefaultScheduler implements Scheduler {
       if (progress || S.stall.length > 0) remaining.extends.push(...deferredExtends);
       else S.rejectedExtends.push(...deferredExtends);
     }
+    // A waiting spawn follows the same rule, in request order: carried while the
+    // pool can still free what it lacks — an agent finishing gives back its
+    // cells and its sequence, a drop decided here becomes a prune next tick —
+    // and refused, naming what it lacked, once nothing can. Retained ancestors
+    // holding every sequence end here instead of waiting forever.
+    for (const { req, on } of waitingSpawns) {
+      if (on === 'capacity' || progress || S.stall.length > 0) remaining.spawns.push(req);
+      else S.refusedSpawns.push({ req, reason: on });
+    }
 
     // 5. Close: the orchestrator is done, every agent is final and nothing
     //    waits. Every drop decided its recovery at the drop, so an idle agent
     //    IS final — there is nothing left to sweep.
     const allIdle = state.agents.every(a => a.status === 'idle' || a.status === 'disposed');
     const nothingWaiting =
-      remaining.items.length === 0 && remaining.retries.length === 0 && remaining.extends.length === 0 &&
+      remaining.items.length === 0 && remaining.retries.length === 0 && remaining.extends.length === 0 && remaining.spawns.length === 0 &&
       S.prefills.length === 0 && S.spawns.length === 0 && S.extends.length === 0 &&
       S.dispatch.length === 0 && S.decode.length === 0 &&
       S.drops.length === 0 && S.stall.length === 0 && S.finishes.length === 0 && S.abandoned.length === 0 &&

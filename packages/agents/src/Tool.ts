@@ -241,9 +241,19 @@ export type FollowUp =
   | { type: 'none' };
 
 /**
+ * At the terminal call: accept it, with the string the agent's result becomes,
+ * or reject it, with the reason the model reads.
+ *
+ * @category Agents
+ */
+export type ReturnDecision =
+  | { type: 'accept'; result: string }
+  | { type: 'reject'; message: string };
+
+/**
  * Everything a contributor says about the life of a tool call, in one place.
  *
- * Four positions, one per moment a call passes through the pool. A tool
+ * Five positions, one per moment a call passes through the pool. A tool
  * declares the ones it has an opinion about and leaves the rest to the harness
  * and the framework, which contribute values of this same type.
  *
@@ -293,6 +303,28 @@ export interface ToolLifecycleHooks {
     outcome: Outcome;
     result: unknown;
   }): FollowUp | undefined;
+
+  /**
+   * The terminal call ended the turn: may it, and what the agent's result
+   * becomes. `raw` is the call's arguments as the model emitted them; `result`
+   * is the policy's capture (the `result` field, else the raw arguments).
+   * Accept with the string to keep — a typed output keeps the raw arguments
+   * and reads them back through its own schema — or reject it: the pool
+   * nudges the model with the message in the result's place, as a gate does
+   * at dispatch. A rejection from any contributor refuses the return (a
+   * harness's floor on the evidence an agent must have gathered,
+   * `agent.toolCallCount`, is one), and the first accept is the capture. The
+   * pool allows one rejected return per agent and none once the context or
+   * the turn cap is exhausted; a rejection the bound refuses falls through to
+   * the accept. `undefined` abstains.
+   */
+  onReturn?(i: {
+    agent: Agent;
+    tool: string;
+    args: Record<string, unknown>;
+    raw: string;
+    result: string;
+  }): ReturnDecision | undefined;
 }
 
 /**

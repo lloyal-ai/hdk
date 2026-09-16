@@ -14,7 +14,7 @@ import type { Attachment } from '@lloyal-labs/media';
  * |--------------------|--------------------------|-------------------------------------------|
  * | **Tool query**     | Per tool call            | scored by the tool's own reranker pass |
  * | **Agent task**     | Per agent lifetime       | `reference` param of scoreSimilarityBatch |
- * | **Original query** | Per research invocation  | Captured in closure by createScorer       |
+ * | **Original query** | Per run, the root query  | Captured in closure by createScorer       |
  *
  * - `scoreEntailmentBatch` scores against the **original query** (steering boundaries)
  * - exploit mode (`admitChunks`) takes `min(tool-query score, scoreEntailmentBatch)` — one extra pass, never two
@@ -99,7 +99,7 @@ export abstract class Source<TChunk = unknown> {
    *
    * The returned scorer captures `originalQuery` in a closure — no mutable
    * state on Source. Safe to use across concurrent pools within the same
-   * research run.
+   * run.
    *
    * @param originalQuery - The root query from the harness
    */

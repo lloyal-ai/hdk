@@ -40,14 +40,20 @@ describe('planAlphas', () => {
     // the table it is a golden OF proves nothing.
     const registry: Record<string, string> = {
       '@lloyal-labs/sdk': '3.1.0', '@lloyal-labs/lloyal-agents': '5.5.1', '@lloyal-labs/rig': '5.5.0',
-      '@lloyal-labs/dev-tools': '0.4.3', '@lloyal-labs/lloyal.node': '3.1.1',
+      '@lloyal-labs/dev-tools': '0.4.3', '@lloyal-labs/lloyal.node': '3.1.1', '@lloyal-labs/binding': '0.1.0',
     };
     const manifests: Record<string, { name: string; version: string }> = {
       'packages/media': { name: '@lloyal-labs/media', version: '0.1.0' },
       'packages/sdk': { name: '@lloyal-labs/sdk', version: '3.1.0' },
       'packages/agents': { name: '@lloyal-labs/lloyal-agents', version: '5.5.1' },
       'packages/rig': { name: '@lloyal-labs/rig', version: '5.5.0' },
+      'packages/binding': { name: '@lloyal-labs/binding', version: '0.1.0' },
       'packages/dev-tools': { name: '@lloyal-labs/dev-tools', version: '0.4.3' },
+      // Never published: absent from `registry` above, so `view` throws 404 and the fallback reads the
+      // manifest. Their triples already carry a prerelease, which is what keeps cut N at 0.1.0-alpha.N
+      // instead of bumping to 0.2.0 — the same branch media relies on, exercised here for a 404.
+      'packages/ui': { name: '@lloyal-labs/ui', version: '0.1.0-alpha.0' },
+      'packages/desktop': { name: '@lloyal-labs/desktop', version: '0.1.0-alpha.0' },
     };
     const view = (name: string) => { if (name in registry) return registry[name]; throw e404; };
     const alphas = planAlphas({
@@ -60,7 +66,10 @@ describe('planAlphas', () => {
       '@lloyal-labs/sdk': '4.0.0-alpha.1',
       '@lloyal-labs/lloyal-agents': '6.0.0-alpha.1',
       '@lloyal-labs/rig': '5.6.0-alpha.1',
+      '@lloyal-labs/binding': '0.2.0-alpha.1',
       '@lloyal-labs/dev-tools': '0.5.0-alpha.1',
+      '@lloyal-labs/ui': '0.1.0-alpha.1',
+      '@lloyal-labs/desktop': '0.1.0-alpha.1',
       '@lloyal-labs/lloyal.node': '3.2.0-alpha.1',
     });
   });
@@ -221,7 +230,7 @@ describe('the abilities admit the set', () => {
   it('every ability peer on a set member admits the version the NEXT cut stamps, and the stable before it', () => {
     const registry: Record<string, string> = {
       '@lloyal-labs/sdk': '3.1.0', '@lloyal-labs/lloyal-agents': '5.5.1', '@lloyal-labs/rig': '5.5.0',
-      '@lloyal-labs/dev-tools': '0.4.3', '@lloyal-labs/lloyal.node': '3.1.1',
+      '@lloyal-labs/dev-tools': '0.4.3', '@lloyal-labs/lloyal.node': '3.1.1', '@lloyal-labs/binding': '0.1.0',
     };
     const view = (name: string) => { if (name in registry) return registry[name]; throw e404; };
     const stamped = planAlphas({ cut: 99, packages: arcPackages(CUTS, EXTERNAL, manifestOf), view });

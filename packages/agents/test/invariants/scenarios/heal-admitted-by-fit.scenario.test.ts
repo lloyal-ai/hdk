@@ -16,8 +16,8 @@
  * replacement must fit in what is left. The mock refuses an over-budget batch
  * the way the kernel does (rc 1).
  *
- * What this locks: the replacement is dropped with `pressure_init`, like a
- * spawn the scheduler cannot admit; the run closes normally; nothing is
+ * What this locks: the replacement is refused with `pressure_init` before any
+ * fork, like a spawn the scheduler cannot admit; the run closes normally; nothing is
  * decoded on faith.
  */
 import { describe, it, expect } from 'vitest';
@@ -84,8 +84,9 @@ describe('scenario: a heal is admitted by fit', () => {
     expect(run.traceEvents.some(e => e.type === 'pool:close'), 'the run was torn down, not completed').toBe(true);
     // The replacement was refused for pressure, like any spawn that cannot fit.
     const original = (mediaFailures(run.channelEvents)[0] as { agentId: number }).agentId;
-    const drops = run.traceEvents.filter(e => e.type === 'pool:agentDrop') as { agentId: number; reason: string }[];
-    expect(drops.filter(d => d.reason === 'pressure_init' && d.agentId !== original)).toHaveLength(1);
+    // No fork was made for it, so no agent was dropped: the ledger records the refusal against the original.
+    const refused = run.traceEvents.filter(e => e.type === 'pool:spawnRefused') as { reason: string; of?: number }[];
+    expect(refused).toEqual([expect.objectContaining({ reason: 'pressure_init', of: original })]);
     expect(run.traceEvents.some(e => e.type === 'pool:agentHeal')).toBe(false);
   });
 });

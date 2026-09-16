@@ -14,7 +14,7 @@ import { createMockBranch } from './helpers/mock-branch';
 
 import { FMT } from './helpers/format-config';
 
-const BASE_CONFIG: PolicyConfig = { maxTurns: 20, terminalToolName: 'report', hasNonTerminalTools: true };
+const BASE_CONFIG: PolicyConfig = { maxTurns: 20, terminalToolName: 'report' };
 
 function makeAgent(overrides?: { toolCallCount?: number; turns?: number; toolHistory?: Array<{ name: string; args: string }> }) {
   const branch = createMockBranch();
@@ -55,17 +55,17 @@ describe('DefaultAgentPolicy', () => {
       const a = makeAgent({ toolCallCount: 3 });
       const tc = { name: 'report', arguments: JSON.stringify({ result: 'my result' }), id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action).toEqual({ type: 'return', result: 'my result' });
+      expect(action).toMatchObject({ type: 'return', result: 'my result' });
     });
 
-    it('nudges premature report (< 2 tool calls)', () => {
+    it('a report after one call is a return: no evidence floor lives in the policy', () => {
       const a = makeAgent({ toolCallCount: 1 });
       const tc = { name: 'report', arguments: '{}', id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action.type).toBe('nudge');
+      expect(action.type).toBe('return');
     });
 
-    it('allows report when over budget despite < minToolCalls', () => {
+    it('allows report when over budget', () => {
       const a = makeAgent({ toolCallCount: 1, turns: 25 });
       const tc = { name: 'report', arguments: JSON.stringify({ result: 'r' }), id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
@@ -78,7 +78,7 @@ describe('DefaultAgentPolicy', () => {
       const a = makeAgent({ toolCallCount: 3 });
       const tc = { name: 'report', arguments: 'not valid json', id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action).toEqual({ type: 'return', result: 'not valid json' });
+      expect(action).toMatchObject({ type: 'return', result: 'not valid json' });
     });
 
   });
@@ -113,13 +113,12 @@ describe('DefaultAgentPolicy', () => {
     });
   });
 
-  describe('custom opts', () => {
-    it('respects custom minToolCallsBeforeReturn', () => {
-      const customPolicy = new DefaultAgentPolicy({ minToolCallsBeforeReturn: 5 });
-      const a = makeAgent({ toolCallCount: 3 });
+  describe('the terminal call', () => {
+    it('is a return however few tools were called: the evidence floor is the harness\'s, an onReturn contribution, never a number here', () => {
+      const a = makeAgent({ toolCallCount: 0 });
       const tc = { name: 'report', arguments: '{"findings":"f"}', id: 'c1' };
-      const action = customPolicy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action.type).toBe('nudge');
+      const action = new DefaultAgentPolicy().onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      expect(action).toMatchObject({ type: 'return', call: tc });
     });
   });
 
@@ -374,12 +373,11 @@ describe('DefaultAgentPolicy', () => {
       expect(action.type).toBe('return');
     });
 
-    it('not underPressure + terminal tool + < minToolCalls → premature nudge', () => {
+    it('not underPressure + terminal tool after one call → a return (no floor in the framework)', () => {
       const a = makeAgent({ toolCallCount: 1 });
       const tc = { name: 'report', arguments: '{}', id: 'c1' };
       const action = policy.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect(action.type).toBe('nudge');
-      expect((action as any).message).toContain('must use tools');
+      expect(action.type).toBe('return');
     });
 
     it('underPressure + non-terminal tool → overBudget → nudge (first agent)', () => {

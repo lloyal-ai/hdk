@@ -9,8 +9,8 @@ import { useAgentPool } from './agent-pool';
 import { createToolkit } from './toolkit';
 import { useTraceScope } from './trace-scope';
 import { parallel } from './orchestrators';
-import type { Tool } from './Tool';
-import type { AgentPolicy } from './AgentPolicy';
+import type { Tool, ToolLifecycleHooks } from './Tool';
+import type { AgentPolicy, Budget, GuardOverrides } from './AgentPolicy';
 import type { JsonSchema, SamplingParams, AgentEvent } from './types';
 
 /**
@@ -24,7 +24,7 @@ export interface UseAgentOpts {
   /** User message content — the agent's task. */
   task: string;
   /** Tools available to the agent. Optional — pool degenerates cleanly without tools. */
-  tools?: Tool[];
+  tools?: readonly Tool[];
   /**
    * The tool that ends the agent's turn (e.g. `reportTool`), by reference.
    * Merged into the tool set so its schema reaches the model; the pool
@@ -32,8 +32,18 @@ export interface UseAgentOpts {
    * free-text/stop.
    */
   terminal?: Tool;
-  /** Max tool-use turns before hard cut. @default 100 */
+  /** Max tool-use turns before hard cut. Wins over the row's. @default the row's, else 100 */
   maxTurns?: number;
+  /** Every number the agent's turn obeys, as one row ({@link Budget}); the policy is derived from it. Give this or `policy`. */
+  budget?: Budget;
+  /** The harness's overrides of declared gates ({@link GuardOverrides}), on the policy the budget derives. */
+  guards?: GuardOverrides;
+  /** Accept the agent's prose as its result when it makes no tool call — a passthrough answer, a settling pass. On the policy the budget derives; not with `policy`. */
+  acceptFreeText?: boolean;
+  /** The harness's part of the tool lifecycle, as data ({@link ToolLifecycleHooks}): walked after the
+   *  called tool's own hooks and before the framework's defaults — a floor on the return, a follow-up.
+   *  On the policy the budget derives; not with `policy`. */
+  hooks?: readonly ToolLifecycleHooks[];
   /** JSON Schema for eager grammar constraint (deferred: Zod support). */
   schema?: JsonSchema;
   /**
@@ -54,9 +64,9 @@ export interface UseAgentOpts {
   parent?: Branch;
   /** Session for warm path via trunk. */
   session?: Session;
-  /** Custom agent policy. */
+  /** A policy of your own, in place of the one the budget derives. Never with `budget` or `guards`. */
   policy?: AgentPolicy;
-  /** Enable structured trace events. */
+  /** Per-token entropy/surprisal on `agent:produce`. @default the {@link PoolDefaults} context's, else false */
   trace?: boolean;
 }
 
@@ -81,7 +91,7 @@ export interface UseAgentOpts {
  * @example Single agent with tools
  * ```typescript
  * const agent = yield* useAgent({
- *   systemPrompt: "You are a research assistant.",
+ *   systemPrompt: "You answer from what your tools return.",
  *   task: "Find information about X",
  *   tools: [searchTool],
  *   terminal: reportTool,
@@ -140,9 +150,16 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
       terminalToolName: toolkit.terminalName,
       maxTurns: opts.maxTurns,
       policy: opts.policy,
+      budget: opts.budget,
+      guards: opts.guards,
+      acceptFreeText: opts.acceptFreeText,
+      hooks: opts.hooks,
       trace: opts.trace,
       eagerGrammar,
       enableThinking: opts.enableThinking,
+      // The resource's contract: the agent's branch is alive for the caller to
+      // fork from, whatever `PoolDefaults` says about pools.
+      pruneOnReturn: false,
     });
 
     // Drain Subscription inline — forward to broadcast
@@ -152,8 +169,21 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
       next = yield* sub.next();
     }
     const pool = next.value;
+    // One spawn, one seat. A pool that ended on a failure hands it on; a spawn it could not seat (no sequence, no
+    // room) fails by its reason. The caller hears why, never a missing roster entry.
+    // A pool that ended on a failure hands it on, whether or not a seat was taken: a fatal error
+    // AFTER seating leaves a roster entry behind, and reading the roster first would return the
+    // agent and swallow the reason.
+    if (pool.failure) throw pool.failure;
+    // One spawn, one outcome — and the outcome names the lineage's FINAL agent, so a successful
+    // heal returns the replacement rather than the disposed original the roster still holds.
+    const outcome = pool.outcomes[0];
+    const seated = pool.agents.find(a => a.agentId === outcome?.agentId) ?? pool.agents[0];
+    if (!seated) {
+      throw new Error(`useAgent: the agent was not seated (${outcome?.failed ?? 'the pool closed before it was seated'})`);
+    }
 
-    yield* provide(pool.agents[0].agent);
+    yield* provide(seated.agent);
     // Resource stays alive — branch alive for caller to fork from
     // ensure() prunes root on scope exit
   });

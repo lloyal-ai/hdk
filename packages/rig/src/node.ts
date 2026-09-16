@@ -60,6 +60,7 @@ export type {
 // boundary path resolution. The per-template LAYERING stays in the scaffold.
 export {
   resolvePath,
+  isPathShaped,
   resolveAppConfigPaths,
   readJsonOverlay,
   readJsonForWrite,
@@ -67,5 +68,34 @@ export {
   maybeAppendGitignore,
 } from './config-node';
 
-export { provisionAbilityModels } from './provision';
-export type { ProvisionAbilityModelsOpts } from './provision';
+// Node-only: a library's folder mechanics — a name minted and its folder reserved
+// exclusively, a client path confined by its real location, a listing held to the
+// same rule, removal. What a folder holds is the app's.
+export { reserveFolder, confined, listFolders, removeFolder } from './folders';
+
+// Node-only: the layering a `defineConfig` table describes — harness.yml read loud,
+// the rungs layered with provenance, harness.json written back, the Runner's plumbing.
+export { loadYml, loadConfig, saveLocalConfig, runnerConfig } from './config-layering';
+export type { ConfigSource } from './config-layering';
+
+// Node-only: the one rig default — the Runner's knobs as a command group.
+export { settings } from './settings';
+export type { SettingsDeps } from './settings';
+
+export { provisionAbilityModels, resolveAbilityModels } from './provision';
+export type { ProvisionAbilityModelsOpts, AbilityModels } from './provision';
+
+// Node-only: the host-resources sampler a dev boot runs beside the trace writer.
+export { startHostResources } from './host-resources';
+
+// Node-only: the engine's half of a desktop shell's ingress, over the utilityProcess channel.
+export { serveIngest } from './ingest-responder';
+export type { IngestRequest, IngestReply } from './ingest-responder';
+
+// Node-only: the resident context, the served host's per-connection seam, and the two boots a target entry is one call to.
+export { createResidentContext, residentContextOptions, applyGpuEnv, DEFAULT_N_SEQ_MAX, DEFAULT_N_CTX } from './resident-context';
+export type { ResidentModel } from './resident-context';
+export { createServedChannels, createServedHostDriver } from './served-host';
+export type { ServedChannels, ServedHostDriver, ServedHostDriverOpts, OwnedConnection } from './served-host';
+export { bootEdge, bootServed, DEFAULT_MAX_SESSIONS } from './boot';
+export type { HarnessApp, BootEdgeOpts, BootServedOpts } from './boot';

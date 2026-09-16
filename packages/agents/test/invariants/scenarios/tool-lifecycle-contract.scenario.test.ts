@@ -128,7 +128,7 @@ describe('tool-lifecycle contract (real pool)', () => {
     const t = new OpenTool('t', { ok: true }, gate(sameQ));
     const r = await runPool({
       scripts: [{ tokens: [1, STOP, 2, STOP, STOP] }],
-      policy: new DefaultAgentPolicy({ terminalToolName: 'report', minToolCallsBeforeReturn: 0 }),
+      policy: new DefaultAgentPolicy({ terminalToolName: 'report' }),
       tools: only(t), terminalToolName: 'report', maxTurns: 1, trace: true,
       instrument: parse({ t1: call('same'), t2: call('same') }),
     });

@@ -3,26 +3,30 @@ import type { Operation, Subscription, Task, Signal } from 'effection';
 import type { SessionContext, BranchStore } from '@lloyal-labs/sdk';
 import type { Attachment } from '@lloyal-labs/media';
 import { buildTurnDelta } from '@lloyal-labs/sdk';
-import { Ctx, Store, Trace, TraceParent, GrantStoreCtx, WindDown, CancelAgent, Pause, Attachments, Ingress } from './context';
+import { Ctx, Store, Trace, TraceParent, CallingAgent, GrantStoreCtx, WindDown, CancelAgent, Pause, Attachments, Ingress, PoolDefaults } from './context';
 import { useTraceScope } from './trace-scope';
 import type { Agent } from './Agent';
-import { DefaultAgentPolicy } from './AgentPolicy';
+import { policyFromBudget } from './AgentPolicy';
 import type { PolicyConfig } from './AgentPolicy';
 import { ContextPressure } from './pressure';
 import { Emitter } from './emit';
 import { DefaultScheduler } from './scheduler';
 import { Applier } from './apply';
-import { Executor, setupAgent, makePermits, pruneAll, DEFAULT_MAX_CONCURRENT_TOOLS } from './execute';
+import { Executor, priceSpawn, makePermits, pruneAll, DEFAULT_MAX_CONCURRENT_TOOLS } from './execute';
+import type { PricedSpawn } from './execute';
+import { SpawnLedger } from './spawns';
+import type { SpawnEntry } from './spawns';
 import { makeFrame } from './hooks';
 import { prepareReplay } from './replay';
 import type { Tool } from './Tool';
 import {
-  type Pending, type TickState, type ToolCompletion, type Ladder, type SpawnRequest, type Lineage, emptyPending,
+  type Pending, type TickState, type ToolCompletion, type Ladder, type SpawnReplay, type Lineage, emptyPending,
 } from './state';
 import type { PoolContext } from './orchestrators';
 import type { AgentTaskSpec, AgentPoolOptions, AgentPoolResult, AgentEvent, PressureThresholds } from './types';
 
 export { ContextPressure } from './pressure';
+export { SpawnRefused } from './spawns';
 
 /** The grammar that forces a recovery output to be a valid call to the pool's
  *  TERMINAL tool. `toolChoice: 'auto'` — the root rule is the bare call;
@@ -54,6 +58,16 @@ function buildTerminalGrammar(ctx: SessionContext, terminalTool: Tool): string {
  * tokenized and admitted here, so the store is only ever touched from this
  * fiber.
  *
+ * **Admission.** A spawn is a priced request — its suffix tokenized, its
+ * format fixed, no branch — until the scheduler seats it: the KV fits, a
+ * sequence is vacant, the pool is under `capacity`. The executor forks it then.
+ * What cannot be seated waits in request order while a sibling can still free
+ * room, and is refused with a named reason when none can, so every topology
+ * runs in waves and no fork is ever made on faith. Each spawn keeps one entry
+ * in the pool's ledger across heals: `waitFor` resolves to the lineage's final
+ * agent, and `AgentPoolResult.outcomes` carries one final outcome per spawn, in
+ * spawn order, read back by `key`.
+ *
  * **Resource semantics:** `provide()` suspends after all agents complete,
  * keeping branches alive so the caller can fork from them. Branches are
  * pruned when the scope exits.
@@ -81,7 +95,13 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     // tool result that admits a root. One list, owned here — it outlives any
     // agent, so a root agent A admitted stays available after A is pruned.
     const available: Attachment[] = [...(opts.attachments ?? [])];
-    const { spine, orchestrate, toolsJson, tools, maxTurns = 100, terminalToolName, trace = false, pruneOnReturn = false, enableThinking = true, eagerGrammar } = opts;
+    const { spine, orchestrate, toolsJson, tools, terminalToolName, eagerGrammar } = opts;
+    // The knobs a harness fixes once come from the context; the call's own option wins.
+    const defaults = yield* PoolDefaults.expect();
+    const maxTurns = opts.maxTurns ?? opts.budget?.maxTurns ?? 100;
+    const trace = opts.trace ?? defaults.trace ?? false;
+    const pruneOnReturn = opts.pruneOnReturn ?? defaults.pruneOnReturn ?? false;
+    const enableThinking = opts.enableThinking ?? defaults.enableThinking ?? true;
 
     const toolIndexMap = new Map([...tools.keys()].map((name, i) => [name, i]));
     const poolT0 = performance.now();
@@ -98,12 +118,16 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     const poolScopeId = yield* useTraceScope(tw, poolParentTraceId, 'pool', { maxTurns, terminalToolName });
     const emit = new Emitter(tw, poolChannel, poolScopeId);
 
-    // Whether the registry holds tools besides the terminal one: when not, an
-    // agent may report as its first action (a reporter sub-agent).
-    const hasNonTerminalTools = terminalToolName ? [...tools.keys()].some(k => k !== terminalToolName) : tools.size > 0;
     const terminalTool = terminalToolName ? tools.get(terminalToolName) : undefined;
     const terminalGrammar = terminalTool ? buildTerminalGrammar(ctx, terminalTool) : null;
-    const policy = opts.policy ?? new DefaultAgentPolicy();
+    // One policy per pool: the caller's own, or the one its budget row derives —
+    // with this pool's terminal and the harness's guard overrides on it.
+    if (opts.policy && (opts.budget || opts.guards || opts.hooks || opts.acceptFreeText !== undefined)) {
+      throw new Error('useAgentPool: pass `budget`, `guards`, `hooks` and `acceptFreeText`, or a `policy` — not both: a policy carries its own');
+    }
+    const policy = opts.policy ?? policyFromBudget(opts.budget ?? {}, { terminalToolName, guardOverrides: opts.guards, hooks: opts.hooks, acceptFreeText: opts.acceptFreeText });
+    // The terminal's identity, decided once, here.
+    policy.bindTerminal?.(terminalToolName);
 
     // The run clock: wall time minus paused spans. Policy budgets and
     // `agent.startedAt` read it; trace `ts` and retry parks stay on the wall.
@@ -143,15 +167,18 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     const frame = makeFrame({ protectedTools, grants });
     if (policy.recoveryBudget !== undefined) requireInteger('policy.recoveryBudget', policy.recoveryBudget, 1);
     if (opts.maxConcurrentTools !== undefined) requireInteger('maxConcurrentTools', opts.maxConcurrentTools, 1);
+    if (opts.capacity !== undefined) requireInteger('capacity', opts.capacity, 1);
 
     // ── The pool's state ─────────────────────────────────────────
     const agents: Agent[] = [];
-    /** Forks forged and not yet admitted. A fork is the pool's from the forge
-     *  until it enters the roster (the executor removes it there) or is given
-     *  back (`discardSpawn` removes it); whatever is left is released at every
-     *  close and at teardown — the one owner between forge and roster. */
+    /** The ledger of spawns: one entry per request, carried across heals. */
+    const spawns = new SpawnLedger();
+    /** Forks made at admission and not yet in the roster. A fork is the pool's
+     *  from the fork until it enters the roster (the executor removes it there)
+     *  or is given back (`discardFork`); whatever is left is released at every
+     *  close and at teardown — the one owner between fork and roster. */
     const forged = new Set<Agent>();
-    const config: PolicyConfig = { maxTurns, terminalToolName, hasNonTerminalTools };
+    const config: PolicyConfig = { maxTurns, terminalToolName };
     const pending: Pending = emptyPending();
     const ladder: Ladder = { consecutiveFatalRc: 0, backendSuspect: false };
     const counters = { warmPrefillCalls: 0, warmPrefillBranches: 0 };
@@ -173,7 +200,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     let orchestratorDone = false;
     let orchestratorError: unknown = null;
 
-    /** Give back every fork that was forged and never admitted. Runs after the
+    /** Give back every fork that was made at admission and never entered the roster. Runs after the
      *  native work has settled (the executor's `waitUntilSettled` ensure runs as
      *  its operation unwinds), and BEFORE the roster prune: a forged fork under
      *  a roster agent would make that agent a non-leaf the leaf-only prune
@@ -197,43 +224,31 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       recovery: policy.recoveryShape === 'parallel' ? 'cohort' : 'serial',
       recoveryBudget: policy.recoveryBudget,
       terminalToolName,
+      capacity: opts.capacity,
     }, ctx, tools, frame);
     /**
-     * The one way a spawn request is made: price, then fork. For a heal the
-     * lineage the replacement will replay is built and priced FIRST, so
+     * The one way a spawn request is priced: its format, its suffix and, for a
+     * heal, the lineage the replacement will replay — built and priced FIRST, so
      * admission sees everything the request will prefill, and a lineage that
      * cannot be rebuilt (its content gone from the store) fails before any
-     * fork exists. A replacement forks the ORIGINAL'S parent at the original's
-     * fork point: its replay carries only what came after the fork, so the
-     * prefix under it must be the one the original had. A parent that is gone
-     * or has moved since cannot give that prefix, and the heal stands down
-     * (setupAgent throws at the fork; the forge site catches) rather than
-     * report a reconstruction onto a different context. The check is
-     * setupAgent's, adjacent to the fork: every suspension before it — the
-     * pricing's native call, the context reads — is a point where whoever
-     * owns the parent may run. A pool that has closed while a spawn was being
-     * priced makes no fork either. Every fork made here is the pool's
-     * (`forged`) until it enters the roster.
+     * request exists. No fork is made here: the executor forks an admitted
+     * request, at admission, when a sequence is known to be vacant. A pool that
+     * has closed while a spawn was being priced makes no request either.
      */
-    function* forge(task: AgentTaskSpec, lineage?: Lineage): Operation<Omit<SpawnRequest, 'resolve' | 'reject' | 'discarded'>> {
+    function* price(task: AgentTaskSpec, lineage?: Lineage): Operation<PricedSpawn & { replay?: SpawnReplay }> {
       const replay = lineage ? yield* prepareReplay(lineage.records, { enableThinking }) : null;
       if (closed) throw new Error('useAgentPool: the pool has closed');
-      const parent = task.parent ?? spine;
-      // A heal forges off the loop fiber, where no tool call is active, so
-      // setupAgent reads CallingAgent as null — the replacement is nobody's
-      // live child. A delegate's forge runs inside its call, so it reads the caller.
-      const { agent, suffixTokens, formattedPrompt } = yield* setupAgent(parent, task, ctx, enableThinking, runNow, lineage?.forkHead);
-      forged.add(agent);
-      if (!lineage || !replay) return { agent, suffixTokens, formattedPrompt, task };
-      return { agent, suffixTokens, formattedPrompt, task, replay: { ...replay, of: lineage.of, rc: lineage.rc, attempt: lineage.attempt, history: lineage.history } };
+      const priced = yield* priceSpawn(task, ctx, enableThinking);
+      if (!lineage || !replay) return priced;
+      return { ...priced, replay: { ...replay, of: lineage.of, rc: lineage.rc, attempt: lineage.attempt, history: lineage.history, forkHead: lineage.forkHead } };
     }
 
     const applier = new Applier({
-      ctx, policy, config, tools, frame, emit, pending, forged, ladder,
+      ctx, policy, config, tools, frame, emit, pending, spawns, ladder,
       recoveryBudget: policy.recoveryBudget, terminalToolName, pruneOnReturn, pressureOpts, totals,
     });
     const executor = new Executor({
-      ctx, store, tools, emit, tw, pending, agents, forged, inflight,
+      ctx, store, tools, emit, tw, pending, agents, forged, spawns, inflight,
       permits: makePermits(opts.maxConcurrentTools ?? DEFAULT_MAX_CONCURRENT_TOOLS),
       completed, wake, progress, scorer: opts.scorer, toolIndexMap, toolkitSize: tools.size,
       terminalGrammar, eagerGrammar, enableThinking, spine, runNow, counters, totals, policy, frame,
@@ -250,26 +265,31 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         const task: AgentTaskSpec = {
           systemPrompt: spec.systemPrompt, content: spec.content, tools: toolsJson, seed: spec.seed,
           ...(spec.after && spec.after.length > 0 ? { after: spec.after } : {}),
-          parent, assignedAbility: spec.assignedAbility,
+          parent, assignedAbility: spec.assignedAbility, ...(spec.key !== undefined ? { key: spec.key } : {}),
         };
-        // Fork now (metadata only); the suffix prefill and the activation are
-        // the scheduler's. Suspend until admitted — or rejected for pressure.
-        const forged = yield* forge(task);
-        const admitted = yield* action<Agent>((resolve, reject) => {
-          const req: SpawnRequest = { ...forged, resolve, reject, discarded: false };
+        // The entry first: a repeated key is refused before anything is priced.
+        const entry = spawns.open(spec.key);
+        // Who is calling — a delegate's spawn runs inside its tool call — is read
+        // here, where it is known; the fork happens later, on the loop.
+        const caller = (yield* CallingAgent.get()) ?? null;
+        const priced = yield* price(task);
+        // Post the priced request and suspend until it is admitted and forked, or
+        // refused (`SpawnRefused`, with the outcome the ledger recorded).
+        return yield* action<Agent>((resolve, reject) => {
+          const req = { index: entry.index, key: spec.key, task, ...priced, parent, caller, resolve, reject, discarded: false };
           pending.spawns.push(req);
           wake.add();
           return () => { req.discarded = true; };
         });
-        return admitted;
       },
 
       *waitFor(agent) {
-        // One future per agent: resolved the first time it is final — `idle`
-        // after it lived, or `disposed` — whether that happened before or after
-        // this wait began.
-        yield* agent.final;
-        return agent;
+        // The spawn's entry, not the agent: a heal moves the entry to its
+        // replacement, and the waiter resumes against the lineage's final agent.
+        const entry = spawns.of(agent);
+        if (!entry) { yield* agent.final; return agent; }
+        yield* spawns.settled(entry);
+        return entry.agent ?? agent;
       },
 
       *extendSpine(userContent, assistantContent) {
@@ -355,24 +375,34 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           if (executor.prunePass() > 0) {
             yield* emit.emit({ kind: 'kvTick', pressure: new ContextPressure(ctx, pressureOpts) });
           }
-          // Heals the ladder decided are forged here, after the prune pass has
-          // reclaimed what it could: a replacement forks the original's parent
-          // and needs a lease, and the poisoned branch is the one that just gave
-          // one back. An original with live children is not reclaimed yet; its
-          // heal is forged all the same — once, now — and admitted or refused by
-          // fit like any spawn, never held for a reclamation that may not come.
-          // A forge that throws (lineage content gone, no lease, the parent gone
-          // or moved since the fork) stands down: the original's failure already
-          // stands, and nothing else goes with it.
+          // Heals the ladder decided are priced and queued here, after the prune
+          // pass has reclaimed what it could: a replacement forks the original's
+          // parent and needs a sequence, and the poisoned branch is the one that
+          // just gave one back. An original with live children is not reclaimed
+          // yet; its heal is queued all the same — once, now — and admitted or
+          // refused like any spawn, never held for a reclamation that may not
+          // come. A pricing that throws (lineage content gone) stands down, as
+          // does a fork whose parent is gone or has moved since: the original's
+          // failure already stands, and nothing else goes with it.
           for (const a of agents) {
             const lineage = a.heal;
             if (!lineage) continue;
             a.heal = null;
-            if (windingDown || !a.spec) continue;
+            const entry = spawns.of(a);
+            if (windingDown || !a.spec || !entry) continue;
             try {
-              const forged = yield* forge(a.spec, lineage);
-              pending.spawns.push({ ...forged, resolve: () => {}, reject: () => {}, discarded: false });
-            } catch { /* the heal stands down */ }
+              const priced = yield* price(a.spec, lineage);
+              spawns.healing(entry);
+              pending.spawns.push({
+                index: entry.index, key: entry.key, task: a.spec, ...priced,
+                // The replacement inherits the original's caller, not nothing: the branch parent
+                // carries the attention, and this carries the RECEIPTS — `Agent.attendedResults`
+                // walks this chain, so a heal that dropped it would re-attend evidence the lineage
+                // had already seen, and a receipt-keyed guard would read it as unseen.
+                parent: a.spec.parent ?? spine, caller: a.parent,
+                resolve: () => {}, reject: () => {}, discarded: false,
+              });
+            } catch { /* the heal stands down; the entry settles on the original */ }
           }
           if (paused && !wasPaused) {
             heldAt = performance.now();
@@ -409,6 +439,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
             pending,
             signals: { paused, windDown: windingDown, cancelled: pendingCancels.splice(0), orchestratorDone },
             inflight: new Set(inflight.keys()),
+            sequences: store.available,
           };
 
           // SCHEDULE — one pure decision over one value.
@@ -422,6 +453,8 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           // EXECUTE, then APPLY what came back.
           const out = yield* executor.run(S);
           yield* applier.applyOutputs(out, S);
+          // Entries whose agent is final with no heal decided or pending settle now.
+          spawns.settlePass();
 
           // Quiet = nothing ran. Whatever is still pending is either carried
           // (deferred for capacity, waiting on a sibling's progress) or arrived
@@ -438,22 +471,27 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         closed = true;
         releaseUnadmitted();
         emit.trace({ kind: 'closed', agents, steps: totals.steps, durationMs: performance.now() - poolT0 });
-        yield* poolChannel.close(result());
-      } catch {
+        yield* poolChannel.close(result(null));
+      } catch (err) {
         // A decode failed beyond the ladder, or the orchestrator threw: close
-        // with what exists. Closing is terminal for new work FIRST, then the
-        // producer is stopped, then the unadmitted forks are given back — now,
-        // not at scope exit. No `pool:close` — its absence is the signal.
+        // with what exists, and say what ended it. Closing is terminal for new
+        // work FIRST, then the producer is stopped, then the unadmitted forks
+        // are given back — now, not at scope exit. No `pool:close` is recorded;
+        // the result carries the failure.
         closed = true;
         yield* orchestratorTask.halt();
         releaseUnadmitted();
-        yield* poolChannel.close(result());
+        yield* poolChannel.close(result(err instanceof Error ? err : new Error(String(err))));
       }
     });
 
-    /** The per-agent results — the same record on the normal and partial paths. */
-    function result(): AgentPoolResult {
+    /** The per-agent results — the same record on the normal and partial paths, the partial one naming what ended it. */
+    function result(failure: Error | null): AgentPoolResult {
+      spawns.settlePass();
       return {
+        failure,
+        outcomes: spawns.outcomes(),
+        byKey: (key: string) => spawns.byKey(key),
         agents: agents.map(a => ({
           agentId: a.id,
           parentAgentId: a.parentId,

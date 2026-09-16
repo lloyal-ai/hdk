@@ -7,6 +7,9 @@
     "paths": {
       "@lloyal-labs/media/node": [
         "../media/dist/node.d.ts"
+      ],
+      "@lloyal-labs/binding/node": [
+        "../binding/dist/node.d.ts"
       ]
     }
   },
@@ -25,6 +28,12 @@
     },
     {
       "path": "../media"
+    },
+    {
+      "path": "../binding"
+    },
+    {
+      "path": "../host"
     }
   ]
 }

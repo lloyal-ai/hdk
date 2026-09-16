@@ -87,8 +87,8 @@ export function extractSpineSeed(events: TraceEvent[]): BranchCheckpoint {
  *
  * When `opts.poolTraceId` is set, only spine extensions under that pool's
  * scope are included (useful when a trace contains multiple nested or
- * sequential pools with independent spines — typically the research pool
- * vs. a later synthesis pool, both extending their own spines).
+ * sequential pools with independent spines — a first pool and a later one
+ * that consumed its findings, both extending their own spines).
  *
  * @param events - parsed JSONL trace events, in emission order
  * @param opts.poolTraceId - filter extensions to this pool's scope
@@ -124,7 +124,7 @@ export function extractSpineCheckpoint(
  * `resource()`, matching how `withSpine` manages its own spine.
  *
  * Pass the returned branch as `parent` to `agentPool` to run a replacement
- * stage (synth re-run, single-agent replay with modified prompt, etc.) against
+ * stage (a later pool re-run, a single-agent replay with a modified prompt) against
  * the reconstructed KV state.
  *
  * A spine seeded with images (`withSpine({ bitmaps })`) replays too, provided
@@ -145,15 +145,15 @@ export function extractSpineCheckpoint(
  * });
  * ```
  *
- * @example Replay a spine-chain (research) state with a different synth prompt
+ * @example Replay a spine-chain state under a different prompt for the pool that follows it
  * ```ts
  * const events = parseTrace(tracePath);
  * const checkpoint = extractSpineCheckpoint(events);
  * const spine = yield* reconstructBranch(checkpoint);
  * yield* agentPool({
  *   parent: spine,
- *   orchestrate: parallel([{ content: SYNTHESIZE.user }]),
- *   systemPrompt: SYNTHESIZE.system,
+ *   orchestrate: parallel([{ content: NEXT_STAGE.user }]),
+ *   systemPrompt: NEXT_STAGE.system,
  *   ...
  * });
  * ```

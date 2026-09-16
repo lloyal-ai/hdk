@@ -1,20 +1,36 @@
 /**
- * The pane's host-resources sampler — the ONLY node-bound entry in
- * dev-tools. A dev-gated boot starts it beside the trace writer and sends
- * each sample onto the harness event channel; the pane overlays the series
- * on the pressure strip, so machine pressure and model pressure read on
- * one axis.
+ * The host-resources sampler: the machine's side of the pressure a run puts
+ * on it. A dev boot starts it beside the trace writer and sends each sample
+ * onto the harness event channel; a dev pane overlays the series on the KV
+ * pressure strip, so machine pressure and model pressure read on one axis.
  *
- * GPU is deliberately absent: neither Metal nor CUDA exposes a
- * utilization number to an unprivileged process portably — honest
- * omission over a fake gauge.
+ * GPU is deliberately absent: neither Metal nor CUDA exposes a utilization
+ * number to an unprivileged process portably — honest omission over a fake
+ * gauge.
+ *
+ * @category Runtime
  */
-import os from 'node:os';
+import * as os from 'node:os';
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs';
-import type { HostResourcesEvent } from './index.js';
 
-export type { HostResourcesEvent } from './index.js';
+/** One host-resources sample on the wire. Declared beside the sampler so a
+ *  node-free protocol can name it type-only. */
+export interface HostResourcesEvent {
+  type: 'host:resources';
+  /** The harness process's CPU use since the last sample, as % of the
+   *  whole machine (all cores). */
+  cpuPct: number;
+  /** The process's resident set, MB — on a model host this is effectively
+   *  weights + KV + runtime. */
+  rssMb: number;
+  /** System-wide memory in use, MB — honest per-platform accounting
+   *  (darwin: vm_stat active+wired+compressed; linux: total − MemAvailable).
+   *  Absent where no honest read exists. */
+  sysMemUsedMb?: number;
+  /** Total machine memory, MB. */
+  sysMemTotalMb?: number;
+}
 
 /** Start sampling; returns the stop function. The timer is unref'd so it
  *  never holds the process open. */

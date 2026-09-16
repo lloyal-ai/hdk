@@ -40,7 +40,10 @@ export interface AgentHandle<E = AgentEvent> {
  * be invisible to sibling operations.
  *
  * The caller creates the {@link SessionContext} (model path, nCtx, KV types
- * are harness-specific decisions) and passes it in.
+ * are harness-specific decisions) and passes it in. The session is this
+ * initializer's to dispose. The context is disposed at scope exit too unless
+ * `disposeContext: false` says the caller owns it — a boot or a served host
+ * that made the context and frees it itself, so nothing disposes it twice.
  *
  * @param ctx - Session context created via `createContext()`
  * @returns Agent handle with session, store, and event channel
@@ -64,7 +67,7 @@ export interface AgentHandle<E = AgentEvent> {
  */
 export function* initAgents<E = AgentEvent>(
   ctx: SessionContext,
-  opts?: { traceWriter?: TraceWriter; attachmentStore?: AttachmentStore },
+  opts?: { traceWriter?: TraceWriter; attachmentStore?: AttachmentStore; disposeContext?: boolean },
 ): Operation<AgentHandle<E>> {
   const store = new BranchStore(ctx);
   const tw = opts?.traceWriter ?? new NullTraceWriter();
@@ -136,7 +139,7 @@ export function* initAgents<E = AgentEvent>(
     const tw = yield* Trace.expect();
     tw.flush();
     yield* call(() => session.dispose());
-    ctx.dispose();
+    if (opts?.disposeContext !== false) ctx.dispose();
   });
 
   return { ctx, store, session, events };

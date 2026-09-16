@@ -17,10 +17,6 @@
     "./ink": {
       "types": "./dist/ink.d.ts",
       "default": "./dist/ink.js"
-    },
-    "./node": {
-      "types": "./dist/node.d.ts",
-      "default": "./dist/node.js"
     }
   },
   "publishConfig": {

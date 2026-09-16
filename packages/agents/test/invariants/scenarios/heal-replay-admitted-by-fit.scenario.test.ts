@@ -16,8 +16,8 @@
  * live child, so its cells are not refunded. The replacement's suffix (28) fits
  * the headroom that is left; suffix plus lineage does not.
  *
- * What this locks: the heal is refused up front (`pressure_init`, like any
- * spawn the scheduler cannot admit) — no fork announced, no prefill issued on
+ * What this locks: the heal is refused up front (`pool:spawnRefused` with
+ * `pressure_init`, like any spawn the scheduler cannot admit) — no fork announced, no prefill issued on
  * it, no `pool:agentHeal` — and the run closes normally.
  */
 import { describe, it, expect } from 'vitest';
@@ -79,8 +79,9 @@ describe('scenario: a heal is admitted for suffix plus lineage', () => {
     expect(run.traceEvents.some(e => e.type === 'pool:close'), 'the run was torn down, not completed').toBe(true);
 
     // Refused up front, like any spawn the scheduler cannot admit.
-    const drops = run.traceEvents.filter(e => e.type === 'pool:agentDrop') as { agentId: number; reason: string }[];
-    expect(drops.filter(d => d.reason === 'pressure_init' && d.agentId !== original)).toHaveLength(1);
+    // No fork was made for it, so no agent was dropped: the ledger records the refusal against the original.
+    const refused = run.traceEvents.filter(e => e.type === 'pool:spawnRefused') as { reason: string; of?: number }[];
+    expect(refused).toEqual([expect.objectContaining({ reason: 'pressure_init', of: original })]);
     expect(run.traceEvents.some(e => e.type === 'pool:agentHeal')).toBe(false);
     // Nothing was announced or decoded for a replacement that never entered the pool.
     const creates = run.traceEvents.filter(e => e.type === 'branch:create' && (e as { role?: string }).role === 'agentFork');

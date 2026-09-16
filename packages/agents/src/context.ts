@@ -88,6 +88,32 @@ export const Ingress = createContext<ContentIngress>(
 );
 
 /**
+ * Effection context holding the pool knobs a harness fixes once for every
+ * pool and single agent under it: per-token epistemics on `agent:produce`
+ * (`trace`), pruning a returned agent's branch at once (`pruneOnReturn`),
+ * and whether the chat template delimits thinking (`enableThinking`). A pool
+ * option given at the call still wins. Defaults to nothing set, so the
+ * framework's own defaults apply (`false`, `false`, `true`).
+ *
+ * @category Agents
+ */
+export const PoolDefaults = createContext<{ trace?: boolean; pruneOnReturn?: boolean; enableThinking?: boolean }>(
+  'lloyal.poolDefaults',
+  {},
+);
+
+/**
+ * Effection context carrying the resident context's sequence count (`nSeqMax`),
+ * the number of branches the KV can hold at once. The boot passed it to
+ * `createContext`; the SDK does not expose it at runtime, so a boot that
+ * knows it carries it here for the pool's seat accounting and diagnostics.
+ * Unset when no boot carried it.
+ *
+ * @category Agents
+ */
+export const NSeqMax = createContext<number>('lloyal.nSeqMax');
+
+/**
  * Effection context carrying the current trace scope ID
  *
  * Used to build parent-child relationships across nested agent pools.
