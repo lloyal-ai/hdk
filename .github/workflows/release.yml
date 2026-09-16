@@ -62,8 +62,8 @@ jobs:
           test -f packages/dev-tools/dist/react.d.ts
           test -f packages/dev-tools/dist/ink.js
           test -f packages/dev-tools/dist/ink.d.ts
-          test -f packages/dev-tools/dist/node.js
-          test -f packages/dev-tools/dist/node.d.ts
+          test -f packages/rig/dist/node.js
+          test -f packages/rig/dist/node.d.ts
           test -f packages/host/dist/index.js
           test -f packages/host/dist/index.d.ts
           # channel-verify ships a dual build, so BOTH halves must exist —
@@ -107,7 +107,7 @@ jobs:
           # It has no dependencies of its own, so it is safe at the head.
           # media sits right after channel-verify: sdk, agents and rig all
           # depend on it, so it must exist on the registry before they do.
-          for pkg in packages/channel-verify packages/media packages/sdk packages/agents packages/binding packages/rig packages/relay packages/host packages/dev-tools packages/ui packages/desktop; do
+          for pkg in packages/channel-verify packages/media packages/sdk packages/agents packages/binding packages/host packages/relay packages/rig packages/dev-tools packages/ui packages/desktop; do
             name=$(node -p "require('./$pkg/package.json').name")
             version=$(node -p "require('./$pkg/package.json').version")
             # The dist-tag follows each package's OWN version: an -alpha.N

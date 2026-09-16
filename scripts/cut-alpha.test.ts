@@ -41,6 +41,7 @@ describe('planAlphas', () => {
     const registry: Record<string, string> = {
       '@lloyal-labs/sdk': '3.1.0', '@lloyal-labs/lloyal-agents': '5.5.1', '@lloyal-labs/rig': '5.5.0',
       '@lloyal-labs/dev-tools': '0.4.3', '@lloyal-labs/lloyal.node': '3.1.1', '@lloyal-labs/binding': '0.1.0',
+      '@lloyal-labs/host': '0.1.0', '@lloyal-labs/relay': '0.1.0',
     };
     const manifests: Record<string, { name: string; version: string }> = {
       'packages/media': { name: '@lloyal-labs/media', version: '0.1.0' },
@@ -49,6 +50,10 @@ describe('planAlphas', () => {
       'packages/rig': { name: '@lloyal-labs/rig', version: '5.5.0' },
       'packages/binding': { name: '@lloyal-labs/binding', version: '0.1.0' },
       'packages/dev-tools': { name: '@lloyal-labs/dev-tools', version: '0.4.3' },
+      // Published and STABLE, so `nextBase` bumps rather than holding a base: they move for their
+      // binding pin, not for code of their own.
+      'packages/host': { name: '@lloyal-labs/host', version: '0.1.0' },
+      'packages/relay': { name: '@lloyal-labs/relay', version: '0.1.0' },
       // Never published: absent from `registry` above, so `view` throws 404 and the fallback reads the
       // manifest. Their triples already carry a prerelease, which is what keeps cut N at 0.1.0-alpha.N
       // instead of bumping to 0.2.0 — the same branch media relies on, exercised here for a 404.
@@ -67,6 +72,8 @@ describe('planAlphas', () => {
       '@lloyal-labs/lloyal-agents': '6.0.0-alpha.1',
       '@lloyal-labs/rig': '5.6.0-alpha.1',
       '@lloyal-labs/binding': '0.2.0-alpha.1',
+      '@lloyal-labs/host': '0.2.0-alpha.1',
+      '@lloyal-labs/relay': '0.2.0-alpha.1',
       '@lloyal-labs/dev-tools': '0.5.0-alpha.1',
       '@lloyal-labs/ui': '0.1.0-alpha.1',
       '@lloyal-labs/desktop': '0.1.0-alpha.1',
@@ -227,7 +234,24 @@ describe('the abilities admit the set', () => {
       name: string; version: string; peerDependencies?: Record<string, string>;
     };
 
-  it('every ability peer on a set member admits the version the NEXT cut stamps, and the stable before it', () => {
+  /**
+   * Which abilities are still installable against the PUBLISHED stable of a set
+   * member, declared rather than assumed.
+   *
+   * It used to be assumed of all four, and the assumption was wrong: corpus
+   * reaches for `fitChunks`, `DEFAULT_CHUNK_TOKENS`, `BM25Index`, `mergeRanges`
+   * and `subtractRanges`, and documents for those plus `loadDocuments` — none of
+   * which rig 5.5.0 exports. Their manifests said `^5.5.0` anyway, so npm would
+   * install them beside a rig that cannot run them and the failure arrived later,
+   * inside a search. Their ranges now start at `>=5.6.0-0`, and this list says so
+   * out loud: a future narrowing of web or wikipedia still fails here.
+   *
+   * This is a RANGE check, not a compile: nothing in the repo builds an ability
+   * against its declared minimum. That gap is what let the lie stand.
+   */
+  const RUNS_ON_STABLE = new Set(['packages/abilities/web', 'packages/abilities/wikipedia']);
+
+  it('every ability peer on a set member admits the version the NEXT cut stamps, and the stable where it claims to', () => {
     const registry: Record<string, string> = {
       '@lloyal-labs/sdk': '3.1.0', '@lloyal-labs/lloyal-agents': '5.5.1', '@lloyal-labs/rig': '5.5.0',
       '@lloyal-labs/dev-tools': '0.4.3', '@lloyal-labs/lloyal.node': '3.1.1', '@lloyal-labs/binding': '0.1.0',
@@ -240,8 +264,9 @@ describe('the abilities admit the set', () => {
         if (!(name in stamped)) continue;
         expect(satisfies(stamped[name], range), `${dir}: ${name} ${range} admits ${stamped[name]}`).toBe(true);
         // A member the registry has never seen stable (media, whose first
-        // publish was an alpha) has no stable to admit yet.
-        if (registry[name] !== undefined) {
+        // publish was an alpha) has no stable to admit yet — and an ability may
+        // legitimately require a newer member than the last stable.
+        if (registry[name] !== undefined && RUNS_ON_STABLE.has(dir)) {
           expect(satisfies(registry[name], range), `${dir}: ${name} ${range} admits stable ${registry[name]}`).toBe(true);
         }
       }

@@ -20,6 +20,15 @@ export const CUTS = {
   'packages/agents': 'major',
   'packages/rig': 'minor',
   'packages/binding': 'minor',
+  // host and relay ship no new code this arc. They are here because their
+  // PUBLISHED manifests pin `binding ^0.1.0`, and a caret cannot match a
+  // prerelease: with binding at 0.2.0-alpha.N a consumer installs the stamped
+  // binding at the top AND a stale 0.1.0 nested under host, which rig depends
+  // on. The cutter already rewrites their pins in the working tree, but a held
+  // version is skipped by the publish loop's exists-guard, so the rewrite never
+  // reaches the registry. Moving them is what ships it.
+  'packages/host': 'minor',
+  'packages/relay': 'minor',
   'packages/dev-tools': 'minor',
   'packages/ui': 'minor',
   'packages/desktop': 'minor',
@@ -152,8 +161,10 @@ export function include(alphas, names) {
  * version nothing consumes.
  *
  * Only members of `CUTS` are considered. A workspace package outside the arc
- * (host, binding, relay, channel-verify) was never going to move, and its pins
- * following the set is the existing, intended behaviour.
+ * (channel-verify) was never going to move, and its pins following the set is
+ * the existing, intended behaviour. That exemption is why this check could not
+ * see host and relay while they sat outside the table: they DID need to move,
+ * for their pins rather than their code, and nothing here could say so.
  *
  * The predicate is {@link rewriteManifest}'s, deliberately: whatever that
  * function would REWRITE is what this must check, so the two cannot drift.
