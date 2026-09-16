@@ -19,7 +19,10 @@ export const CUTS = {
   'packages/sdk': 'major',
   'packages/agents': 'major',
   'packages/rig': 'minor',
+  'packages/binding': 'minor',
   'packages/dev-tools': 'minor',
+  'packages/ui': 'minor',
+  'packages/desktop': 'minor',
 };
 /** Cross-repo deps that are ALSO being cut this arc (rig depends on the
  *  binding). Must match lloyal.node's own cut level.

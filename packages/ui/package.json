@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/ui",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.0",
   "description": "The view side of a harness: the projection provider and hooks over a bridge, the generic agent fold, and the prose and figure primitives",
   "type": "module",
   "main": "dist/index.js",
