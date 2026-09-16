@@ -9,6 +9,14 @@
  * what `useSyncExternalStore` needs. The contract: a selector with a stable
  * identity may build objects; an inline selector must return a primitive.
  *
+ * The folded state must be an OBJECT, and a new one on every event. Both halves
+ * are load-bearing and neither is a style preference: the memo is a `WeakMap`
+ * keyed by the snapshot, so a scalar or `null` state is not a legal key at all,
+ * and a state mutated in place keeps its identity and so keeps returning the
+ * selection cached against the previous fold. `S extends object` states the
+ * first half to the compiler. The second is a discipline the type system cannot
+ * carry, which is why it is written here.
+ *
  * @category UI
  */
 import { createContext, createElement, useContext, useMemo, useSyncExternalStore } from 'react';
@@ -16,18 +24,20 @@ import type { ReactElement, ReactNode } from 'react';
 import { connectProjection, availabilityOf } from '@lloyal-labs/binding';
 import type { Availability, Bridge, Projection, SessionState, WireStatus } from '@lloyal-labs/binding';
 
-export interface Harness<E, C, S> {
+export interface Harness<E, C, S extends object> {
   bridge: Bridge<E, C, S>;
   projection: Projection<S>;
 }
 
-const HarnessContext = createContext<Harness<unknown, unknown, unknown> | null>(null);
+// `object`, not `unknown`, is what the erased context can say now that `S` is
+// constrained — the hooks below cast back out of it exactly as before.
+const HarnessContext = createContext<Harness<unknown, unknown, object> | null>(null);
 
 /** One projection per bridge, for the life of the page: a React remount under the same bridge reattaches. */
 const projections = new WeakMap<object, Projection<unknown>>();
 
 /** The one projection over a bridge — the provider's, shared with a consumer outside React (a history adapter). */
-export function projectionFor<E, C, S>(bridge: Bridge<E, C, S>, initialState: S, reduce: (state: S, ev: E) => S): Projection<S> {
+export function projectionFor<E, C, S extends object>(bridge: Bridge<E, C, S>, initialState: S, reduce: (state: S, ev: E) => S): Projection<S> {
   let projection = projections.get(bridge) as Projection<S> | undefined;
   if (!projection) {
     projection = connectProjection(bridge, initialState, reduce);
@@ -36,18 +46,18 @@ export function projectionFor<E, C, S>(bridge: Bridge<E, C, S>, initialState: S,
   return projection;
 }
 
-export function HarnessProvider<E, C, S>({ bridge, initialState, reduce, children }: {
+export function HarnessProvider<E, C, S extends object>({ bridge, initialState, reduce, children }: {
   bridge: Bridge<E, C, S>;
   initialState: S;
   reduce: (state: S, ev: E) => S;
   children: ReactNode;
 }): ReactElement {
   const value = useMemo<Harness<E, C, S>>(() => ({ bridge, projection: projectionFor(bridge, initialState, reduce) }), [bridge]);
-  return createElement(HarnessContext.Provider, { value: value as Harness<unknown, unknown, unknown> }, children);
+  return createElement(HarnessContext.Provider, { value: value as Harness<unknown, unknown, object> }, children);
 }
 
 /** The provider's bridge and projection, for a consumer outside the hooks (a history adapter). */
-export function useHarness<E = unknown, C = unknown, S = unknown>(): Harness<E, C, S> {
+export function useHarness<E = unknown, C = unknown, S extends object = object>(): Harness<E, C, S> {
   const h = useContext(HarnessContext);
   if (!h) throw new Error('useHarness: no HarnessProvider above this component');
   return h as Harness<E, C, S>;
@@ -56,17 +66,17 @@ export function useHarness<E = unknown, C = unknown, S = unknown>(): Harness<E, 
 const derived = new WeakMap<object, Map<(s: never) => unknown, unknown>>();
 
 /** Read a derivation of the folded state, memoized per fold. */
-export function useProjection<S, T>(select: (state: S) => T): T {
+export function useProjection<S extends object, T>(select: (state: S) => T): T {
   const { projection } = useHarness<unknown, unknown, S>();
   const read = (): T => {
-    const state = projection.getSnapshot() as unknown as object;
+    const state = projection.getSnapshot();
     let memo = derived.get(state);
     if (!memo) {
       memo = new Map();
       derived.set(state, memo);
     }
     const key = select as unknown as (s: never) => unknown;
-    if (!memo.has(key)) memo.set(key, select(state as unknown as S));
+    if (!memo.has(key)) memo.set(key, select(state));
     return memo.get(key) as T;
   };
   return useSyncExternalStore(projection.subscribe, read, read);
@@ -74,7 +84,7 @@ export function useProjection<S, T>(select: (state: S) => T): T {
 
 /** Dispatch a command to the harness. */
 export function useSend<C>(): (command: C) => void {
-  const { bridge } = useHarness<unknown, C, unknown>();
+  const { bridge } = useHarness<unknown, C, object>();
   return bridge.send;
 }
 
