@@ -9,9 +9,12 @@
  * long work to the execution owner and returns, and never waits for the owner
  * to be idle, which is what keeps this loop dispatching a Stop during the
  * slowest cleanup. `"exit"` from a handler, or from `onError`, ends the loop;
- * `quit` is the dispatcher's own and needs no group. A handler that throws, or
- * a command nobody handles, reaches `onError`; without one the error ends the
- * loop, since nothing else could report it.
+ * `quit` is the dispatcher's own and needs no group. A handler that throws
+ * reaches `onError`; without one the error ends the loop, since nothing else
+ * could report it. A command nobody handles is a different fact — a view wired
+ * to something the application never offered — and reaches `onUnhandled` when
+ * there is one, so the application need not tell the two apart by inspecting
+ * an error; without one it reaches `onError` as an error naming the type.
  *
  * @category Rig
  */
@@ -31,9 +34,11 @@ export interface CommandGroup<C extends { type: string }> {
   handlers: Handlers<C>;
 }
 
-export interface ServeCommandsOptions {
-  /** A handler threw, or a command had no handler. Return `"exit"` to end the loop. */
+export interface ServeCommandsOptions<C extends { type: string } = { type: string }> {
+  /** A handler threw — or, with no `onUnhandled`, a command had no handler. Return `"exit"` to end the loop. */
   onError?: (err: unknown) => Operation<Flow>;
+  /** A command arrived that no group handles. Return `"exit"` to end the loop. */
+  onUnhandled?: (command: C) => Operation<Flow>;
   /**
    * Ends the loop when it settles — for a fact no command carries.
    *
@@ -53,7 +58,7 @@ export interface ServeCommandsOptions {
 export function* serveCommands<C extends { type: string }>(
   commands: Signal<C, void>,
   groups: readonly CommandGroup<C>[],
-  opts: ServeCommandsOptions = {},
+  opts: ServeCommandsOptions<C> = {},
 ): Operation<void> {
   const table = new Map<string, (command: C) => Operation<Flow>>();
   for (const group of groups) {
@@ -75,15 +80,16 @@ export function* serveCommands<C extends { type: string }>(
 function* dispatch<C extends { type: string }>(
   commands: Signal<C, void>,
   table: Map<string, (command: C) => Operation<Flow>>,
-  opts: ServeCommandsOptions,
+  opts: ServeCommandsOptions<C>,
 ): Operation<void> {
   for (const command of yield* each(commands)) {
     if (command.type === 'quit') return;
     let flow: Flow;
     try {
       const handler = table.get(command.type);
-      if (!handler) throw new Error(`serveCommands: no handler for "${command.type}"`);
-      flow = yield* scoped(() => handler(command));
+      if (handler) flow = yield* scoped(() => handler(command));
+      else if (opts.onUnhandled) flow = yield* opts.onUnhandled(command);
+      else throw new Error(`serveCommands: no handler for "${command.type}"`);
     } catch (err) {
       if (!opts.onError) throw err;
       flow = yield* opts.onError(err);
