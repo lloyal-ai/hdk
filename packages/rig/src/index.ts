@@ -71,7 +71,7 @@ export { cancellableFetch, FetchTimeoutError } from './cancellable-fetch';
 export { createInMemoryConfigStore } from './config-store';
 // A harness's configuration as data: one declaration per key, the model block shipped.
 export { defineConfig, modelSettings } from './config';
-export type { ConfigKey, ConfigTable, ConfigOf, OriginOf, CliOf, YmlOf } from './config';
+export type { ConfigKey, ConfigTable, ConfigTier, ConfigOf, OriginOf, CliOf, YmlOf } from './config';
 export { createGrantStore } from './grant-store';
 export { createAbilityRegistry, ability, abilityRequiresConfig } from './registry';
 export type { CreateAbilityRegistryOpts } from './registry';

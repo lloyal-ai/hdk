@@ -16,6 +16,11 @@
  */
 import type { BaseHarnessConfig, ConfigOriginValue } from './runner';
 
+/** When a change to a key takes effect. `session`: at once, for what runs next. `reload`: it names the
+ *  residency (a model, a backend), so it is saved and the next launch applies it. `boot`: it sizes the context
+ *  the process already built, so only `harness.yml` and a restart change it. */
+export type ConfigTier = 'session' | 'reload' | 'boot';
+
 /** One key's declaration. Every field is optional; a key with none is a committed-only string. */
 export interface ConfigKey {
   /** Where the committed rung reads it in `harness.yml`, dotted. Absent: never committed. */
@@ -34,6 +39,9 @@ export interface ConfigKey {
   check?: (value: unknown) => boolean;
   /** What stands when no rung supplies a value. Makes the key always present. */
   default?: unknown;
+  /** When a change takes effect, for whatever offers one: a `session` key is changed with `set_config`, a
+   *  `reload` key with `reload_runtime`, a `boot` key not at all while running. @default 'session' */
+  applies?: ConfigTier;
 }
 
 /** The table: config paths (dotted) to their declarations. */
@@ -115,16 +123,16 @@ const KV_CACHE_TYPES = ['f32', 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'iq4_nl', 
  * @category Rig
  */
 export const modelSettings = defineConfig({
-  'model.id': { yml: 'model.llm.id' },
-  'model.path': { yml: 'model.llm.path', cli: 'modelPath', path: true },
-  'model.reranker': { yml: 'model.reranker.path', cli: 'reranker', path: true },
-  'model.rerankerId': { yml: 'model.reranker.id' },
-  'model.nCtx': { yml: 'model.llm.context', env: 'LLAMA_CTX_SIZE', cli: 'nCtx', integer: true },
-  'model.gpu': { yml: 'model.llm.gpu', env: 'LLOYAL_GPU', cli: 'gpu', oneOf: ['default', 'cuda', 'vulkan'] },
-  'model.branches': { yml: 'model.llm.branches', integer: true },
-  'model.kvCache': { yml: 'model.llm.kvCache', oneOf: KV_CACHE_TYPES },
-  'model.imageMinTokens': { yml: 'model.llm.imageMinTokens', integer: true },
-  'model.imageMaxTokens': { yml: 'model.llm.imageMaxTokens', integer: true },
-  'model.mmproj': { yml: 'model.llm.mmproj' },
-  'model.backendPack': { check: (v: unknown): v is false => v === false },
+  'model.id': { yml: 'model.llm.id', applies: 'reload' },
+  'model.path': { yml: 'model.llm.path', cli: 'modelPath', path: true, applies: 'reload' },
+  'model.reranker': { yml: 'model.reranker.path', cli: 'reranker', path: true, applies: 'reload' },
+  'model.rerankerId': { yml: 'model.reranker.id', applies: 'reload' },
+  'model.nCtx': { yml: 'model.llm.context', env: 'LLAMA_CTX_SIZE', cli: 'nCtx', integer: true, applies: 'boot' },
+  'model.gpu': { yml: 'model.llm.gpu', env: 'LLOYAL_GPU', cli: 'gpu', oneOf: ['default', 'cuda', 'vulkan'], applies: 'reload' },
+  'model.branches': { yml: 'model.llm.branches', integer: true, applies: 'boot' },
+  'model.kvCache': { yml: 'model.llm.kvCache', oneOf: KV_CACHE_TYPES, applies: 'boot' },
+  'model.imageMinTokens': { yml: 'model.llm.imageMinTokens', integer: true, applies: 'reload' },
+  'model.imageMaxTokens': { yml: 'model.llm.imageMaxTokens', integer: true, applies: 'reload' },
+  'model.mmproj': { yml: 'model.llm.mmproj', applies: 'reload' },
+  'model.backendPack': { check: (v: unknown): v is false => v === false, applies: 'boot' },
 });
