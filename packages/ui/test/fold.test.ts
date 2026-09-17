@@ -58,13 +58,29 @@ describe('foldAgents', () => {
 
   it('a terminal whose text lives in another argument streams from that argument, when the application names it', () => {
     const rows = { spawn: () => ({ taskIndex: 0 }), terminal: 'enrich_row', terminalField: 'summary', now };
+    const streamed = '<tool_call>\n<function=enrich_row>\n<parameter=summary>\nA row';
     const r = [
-      spawn(1), produce(1, 'x</think>', 1), produce(1, '<tool_call><parameter=summary>\nA row', 4),
+      spawn(1), produce(1, 'x</think>', 1), produce(1, streamed, 4),
       { type: 'agent:tool_call' as const, agentId: 1, tool: 'enrich_row', args: '{}' },
     ].reduce((acc, ev) => foldAgents(acc, ev, rows), emptyRoster());
     expect(r.agents.get(1)!.timeline.filter((t) => t.kind === 'tool_call')).toEqual([]);
-    expect(extractStreamingReport('<tool_call><parameter=summary>\nA row', 'summary')).toBe('A row');
-    expect(extractStreamingReport('<tool_call><parameter=summary>\nA row')).toBeNull();
+    expect(extractStreamingReport(streamed, { tool: 'enrich_row', field: 'summary' })).toBe('A row');
+    expect(extractStreamingReport(streamed)).toBeNull();
+  });
+
+  it('an ordinary tool that shares the terminal\'s argument name is a step of the work, not a report', () => {
+    // `finish(body)` ends the turn; `write_file(body)` is just a tool. The argument name alone cannot tell them apart.
+    const rows = { spawn: () => ({ taskIndex: 0 }), terminal: 'finish', terminalField: 'body', now };
+    const writing = '<tool_call>\n<function=write_file>\n<parameter=path>\nnotes.md\n</parameter>\n<parameter=body>\nFILE CONTENTS';
+    expect(extractStreamingReport(writing, { tool: 'finish', field: 'body' })).toBeNull();
+    const r = [
+      spawn(1), produce(1, 'x</think>', 1), produce(1, writing, 4),
+      { type: 'agent:tool_call' as const, agentId: 1, tool: 'write_file', args: '{"path":"notes.md"}' },
+    ].reduce((acc, ev) => foldAgents(acc, ev, rows), emptyRoster());
+    expect(r.agents.get(1)!.timeline.filter((t) => t.kind === 'tool_call').map((t) => t.kind === 'tool_call' && t.tool)).toEqual(['write_file']);
+    // And the terminal is still the terminal, after an ordinary call in the same buffer's history.
+    const finishing = '<tool_call>\n<function=finish>\n<parameter=body>\nTHE FINDINGS';
+    expect(extractStreamingReport(finishing, { tool: 'finish', field: 'body' })).toBe('THE FINDINGS');
   });
 
   it('the terminal tool adds no row — its report streamed as content — and agent:return files the report', () => {

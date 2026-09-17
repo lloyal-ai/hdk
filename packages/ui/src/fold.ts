@@ -127,13 +127,24 @@ export interface FoldAgentsOptions {
 /** The argument a terminal tool's report is read from unless the application names another. */
 export const DEFAULT_TERMINAL_FIELD = 'result';
 
-/** Live report markdown from a raw Hermes terminal-tool buffer
- *  (`…<parameter=FIELD>\n<markdown>\n</parameter>…`). Null until the open
- *  marker arrives, so a half-written tool call never flashes as prose. A forced
- *  recovery streams raw prose with no envelope — callers branch on `recovering` first. */
-export function extractStreamingReport(buffer: string, field: string = DEFAULT_TERMINAL_FIELD): string | null {
-  const OPEN = `<parameter=${field}>`;
-  const i = buffer.indexOf(OPEN);
+/** Live report markdown from a raw Hermes tool-call buffer
+ *  (`<tool_call>\n<function=TOOL>\n<parameter=FIELD>\n<markdown>\n</parameter>…`). Null until the open marker
+ *  arrives, so a half-written call never flashes as prose. A forced recovery streams raw prose with no envelope —
+ *  callers branch on `recovering` first.
+ *
+ *  Name the terminal `tool` and only ITS call is read: an argument name says nothing about which tool it belongs
+ *  to, and an ordinary tool may well share one (`write_file(body)` beside `finish(body)`). Without a tool, any
+ *  call carrying the argument is read. */
+export function extractStreamingReport(buffer: string, terminal: { tool?: string; field?: string } = {}): string | null {
+  const OPEN = `<parameter=${terminal.field ?? DEFAULT_TERMINAL_FIELD}>`;
+  let from = 0;
+  if (terminal.tool !== undefined) {
+    // The call being written is the last one opened; it must be the terminal's.
+    const lastCall = buffer.lastIndexOf('<function=');
+    if (lastCall === -1 || !buffer.startsWith(`<function=${terminal.tool}>`, lastCall)) return null;
+    from = lastCall;
+  }
+  const i = buffer.indexOf(OPEN, from);
   if (i === -1) return null;
   let body = buffer.slice(i + OPEN.length);
   const c = body.indexOf('</parameter>');
@@ -348,7 +359,11 @@ export function foldAgents(r: AgentRoster, ev: AgentEvent, opts: FoldAgentsOptio
       // The terminal tool fires at the stop token, but its report already streamed as content: no timeline row,
       // the buffer clears, and `agent:return` files the report next.
       const acting = working.agents.get(ev.agentId);
-      const wasReporting = ev.tool === opts.terminal || (acting?.contentBuffer.includes(`<parameter=${opts.terminalField ?? DEFAULT_TERMINAL_FIELD}>`) ?? false);
+      // A named terminal is recognised by its name and nothing else. Only an application that names none falls
+      // back to the shape of what streamed.
+      const wasReporting = opts.terminal !== undefined
+        ? ev.tool === opts.terminal
+        : extractStreamingReport(acting?.contentBuffer ?? '', { field: opts.terminalField }) !== null;
       if (wasReporting) {
         return replaceAgent(working, ev.agentId, (a) => ({ ...a, phase: 'tool', toolCallCount: a.toolCallCount + 1, contentBuffer: '' }));
       }
