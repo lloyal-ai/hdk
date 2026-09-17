@@ -117,16 +117,22 @@ export interface FoldAgentsOptions {
   /** The tool whose call ends the turn. Its call is not a timeline row: the report streamed live and
    *  `agent:return` files it. */
   terminal?: string;
+  /** The argument of the terminal tool whose text is the report, streamed as the model writes it.
+   *  @default 'result' */
+  terminalField?: string;
   /** The clock, for tests. */
   now?: () => number;
 }
 
+/** The argument a terminal tool's report is read from unless the application names another. */
+export const DEFAULT_TERMINAL_FIELD = 'result';
+
 /** Live report markdown from a raw Hermes terminal-tool buffer
- *  (`…<parameter=result>\n<markdown>\n</parameter>…`). Null until the open
+ *  (`…<parameter=FIELD>\n<markdown>\n</parameter>…`). Null until the open
  *  marker arrives, so a half-written tool call never flashes as prose. A forced
  *  recovery streams raw prose with no envelope — callers branch on `recovering` first. */
-export function extractStreamingReport(buffer: string): string | null {
-  const OPEN = '<parameter=result>';
+export function extractStreamingReport(buffer: string, field: string = DEFAULT_TERMINAL_FIELD): string | null {
+  const OPEN = `<parameter=${field}>`;
   const i = buffer.indexOf(OPEN);
   if (i === -1) return null;
   let body = buffer.slice(i + OPEN.length);
@@ -342,7 +348,7 @@ export function foldAgents(r: AgentRoster, ev: AgentEvent, opts: FoldAgentsOptio
       // The terminal tool fires at the stop token, but its report already streamed as content: no timeline row,
       // the buffer clears, and `agent:return` files the report next.
       const acting = working.agents.get(ev.agentId);
-      const wasReporting = ev.tool === opts.terminal || (acting?.contentBuffer.includes('<parameter=result>') ?? false);
+      const wasReporting = ev.tool === opts.terminal || (acting?.contentBuffer.includes(`<parameter=${opts.terminalField ?? DEFAULT_TERMINAL_FIELD}>`) ?? false);
       if (wasReporting) {
         return replaceAgent(working, ev.agentId, (a) => ({ ...a, phase: 'tool', toolCallCount: a.toolCallCount + 1, contentBuffer: '' }));
       }

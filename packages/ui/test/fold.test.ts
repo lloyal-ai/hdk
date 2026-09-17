@@ -56,6 +56,17 @@ describe('foldAgents', () => {
     expect(a.phase).toBe('thinking');
   });
 
+  it('a terminal whose text lives in another argument streams from that argument, when the application names it', () => {
+    const rows = { spawn: () => ({ taskIndex: 0 }), terminal: 'enrich_row', terminalField: 'summary', now };
+    const r = [
+      spawn(1), produce(1, 'x</think>', 1), produce(1, '<tool_call><parameter=summary>\nA row', 4),
+      { type: 'agent:tool_call' as const, agentId: 1, tool: 'enrich_row', args: '{}' },
+    ].reduce((acc, ev) => foldAgents(acc, ev, rows), emptyRoster());
+    expect(r.agents.get(1)!.timeline.filter((t) => t.kind === 'tool_call')).toEqual([]);
+    expect(extractStreamingReport('<tool_call><parameter=summary>\nA row', 'summary')).toBe('A row');
+    expect(extractStreamingReport('<tool_call><parameter=summary>\nA row')).toBeNull();
+  });
+
   it('the terminal tool adds no row — its report streamed as content — and agent:return files the report', () => {
     const r = fold(emptyRoster(), [
       spawn(1), produce(1, 'x</think>', 1), produce(1, '<tool_call><parameter=result>\nFindings', 4),
