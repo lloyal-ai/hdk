@@ -7,7 +7,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { residentContextOptions, applyGpuEnv, DEFAULT_N_SEQ_MAX, DEFAULT_N_CTX } from '../src/resident-context';
+import { residentContextOptions, applyGpuEnv, backendPackAdvice, DEFAULT_N_SEQ_MAX, DEFAULT_N_CTX } from '../src/resident-context';
 import { DEFAULT_MAX_SESSIONS } from '../src/boot';
 
 const saved = { gpu: process.env.LLOYAL_GPU, fallback: process.env.LLOYAL_NO_FALLBACK };
@@ -69,3 +69,20 @@ describe('the box says how many sessions it can hold', () => {
     expect(/MAX_SESSIONS/.test(boot), 'the environment is still where it comes from').toBe(true);
   });
 });
+
+describe('the backend pack, as the boot speaks of it', () => {
+  const linux = { platform: 'linux', arch: 'x64', backendDir: undefined, packDir: null };
+  it('a cuda boot on linux-x64 with no pack is told how the box gets one', () => {
+    expect(backendPackAdvice({ gpu: 'cuda' }, linux)).toMatch(/lloyal-ai backends:install/);
+    expect(backendPackAdvice({ gpu: 'cuda' }, linux)).toMatch(/LLOYAL_BACKEND_DIR/);
+  });
+  it('and nothing otherwise: another backend, another platform, a provisioned dir, a cached pack', () => {
+    expect(backendPackAdvice({ gpu: 'vulkan' }, linux)).toBeNull();
+    expect(backendPackAdvice({}, linux)).toBeNull();
+    expect(backendPackAdvice({ gpu: 'cuda' }, { ...linux, platform: 'darwin', arch: 'arm64' })).toBeNull();
+    expect(backendPackAdvice({ gpu: 'cuda' }, { ...linux, arch: 'arm64' })).toBeNull();
+    expect(backendPackAdvice({ gpu: 'cuda' }, { ...linux, backendDir: '/opt/lloyal/pack' })).toBeNull();
+    expect(backendPackAdvice({ gpu: 'cuda' }, { ...linux, packDir: '/home/x/.cache/lloyal/backends/3.2.0-linux-x64' })).toBeNull();
+  });
+});
+

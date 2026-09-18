@@ -46,7 +46,7 @@ import { makeEdgeRunner, makeServedRunner, RunnerCtx } from './runner';
 import { startHostResources } from './host-resources';
 import { serveIngest } from './ingest-responder';
 import { bufferedCommandSignal } from './buffered-command-signal';
-import { applyGpuEnv, createResidentContext, DEFAULT_N_CTX, DEFAULT_N_SEQ_MAX } from './resident-context';
+import { applyGpuEnv, backendPackAdvice, createResidentContext, DEFAULT_N_CTX, DEFAULT_N_SEQ_MAX } from './resident-context';
 import { createServedHostDriver } from './served-host';
 import type { OwnedConnection } from './served-host';
 import { HarnessExit } from './harness-exit';
@@ -131,6 +131,8 @@ export function bootEdge<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>, 
     const nCtx = model.nCtx ?? DEFAULT_N_CTX;
     const cfg = { ...loaded.config, model: { ...model, path: modelPath, nCtx } } as ConfigOf<T>;
     applyGpuEnv(model);
+    const advice = backendPackAdvice(model);
+    if (advice) process.stderr.write(`${advice}\n`);
     const ctx = yield* call(() => createResidentContext({ ...model, path: modelPath, nCtx }, mmprojPath));
     yield* ensure(() => { try { ctx.dispose?.(); } catch { /* the context is gone either way */ } });
     yield* NSeqMax.set(model.branches ?? DEFAULT_N_SEQ_MAX);
@@ -278,6 +280,8 @@ export function bootServed<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>
       buildContext: () => createResidentContext(resident, models.mmprojPath),
       *run(m) {
         applyGpuEnv(resident);
+        const advice = backendPackAdvice(resident);
+        if (advice) process.stderr.write(`${advice}\n`);
         yield* NSeqMax.set(resident.branches ?? DEFAULT_N_SEQ_MAX);
         // Per session, off the paths the boot already fetched: the requirement is
         // read again from the same abilities, so nothing loads that nothing asked for.

@@ -7,7 +7,7 @@
  *
  * @category Runtime
  */
-import { createContext as createNativeContext } from '@lloyal-labs/lloyal.node';
+import { createContext as createNativeContext, resolveBackendPackDirSync } from '@lloyal-labs/lloyal.node';
 import type { SessionContext } from '@lloyal-labs/sdk';
 
 /** The model block a boot resolved: the config's model keys with `path` concrete. */
@@ -40,6 +40,28 @@ export function applyGpuEnv(model: { gpu?: string }): void {
   } else if (process.env.LLOYAL_GPU !== undefined) {
     delete process.env.LLOYAL_GPU;
   }
+}
+
+/**
+ * What a `gpu: cuda` boot on linux-x64 is told when no backend pack is on the box — the one thing rig says
+ * about the pack, because acquiring it is provisioning (`lloyal backends:install`, or a deploy that sets
+ * `LLOYAL_BACKEND_DIR`), never a boot's. Null when there is nothing to say: another backend, another platform,
+ * or a pack already there. Pure, so the boot writes it and a test reads the table.
+ */
+export function backendPackAdvice(
+  model: { gpu?: string },
+  world: { platform?: string; arch?: string; backendDir?: string; packDir?: string | null } = {},
+): string | null {
+  const platform = world.platform ?? process.platform;
+  const arch = world.arch ?? process.arch;
+  if (model.gpu !== 'cuda' || platform !== 'linux' || arch !== 'x64') return null;
+  if (world.backendDir ?? process.env.LLOYAL_BACKEND_DIR) return null;
+  if ((world.packDir === undefined ? resolveBackendPackDirSync() : world.packDir) !== null) return null;
+  return (
+    '[rig] gpu: cuda with no backend pack on this box — the npm package serves sm_86/89 natively and runs ' +
+    'JIT-degraded or fails elsewhere (Blackwell, Hopper). Once per box: `npx lloyal-ai backends:install`, or ' +
+    'provision the pack and set LLOYAL_BACKEND_DIR.'
+  );
 }
 
 /** The options one resident context is built from — pure, so a law can read them without a model. */
