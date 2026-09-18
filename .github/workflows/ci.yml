@@ -4,7 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    # An arc branch takes PRs for weeks before it reaches main. Left to `main`
+    # alone, none of them ran here: #129 merged with no checks reported.
+    branches: [main, 'feat/**']
 
 jobs:
   build:

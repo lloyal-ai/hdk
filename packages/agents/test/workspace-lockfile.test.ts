@@ -29,6 +29,23 @@ describe('workspace lockfile', () => {
     }
   });
 
+  it('records every platform package the binding declares — the lockfile is written on one OS and installed on all', () => {
+    // npm resolves an optional platform package for every OS when it writes the
+    // lockfile, and `npm install` on any OS then takes only what the lockfile
+    // records. This one was written on darwin-arm64 at a moment linux-x64 and
+    // darwin-x64 had not reached the registry, and "up to date" preserved the
+    // hole for six cuts: every Linux install of the workspace had no binary,
+    // which CI never said because CI never ran on the arc.
+    const binding = lock.packages['node_modules/@lloyal-labs/lloyal.node'] as {
+      version?: string; optionalDependencies?: Record<string, string>;
+    };
+    const platforms = Object.entries(binding.optionalDependencies ?? {});
+    expect(platforms.length).toBeGreaterThan(0);
+    for (const [name, version] of platforms) {
+      expect(lock.packages[`node_modules/${name}`]?.version, name).toBe(version);
+    }
+  });
+
   it('resolved the binding rig pins, not a stable a devDependency range let in', () => {
     // rig peers on the binding EXACTLY; sdk and host used to develop against
     // `^3.1.1`, which resolves to the published stable — so the workspace

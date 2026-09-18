@@ -90,14 +90,16 @@ describe('scenario: pause/play', () => {
       scripts: [toolSpec],
       policy: new DefaultAgentPolicy({
         terminalToolName: 'report',
-        budget: { time: { softLimit: 80, hardLimit: 120 } },
+        // The run's own work is ~50 ms here and took 143 ms on a CI runner;
+        // the budget must dwarf that, and the hold must dwarf the budget.
+        budget: { time: { softLimit: 600, hardLimit: 800 } },
       }),
       tools: new Map<string, Tool>([['web_search', new SmallTool()]]),
       terminalToolName: 'report', maxTurns: 5,
       pauseAfter: (ev) => ev.type === 'agent:spawn',
-      whilePaused: () => new Promise((r) => setTimeout(r, 200)), // ≫ hardLimit
+      whilePaused: () => new Promise((r) => setTimeout(r, 1200)), // ≫ hardLimit
     });
-    // the agent survived a 200ms pause against a 120ms hard budget: run time
+    // the agent survived a 1200ms pause against an 800ms hard budget: run time
     // excluded the hold, so no policy_exit drop fired.
     const drops = run.traceEvents.filter(te => te.type === 'pool:agentDrop' && (te as { reason?: string }).reason === 'policy_exit');
     expect(drops).toHaveLength(0);
