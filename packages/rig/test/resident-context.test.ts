@@ -71,14 +71,19 @@ describe('the box says how many sessions it can hold', () => {
 });
 
 describe('the backend pack, as the boot speaks of it', () => {
-  const linux = { platform: 'linux', arch: 'x64', backendDir: undefined, packDir: null };
+  const linux = { platform: 'linux', arch: 'x64', backendDir: undefined, packDir: null, nvidia: true };
+  it('a GPU the harness never named: the boot runs on CPU and says so', () => {
+    expect(backendPackAdvice({}, linux)).toMatch(/unset — running on CPU/);
+    expect(backendPackAdvice({ gpu: 'default' }, linux)).toMatch(/running on CPU/);
+    expect(backendPackAdvice({}, { ...linux, nvidia: false })).toBeNull();
+    expect(backendPackAdvice({}, { ...linux, platform: 'darwin' })).toBeNull();
+  });
   it('a cuda boot on linux-x64 with no pack is told how the box gets one', () => {
     expect(backendPackAdvice({ gpu: 'cuda' }, linux)).toMatch(/lloyal-ai backends:install/);
     expect(backendPackAdvice({ gpu: 'cuda' }, linux)).toMatch(/LLOYAL_BACKEND_DIR/);
   });
   it('and nothing otherwise: another backend, another platform, a provisioned dir, a cached pack', () => {
     expect(backendPackAdvice({ gpu: 'vulkan' }, linux)).toBeNull();
-    expect(backendPackAdvice({}, linux)).toBeNull();
     expect(backendPackAdvice({ gpu: 'cuda' }, { ...linux, platform: 'darwin', arch: 'arm64' })).toBeNull();
     expect(backendPackAdvice({ gpu: 'cuda' }, { ...linux, arch: 'arm64' })).toBeNull();
     expect(backendPackAdvice({ gpu: 'cuda' }, { ...linux, backendDir: '/opt/lloyal/pack' })).toBeNull();

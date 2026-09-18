@@ -7,6 +7,7 @@
  *
  * @category Runtime
  */
+import { spawnSync } from 'node:child_process';
 import { createContext as createNativeContext, resolveBackendPackDirSync } from '@lloyal-labs/lloyal.node';
 import type { SessionContext } from '@lloyal-labs/sdk';
 
@@ -50,11 +51,20 @@ export function applyGpuEnv(model: { gpu?: string }): void {
  */
 export function backendPackAdvice(
   model: { gpu?: string },
-  world: { platform?: string; arch?: string; backendDir?: string; packDir?: string | null } = {},
+  world: { platform?: string; arch?: string; backendDir?: string; packDir?: string | null; nvidia?: boolean } = {},
 ): string | null {
   const platform = world.platform ?? process.platform;
   const arch = world.arch ?? process.arch;
-  if (model.gpu !== 'cuda' || platform !== 'linux' || arch !== 'x64') return null;
+  if (platform !== 'linux' || arch !== 'x64') return null;
+  if (model.gpu === undefined || model.gpu === 'default') {
+    // The box has a GPU and the harness never said so: the boot runs on CPU, and says it.
+    if (!(world.nvidia ?? nvidiaGpuPresent())) return null;
+    return (
+      '[rig] an NVIDIA GPU is present but model.llm.gpu is unset — running on CPU. Once per box: ' +
+      '`npx lloyal-ai backends:install` (it sets gpu: cuda in harness.yml).'
+    );
+  }
+  if (model.gpu !== 'cuda') return null;
   if (world.backendDir ?? process.env.LLOYAL_BACKEND_DIR) return null;
   if ((world.packDir === undefined ? resolveBackendPackDirSync() : world.packDir) !== null) return null;
   return (
@@ -62,6 +72,12 @@ export function backendPackAdvice(
     'JIT-degraded or fails elsewhere (Blackwell, Hopper). Once per box: `npx lloyal-ai backends:install`, or ' +
     'provision the pack and set LLOYAL_BACKEND_DIR.'
   );
+}
+
+/** Whether `nvidia-smi` reports a device — one cheap call, only ever on linux-x64. */
+function nvidiaGpuPresent(): boolean {
+  const r = spawnSync('nvidia-smi', ['--query-gpu=name', '--format=csv,noheader'], { encoding: 'utf8', timeout: 5_000 });
+  return r.status === 0 && (r.stdout ?? '').trim() !== '';
 }
 
 /** The options one resident context is built from — pure, so a law can read them without a model. */
