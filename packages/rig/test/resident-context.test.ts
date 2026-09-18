@@ -7,7 +7,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { residentContextOptions, applyGpuEnv, DEFAULT_N_SEQ_MAX, DEFAULT_N_CTX } from '../src/resident-context';
+import { residentContextOptions, applyGpuEnv, backendPackAdvice, prepareBackend, DEFAULT_N_SEQ_MAX, DEFAULT_N_CTX } from '../src/resident-context';
 import { DEFAULT_MAX_SESSIONS } from '../src/boot';
 
 const saved = { gpu: process.env.LLOYAL_GPU, fallback: process.env.LLOYAL_NO_FALLBACK };
@@ -69,3 +69,50 @@ describe('the box says how many sessions it can hold', () => {
     expect(/MAX_SESSIONS/.test(boot), 'the environment is still where it comes from').toBe(true);
   });
 });
+
+describe('the backend pack, as the boot speaks of it', () => {
+  const linux = { platform: 'linux', arch: 'x64', backendDir: undefined, packDir: null, nvidia: true };
+  it('a GPU the harness never named: the boot runs on CPU and says so', () => {
+    expect(backendPackAdvice({}, linux)).toMatch(/unset — running on CPU/);
+    expect(backendPackAdvice({ gpu: 'default' }, linux)).toMatch(/running on CPU/);
+    expect(backendPackAdvice({}, { ...linux, nvidia: false })).toBeNull();
+    expect(backendPackAdvice({}, { ...linux, platform: 'darwin' })).toBeNull();
+  });
+  it('a cuda boot on linux-x64 with no pack is told how the box gets one', () => {
+    expect(backendPackAdvice({ gpu: 'cuda' }, linux)).toMatch(/lloyal-ai backends:install/);
+    expect(backendPackAdvice({ gpu: 'cuda' }, linux)).toMatch(/LLOYAL_BACKEND_DIR/);
+  });
+  it('and nothing otherwise: another backend, another platform, a provisioned dir, a cached pack', () => {
+    expect(backendPackAdvice({ gpu: 'vulkan' }, linux)).toBeNull();
+    expect(backendPackAdvice({ gpu: 'cuda' }, { ...linux, platform: 'darwin', arch: 'arm64' })).toBeNull();
+    expect(backendPackAdvice({ gpu: 'cuda' }, { ...linux, arch: 'arm64' })).toBeNull();
+    expect(backendPackAdvice({ gpu: 'cuda' }, { ...linux, backendDir: '/opt/lloyal/pack' })).toBeNull();
+    expect(backendPackAdvice({ gpu: 'cuda' }, { ...linux, packDir: '/home/x/.cache/lloyal/backends/3.2.0-linux-x64' })).toBeNull();
+  });
+});
+
+describe('prepareBackend — the one step both boots take before the context', () => {
+  const linux = { platform: 'linux', arch: 'x64', backendDir: undefined, packDir: null, nvidia: true };
+  afterEach(() => { delete process.env.LLOYAL_GPU; delete process.env.LLOYAL_NO_FALLBACK; });
+  it('sets the env the addon reads, then says what the box should hear — in that order, once', () => {
+    const said: string[] = [];
+    prepareBackend({ gpu: 'cuda' }, (l) => said.push(l), linux);
+    expect(process.env.LLOYAL_GPU).toBe('cuda');
+    expect(said).toHaveLength(1);
+    expect(said[0]).toMatch(/backends:install/);
+  });
+  it('a GPU the harness never named: env cleared, CPU said', () => {
+    process.env.LLOYAL_GPU = 'cuda';
+    const said: string[] = [];
+    prepareBackend({}, (l) => said.push(l), linux);
+    expect(process.env.LLOYAL_GPU).toBeUndefined();
+    expect(said[0]).toMatch(/running on CPU/);
+  });
+  it('nothing to say: silence, env still set', () => {
+    const said: string[] = [];
+    prepareBackend({ gpu: 'cuda' }, (l) => said.push(l), { ...linux, packDir: '/cache/x' });
+    expect(said).toEqual([]);
+    expect(process.env.LLOYAL_GPU).toBe('cuda');
+  });
+});
+

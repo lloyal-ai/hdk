@@ -16,6 +16,11 @@
  */
 import type { BaseHarnessConfig, ConfigOriginValue } from './runner';
 
+/** When a change to a key takes effect. `session`: at once, for what runs next. `reload`: it names the
+ *  residency (a model, a backend), so it is saved and the next launch applies it. `boot`: it sizes the context
+ *  the process already built, so only `harness.yml` and a restart change it. */
+export type ConfigTier = 'session' | 'reload' | 'boot';
+
 /** One key's declaration. Every field is optional; a key with none is a committed-only string. */
 export interface ConfigKey {
   /** Where the committed rung reads it in `harness.yml`, dotted. Absent: never committed. */
@@ -34,6 +39,12 @@ export interface ConfigKey {
   check?: (value: unknown) => boolean;
   /** What stands when no rung supplies a value. Makes the key always present. */
   default?: unknown;
+  /** When a change takes effect, for whatever offers one: a `session` key is changed with `set_config`, a
+   *  `reload` key with `reload_runtime`, a `boot` key not at all while running. @default 'session' */
+  applies?: ConfigTier;
+  /** What the key is, in one sentence, for whoever shows it. How a change applies is `applies`'s to say, and
+   *  where it is set is `yml`'s, so this says neither. */
+  describe?: string;
 }
 
 /** The table: config paths (dotted) to their declarations. */
@@ -109,22 +120,21 @@ const KV_CACHE_TYPES = ['f32', 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'iq4_nl', 
  *
  * `id`/`path` name the reasoning model (a catalog id, or a file); `reranker`/`rerankerId`
  * the reranker the abilities score with; `nCtx`, `branches` (`nSeqMax`) and `kvCache`
- * size the context; `gpu` picks the backend; `mmproj` and the image token bounds
- * govern vision; `backendPack` records a declined pack offer.
+ * size the context; `gpu` names the backend the process loaded; `mmproj` and the image token bounds
+ * govern vision. The CUDA backend pack is the box's, not a key: `lloyal backends:install` puts it there.
  *
  * @category Rig
  */
 export const modelSettings = defineConfig({
-  'model.id': { yml: 'model.llm.id' },
-  'model.path': { yml: 'model.llm.path', cli: 'modelPath', path: true },
-  'model.reranker': { yml: 'model.reranker.path', cli: 'reranker', path: true },
-  'model.rerankerId': { yml: 'model.reranker.id' },
-  'model.nCtx': { yml: 'model.llm.context', env: 'LLAMA_CTX_SIZE', cli: 'nCtx', integer: true },
-  'model.gpu': { yml: 'model.llm.gpu', env: 'LLOYAL_GPU', cli: 'gpu', oneOf: ['default', 'cuda', 'vulkan'] },
-  'model.branches': { yml: 'model.llm.branches', integer: true },
-  'model.kvCache': { yml: 'model.llm.kvCache', oneOf: KV_CACHE_TYPES },
-  'model.imageMinTokens': { yml: 'model.llm.imageMinTokens', integer: true },
-  'model.imageMaxTokens': { yml: 'model.llm.imageMaxTokens', integer: true },
-  'model.mmproj': { yml: 'model.llm.mmproj' },
-  'model.backendPack': { check: (v: unknown): v is false => v === false },
+  'model.id': { yml: 'model.llm.id', applies: 'reload', describe: 'The catalog id of the reasoning model, fetched and digest-verified before it loads.' },
+  'model.path': { yml: 'model.llm.path', cli: 'modelPath', path: true, applies: 'reload', describe: 'A local .gguf for the reasoning model; outranks the catalog id.' },
+  'model.reranker': { yml: 'model.reranker.path', cli: 'reranker', path: true, applies: 'reload', describe: 'A local .gguf for the reranker — the pointwise judge that scores what the abilities retrieve.' },
+  'model.rerankerId': { yml: 'model.reranker.id', applies: 'reload', describe: 'The catalog id of the reranker.' },
+  'model.nCtx': { yml: 'model.llm.context', env: 'LLAMA_CTX_SIZE', cli: 'nCtx', integer: true, applies: 'boot', describe: 'The context window of the one shared llama_context; every branch leases its cells from this budget.' },
+  'model.gpu': { yml: 'model.llm.gpu', env: 'LLOYAL_GPU', cli: 'gpu', oneOf: ['default', 'cuda', 'vulkan'], applies: 'boot', describe: 'The native backend the process loaded. A configured backend fails loud when unavailable, never silently CPU.' },
+  'model.branches': { yml: 'model.llm.branches', integer: true, applies: 'boot', describe: 'How many sequences the context holds at once (nSeqMax); each holds its own KV lease.' },
+  'model.kvCache': { yml: 'model.llm.kvCache', oneOf: KV_CACHE_TYPES, applies: 'boot', describe: 'The KV cache type for the attention layers: higher precision costs memory, and the reranker needs it.' },
+  'model.imageMinTokens': { yml: 'model.llm.imageMinTokens', integer: true, applies: 'reload', describe: 'The floor on how many tokens one image is projected into; grounding tasks want it high.' },
+  'model.imageMaxTokens': { yml: 'model.llm.imageMaxTokens', integer: true, applies: 'reload', describe: 'The ceiling on what one image costs in context cells; lower it to fit more images.' },
+  'model.mmproj': { yml: 'model.llm.mmproj', applies: 'reload', describe: 'The vision projector for the reasoning model, so it can see an image.' },
 });

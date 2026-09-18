@@ -18,10 +18,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { useStore } from 'zustand';
 import {
-  pressureStrip, pressurePercent, readConfigPath, lanePpl, isLive, KEY_TIERS,
+  pressureStrip, pressurePercent, readConfigPath, lanePpl, isLive, configRows, configCommand, liveConfigKeys, changing,
 } from './index.js';
 import type {
-  AbilityInfo, AgentLane, DevControl, Intervention, PaneModel, PaneTab, Retrieval,
+  AbilityInfo, AgentLane, ConfigRow, ConfigTable, Intervention, PaneModel, PaneTab, Retrieval,
 } from './index.js';
 import { devStoreFor, EDGE_STEP } from './store.js';
 import type { RunFraming } from './index.js';
@@ -31,9 +31,11 @@ export type { DevBridge } from './store.js';
 
 export interface DevPaneProps {
   bridge: DevBridge;
-  /** Template-contributed Settings controls (research passes effort/mode
-   *  rows; basic passes none — its Settings is the read-only inspector). */
-  controls?: readonly DevControl[];
+  /** The application's config table (what `defineConfig` returned). The Settings tab is derived from it: every
+   *  key is a row, grouped by when a change applies, and a key that lists its values is a control that sends
+   *  rig's own settings command. Without it the tab is a read-only inspector of whatever config the harness
+   *  announced. */
+  config?: ConfigTable;
   /** Shown in the status area. */
   title?: string;
   /** The run commands THIS template's harness handles — the pane renders a
@@ -43,7 +45,7 @@ export interface DevPaneProps {
   /** The harness's run framing, as data — which of its OWN events open and
    *  close a run and which mark phases (the labels its agent lanes wear).
    *  Declare it beside the other wiring and edit it when your pipeline
-   *  gains or renames a stage. Default: the stock templates' grammar. */
+   *  gains or renames a stage. Without it the pane frames no runs: it knows no harness's event names. */
   framing?: RunFraming;
   /** The harness view itself. The shell renders it in a scroll container
    *  above the pane; production (no dev on the wire) gets the same shell
@@ -336,7 +338,7 @@ function runEndS(m: PaneModel): number {
 }
 
 // ═══════════════════════════════════════════════════════════════
-export function DevPane({ bridge, controls = [], title, runCommands = {}, framing, children }: DevPaneProps): ReactElement {
+export function DevPane({ bridge, config, title, runCommands = {}, framing, children }: DevPaneProps): ReactElement {
   // The store is a per-bridge SINGLETON: a remount reattaches to the running
   // fold (full history intact) instead of restarting it and desyncing. It is
   // deliberately NOT destroyed on unmount — it lives with the page, like the
@@ -482,7 +484,7 @@ export function DevPane({ bridge, controls = [], title, runCommands = {}, framin
 
   return shell(
     <Pane
-      store={store} m={m} rev={rev} controls={controls} title={title} runCommands={runCommands}
+      store={store} m={m} rev={rev} config={config} title={title} runCommands={runCommands}
       onClose={() => setOpen(false)}
       // Thumbnails resolve through the bridge when the harness exposes a
       // content route; the pane never learns the transport, only the URL.
@@ -492,9 +494,9 @@ export function DevPane({ bridge, controls = [], title, runCommands = {}, framin
 }
 
 // ═══ the docked pane ═══
-function Pane({ store, m, rev, controls, title, runCommands, onClose, mediaUrl }: {
+function Pane({ store, m, rev, config, title, runCommands, onClose, mediaUrl }: {
   store: DevStore; m: PaneModel; rev: number;
-  controls: readonly DevControl[]; title?: string; onClose: () => void;
+  config?: ConfigTable; title?: string; onClose: () => void;
   runCommands: NonNullable<DevPaneProps['runCommands']>;
   mediaUrl?: (digest: string, index?: number) => string;
 }): ReactElement {
@@ -652,7 +654,7 @@ function Pane({ store, m, rev, controls, title, runCommands, onClose, mediaUrl }
         </div>
       )}
       {tab === 'sources' && <Sources m={m} toolColor={toolColor} />}
-      {tab === 'settings' && <Settings m={m} controls={controls} send={(c) => store.send(c)} />}
+      {tab === 'settings' && <Settings m={m} config={config} send={(c) => store.send(c)} />}
 
       {/* status bar */}
       <div style={{
@@ -2226,70 +2228,6 @@ const cutline: React.CSSProperties = {
 
 // ═══ Settings: category nav → harness (master list + detail) · ability pages ═══
 
-/** What the detail panel knows about each well-known harness key: what it is,
- *  and how to change it. Prose is product copy — one clause per sentence. */
-/** Config path → the ConfigOrigin field carrying its rung, so the
- *  exception note (env/cli overrode the manifest) fires for read-only rows
- *  too — full-rung provenance display stays demoted by design. */
-const ORIGIN_KEYS: Readonly<Record<string, string>> = {
-  'model.path': 'modelPath',
-  'model.reranker': 'reranker',
-  'model.nCtx': 'nCtx',
-  'model.gpu': 'gpu',
-  'sources.outputDir': 'outputDir',
-  'defaults.reasoningMode': 'reasoningMode',
-};
-
-const SETTING_META: Readonly<Record<string, { desc: string; how: string }>> = {
-  'defaults.effort': {
-    desc: 'Run effort preset — agent budget, planner breadth, recovery cap.',
-    how: 'Change it here; it applies to your next run and is remembered locally. The committed default lives in harness.yml → defaults.effort.',
-  },
-  'defaults.reasoningMode': {
-    desc: 'flat runs one research wave over the plan; deep lets agents recurse into sub-plans.',
-    how: 'Change it here; it applies to your next run.',
-  },
-  'model.imageMaxTokens': {
-    desc: 'Ceiling on what ONE image costs in KV. Measured on Qwen3.5 with a 176 KB photo: 564 cells uncapped, 251 at 256. Lower it to fit more images into a context; auto lets the model metadata decide.',
-    how: 'Change it here and the runtime reloads on the new value. It does NOT shrink the projector\u2019s warmup allocation, so it will not rescue a boot that runs out of GPU memory before any image arrives.',
-  },
-  'model.imageMinTokens': {
-    desc: 'Floor on per-image detail. Grounding tasks need it high \u2014 llama.cpp warns Qwen-VL wants at least 1024 to read positions reliably.',
-    how: 'Change it here and the runtime reloads on the new value. Raise it if the model reads an image but places things wrongly in it.',
-  },
-  'sources.outputDir': {
-    desc: 'Where per-query run-dirs and the session trace are written. Empty means where the harness started.',
-    how: 'Edit harness.yml → sources.outputDir; the next run picks it up.',
-  },
-  'defaults.maxTurns': {
-    desc: 'Turn cap per agent run.',
-    how: 'Edit harness.yml → defaults.maxTurns; the next run picks it up.',
-  },
-  'model.path': {
-    desc: 'Filesystem path or catalog id of the reasoning model.',
-    how: 'Saved changes load at the next start; this run keeps the model it booted with.',
-  },
-  'model.reranker': {
-    desc: 'The admission judge — a pointwise yes/no reranker that gates what enters the context.',
-    how: 'Saved changes load at the next start.',
-  },
-  'model.nCtx': {
-    desc: 'Context window of the one shared llama_context — every branch leases cells out of this budget.',
-    how: 'Edit harness.yml → model.llm.context, then restart.',
-  },
-  'model.branches': {
-    desc: 'Concurrent sequences — createContext takes it as nSeqMax. Each sequence holds its own KV lease.',
-    how: 'Edit harness.yml → model.llm.branches, then restart.',
-  },
-  'model.kvCache': {
-    desc: 'KV cache type for the attention layers — raise for precision, lower for memory.',
-    how: 'Edit harness.yml → model.llm.kvCache, then restart.',
-  },
-  'model.gpu': {
-    desc: 'Which native backend the process loaded — picked once at start. A configured backend fails loud if unavailable, never silently CPU.',
-    how: 'A deploy choice: set harness.yml → model.llm.gpu (or LLOYAL_GPU), then restart.',
-  },
-};
 
 const TIER_NOTE: Record<string, string> = {
   session: 'applies to the next run',
@@ -2297,11 +2235,17 @@ const TIER_NOTE: Record<string, string> = {
   boot: 'fixed for this run',
 };
 
-function Settings({ m, controls, send }: {
-  m: PaneModel; controls: readonly DevControl[]; send: (c: unknown) => void;
+function Settings({ m, config, send }: {
+  m: PaneModel; config?: ConfigTable; send: (c: unknown) => void;
 }): ReactElement {
   const [cat, setCat] = useState('harness');
-  const [selKey, setSelKey] = useState<string>(controls[0]?.key ?? 'model.path');
+  // With a table the rows are the application's own keys; without one, whatever config the harness announced.
+  const rows: ConfigRow[] = config
+    ? configRows(config)
+    : liveConfigKeys(m.config).map((key) => ({ key, applies: 'session' as const, values: null }));
+  // Open on the first thing that can be changed now, else the first that can be changed at all.
+  const [selKey, setSelKey] = useState<string>(
+    (rows.find((r) => r.values && r.applies === 'session') ?? rows.find((r) => r.values) ?? rows[0])?.key ?? '');
   // The nav lists INSTALLED abilities (`abilities:state` descriptors) — not
   // merely configured ones, or the page you'd use to configure an ability
   // could never appear. Harnesses that don't emit descriptors degrade to the
@@ -2337,66 +2281,28 @@ function Settings({ m, controls, send }: {
         {abilities.map((a) => navItem(a, cat === a))}
       </div>
       {cat === 'harness'
-        ? <HarnessSettings m={m} controls={controls} send={send} selKey={selKey} onSelect={setSelKey} />
+        ? <HarnessSettings m={m} rows={rows} tiered={config !== undefined} send={send} selKey={selKey} onSelect={setSelKey} />
         : <AbilityPage m={m} name={cat} send={send} />}
     </div>
   );
 }
 
-/** A DevControl drawn as a stepped slider: the steps ARE `ctl.values`, in the
- *  order the template declared them, so there is no numeric range to keep in
- *  sync with the option list and no value can be selected that the command
- *  would not accept. Commits on release, not on drag \u2014 each change reloads
- *  the runtime, and every intermediate step would be a reload nobody asked
- *  for. */
-function SteppedSlider({ ctl, value, onSelect, send }: {
-  ctl: DevControl; value: string | undefined;
-  onSelect: () => void; send: (c: unknown) => void;
-}): ReactElement {
-  const at = Math.max(0, ctl.values.indexOf(value ?? ''));
-  const [dragging, setDragging] = useState<number | null>(null);
-  const shown = dragging ?? at;
-  const commit = (i: number): void => {
-    setDragging(null);
-    if (ctl.values[i] !== value) { onSelect(); send({ type: ctl.command, [ctl.field]: ctl.values[i] }); }
-  };
-  return (
-    <span
-      onClick={(e) => e.stopPropagation()}
-      style={{ display: 'flex', alignItems: 'center', gap: 10, width: 276, flex: 'none' }}
-    >
-      <input
-        type="range" min={0} max={ctl.values.length - 1} step={1} value={shown}
-        aria-label={ctl.key}
-        aria-valuetext={String(ctl.values[shown])}
-        onChange={(e) => setDragging(Number(e.target.value))}
-        onPointerUp={(e) => commit(Number((e.target as HTMLInputElement).value))}
-        onKeyUp={(e) => commit(Number((e.target as HTMLInputElement).value))}
-        onBlur={() => setDragging(null)}
-        style={{ flex: 1, accentColor: C.text, cursor: 'pointer', minWidth: 0 }}
-      />
-      <span style={{
-        fontFamily: mono, fontSize: 11, color: C.text, width: 46, flex: 'none',
-        textAlign: 'right', fontVariantNumeric: 'tabular-nums',
-      }}>{ctl.values[shown]}</span>
-    </span>
-  );
-}
-
-function HarnessSettings({ m, controls, send, selKey, onSelect }: {
-  m: PaneModel; controls: readonly DevControl[]; send: (c: unknown) => void;
+function HarnessSettings({ m, rows, tiered, send, selKey, onSelect }: {
+  m: PaneModel; rows: readonly ConfigRow[]; tiered: boolean; send: (c: unknown) => void;
   selKey: string; onSelect: (k: string) => void;
 }): ReactElement {
   const config = m.config!;
-  const byTier = (tier: string): string[] =>
-    Object.entries(KEY_TIERS).filter(([, t]) => t === tier).map(([k]) => k);
-  const controlFor = (key: string): DevControl | undefined => controls.find((c) => c.key === key);
+  const byTier = (tier: string): ConfigRow[] => rows.filter((r) => r.applies === tier);
 
-  const row = (key: string): ReactElement | null => {
-    const ctl = controlFor(key);
-    const value = ctl ? ctl.read(config) : readConfigPath(config, key);
-    if (value === undefined && !ctl) return null; // skip-if-absent: basic has no defaults block
+  const row = (r: ConfigRow): ReactElement => {
+    const { key } = r;
+    const raw = readConfigPath(config, key);   // a declared key the harness never set is still a row: its value is —
+    // A value that is itself a table (an app's own structured key) is shown as it is written.
+    const value = raw === undefined || raw === null ? undefined : typeof raw === 'object' ? JSON.stringify(raw) : String(raw);
     const selected = selKey === key;
+    // Choosing the value already in force is a selection, never a command: on a reload row the command would
+    // end the session to apply nothing.
+    const choose = (v: string): void => { onSelect(key); if (v === value) return; const command = configCommand(r, v); if (command) send(command); };
     return (
       <div key={key} onClick={() => onSelect(key)} role="button" tabIndex={0} onKeyDown={keyActivate(() => onSelect(key))} style={{
         display: 'flex', alignItems: 'center', gap: 8, padding: '5px 14px 5px 11px', minHeight: 36,
@@ -2405,21 +2311,13 @@ function HarnessSettings({ m, controls, send, selKey, onSelect }: {
       }}>
         <span style={{ fontFamily: mono, fontSize: 11.5, fontWeight: 500 }}>{key}</span>
         <span style={{ flex: 1 }} />
-        {ctl?.note && <span style={{ color: C.faint, fontSize: 10.5, marginRight: 10, flex: 'none' }}>{ctl.note}</span>}
-        {ctl?.render === 'slider' ? (
-          <SteppedSlider
-            ctl={ctl}
-            value={value === undefined || value === null ? undefined : String(value)}
-            onSelect={() => onSelect(key)}
-            send={send}
-          />
-        ) : ctl ? (
+        {r.values ? (
           <span style={{ display: 'flex', border: '1px solid #dadce0', borderRadius: 4, overflow: 'hidden', width: 276, flex: 'none' }}>
-            {ctl.values.map((v) => (
+            {r.values.map((v) => (
               <span key={v}
-                onClick={(e) => { e.stopPropagation(); onSelect(key); send({ type: ctl.command, [ctl.field]: v }); }}
+                onClick={(e) => { e.stopPropagation(); choose(v); }}
                 role="button" tabIndex={0} aria-pressed={v === value}
-                onKeyDown={keyActivate(() => { onSelect(key); send({ type: ctl.command, [ctl.field]: v }); })}
+                onKeyDown={keyActivate(() => choose(v))}
                 style={{
                   flex: 1, fontSize: 11, padding: '5px 0', textAlign: 'center', cursor: 'pointer',
                   background: v === value ? C.text : '#fff', color: v === value ? '#fff' : C.dim,
@@ -2429,7 +2327,7 @@ function HarnessSettings({ m, controls, send, selKey, onSelect }: {
           </span>
         ) : (
           <span style={{ fontFamily: mono, fontSize: 11, color: C.dim, maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {value === undefined || value === null || value === '' ? '—' : String(value)}
+            {value === undefined || value === '' ? '—' : value}
             {key === 'model.branches' && <span style={{ color: C.faint }}> → nSeqMax</span>}
           </span>
         )}
@@ -2444,34 +2342,36 @@ function HarnessSettings({ m, controls, send, selKey, onSelect }: {
     </div>
   );
 
-  const meta = SETTING_META[selKey];
-  const tier = KEY_TIERS[selKey];
+  const selected = rows.find((r) => r.key === selKey);
+  const tier = tiered ? selected?.applies : undefined;
   // The exception case, surfaced exactly when true: something outside the
-  // manifest set this value. No badges anywhere else.
-  const originKey = controlFor(selKey)?.originKey ?? ORIGIN_KEYS[selKey];
-  const origin = originKey && m.origin ? m.origin[originKey] : undefined;
+  // manifest set this value. No badges anywhere else. Provenance is keyed by the config path itself.
+  const origin = m.origin ? m.origin[selKey] : undefined;
   const overridden = origin === 'env' || origin === 'cli';
 
   return (
     <>
       <div style={{ flex: 1, minWidth: 0, overflowY: 'auto', paddingBottom: 10 }}>
-        {byTier('session').length > 0 && head('session')}
-        {byTier('session').map(row)}
-        {byTier('reload').length > 0 && head('reload')}
-        {byTier('reload').map(row)}
-        {byTier('boot').length > 0 && head('boot')}
-        {byTier('boot').map(row)}
+        {tiered ? (['session', 'reload', 'boot'] as const).map((t) => byTier(t).length > 0 && (
+          <div key={t}>{head(t)}{byTier(t).map(row)}</div>
+        )) : rows.map(row)}
       </div>
       <div style={{ width: 400, flex: 'none', borderLeft: '1px solid #d9dce1', overflowY: 'auto', padding: '16px 20px', background: C.panelBg }}>
-        {meta ? (
+        {selected ? (
           <>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{ fontFamily: mono, fontSize: 13, fontWeight: 500 }}>{selKey}</span>
               {tier && <span style={chip}>{TIER_NOTE[tier]}</span>}
             </div>
-            <p style={{ maxWidth: 340, margin: '8px 0 0', fontSize: 12, lineHeight: 1.55, color: '#3c4043' }}>{meta.desc}</p>
-            <div style={{ ...label, marginTop: 16 }}>changing it</div>
-            <p style={{ maxWidth: 340, margin: '6px 0 0', fontSize: 12, lineHeight: 1.55, color: '#3c4043' }}>{meta.how}</p>
+            {selected.describe && (
+              <p style={{ maxWidth: 340, margin: '8px 0 0', fontSize: 12, lineHeight: 1.55, color: '#3c4043' }}>{selected.describe}</p>
+            )}
+            {tiered && (
+              <>
+                <div style={{ ...label, marginTop: 16 }}>changing it</div>
+                <p style={{ maxWidth: 340, margin: '6px 0 0', fontSize: 12, lineHeight: 1.55, color: '#3c4043' }}>{changing(selected)}</p>
+              </>
+            )}
             {overridden && (
               <div style={{
                 display: 'flex', alignItems: 'baseline', gap: 8, padding: '8px 11px', marginTop: 14,

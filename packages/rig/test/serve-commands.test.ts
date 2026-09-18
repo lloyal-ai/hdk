@@ -130,6 +130,25 @@ describe('serveCommands', () => {
     });
   });
 
+  it('with `onUnhandled`, a command nobody handles goes there and never to onError; "exit" from it ends the loop', async () => {
+    const log: string[] = [];
+    await run(function* () {
+      const commands = createSignal<Command, void>();
+      const g = { handlers: { *ask() { log.push('ask'); } } };
+      const served = yield* spawn(() => serveCommands(commands, [g], {
+        *onError() { log.push('onError'); },
+        *onUnhandled(c) { log.push(`unhandled:${c.type}`); return c.type === 'leave' ? 'exit' as const : undefined; },
+      }));
+      yield* sleep(0);
+      commands.send({ type: 'boom' });
+      commands.send({ type: 'ask', text: 'still served' });
+      commands.send({ type: 'leave' });
+      commands.send({ type: 'ask', text: 'never' });
+      yield* served;
+    });
+    expect(log).toEqual(['unhandled:boom', 'ask', 'unhandled:leave']);
+  });
+
   it('a command nobody handles reaches onError, naming its type', async () => {
     const seen: string[] = [];
     await run(function* () {

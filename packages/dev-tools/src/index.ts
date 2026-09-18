@@ -1,7 +1,7 @@
 /**
  * The dev pane's node-free core: the event fold that turns a harness's bus
- * stream into renderable pane state, the declarative control table a template
- * contributes, and the provenance/tier vocabulary.
+ * stream into renderable pane state, the settings rows derived from an
+ * application's config table, and the provenance vocabulary.
  *
  * Everything here is DERIVED from events the harness already emits — the pane
  * never asks the harness for anything it doesn't already say. Events arrive
@@ -11,9 +11,9 @@
  *
  * @category DevTools
  */
-import type { ConfigOriginValue } from '@lloyal-labs/rig';
+import type { ConfigOriginValue, ConfigTable, ConfigTier } from '@lloyal-labs/rig';
 
-export type { ConfigOriginValue } from '@lloyal-labs/rig';
+export type { ConfigOriginValue, ConfigTable, ConfigTier } from '@lloyal-labs/rig';
 
 /** A structural bus event — the pane subscribes to the SAME stream the app
  *  view folds, and narrows by `type` per field it reads. */
@@ -22,36 +22,6 @@ export type DevEvent = { type: string } & Record<string, unknown>;
 /** The pane's tabs. `prompt` arrives with the trace transport — the model
  *  knows the name so the tab strip can reserve it, but v1 never activates it. */
 export type PaneTab = 'timeline' | 'sources' | 'settings';
-
-/**
- * One template-contributed Settings control — pure DATA, no components. The
- * pane renders a segmented control and dispatches
- * `{ type: command, [field]: value }` on click; the template's reducer and
- * handlers already know that command (it is the same one its composer sends).
- */
-export interface DevControl {
-  /** The config path this control edits (display + provenance lookup),
-   *  e.g. `defaults.effort`. */
-  key: string;
-  /** The `ConfigOrigin` field carrying this key's provenance, e.g. `effort`
-   *  is not tracked — use the origin key that is (`reasoningMode`), or omit. */
-  originKey?: string;
-  /** The values the segmented control offers, in display order. */
-  values: readonly string[];
-  /** The command `type` dispatched on selection. */
-  command: string;
-  /** The command field carrying the selected value. */
-  field: string;
-  /** How to draw the choice. `segmented` (default) is the button row;
-   *  `slider` is the same ordered `values`, stepped — right when they form a
-   *  scale rather than a set, so the ordering is the information. Both
-   *  dispatch the identical command, so this changes the picture only. */
-  render?: 'segmented' | 'slider';
-  /** One clause shown beside the control, e.g. `applies next run`. */
-  note?: string;
-  /** Read the current value out of the live config object. */
-  read: (config: Record<string, unknown>) => string | undefined;
-}
 
 /** A clarify exchange on the planner's lane — the planner waiting on the
  *  USER, rendered with the same call/wait/answer grammar a tool wait uses. */
@@ -216,15 +186,15 @@ export interface AbilityInfo {
 /** The run's framing, declared by the HARNESS as data — the pane knows no
  *  pipeline's event names. `phases` maps a marker event to the label every
  *  agent spawned under it wears; `open` events reset the run (the timeline
- *  anchor); `close` events end it. A scaffold passes its own grammar beside
- *  the other DevPane wiring and EDITS it when a stage is added or renamed;
- *  the default covers the stock templates. */
+ *  anchor); `close` events end it. An application declares its own and edits
+ *  it when a stage is added or renamed. */
 export interface RunFraming {
   phases: Record<string, string>;
-  /** The submission's start markers IN PIPELINE ORDER. Within one run they
-   *  only advance (preflight → plan:start → query); a marker at or before
-   *  the last one seen is a NEW submission superseding an unclosed run —
-   *  the halt-and-resubmit path emits no close event. */
+  /** The submission's start markers IN THE ORDER THE WIRE SAYS THEM. Within
+   *  one run they only advance; a marker at or before the last one seen is a
+   *  NEW submission superseding an unclosed run — the halt-and-resubmit path
+   *  emits no close event. Declared out of order, a run resets itself
+   *  mid-flight, so the application's own tests should fold a real run. */
   open: readonly string[];
   close: readonly string[];
   /** Where the user's instruction lives on THIS harness's wire — the event
@@ -235,21 +205,10 @@ export interface RunFraming {
   instruction?: { event: string; field: string; attachments?: string };
 }
 
-export const DEFAULT_FRAMING: RunFraming = {
-  phases: {
-    'preflight:start': 'recon',
-    'plan:start': 'planner',
-    'research:start': 'research',
-    'synthesize:start': 'synth',
-  },
-  // Declared in WIRE order: preflight (when it runs) precedes the query
-  // event, which the pipeline sends before the planner phase marker. An
-  // out-of-order declaration makes the supersede heuristic fire a second
-  // resetRun on every run (query idx > plan idx), wiping run-scoped state.
-  open: ['preflight:start', 'query', 'plan:start'],
-  close: ['complete', 'ui:error', 'ui:composer'],
-  instruction: { event: 'query', field: 'query', attachments: 'attachments' },
-};
+/** What the pane assumes of a harness that declares nothing: no event opens or closes a run, no lane wears a
+ *  phase, and no instruction is read. Lanes, retrievals, pressure and the trunk still fold, because those come
+ *  from the runtime's own events; the run axis simply never resets. */
+export const DEFAULT_FRAMING: RunFraming = { phases: {}, open: [], close: [] };
 
 /** One session-trunk turn (`branch:prefill role='warmDelta'` mirror) — the
  *  verbatim conversation delta the spine accreted, with what it cost. */
@@ -1079,22 +1038,71 @@ export const PROVENANCE_RUNGS: readonly { rung: ConfigOriginValue; means: string
   { rung: 'default', means: 'nothing set it' },
 ];
 
-/** The tier each well-known config key answers to. The runtime sets the tier,
- *  not the UI — it decides whether a control can exist at all. */
-export type ConfigTier = 'session' | 'reload' | 'boot';
-export const KEY_TIERS: Readonly<Record<string, ConfigTier>> = {
-  'sources.outputDir': 'session',
-  'defaults.effort': 'session',
-  'defaults.reasoningMode': 'session',
-  'model.path': 'reload',
-  'model.reranker': 'reload',
-  'model.gpu': 'reload',
-  'model.imageMinTokens': 'reload',
-  'model.imageMaxTokens': 'reload',
-  'model.nCtx': 'boot',
-  'model.branches': 'boot',
-  'model.kvCache': 'boot',
-};
+/** One row of the Settings inspector, derived from the application's config table. */
+export interface ConfigRow {
+  /** The config path, e.g. `defaults.effort`. */
+  key: string;
+  /** When a change takes effect — the key's own declaration, `session` when it says nothing. */
+  applies: ConfigTier;
+  /** The values the row offers, or null when it offers none: the key lists no values, it is fixed at boot,
+   *  or it is not a `family.leaf` path, which is all a settings patch can name. */
+  values: readonly string[] | null;
+  /** What the key is, in the declaration's own words; absent when it said nothing. */
+  describe?: string;
+  /** Where `harness.yml` sets it, and the environment variable that outranks the files — for saying how to change it. */
+  yml?: string;
+  env?: string;
+}
+
+export function configRows(table: ConfigTable): ConfigRow[] {
+  return Object.entries(table).map(([key, decl]) => {
+    const applies = decl.applies ?? 'session';
+    const offered = decl.oneOf && applies !== 'boot' && key.split('.').length === 2;
+    return {
+      key, applies, values: offered ? decl.oneOf! : null,
+      ...(decl.describe !== undefined ? { describe: decl.describe } : {}),
+      ...(decl.yml !== undefined ? { yml: decl.yml } : {}),
+      ...(decl.env !== undefined ? { env: decl.env } : {}),
+    };
+  });
+}
+
+/** How a row is changed, said from its declaration: the tier says when, `yml` and `env` say where. */
+export function changing(row: ConfigRow): string {
+  const committed = row.yml ? `harness.yml → ${row.yml}` : null;
+  switch (row.applies) {
+    case 'session':
+      return `Change it here: it applies to the next run and is remembered locally.${committed ? ` The committed default is ${committed}.` : ''}`;
+    case 'reload':
+      return `Saved now; the next start loads it.${committed ? ` Committed in ${committed}.` : ''}`;
+    case 'boot':
+      return `Fixed for this run.${committed ? ` Set ${committed}${row.env ? ` (or ${row.env})` : ''}, then restart.` : ''}`;
+  }
+}
+
+/** The command that makes a row's choice: rig's own, for the row's tier, carrying a real patch. Null when the
+ *  row offers no such choice. */
+export function configCommand(
+  row: ConfigRow,
+  value: string,
+): { type: 'set_config' | 'reload_runtime'; patch: Record<string, Record<string, string>> } | null {
+  if (!row.values?.includes(value)) return null;
+  const [family, leaf] = row.key.split('.');
+  return { type: row.applies === 'reload' ? 'reload_runtime' : 'set_config', patch: { [family]: { [leaf]: value } } };
+}
+
+/** Every path the live config carries — a top-level key, or a `family.leaf` under one — as the rows of a harness
+ *  that handed the pane no table. The keys rig owns (`version`, the `abilities` family) are not the app's. */
+export function liveConfigKeys(config: Record<string, unknown> | null): string[] {
+  const keys: string[] = [];
+  for (const [key, node] of Object.entries(config ?? {})) {
+    if (key === 'version' || key === 'abilities') continue;
+    if (node !== null && typeof node === 'object' && !Array.isArray(node)) {
+      for (const leaf of Object.keys(node as Record<string, unknown>)) keys.push(`${key}.${leaf}`);
+    } else keys.push(key);
+  }
+  return keys;
+}
 
 /** Read a dotted config path off the live config object. */
 export function readConfigPath(

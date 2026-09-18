@@ -13,7 +13,7 @@ import type { AgentEvent, Ability } from '@lloyal-labs/lloyal-agents';
 import { NullAttachmentStore } from '@lloyal-labs/media';
 import { createAbilityRegistry } from '../src/registry';
 import { createInMemoryConfigStore } from '../src/config-store';
-import { coverage } from '../src/coverage';
+import { coverage, sourceKey, sourceOf } from '../src/coverage';
 import { fakeAbility } from './helpers/fake-ability';
 
 const STOP = 999;
@@ -54,5 +54,14 @@ describe('coverage', () => {
     expect(out.coverage).toBe('### web_protocol\nweb covers the news\n\n### corpus_protocol\ncorpus covers the archive');
     expect(out.tokens).toBe(3); // one token per probe
     expect(out.timeMs).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('a probe\'s key', () => {
+  it('names the source it reads, and reads back as that source; any other key is nobody\'s probe', () => {
+    expect(sourceOf(sourceKey('web'))).toBe('web');
+    expect(sourceOf(sourceKey('my-notes.v2'))).toBe('my-notes.v2');
+    expect(sourceOf('task:0')).toBeNull();
+    expect(sourceOf(undefined)).toBeNull();
   });
 });

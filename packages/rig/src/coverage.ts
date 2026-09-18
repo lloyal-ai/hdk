@@ -45,6 +45,12 @@ export interface Coverage {
   timeMs: number;
 }
 
+/** The key a probe's spawn carries (`agent:spawn.key`): it names the SOURCE the probe reads, so a view can label
+ *  the probe by reading it back, whatever order the pool seats the probes in. */
+export const sourceKey = (name: string): string => `source:${name}`;
+/** The source a probe's key names; null for a spawn that is not a probe's. */
+export const sourceOf = (key: string | undefined): string | null => (key?.startsWith('source:') ? key.slice('source:'.length) : null);
+
 /** The default policy with a firm turn cap: `shouldExit` at the cap, where the default only nudges. */
 class ProbePolicy extends DefaultAgentPolicy {
   constructor(opts: ConstructorParameters<typeof DefaultAgentPolicy>[0], private readonly cap: number | undefined) {
@@ -72,7 +78,7 @@ export function* coverage(opts: CoverageOptions): Operation<Coverage> {
         parent: spine, tools, terminal: reportTool, attachments: reference,
         maxTurns: opts.budget.maxTurns, policy,
         orchestrate: parallel(opts.sources.map((ability, i) => ({
-          key: `source:${ability.manifest.name}`,
+          key: sourceKey(ability.manifest.name),
           content: renderTemplate(opts.prompt.user, {
             query: opts.question, date,
             ability: {
@@ -86,7 +92,7 @@ export function* coverage(opts: CoverageOptions): Operation<Coverage> {
         }))),
       });
       const lines = opts.sources
-        .map((ability) => ({ name: ability.manifest.protocol.name, body: probe.byKey(`source:${ability.manifest.name}`)?.result?.trim() }))
+        .map((ability) => ({ name: ability.manifest.protocol.name, body: probe.byKey(sourceKey(ability.manifest.name))?.result?.trim() }))
         .filter((l): l is { name: string; body: string } => !!l.body)
         .map((l) => `### ${l.name}\n${l.body}`);
       return { coverage: lines.join('\n\n'), tokens: probe.totalTokens, toolCalls: probe.totalToolCalls, timeMs: performance.now() - t0 };

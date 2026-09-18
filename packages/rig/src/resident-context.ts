@@ -7,7 +7,8 @@
  *
  * @category Runtime
  */
-import { createContext as createNativeContext } from '@lloyal-labs/lloyal.node';
+import { spawnSync } from 'node:child_process';
+import { createContext as createNativeContext, resolveBackendPackDirSync } from '@lloyal-labs/lloyal.node';
 import type { SessionContext } from '@lloyal-labs/sdk';
 
 /** The model block a boot resolved: the config's model keys with `path` concrete. */
@@ -40,6 +41,54 @@ export function applyGpuEnv(model: { gpu?: string }): void {
   } else if (process.env.LLOYAL_GPU !== undefined) {
     delete process.env.LLOYAL_GPU;
   }
+}
+
+/**
+ * What a `gpu: cuda` boot on linux-x64 is told when no backend pack is on the box — the one thing rig says
+ * about the pack, because acquiring it is provisioning (`lloyal backends:install`, or a deploy that sets
+ * `LLOYAL_BACKEND_DIR`), never a boot's. Null when there is nothing to say: another backend, another platform,
+ * or a pack already there. Pure, so the boot writes it and a test reads the table.
+ */
+export function backendPackAdvice(
+  model: { gpu?: string },
+  world: { platform?: string; arch?: string; backendDir?: string; packDir?: string | null; nvidia?: boolean } = {},
+): string | null {
+  const platform = world.platform ?? process.platform;
+  const arch = world.arch ?? process.arch;
+  if (platform !== 'linux' || arch !== 'x64') return null;
+  if (model.gpu === undefined || model.gpu === 'default') {
+    // The box has a GPU and the harness never said so: the boot runs on CPU, and says it.
+    if (!(world.nvidia ?? nvidiaGpuPresent())) return null;
+    return (
+      '[rig] an NVIDIA GPU is present but model.llm.gpu is unset — running on CPU. Once per box: ' +
+      '`npx lloyal-ai backends:install` (it sets gpu: cuda in harness.yml).'
+    );
+  }
+  if (model.gpu !== 'cuda') return null;
+  if (world.backendDir ?? process.env.LLOYAL_BACKEND_DIR) return null;
+  if ((world.packDir === undefined ? resolveBackendPackDirSync() : world.packDir) !== null) return null;
+  return (
+    '[rig] gpu: cuda with no backend pack on this box — the npm package serves sm_86/89 natively and runs ' +
+    'JIT-degraded or fails elsewhere (Blackwell, Hopper). Once per box: `npx lloyal-ai backends:install`, or ' +
+    'provision the pack and set LLOYAL_BACKEND_DIR.'
+  );
+}
+
+/**
+ * The one backend step a boot takes before its context: the env the addon reads, then whatever the box
+ * should be told. Both boots call this and nothing else about the backend, so a line said here is said on
+ * every surface, and a test of it is a test of them.
+ */
+export function prepareBackend(model: { gpu?: string }, say: (line: string) => void = (l) => process.stderr.write(`${l}\n`), world?: Parameters<typeof backendPackAdvice>[1]): void {
+  applyGpuEnv(model);
+  const advice = backendPackAdvice(model, world);
+  if (advice) say(advice);
+}
+
+/** Whether `nvidia-smi` reports a device — one cheap call, only ever on linux-x64. */
+function nvidiaGpuPresent(): boolean {
+  const r = spawnSync('nvidia-smi', ['--query-gpu=name', '--format=csv,noheader'], { encoding: 'utf8', timeout: 5_000 });
+  return r.status === 0 && (r.stdout ?? '').trim() !== '';
 }
 
 /** The options one resident context is built from — pure, so a law can read them without a model. */

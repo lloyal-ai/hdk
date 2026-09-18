@@ -5,16 +5,31 @@
 import { describe, it, expect } from 'vitest';
 import {
   createPaneModel,
-  foldEvent,
+  foldEvent as foldWith,
   isLive,
   lanePpl,
   pressurePercent,
   pressureStrip,
   sparkline,
   readConfigPath,
-  KEY_TIERS,
+  configRows,
+  configCommand,
+  liveConfigKeys,
+  changing,
+  DEFAULT_FRAMING,
   PROVENANCE_RUNGS,
 } from '../src/index';
+import type { DevEvent, PaneModel, RunFraming } from '../src/index';
+
+/** A harness's own framing, as an application declares it. The pane knows no product's events, so every law
+ *  below that speaks of a run is told what opens one, what closes one, and what each phase is called. */
+const RESEARCH: RunFraming = {
+  phases: { 'preflight:start': 'recon', 'plan:start': 'planner', 'research:start': 'research', 'synthesize:start': 'synth' },
+  open: ['preflight:start', 'query', 'plan:start'],
+  close: ['complete', 'ui:error', 'ui:composer'],
+  instruction: { event: 'query', field: 'query', attachments: 'attachments' },
+};
+const foldEvent = (m: PaneModel, ev: DevEvent, now: number): void => foldWith(m, ev, now, RESEARCH);
 
 const ready = (_dev: boolean) => ({
   type: 'ready',
@@ -66,9 +81,68 @@ describe('config + provenance', () => {
     expect(PROVENANCE_RUNGS.map((r) => r.rung)).toEqual([
       'cli', 'env', 'file', 'yml', 'session', 'default',
     ]);
-    expect(KEY_TIERS['model.nCtx']).toBe('boot');
-    expect(KEY_TIERS['model.gpu']).toBe('reload');
-    expect(KEY_TIERS['defaults.effort']).toBe('session');
+  });
+});
+
+describe('an undeclared harness', () => {
+  it('the default framing names no events: nothing opens a run, no lane wears a phase, no instruction is read', () => {
+    expect(DEFAULT_FRAMING).toEqual({ phases: {}, open: [], close: [] });
+    const m = createPaneModel();
+    foldWith(m, { type: 'query', query: 'q' }, 0);
+    foldWith(m, { type: 'plan:start' }, 1);
+    foldWith(m, { type: 'agent:spawn', agentId: 2, parentAgentId: 1 }, 2);
+    expect(m.runOpen).toBe(false);
+    expect(m.spine).toBeNull();
+    expect(m.lanes.get(2)!.role).toBeNull();
+  });
+});
+
+describe('settings rows, derived from the application\'s config table', () => {
+  const table = {
+    'defaults.effort': { oneOf: ['low', 'high'], default: 'high' },
+    'sources.outputDir': { path: true as const, default: 'reports' },
+    'model.mmproj': { oneOf: ['none', 'qwen-vl'], applies: 'reload' as const },
+    'model.kvCache': { oneOf: ['f16', 'q8_0'], applies: 'boot' as const },
+    'deep.er.key': { oneOf: ['a', 'b'] },
+  };
+  it('every key is a row, at the tier it declares; a key that says nothing applies to the session', () => {
+    expect(configRows(table).map((r) => [r.key, r.applies])).toEqual([
+      ['defaults.effort', 'session'], ['sources.outputDir', 'session'], ['model.mmproj', 'reload'], ['model.kvCache', 'boot'], ['deep.er.key', 'session'],
+    ]);
+  });
+  it('a row offers a choice only where one can be made: it lists its values, it is not fixed at boot, and a patch can name it', () => {
+    const offered = Object.fromEntries(configRows(table).map((r) => [r.key, r.values]));
+    expect(offered).toEqual({
+      'defaults.effort': ['low', 'high'], 'sources.outputDir': null, 'model.mmproj': ['none', 'qwen-vl'], 'model.kvCache': null, 'deep.er.key': null,
+    });
+  });
+  it('a row carries what its key said of itself, and how to change it is said from the declaration alone', () => {
+    const rows = configRows({
+      'defaults.effort': { yml: 'defaults.effort', oneOf: ['low', 'high'], describe: 'How hard a run tries.' },
+      'model.gpu': { yml: 'model.llm.gpu', env: 'LLOYAL_GPU', oneOf: ['default', 'cuda'], applies: 'boot' as const },
+      'model.path': { applies: 'reload' as const },
+    });
+    expect(rows.map((r) => [r.describe, r.yml, r.env])).toEqual([
+      ['How hard a run tries.', 'defaults.effort', undefined], [undefined, 'model.llm.gpu', 'LLOYAL_GPU'], [undefined, undefined, undefined],
+    ]);
+    expect(changing(rows[0])).toBe('Change it here: it applies to the next run and is remembered locally. The committed default is harness.yml → defaults.effort.');
+    expect(changing(rows[1])).toBe('Fixed for this run. Set harness.yml → model.llm.gpu (or LLOYAL_GPU), then restart.');
+    expect(changing(rows[2])).toBe('Saved now; the next start loads it.');
+  });
+  it('a choice is sent as rig\'s own command for its tier, with a real patch', () => {
+    const [effort, , mmproj, kv] = configRows(table);
+    expect(configCommand(effort, 'low')).toEqual({ type: 'set_config', patch: { defaults: { effort: 'low' } } });
+    expect(configCommand(mmproj, 'qwen-vl')).toEqual({ type: 'reload_runtime', patch: { model: { mmproj: 'qwen-vl' } } });
+    expect(configCommand(kv, 'q8_0')).toBeNull();
+    expect(configCommand(effort, 'not-a-value')).toBeNull();
+  });
+});
+
+describe('settings rows of a harness that handed the pane no table', () => {
+  it('every path the live config carries is a row — a top-level scalar as much as a family leaf; rig\'s own keys are not', () => {
+    const config = { version: 1, maxRows: 10, model: { id: 'qwen', gpu: 'default' }, tags: ['a'], abilities: { corpus: { corpusPath: 'x' } } };
+    expect(liveConfigKeys(config)).toEqual(['maxRows', 'model.id', 'model.gpu', 'tags']);
+    expect(liveConfigKeys(null)).toEqual([]);
   });
 });
 
