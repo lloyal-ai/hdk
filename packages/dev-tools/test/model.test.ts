@@ -724,9 +724,9 @@ describe('the spine row', () => {
     it('an undeclared harness still gets a runtime-only spine', () => {
     const m = createPaneModel();
     const bare = { phases: {}, open: ['sheet:task'], close: ['done'] };
-    foldEvent(m, { type: 'sheet:task', instruction: 'sum col B' }, 50, bare);
+    foldWith(m, { type: 'sheet:task', instruction: 'sum col B' }, 50, bare);
     expect(m.spine).toBeNull();
-    foldEvent(m, { type: 'agent:trace', agentId: -1, event: {
+    foldWith(m, { type: 'agent:trace', agentId: -1, event: {
       traceId: 9, parentTraceId: null, ts: 0, type: 'branch:prefill',
       branchHandle: 7, cells: 300, role: 'spineHeader',
     } }, 80, bare);
