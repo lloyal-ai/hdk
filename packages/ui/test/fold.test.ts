@@ -81,6 +81,15 @@ describe('foldAgents', () => {
     // And the terminal is still the terminal, after an ordinary call in the same buffer's history.
     const finishing = '<tool_call>\n<function=finish>\n<parameter=body>\nTHE FINDINGS';
     expect(extractStreamingReport(finishing, { tool: 'finish', field: 'body' })).toBe('THE FINDINGS');
+    // A report that MENTIONS a call is still the terminal's report: the call is known by its envelope, never
+    // by marker-like text inside the body being written.
+    const mentioning = '<tool_call>\n<function=finish>\n<parameter=body>\nUse `<function=write_file>` to save, then';
+    expect(extractStreamingReport(mentioning, { tool: 'finish', field: 'body' })).toBe('Use `<function=write_file>` to save, then');
+    // Two envelopes in one buffer: the report is the LAST call's, and only when that call is the terminal.
+    const twice = writing + '\n</parameter>\n</tool_call>\n' + finishing;
+    expect(extractStreamingReport(twice, { tool: 'finish', field: 'body' })).toBe('THE FINDINGS');
+    const twiceBack = finishing + '\n</parameter>\n</tool_call>\n' + writing;
+    expect(extractStreamingReport(twiceBack, { tool: 'finish', field: 'body' })).toBeNull();
   });
 
   it('the terminal tool adds no row — its report streamed as content — and agent:return files the report', () => {

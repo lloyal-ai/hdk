@@ -139,10 +139,13 @@ export function extractStreamingReport(buffer: string, terminal: { tool?: string
   const OPEN = `<parameter=${terminal.field ?? DEFAULT_TERMINAL_FIELD}>`;
   let from = 0;
   if (terminal.tool !== undefined) {
-    // The call being written is the last one opened; it must be the terminal's.
-    const lastCall = buffer.lastIndexOf('<function=');
-    if (lastCall === -1 || !buffer.startsWith(`<function=${terminal.tool}>`, lastCall)) return null;
-    from = lastCall;
+    // The call being written is the last envelope opened, and a call is known by its envelope — the `<function=`
+    // that follows `<tool_call>` — never by marker-like text inside a body that is still being written.
+    const lastCall = buffer.lastIndexOf('<tool_call>');
+    if (lastCall === -1) return null;
+    const fn = buffer.indexOf('<function=', lastCall);
+    if (fn === -1 || !buffer.startsWith(`<function=${terminal.tool}>`, fn)) return null;
+    from = fn;
   }
   const i = buffer.indexOf(OPEN, from);
   if (i === -1) return null;
