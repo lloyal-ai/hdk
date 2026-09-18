@@ -51,6 +51,33 @@ describe('useDevOverlay', () => {
     app.unmount();
   });
 
+  it('a closed overlay costs the view no render however many events the wire says; an open one repaints', async () => {
+    const b = bus();
+    let toggle: () => void = () => {};
+    let renders = 0;
+    function View() {
+      renders += 1;
+      const dev = useDevOverlay(b);
+      toggle = dev.toggle;
+      return createElement(Box, { flexDirection: 'column' }, createElement(Text, null, 'app'), dev.overlay);
+    }
+    const out = capture();
+    const app = render(createElement(View), { stdout: out.stream, patchConsole: false, exitOnCtrlC: false, debug: true });
+    b.send({ type: 'config:loaded', dev: true, config: {}, origin: {} });
+    await painted();
+    const before = renders;
+    for (let i = 0; i < 50; i++) b.send({ type: 'agent:produce', agentId: 1, text: 'x', tokenCount: i });
+    b.send({ type: 'agent:tick', agentId: 1, cellsUsed: 250, nCtx: 1000 });
+    await painted();
+    expect(renders).toBe(before);
+    toggle();
+    await shown(out.text, /25%/);   // what was folded while closed is shown the moment it opens
+    b.send({ type: 'agent:tick', agentId: 1, cellsUsed: 500, nCtx: 1000 });
+    await shown(out.text, /50%/);
+    expect(out.text()).toMatch(/50%/);
+    app.unmount();
+  });
+
   it('tick traffic is never a tail line, but the pressure it carries repaints the open overlay', async () => {
     const b = bus();
     let toggle: () => void = () => {};

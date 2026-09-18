@@ -190,10 +190,11 @@ export interface AbilityInfo {
  *  it when a stage is added or renamed. */
 export interface RunFraming {
   phases: Record<string, string>;
-  /** The submission's start markers IN PIPELINE ORDER. Within one run they
-   *  only advance (preflight → plan:start → query); a marker at or before
-   *  the last one seen is a NEW submission superseding an unclosed run —
-   *  the halt-and-resubmit path emits no close event. */
+  /** The submission's start markers IN THE ORDER THE WIRE SAYS THEM. Within
+   *  one run they only advance; a marker at or before the last one seen is a
+   *  NEW submission superseding an unclosed run — the halt-and-resubmit path
+   *  emits no close event. Declared out of order, a run resets itself
+   *  mid-flight, so the application's own tests should fold a real run. */
   open: readonly string[];
   close: readonly string[];
   /** Where the user's instruction lives on THIS harness's wire — the event

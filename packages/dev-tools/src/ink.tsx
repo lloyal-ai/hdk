@@ -84,7 +84,7 @@ export function useDevOverlay(
   const model = useRef<PaneModel | null>(null);
   model.current ??= createPaneModel();
   const tail = useRef<string[]>([]);
-  const [open, setOpen] = useState(false);
+  const open = useRef(false);   // read by the subscriber, so a ref: the fold runs whether or not anything is shown
   const [, repaint] = useState(0);
   const { framing, tailRows } = opts;
 
@@ -97,12 +97,14 @@ export function useDevOverlay(
       tail.current.push(ev.type);
       if (tail.current.length > TAIL_KEPT) tail.current.shift();
     }
-    repaint((n) => n + 1);   // every folded event can move what the overlay shows: a tick moves the pressure
+    // Only an open overlay has anything to repaint; then every folded event may move what it shows (a tick moves
+    // the pressure), and Ink paces the terminal, so the view is asked and the terminal is not flooded.
+    if (open.current) repaint((n) => n + 1);
   }), [bus, framing]);
 
   return {
-    overlay: open ? <DevOverlay model={model.current} tail={tail.current} tailRows={tailRows} /> : null,
-    open,
-    toggle: () => setOpen((v) => !v),
+    overlay: open.current ? <DevOverlay model={model.current} tail={tail.current} tailRows={tailRows} /> : null,
+    open: open.current,
+    toggle: () => { open.current = !open.current; repaint((n) => n + 1); },
   };
 }
