@@ -92,9 +92,11 @@ describe('useDevOverlay', () => {
     toggle();
     await shown(out.text, /ctrl\+g close/);
     b.send({ type: 'agent:tick', agentId: 1, cellsUsed: 250, nCtx: 1000 });
-    await shown(out.text, /25%/);
+    b.send({ type: 'host:resources', cpuPct: 3, memBytes: 1, memTotalBytes: 2 });   // a host sample: folded, never listed
+    b.send({ type: 'run:paused' });
+    await shown(out.text, /run:paused/);
     expect(out.text()).toMatch(/25%/);
-    expect(out.text()).not.toMatch(/agent:tick/);
+    expect(out.text()).not.toMatch(/agent:tick|host:resources/);
     app.unmount();
   });
 });

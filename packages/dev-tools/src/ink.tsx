@@ -67,8 +67,9 @@ export function DevOverlay({ model: m, tailRows = 5, tail = [] }: DevOverlayProp
 
 /** How many events the tail remembers; the overlay shows the last few of them. */
 const TAIL_KEPT = 24;
-/** Token and tick traffic: folded, never listed. A tail of these would be all the tail ever showed. */
-const UNLISTED = new Set(['agent:produce', 'agent:tick']);
+/** Samples — token, tick and host traffic: folded into what the overlay draws, never listed. A tail of these
+ *  would be all the tail ever showed. */
+const UNLISTED = new Set(['agent:produce', 'agent:tick', 'host:resources']);
 
 /**
  * The dev overlay for a terminal view. Give it the bus the view already subscribes to; bind `toggle` to a key;
