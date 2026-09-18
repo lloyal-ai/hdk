@@ -2352,7 +2352,9 @@ function HarnessSettings({ m, rows, tiered, send, selKey, onSelect }: {
     // A value that is itself a table (an app's own structured key) is shown as it is written.
     const value = raw === undefined || raw === null ? undefined : typeof raw === 'object' ? JSON.stringify(raw) : String(raw);
     const selected = selKey === key;
-    const choose = (v: string): void => { onSelect(key); const command = configCommand(r, v); if (command) send(command); };
+    // Choosing the value already in force is a selection, never a command: on a reload row the command would
+    // end the session to apply nothing.
+    const choose = (v: string): void => { onSelect(key); if (v === value) return; const command = configCommand(r, v); if (command) send(command); };
     return (
       <div key={key} onClick={() => onSelect(key)} role="button" tabIndex={0} onKeyDown={keyActivate(() => onSelect(key))} style={{
         display: 'flex', alignItems: 'center', gap: 8, padding: '5px 14px 5px 11px', minHeight: 36,
