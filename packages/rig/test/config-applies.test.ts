@@ -14,9 +14,9 @@ describe('config keys: when a change applies', () => {
       expect(decl.applies, key).not.toBe('session');
     }
   });
-  it('what sizes the context the process already built is boot; what names the residency is reload', () => {
+  it('what the process already built or loaded is boot: the context it sized, the backend it picked; what names the residency is reload', () => {
     const tier = (k: keyof typeof modelSettings) => (modelSettings[k] as ConfigKey).applies;
-    expect([tier('model.nCtx'), tier('model.branches'), tier('model.kvCache')]).toEqual(['boot', 'boot', 'boot']);
-    expect([tier('model.path'), tier('model.gpu'), tier('model.reranker')]).toEqual(['reload', 'reload', 'reload']);
+    expect([tier('model.nCtx'), tier('model.branches'), tier('model.kvCache'), tier('model.gpu')]).toEqual(['boot', 'boot', 'boot', 'boot']);
+    expect([tier('model.path'), tier('model.id'), tier('model.reranker')]).toEqual(['reload', 'reload', 'reload']);
   });
 });

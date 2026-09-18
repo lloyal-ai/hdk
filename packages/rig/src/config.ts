@@ -117,7 +117,7 @@ const KV_CACHE_TYPES = ['f32', 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'iq4_nl', 
  *
  * `id`/`path` name the reasoning model (a catalog id, or a file); `reranker`/`rerankerId`
  * the reranker the abilities score with; `nCtx`, `branches` (`nSeqMax`) and `kvCache`
- * size the context; `gpu` picks the backend; `mmproj` and the image token bounds
+ * size the context; `gpu` names the backend the process loaded; `mmproj` and the image token bounds
  * govern vision; `backendPack` records a declined pack offer.
  *
  * @category Rig
@@ -128,7 +128,7 @@ export const modelSettings = defineConfig({
   'model.reranker': { yml: 'model.reranker.path', cli: 'reranker', path: true, applies: 'reload' },
   'model.rerankerId': { yml: 'model.reranker.id', applies: 'reload' },
   'model.nCtx': { yml: 'model.llm.context', env: 'LLAMA_CTX_SIZE', cli: 'nCtx', integer: true, applies: 'boot' },
-  'model.gpu': { yml: 'model.llm.gpu', env: 'LLOYAL_GPU', cli: 'gpu', oneOf: ['default', 'cuda', 'vulkan'], applies: 'reload' },
+  'model.gpu': { yml: 'model.llm.gpu', env: 'LLOYAL_GPU', cli: 'gpu', oneOf: ['default', 'cuda', 'vulkan'], applies: 'boot' },
   'model.branches': { yml: 'model.llm.branches', integer: true, applies: 'boot' },
   'model.kvCache': { yml: 'model.llm.kvCache', oneOf: KV_CACHE_TYPES, applies: 'boot' },
   'model.imageMinTokens': { yml: 'model.llm.imageMinTokens', integer: true, applies: 'reload' },

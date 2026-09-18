@@ -100,25 +100,25 @@ describe('settings rows, derived from the application\'s config table', () => {
   const table = {
     'defaults.effort': { oneOf: ['low', 'high'], default: 'high' },
     'sources.outputDir': { path: true as const, default: 'reports' },
-    'model.gpu': { oneOf: ['default', 'cuda'], applies: 'reload' as const },
+    'model.mmproj': { oneOf: ['none', 'qwen-vl'], applies: 'reload' as const },
     'model.kvCache': { oneOf: ['f16', 'q8_0'], applies: 'boot' as const },
     'deep.er.key': { oneOf: ['a', 'b'] },
   };
   it('every key is a row, at the tier it declares; a key that says nothing applies to the session', () => {
     expect(configRows(table).map((r) => [r.key, r.applies])).toEqual([
-      ['defaults.effort', 'session'], ['sources.outputDir', 'session'], ['model.gpu', 'reload'], ['model.kvCache', 'boot'], ['deep.er.key', 'session'],
+      ['defaults.effort', 'session'], ['sources.outputDir', 'session'], ['model.mmproj', 'reload'], ['model.kvCache', 'boot'], ['deep.er.key', 'session'],
     ]);
   });
   it('a row offers a choice only where one can be made: it lists its values, it is not fixed at boot, and a patch can name it', () => {
     const offered = Object.fromEntries(configRows(table).map((r) => [r.key, r.values]));
     expect(offered).toEqual({
-      'defaults.effort': ['low', 'high'], 'sources.outputDir': null, 'model.gpu': ['default', 'cuda'], 'model.kvCache': null, 'deep.er.key': null,
+      'defaults.effort': ['low', 'high'], 'sources.outputDir': null, 'model.mmproj': ['none', 'qwen-vl'], 'model.kvCache': null, 'deep.er.key': null,
     });
   });
   it('a choice is sent as rig\'s own command for its tier, with a real patch', () => {
-    const [effort, , gpu, kv] = configRows(table);
+    const [effort, , mmproj, kv] = configRows(table);
     expect(configCommand(effort, 'low')).toEqual({ type: 'set_config', patch: { defaults: { effort: 'low' } } });
-    expect(configCommand(gpu, 'cuda')).toEqual({ type: 'reload_runtime', patch: { model: { gpu: 'cuda' } } });
+    expect(configCommand(mmproj, 'qwen-vl')).toEqual({ type: 'reload_runtime', patch: { model: { mmproj: 'qwen-vl' } } });
     expect(configCommand(kv, 'q8_0')).toBeNull();
     expect(configCommand(effort, 'not-a-value')).toBeNull();
   });
