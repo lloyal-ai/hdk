@@ -92,10 +92,12 @@ export function useDevOverlay(
     const m = model.current!;
     if (!m.dev && ev.type !== 'config:loaded') return;
     foldEvent(m, ev as DevEvent, Date.now(), framing);
-    if (!m.dev || UNLISTED.has(ev.type)) return;
-    tail.current.push(ev.type);
-    if (tail.current.length > TAIL_KEPT) tail.current.shift();
-    repaint((n) => n + 1);
+    if (!m.dev) return;
+    if (!UNLISTED.has(ev.type)) {
+      tail.current.push(ev.type);
+      if (tail.current.length > TAIL_KEPT) tail.current.shift();
+    }
+    repaint((n) => n + 1);   // every folded event can move what the overlay shows: a tick moves the pressure
   }), [bus, framing]);
 
   return {

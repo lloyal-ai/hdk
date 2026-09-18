@@ -1067,12 +1067,15 @@ export function configCommand(
   return { type: row.applies === 'reload' ? 'reload_runtime' : 'set_config', patch: { [family]: { [leaf]: value } } };
 }
 
-/** Every `family.leaf` path the live config carries — the rows of a harness that handed the pane no table. */
+/** Every path the live config carries — a top-level key, or a `family.leaf` under one — as the rows of a harness
+ *  that handed the pane no table. The keys rig owns (`version`, the `abilities` family) are not the app's. */
 export function liveConfigKeys(config: Record<string, unknown> | null): string[] {
   const keys: string[] = [];
-  for (const [family, node] of Object.entries(config ?? {})) {
-    if (family === 'abilities' || node === null || typeof node !== 'object' || Array.isArray(node)) continue;
-    for (const leaf of Object.keys(node as Record<string, unknown>)) keys.push(`${family}.${leaf}`);
+  for (const [key, node] of Object.entries(config ?? {})) {
+    if (key === 'version' || key === 'abilities') continue;
+    if (node !== null && typeof node === 'object' && !Array.isArray(node)) {
+      for (const leaf of Object.keys(node as Record<string, unknown>)) keys.push(`${key}.${leaf}`);
+    } else keys.push(key);
   }
   return keys;
 }

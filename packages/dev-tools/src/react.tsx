@@ -2346,10 +2346,9 @@ function HarnessSettings({ m, rows, tiered, send, selKey, onSelect }: {
   const config = m.config!;
   const byTier = (tier: string): ConfigRow[] => rows.filter((r) => r.applies === tier);
 
-  const row = (r: ConfigRow): ReactElement | null => {
+  const row = (r: ConfigRow): ReactElement => {
     const { key } = r;
-    const raw = readConfigPath(config, key);
-    if (raw === undefined && !r.values) return null; // a key this harness never set, and nothing to choose
+    const raw = readConfigPath(config, key);   // a declared key the harness never set is still a row: its value is —
     // A value that is itself a table (an app's own structured key) is shown as it is written.
     const value = raw === undefined || raw === null ? undefined : typeof raw === 'object' ? JSON.stringify(raw) : String(raw);
     const selected = selKey === key;

@@ -14,6 +14,7 @@ import {
   readConfigPath,
   configRows,
   configCommand,
+  liveConfigKeys,
   DEFAULT_FRAMING,
   PROVENANCE_RUNGS,
 } from '../src/index';
@@ -120,6 +121,14 @@ describe('settings rows, derived from the application\'s config table', () => {
     expect(configCommand(gpu, 'cuda')).toEqual({ type: 'reload_runtime', patch: { model: { gpu: 'cuda' } } });
     expect(configCommand(kv, 'q8_0')).toBeNull();
     expect(configCommand(effort, 'not-a-value')).toBeNull();
+  });
+});
+
+describe('settings rows of a harness that handed the pane no table', () => {
+  it('every path the live config carries is a row — a top-level scalar as much as a family leaf; rig\'s own keys are not', () => {
+    const config = { version: 1, maxRows: 10, model: { id: 'qwen', gpu: 'default' }, tags: ['a'], abilities: { corpus: { corpusPath: 'x' } } };
+    expect(liveConfigKeys(config)).toEqual(['maxRows', 'model.id', 'model.gpu', 'tags']);
+    expect(liveConfigKeys(null)).toEqual([]);
   });
 });
 

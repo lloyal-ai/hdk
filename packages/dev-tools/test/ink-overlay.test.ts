@@ -50,4 +50,24 @@ describe('useDevOverlay', () => {
     expect(out.text()).not.toMatch(/agent:produce/);
     app.unmount();
   });
+
+  it('tick traffic is never a tail line, but the pressure it carries repaints the open overlay', async () => {
+    const b = bus();
+    let toggle: () => void = () => {};
+    function View() {
+      const dev = useDevOverlay(b);
+      toggle = dev.toggle;
+      return createElement(Box, { flexDirection: 'column' }, createElement(Text, null, 'app'), dev.overlay);
+    }
+    const out = capture();
+    const app = render(createElement(View), { stdout: out.stream, patchConsole: false, exitOnCtrlC: false, debug: true });
+    b.send({ type: 'config:loaded', dev: true, config: {}, origin: {} });
+    toggle();
+    await shown(out.text, /ctrl\+g close/);
+    b.send({ type: 'agent:tick', agentId: 1, cellsUsed: 250, nCtx: 1000 });
+    await shown(out.text, /25%/);
+    expect(out.text()).toMatch(/25%/);
+    expect(out.text()).not.toMatch(/agent:tick/);
+    app.unmount();
+  });
 });
