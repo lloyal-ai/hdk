@@ -74,6 +74,17 @@ export function backendPackAdvice(
   );
 }
 
+/**
+ * The one backend step a boot takes before its context: the env the addon reads, then whatever the box
+ * should be told. Both boots call this and nothing else about the backend, so a line said here is said on
+ * every surface, and a test of it is a test of them.
+ */
+export function prepareBackend(model: { gpu?: string }, say: (line: string) => void = (l) => process.stderr.write(`${l}\n`), world?: Parameters<typeof backendPackAdvice>[1]): void {
+  applyGpuEnv(model);
+  const advice = backendPackAdvice(model, world);
+  if (advice) say(advice);
+}
+
 /** Whether `nvidia-smi` reports a device — one cheap call, only ever on linux-x64. */
 function nvidiaGpuPresent(): boolean {
   const r = spawnSync('nvidia-smi', ['--query-gpu=name', '--format=csv,noheader'], { encoding: 'utf8', timeout: 5_000 });

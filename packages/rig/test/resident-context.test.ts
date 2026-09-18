@@ -7,7 +7,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { residentContextOptions, applyGpuEnv, backendPackAdvice, DEFAULT_N_SEQ_MAX, DEFAULT_N_CTX } from '../src/resident-context';
+import { residentContextOptions, applyGpuEnv, backendPackAdvice, prepareBackend, DEFAULT_N_SEQ_MAX, DEFAULT_N_CTX } from '../src/resident-context';
 import { DEFAULT_MAX_SESSIONS } from '../src/boot';
 
 const saved = { gpu: process.env.LLOYAL_GPU, fallback: process.env.LLOYAL_NO_FALLBACK };
@@ -88,6 +88,31 @@ describe('the backend pack, as the boot speaks of it', () => {
     expect(backendPackAdvice({ gpu: 'cuda' }, { ...linux, arch: 'arm64' })).toBeNull();
     expect(backendPackAdvice({ gpu: 'cuda' }, { ...linux, backendDir: '/opt/lloyal/pack' })).toBeNull();
     expect(backendPackAdvice({ gpu: 'cuda' }, { ...linux, packDir: '/home/x/.cache/lloyal/backends/3.2.0-linux-x64' })).toBeNull();
+  });
+});
+
+describe('prepareBackend — the one step both boots take before the context', () => {
+  const linux = { platform: 'linux', arch: 'x64', backendDir: undefined, packDir: null, nvidia: true };
+  afterEach(() => { delete process.env.LLOYAL_GPU; delete process.env.LLOYAL_NO_FALLBACK; });
+  it('sets the env the addon reads, then says what the box should hear — in that order, once', () => {
+    const said: string[] = [];
+    prepareBackend({ gpu: 'cuda' }, (l) => said.push(l), linux);
+    expect(process.env.LLOYAL_GPU).toBe('cuda');
+    expect(said).toHaveLength(1);
+    expect(said[0]).toMatch(/backends:install/);
+  });
+  it('a GPU the harness never named: env cleared, CPU said', () => {
+    process.env.LLOYAL_GPU = 'cuda';
+    const said: string[] = [];
+    prepareBackend({}, (l) => said.push(l), linux);
+    expect(process.env.LLOYAL_GPU).toBeUndefined();
+    expect(said[0]).toMatch(/running on CPU/);
+  });
+  it('nothing to say: silence, env still set', () => {
+    const said: string[] = [];
+    prepareBackend({ gpu: 'cuda' }, (l) => said.push(l), { ...linux, packDir: '/cache/x' });
+    expect(said).toEqual([]);
+    expect(process.env.LLOYAL_GPU).toBe('cuda');
   });
 });
 

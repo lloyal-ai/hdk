@@ -46,7 +46,7 @@ import { makeEdgeRunner, makeServedRunner, RunnerCtx } from './runner';
 import { startHostResources } from './host-resources';
 import { serveIngest } from './ingest-responder';
 import { bufferedCommandSignal } from './buffered-command-signal';
-import { applyGpuEnv, backendPackAdvice, createResidentContext, DEFAULT_N_CTX, DEFAULT_N_SEQ_MAX } from './resident-context';
+import { prepareBackend, createResidentContext, DEFAULT_N_CTX, DEFAULT_N_SEQ_MAX } from './resident-context';
 import { createServedHostDriver } from './served-host';
 import type { OwnedConnection } from './served-host';
 import { HarnessExit } from './harness-exit';
@@ -100,7 +100,7 @@ export interface BootEdgeOpts<E, C> {
  */
 export function bootEdge<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>, opts: BootEdgeOpts<E, C> = {}): void {
   const projectRoot = opts.projectRoot ?? process.cwd();
-  // Snapshotted before `applyGpuEnv` writes LLOYAL_GPU, so a re-layering after a save reads the operator's env.
+  // Snapshotted before `prepareBackend` writes LLOYAL_GPU, so a re-layering after a save reads the operator's env.
   const bootEnv = { ...process.env };
   const { values: flags } = parseArgs({ args: (opts.argv ?? process.argv).slice(2), options: { query: { type: 'string' } }, strict: false });
   const initialQuery = typeof flags.query === 'string' ? flags.query : undefined;
@@ -130,9 +130,7 @@ export function bootEdge<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>, 
 
     const nCtx = model.nCtx ?? DEFAULT_N_CTX;
     const cfg = { ...loaded.config, model: { ...model, path: modelPath, nCtx } } as ConfigOf<T>;
-    applyGpuEnv(model);
-    const advice = backendPackAdvice(model);
-    if (advice) process.stderr.write(`${advice}\n`);
+    prepareBackend(model);
     const ctx = yield* call(() => createResidentContext({ ...model, path: modelPath, nCtx }, mmprojPath));
     yield* ensure(() => { try { ctx.dispose?.(); } catch { /* the context is gone either way */ } });
     yield* NSeqMax.set(model.branches ?? DEFAULT_N_SEQ_MAX);
@@ -279,9 +277,7 @@ export function bootServed<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>
       maxNativeSessions,
       buildContext: () => createResidentContext(resident, models.mmprojPath),
       *run(m) {
-        applyGpuEnv(resident);
-        const advice = backendPackAdvice(resident);
-        if (advice) process.stderr.write(`${advice}\n`);
+        prepareBackend(resident);
         yield* NSeqMax.set(resident.branches ?? DEFAULT_N_SEQ_MAX);
         // Per session, off the paths the boot already fetched: the requirement is
         // read again from the same abilities, so nothing loads that nothing asked for.
