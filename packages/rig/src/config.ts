@@ -137,5 +137,5 @@ export const modelSettings = defineConfig({
   'model.imageMinTokens': { yml: 'model.llm.imageMinTokens', integer: true, applies: 'reload', describe: 'The floor on how many tokens one image is projected into; grounding tasks want it high.' },
   'model.imageMaxTokens': { yml: 'model.llm.imageMaxTokens', integer: true, applies: 'reload', describe: 'The ceiling on what one image costs in context cells; lower it to fit more images.' },
   'model.mmproj': { yml: 'model.llm.mmproj', applies: 'reload', describe: 'The vision projector for the reasoning model, so it can see an image.' },
-  'model.backendPack': { check: (v: unknown): v is false => v === false, applies: 'boot', describe: 'False once a native backend pack was offered and declined, so the offer is not repeated.' },
+  'model.backendPack': { check: (v: unknown): v is false => v === false, applies: 'boot', describe: 'False once the boot-time offer of a signed CUDA backend pack was declined, so it is not repeated; an accepted or provisioned pack is recorded by its cache, not here.' },
 });
