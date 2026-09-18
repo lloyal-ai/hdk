@@ -1047,14 +1047,37 @@ export interface ConfigRow {
   /** The values the row offers, or null when it offers none: the key lists no values, it is fixed at boot,
    *  or it is not a `family.leaf` path, which is all a settings patch can name. */
   values: readonly string[] | null;
+  /** What the key is, in the declaration's own words; absent when it said nothing. */
+  describe?: string;
+  /** Where `harness.yml` sets it, and the environment variable that outranks the files — for saying how to change it. */
+  yml?: string;
+  env?: string;
 }
 
 export function configRows(table: ConfigTable): ConfigRow[] {
   return Object.entries(table).map(([key, decl]) => {
     const applies = decl.applies ?? 'session';
     const offered = decl.oneOf && applies !== 'boot' && key.split('.').length === 2;
-    return { key, applies, values: offered ? decl.oneOf! : null };
+    return {
+      key, applies, values: offered ? decl.oneOf! : null,
+      ...(decl.describe !== undefined ? { describe: decl.describe } : {}),
+      ...(decl.yml !== undefined ? { yml: decl.yml } : {}),
+      ...(decl.env !== undefined ? { env: decl.env } : {}),
+    };
   });
+}
+
+/** How a row is changed, said from its declaration: the tier says when, `yml` and `env` say where. */
+export function changing(row: ConfigRow): string {
+  const committed = row.yml ? `harness.yml → ${row.yml}` : null;
+  switch (row.applies) {
+    case 'session':
+      return `Change it here: it applies to the next run and is remembered locally.${committed ? ` The committed default is ${committed}.` : ''}`;
+    case 'reload':
+      return `Saved now; the next start loads it.${committed ? ` Committed in ${committed}.` : ''}`;
+    case 'boot':
+      return `Fixed for this run.${committed ? ` Set ${committed}${row.env ? ` (or ${row.env})` : ''}, then restart.` : ''}`;
+  }
 }
 
 /** The command that makes a row's choice: rig's own, for the row's tier, carrying a real patch. Null when the

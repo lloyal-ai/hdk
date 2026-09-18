@@ -14,6 +14,12 @@ describe('config keys: when a change applies', () => {
       expect(decl.applies, key).not.toBe('session');
     }
   });
+  it('every key of the model block says what it is, in a sentence that names neither the tier nor the file', () => {
+    for (const [key, decl] of Object.entries(modelSettings) as [string, ConfigKey][]) {
+      expect(decl.describe, key).toMatch(/\S.*\.$/);
+      expect(decl.describe, key).not.toMatch(/harness\.yml|restart|next run/i);
+    }
+  });
   it('what the process already built or loaded is boot: the context it sized, the backend it picked; what names the residency is reload', () => {
     const tier = (k: keyof typeof modelSettings) => (modelSettings[k] as ConfigKey).applies;
     expect([tier('model.nCtx'), tier('model.branches'), tier('model.kvCache'), tier('model.gpu')]).toEqual(['boot', 'boot', 'boot', 'boot']);

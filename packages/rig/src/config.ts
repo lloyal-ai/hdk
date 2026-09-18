@@ -42,6 +42,9 @@ export interface ConfigKey {
   /** When a change takes effect, for whatever offers one: a `session` key is changed with `set_config`, a
    *  `reload` key with `reload_runtime`, a `boot` key not at all while running. @default 'session' */
   applies?: ConfigTier;
+  /** What the key is, in one sentence, for whoever shows it. How a change applies is `applies`'s to say, and
+   *  where it is set is `yml`'s, so this says neither. */
+  describe?: string;
 }
 
 /** The table: config paths (dotted) to their declarations. */
@@ -123,16 +126,16 @@ const KV_CACHE_TYPES = ['f32', 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'iq4_nl', 
  * @category Rig
  */
 export const modelSettings = defineConfig({
-  'model.id': { yml: 'model.llm.id', applies: 'reload' },
-  'model.path': { yml: 'model.llm.path', cli: 'modelPath', path: true, applies: 'reload' },
-  'model.reranker': { yml: 'model.reranker.path', cli: 'reranker', path: true, applies: 'reload' },
-  'model.rerankerId': { yml: 'model.reranker.id', applies: 'reload' },
-  'model.nCtx': { yml: 'model.llm.context', env: 'LLAMA_CTX_SIZE', cli: 'nCtx', integer: true, applies: 'boot' },
-  'model.gpu': { yml: 'model.llm.gpu', env: 'LLOYAL_GPU', cli: 'gpu', oneOf: ['default', 'cuda', 'vulkan'], applies: 'boot' },
-  'model.branches': { yml: 'model.llm.branches', integer: true, applies: 'boot' },
-  'model.kvCache': { yml: 'model.llm.kvCache', oneOf: KV_CACHE_TYPES, applies: 'boot' },
-  'model.imageMinTokens': { yml: 'model.llm.imageMinTokens', integer: true, applies: 'reload' },
-  'model.imageMaxTokens': { yml: 'model.llm.imageMaxTokens', integer: true, applies: 'reload' },
-  'model.mmproj': { yml: 'model.llm.mmproj', applies: 'reload' },
-  'model.backendPack': { check: (v: unknown): v is false => v === false, applies: 'boot' },
+  'model.id': { yml: 'model.llm.id', applies: 'reload', describe: 'The catalog id of the reasoning model, fetched and digest-verified before it loads.' },
+  'model.path': { yml: 'model.llm.path', cli: 'modelPath', path: true, applies: 'reload', describe: 'A local .gguf for the reasoning model; outranks the catalog id.' },
+  'model.reranker': { yml: 'model.reranker.path', cli: 'reranker', path: true, applies: 'reload', describe: 'A local .gguf for the reranker — the pointwise judge that scores what the abilities retrieve.' },
+  'model.rerankerId': { yml: 'model.reranker.id', applies: 'reload', describe: 'The catalog id of the reranker.' },
+  'model.nCtx': { yml: 'model.llm.context', env: 'LLAMA_CTX_SIZE', cli: 'nCtx', integer: true, applies: 'boot', describe: 'The context window of the one shared llama_context; every branch leases its cells from this budget.' },
+  'model.gpu': { yml: 'model.llm.gpu', env: 'LLOYAL_GPU', cli: 'gpu', oneOf: ['default', 'cuda', 'vulkan'], applies: 'boot', describe: 'The native backend the process loaded. A configured backend fails loud when unavailable, never silently CPU.' },
+  'model.branches': { yml: 'model.llm.branches', integer: true, applies: 'boot', describe: 'How many sequences the context holds at once (nSeqMax); each holds its own KV lease.' },
+  'model.kvCache': { yml: 'model.llm.kvCache', oneOf: KV_CACHE_TYPES, applies: 'boot', describe: 'The KV cache type for the attention layers: higher precision costs memory, and the reranker needs it.' },
+  'model.imageMinTokens': { yml: 'model.llm.imageMinTokens', integer: true, applies: 'reload', describe: 'The floor on how many tokens one image is projected into; grounding tasks want it high.' },
+  'model.imageMaxTokens': { yml: 'model.llm.imageMaxTokens', integer: true, applies: 'reload', describe: 'The ceiling on what one image costs in context cells; lower it to fit more images.' },
+  'model.mmproj': { yml: 'model.llm.mmproj', applies: 'reload', describe: 'The vision projector for the reasoning model, so it can see an image.' },
+  'model.backendPack': { check: (v: unknown): v is false => v === false, applies: 'boot', describe: 'False once a native backend pack was offered and declined, so the offer is not repeated.' },
 });

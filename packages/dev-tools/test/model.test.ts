@@ -15,6 +15,7 @@ import {
   configRows,
   configCommand,
   liveConfigKeys,
+  changing,
   DEFAULT_FRAMING,
   PROVENANCE_RUNGS,
 } from '../src/index';
@@ -114,6 +115,19 @@ describe('settings rows, derived from the application\'s config table', () => {
     expect(offered).toEqual({
       'defaults.effort': ['low', 'high'], 'sources.outputDir': null, 'model.mmproj': ['none', 'qwen-vl'], 'model.kvCache': null, 'deep.er.key': null,
     });
+  });
+  it('a row carries what its key said of itself, and how to change it is said from the declaration alone', () => {
+    const rows = configRows({
+      'defaults.effort': { yml: 'defaults.effort', oneOf: ['low', 'high'], describe: 'How hard a run tries.' },
+      'model.gpu': { yml: 'model.llm.gpu', env: 'LLOYAL_GPU', oneOf: ['default', 'cuda'], applies: 'boot' as const },
+      'model.path': { applies: 'reload' as const },
+    });
+    expect(rows.map((r) => [r.describe, r.yml, r.env])).toEqual([
+      ['How hard a run tries.', 'defaults.effort', undefined], [undefined, 'model.llm.gpu', 'LLOYAL_GPU'], [undefined, undefined, undefined],
+    ]);
+    expect(changing(rows[0])).toBe('Change it here: it applies to the next run and is remembered locally. The committed default is harness.yml → defaults.effort.');
+    expect(changing(rows[1])).toBe('Fixed for this run. Set harness.yml → model.llm.gpu (or LLOYAL_GPU), then restart.');
+    expect(changing(rows[2])).toBe('Saved now; the next start loads it.');
   });
   it('a choice is sent as rig\'s own command for its tier, with a real patch', () => {
     const [effort, , mmproj, kv] = configRows(table);

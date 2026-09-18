@@ -18,7 +18,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { useStore } from 'zustand';
 import {
-  pressureStrip, pressurePercent, readConfigPath, lanePpl, isLive, configRows, configCommand, liveConfigKeys,
+  pressureStrip, pressurePercent, readConfigPath, lanePpl, isLive, configRows, configCommand, liveConfigKeys, changing,
 } from './index.js';
 import type {
   AbilityInfo, AgentLane, ConfigRow, ConfigTable, Intervention, PaneModel, PaneTab, Retrieval,
@@ -2228,58 +2228,6 @@ const cutline: React.CSSProperties = {
 
 // ═══ Settings: category nav → harness (master list + detail) · ability pages ═══
 
-/** What the detail panel knows about each well-known harness key: what it is,
- *  and how to change it. Prose is product copy — one clause per sentence. */
-const SETTING_META: Readonly<Record<string, { desc: string; how: string }>> = {
-  'defaults.effort': {
-    desc: 'Run effort preset — agent budget, planner breadth, recovery cap.',
-    how: 'Change it here; it applies to your next run and is remembered locally. The committed default lives in harness.yml → defaults.effort.',
-  },
-  'defaults.reasoningMode': {
-    desc: 'flat runs one research wave over the plan; deep lets agents recurse into sub-plans.',
-    how: 'Change it here; it applies to your next run.',
-  },
-  'model.imageMaxTokens': {
-    desc: 'Ceiling on what ONE image costs in KV. Measured on Qwen3.5 with a 176 KB photo: 564 cells uncapped, 251 at 256. Lower it to fit more images into a context; auto lets the model metadata decide.',
-    how: 'Set harness.yml \u2192 model.llm.imageMaxTokens, then restart. It does NOT shrink the projector\u2019s warmup allocation, so it will not rescue a boot that runs out of GPU memory before any image arrives.',
-  },
-  'model.imageMinTokens': {
-    desc: 'Floor on per-image detail. Grounding tasks need it high \u2014 llama.cpp warns Qwen-VL wants at least 1024 to read positions reliably.',
-    how: 'Set harness.yml \u2192 model.llm.imageMinTokens, then restart. Raise it if the model reads an image but places things wrongly in it.',
-  },
-  'sources.outputDir': {
-    desc: 'Where per-query run-dirs and the session trace are written. Empty means where the harness started.',
-    how: 'Edit harness.yml → sources.outputDir; the next run picks it up.',
-  },
-  'defaults.maxTurns': {
-    desc: 'Turn cap per agent run.',
-    how: 'Edit harness.yml → defaults.maxTurns; the next run picks it up.',
-  },
-  'model.path': {
-    desc: 'Filesystem path or catalog id of the reasoning model.',
-    how: 'Saved changes load at the next start; this run keeps the model it booted with.',
-  },
-  'model.reranker': {
-    desc: 'The admission judge — a pointwise yes/no reranker that gates what enters the context.',
-    how: 'Saved changes load at the next start.',
-  },
-  'model.nCtx': {
-    desc: 'Context window of the one shared llama_context — every branch leases cells out of this budget.',
-    how: 'Edit harness.yml → model.llm.context, then restart.',
-  },
-  'model.branches': {
-    desc: 'Concurrent sequences — createContext takes it as nSeqMax. Each sequence holds its own KV lease.',
-    how: 'Edit harness.yml → model.llm.branches, then restart.',
-  },
-  'model.kvCache': {
-    desc: 'KV cache type for the attention layers — raise for precision, lower for memory.',
-    how: 'Edit harness.yml → model.llm.kvCache, then restart.',
-  },
-  'model.gpu': {
-    desc: 'Which native backend the process loaded — picked once at start. A configured backend fails loud if unavailable, never silently CPU.',
-    how: 'A deploy choice: set harness.yml → model.llm.gpu (or LLOYAL_GPU), then restart.',
-  },
-};
 
 const TIER_NOTE: Record<string, string> = {
   session: 'applies to the next run',
@@ -2394,8 +2342,8 @@ function HarnessSettings({ m, rows, tiered, send, selKey, onSelect }: {
     </div>
   );
 
-  const meta = SETTING_META[selKey];
-  const tier = tiered ? rows.find((r) => r.key === selKey)?.applies : undefined;
+  const selected = rows.find((r) => r.key === selKey);
+  const tier = tiered ? selected?.applies : undefined;
   // The exception case, surfaced exactly when true: something outside the
   // manifest set this value. No badges anywhere else. Provenance is keyed by the config path itself.
   const origin = m.origin ? m.origin[selKey] : undefined;
@@ -2409,15 +2357,21 @@ function HarnessSettings({ m, rows, tiered, send, selKey, onSelect }: {
         )) : rows.map(row)}
       </div>
       <div style={{ width: 400, flex: 'none', borderLeft: '1px solid #d9dce1', overflowY: 'auto', padding: '16px 20px', background: C.panelBg }}>
-        {meta ? (
+        {selected ? (
           <>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{ fontFamily: mono, fontSize: 13, fontWeight: 500 }}>{selKey}</span>
               {tier && <span style={chip}>{TIER_NOTE[tier]}</span>}
             </div>
-            <p style={{ maxWidth: 340, margin: '8px 0 0', fontSize: 12, lineHeight: 1.55, color: '#3c4043' }}>{meta.desc}</p>
-            <div style={{ ...label, marginTop: 16 }}>changing it</div>
-            <p style={{ maxWidth: 340, margin: '6px 0 0', fontSize: 12, lineHeight: 1.55, color: '#3c4043' }}>{meta.how}</p>
+            {selected.describe && (
+              <p style={{ maxWidth: 340, margin: '8px 0 0', fontSize: 12, lineHeight: 1.55, color: '#3c4043' }}>{selected.describe}</p>
+            )}
+            {tiered && (
+              <>
+                <div style={{ ...label, marginTop: 16 }}>changing it</div>
+                <p style={{ maxWidth: 340, margin: '6px 0 0', fontSize: 12, lineHeight: 1.55, color: '#3c4043' }}>{changing(selected)}</p>
+              </>
+            )}
             {overridden && (
               <div style={{
                 display: 'flex', alignItems: 'baseline', gap: 8, padding: '8px 11px', marginTop: 14,
