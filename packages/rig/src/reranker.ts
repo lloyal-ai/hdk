@@ -19,12 +19,14 @@ export interface RerankerLoadOpts {
   /** Decode batch size (default floor(nCtx / nSeqMax)). */
   nBatch?: number;
   /**
-   * KV cache types for the reranker context. Both default to `q4_0` in this
-   * version.
+   * KV cache types for the reranker context. Both default to `q8_0`.
    *
-   * The score is a logit difference, so KV precision bounds the smallest
-   * score difference that is meaningful. Set these explicitly if you need a
-   * known resolution.
+   * The score is a logit difference read back through these cells, so KV
+   * precision bounds the smallest score difference that is meaningful.
+   * Measured on real document windows (2026-09-07): at `q4_0` ten identical
+   * passages spread 4–6 logits across the leaves and the verdict changed
+   * sign; at `q8_0` they spread 0.05–0.12 at the same pass time.
+   * `test/reranker-resolution.test.ts` holds the default to that floor.
    */
   typeK?: KvCacheType;
   typeV?: KvCacheType;
@@ -85,8 +87,8 @@ export function createReranker(
       nCtx,
       nSeqMax,
       nBatch,
-      typeK: opts?.typeK ?? 'q4_0',
-      typeV: opts?.typeV ?? 'q4_0',
+      typeK: opts?.typeK ?? 'q8_0',
+      typeV: opts?.typeV ?? 'q8_0',
     }));
     const rerank = yield* call(() =>
       Rerank.create(ctx as unknown as SessionContext, {

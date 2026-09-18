@@ -27,7 +27,11 @@ export type { ReportToolOpts } from './report';
 export { DelegateTool } from './delegate';
 export type { DelegateToolOpts } from './delegate';
 export type { Reranker, ScoredChunk, ScoredResult } from './types';
-export { PlanTool, taskToContent } from './plan';
+export { PlanTool, taskToContent, singleTaskPlan } from './plan';
+export { defineOutput, citedReport } from './output';
+export type { Output, OutputOptions } from './output';
+export { weaveSourcesIntoResult } from './weave-sources';
+export type { WeaveSource } from './weave-sources';
 export type { PlanResult, PlanIntent, PlanToolOpts, ResearchTask } from './plan';
 
 /**

@@ -22,7 +22,7 @@
 import { describe, it, expect } from 'vitest';
 import { run, createChannel, scoped } from 'effection';
 import type { Channel } from 'effection';
-import { MockSessionContext } from '../../../../sdk/test/MockSessionContext';
+import { MockSessionContext } from '../../../../sdk/src/testing.js';
 import { Branch } from '../../../../sdk/src/Branch';
 import { BranchStore } from '../../../../sdk/src/BranchStore';
 import type { ChatFormat, ParseChatOutputOptions, ParseChatOutputResult } from '@lloyal-labs/sdk';
@@ -40,7 +40,7 @@ const STOP = 999;
 const NEVER_EXIT_POLICY: AgentPolicy = {
   shouldExit: () => false,
   onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-  onSettleReject: () => ({ type: 'idle', reason: 'pressure_settle_reject' }),
+  hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
 };
 
 class WebSearchTool extends Tool<{ query: string }> {

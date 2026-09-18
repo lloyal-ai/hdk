@@ -23,7 +23,9 @@
 import { createContext, createSignal } from 'effection';
 import type { Signal } from 'effection';
 import { NullTraceWriter } from '@lloyal-labs/lloyal-agents';
+import { NullAttachmentStore } from '@lloyal-labs/media';
 import type { TraceWriter, BranchCheckpoint } from '@lloyal-labs/lloyal-agents';
+import type { AttachmentStore } from '@lloyal-labs/media';
 
 /** One config rung, per field: which layer of
  *  `cli > env > harness.json > harness.yml > default` supplied the value.
@@ -79,6 +81,18 @@ export interface RunnerDevOpts {
 }
 
 /**
+ * The project's content store, injected by the boot.
+ *
+ * Deliberately NOT in {@link RunnerDevOpts}: addressability is a replay
+ * requirement rather than telemetry, so unlike the trace sink this is never
+ * gated on `dev`. Filing it beside `dev?` was what made that easy to miss.
+ * Omitted ⇒ the Null store, which is inert for text and throws on media.
+ */
+export interface RunnerContentOpts {
+  attachmentStore?: AttachmentStore;
+}
+
+/**
  * Boot-owned config plumbing, injected like the dev sink. The boot that
  * layered the config passes the computed per-field `origin`, and — edge only —
  * a `persist` that writes the patch to disk and returns the re-layered result.
@@ -117,10 +131,18 @@ export interface Runner<
    *  patch also lands on disk and provenance re-layers — value and origin
    *  move together in both directions. */
   saveConfig(patch: ConfigPatch<C>): SaveResult & { config: C; origin: O };
-  /** Persist a model/reranker/gpu change. There is no in-process rebuild —
-   *  the harness returns after calling this and the process ends; the next
-   *  launch reads the file and applies it. In-memory (served) ⇒ no-op. */
-  reloadRuntime(patch: ConfigPatch<C>): void;
+  /**
+   * Persist a model/reranker/gpu change, and say whether one can be made here.
+   *
+   * There is no in-process rebuild: the harness returns after calling this and
+   * the process ends; the next launch reads the file and applies it. Returns
+   * the file the next launch will read it from — or **null where this placement
+   * cannot apply one**, which is a served host: it chose its model when it
+   * started and serves every session from that one residency, so nothing a
+   * session does reloads it. A caller that ends the session on a null has taken
+   * a working session away in exchange for no change at all.
+   */
+  reloadRuntime(patch: ConfigPatch<C>): string | null;
   /** Persistent graceful-wind-down signal. */
   windDown: Signal<void, void>;
   /** Persistent per-agent cancel signal. */
@@ -130,6 +152,9 @@ export interface Runner<
   pauseRun: Signal<boolean, void>;
   /** Observability sink threaded into `initAgents`. */
   traceWriter: TraceWriter;
+  /** Image sink threaded into `initAgents` alongside {@link traceWriter} —
+   *  what makes a media-bearing run replayable. */
+  attachmentStore: AttachmentStore;
   /** True when the boot mounted dev observability (trace sink + pool
    *  epistemics). Read this, never `process.env` — harness code stays
    *  portable across bindings. */
@@ -226,7 +251,7 @@ function restoreFrozen(
 function makeRunner<
   C extends BaseHarnessConfig,
   O extends Record<string, ConfigOriginValue>,
->(cfg: C, opts: RunnerDevOpts & RunnerConfigOpts<C, O>, servedPath: null): Runner<C, O> {
+>(cfg: C, opts: RunnerDevOpts & RunnerContentOpts & RunnerConfigOpts<C, O>, servedPath: null): Runner<C, O> {
   let sessionConfig = structuredClone(cfg);
   let sessionOrigin = { ...opts.origin };
   const windDown = createSignal<void, void>();
@@ -267,13 +292,15 @@ function makeRunner<
       };
     },
     reloadRuntime(patch) {
-      // Persist for the next launch; no in-process rebuild. No-op in-memory.
-      opts.persist?.(patch);
+      // Persist for the next launch; no in-process rebuild. With no `persist` this placement has
+      // no next launch of its own — the null is what tells the caller not to end the session.
+      return opts.persist?.(patch).path ?? null;
     },
     windDown,
     cancelAgent,
     pauseRun,
     traceWriter: opts.traceWriter ?? new NullTraceWriter(),
+    attachmentStore: opts.attachmentStore ?? new NullAttachmentStore(),
     dev: opts.dev ?? false,
     replayCheckpoint: null,
     findingsMaxChars: undefined,
@@ -291,11 +318,11 @@ function makeRunner<
 export function makeServedRunner<
   C extends BaseHarnessConfig,
   O extends Record<string, ConfigOriginValue>,
->(cfg: C, opts: RunnerDevOpts & RunnerConfigOpts<C, O>): Runner<C, O> {
+>(cfg: C, opts: RunnerDevOpts & RunnerContentOpts & RunnerConfigOpts<C, O>): Runner<C, O> {
   // Served never persists — drop an accidentally-passed persist so a driver
   // can share one opts object between placements without leaking writes.
   const { persist: _persist, ...rest } = opts;
-  return makeRunner(cfg, rest as RunnerDevOpts & RunnerConfigOpts<C, O>, null);
+  return makeRunner(cfg, rest as RunnerDevOpts & RunnerContentOpts & RunnerConfigOpts<C, O>, null);
 }
 
 /**
@@ -306,6 +333,6 @@ export function makeServedRunner<
 export function makeEdgeRunner<
   C extends BaseHarnessConfig,
   O extends Record<string, ConfigOriginValue>,
->(cfg: C, opts: RunnerDevOpts & RunnerConfigOpts<C, O>): Runner<C, O> {
+>(cfg: C, opts: RunnerDevOpts & RunnerContentOpts & RunnerConfigOpts<C, O>): Runner<C, O> {
   return makeRunner(cfg, opts, null);
 }

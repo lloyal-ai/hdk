@@ -33,6 +33,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { run, ensure } from 'effection';
 import { AbilityConfigStoreCtx } from '@lloyal-labs/lloyal-agents';
+import { Attachments } from '@lloyal-labs/lloyal-agents';
+import type { AttachmentStore } from '@lloyal-labs/media';
 import type { Ability, AbilityManifest, AbilityFactory } from '@lloyal-labs/lloyal-agents';
 import { createAbilityRegistry } from '../src/registry';
 import { createInMemoryConfigStore } from '../src/config-store';
@@ -51,7 +53,6 @@ function fakeApp(opts: {
 }): Ability {
   const manifest: AbilityManifest = {
     name: opts.name,
-    version: '1.0.0',
     abilityProtocolVersion: opts.abilityProtocolVersion ?? '3.0',
     protocol: {
       name: opts.protocolName ?? `${opts.name}_research`,
@@ -62,11 +63,10 @@ function fakeApp(opts: {
   };
   return {
     name: opts.name,
-    version: '1.0.0',
     manifest,
     source: { name: opts.name } as Ability['source'],
     tools: [],
-    agent: 'test agent template',
+    skill: 'test agent template',
     configSchema: opts.configSchema,
   };
 }
@@ -134,6 +134,25 @@ describe('createAbilityRegistry', () => {
       return readConfig;
     });
     expect(seen).toEqual({ key: 'value' });
+  });
+
+  it('seeds the content store into the factory scope, beside the config store and the reranker', async () => {
+    // An ability that reads documents resolves them through the content store
+    // at enable time and in its tools; the detached scope must carry the store
+    // the harness installed, not the null default.
+    const seen = await run(function* () {
+      const store = { marker: 'the harness store' } as unknown as AttachmentStore;
+      yield* Attachments.set(store);
+      let inFactory: unknown;
+      const factory: AbilityFactory = function* () {
+        inFactory = yield* Attachments.expect();
+        return fakeApp({ name: 'docs' });
+      };
+      const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
+      yield* registry.enable(factory);
+      return inFactory === store;
+    });
+    expect(seen).toBe(true);
   });
 
   it('runs the factory body (setup) when enabled', async () => {

@@ -1,8 +1,9 @@
 import { call } from "effection";
 import type { Operation } from "effection";
 import { Tool, ToolRetryError, Trace } from "@lloyal-labs/lloyal-agents";
-import type { JsonSchema, ToolContext } from "@lloyal-labs/lloyal-agents";
+import type { JsonSchema, ToolContext, ToolLifecycleHooks } from "@lloyal-labs/lloyal-agents";
 import type { SearchProvider, SearchResult } from "@lloyal-labs/rig";
+import { queryDedup, trimmed } from "./guards";
 
 export type { SearchProvider, SearchResult };
 
@@ -71,6 +72,8 @@ export class WebSearchTool extends Tool<{ query: string }> {
   // Network-only (Tavily HTTP) — issues no op on the main llama_context, so it
   // runs off the loop fiber under concurrent dispatch. See Tool.fanout.
   readonly fanout = true;
+  /** This tool's gate: a query already attended is not searched again. Scope is the harness's. */
+  readonly hooks: ToolLifecycleHooks = { beforeDispatch: [queryDedup] };
   readonly description =
     "Search the web. Returns results with titles, snippets, and URLs.";
   readonly parameters: JsonSchema = {
@@ -89,20 +92,8 @@ export class WebSearchTool extends Tool<{ query: string }> {
   }
 
   *execute(args: { query: string }, context?: ToolContext): Operation<unknown> {
-    const query = args.query?.trim();
+    const query = trimmed(args.query);
     if (!query) return { error: "query must not be empty" };
-
-    // Cross-agent dedup: another worker in this pool already issued this query
-    const queryLower = query.toLowerCase();
-    if (context?.peerHistory?.some(h => {
-      if (h.name !== 'web_search') return false;
-      try {
-        const prev = (JSON.parse(h.args) as { query?: string }).query?.toLowerCase();
-        return prev === queryLower;
-      } catch { return false; }
-    })) {
-      return { error: 'Resource unavailable. Try a different query.' };
-    }
 
     const provider = this._provider;
     const topN = this._topN;

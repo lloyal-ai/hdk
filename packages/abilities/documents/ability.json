@@ -1,0 +1,10 @@
+{
+  "name": "documents",
+  "abilityProtocolVersion": "3.0",
+  "protocol": {
+    "name": "document_research",
+    "useWhen": "reading the documents attached to this conversation — PDFs, papers, reports: finding passages, quoting sections with page numbers, and checking a table or figure on a specific page.",
+    "tools": ["search_documents", "read_document", "view_page"]
+  },
+  "services": ["reranker"]
+}

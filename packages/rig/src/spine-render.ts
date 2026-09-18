@@ -47,6 +47,8 @@ import type {
   ExamplesRenderCtx,
   ExamplesTemplateFn,
 } from '@lloyal-labs/lloyal-agents';
+import type { Attachment } from '@lloyal-labs/media';
+import { abilityToc } from './participating';
 import {
   BOUNDARY_MARKER,
   CATALOG_ENTRY,
@@ -66,6 +68,15 @@ export interface RenderSpineOptions {
    * subset/ordering the harness wants reflected in the spine.
    */
   abilities: readonly Ability[];
+  /**
+   * The run's reference material: each ability's content advert for these
+   * assets (`abilityToc`) is appended to the catalog as one block per
+   * ability, rendered once and prefix-shared by every fork instead of
+   * repeated in each spawn's suffix. Trusting an ability's advert into the
+   * shared prefix is the harness's call, made by passing this. Absent: no
+   * ability prose reaches the spine.
+   */
+  reference?: readonly Attachment[];
 }
 
 /**
@@ -91,12 +102,20 @@ export function renderSpine(opts: RenderSpineOptions): string {
     )
     .join('\n');
 
+  const reference = opts.reference
+    ? opts.abilities
+        .map((ability) => ({ name: ability.manifest.protocol.name, toc: abilityToc(ability, opts.reference) }))
+        .filter((b): b is { name: string; toc: string } => !!b.toc && b.toc.trim() !== '')
+        .map((b) => `\n\n# ${b.name} — available files\n${b.toc}`)
+        .join('')
+    : '';
   return (
     FRAMEWORK_INTRO +
     '\n\n# Protocols\n\n' +
     catalogBlocks +
     '\n' +
-    TOOL_SELECTION_RULE
+    TOOL_SELECTION_RULE +
+    reference
   );
 }
 
@@ -124,14 +143,25 @@ export function renderSpine(opts: RenderSpineOptions): string {
  * standard {@link AgentRenderCtx} fields, allowing discipline content
  * to reference the protocol identity directly.
  *
- * `params` accepts ability-specific render data beyond {@link AgentRenderCtx}
- * (e.g. a corpus ability merges its `source.promptData()` to supply `it.toc`).
- * Extra keys are spread into the Eta render data unchanged.
+ * The render context defaults to one agent on its own task, today, under the
+ * pool's default turn cap; pass any {@link AgentRenderCtx} field to say
+ * otherwise, and ability-specific render data beyond it (e.g. a corpus ability
+ * merges its `source.promptData()` to supply `it.toc`). Extra keys are spread
+ * into the Eta render data unchanged.
  */
 export function renderAgentPreamble(
   ability: Ability,
-  params: AgentRenderCtx & Record<string, unknown>,
+  given: Partial<AgentRenderCtx> & Record<string, unknown> = {},
 ): string {
+  // One agent on its own task, today, under the pool's default turn cap — unless told otherwise.
+  const params: AgentRenderCtx & Record<string, unknown> = {
+    agentCount: 1,
+    siblingTasks: [],
+    maxTurns: 100,
+    date: new Date().toISOString().slice(0, 10),
+    taskIndex: 0,
+    ...given,
+  };
   const marker = BOUNDARY_MARKER(ability.manifest.protocol.name);
   const body = renderSkillBody(ability.skill, params);
 

@@ -80,7 +80,7 @@ export interface WebSourceOpts {
  * Constructed already-bound to its reranker (no `bind()` step). No
  * orchestration, no prompts, no `node:fs`.
  */
-export class WebSource extends Source<{ reranker: Reranker }, Chunk> {
+export class WebSource extends Source<Chunk> {
   private _buffer: FetchedPage[] = [];
   private _fetchPage: BufferingFetchPage;
   private _webSearch: WebSearchTool;

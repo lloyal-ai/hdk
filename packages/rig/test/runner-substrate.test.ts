@@ -207,6 +207,6 @@ describe('mergeConfig / markSession / rung', () => {
     expect(rung(undefined, undefined, null, 42)).toBe('yml');
     expect(rung(undefined, 0, null, 42)).toBe('env');   // 0 is a value
     expect(rung(null, null, null, null)).toBe('default');
-    expect(rung('x', 1, 'f', 'y')).toBe('cli');
+    expect(rung<unknown>('x', 1, 'f', 'y')).toBe('cli');
   });
 });

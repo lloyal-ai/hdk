@@ -91,7 +91,7 @@ export interface ScoredResult {
  * Cross-encoder reranker for scoring corpus chunks against a query.
  *
  * Abilities obtain the harness-wide reranker via `RerankerCtx.expect()` at
- * factory time — `source.bind({reranker})` is no longer the mechanism.
+ * factory time and hand it to their sources and tools at construction.
  * Implementations tokenize chunks up front via {@link tokenizeChunks},
  * then stream progressive results from {@link score}.
  */

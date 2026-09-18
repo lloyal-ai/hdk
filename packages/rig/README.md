@@ -146,8 +146,6 @@ Agents that get cut by context pressure (their tool results exceeded KV headroom
 
 **Synthesize.** A synthesis agent integrates findings from all sources into a structured report with source attribution. Research notes provide analytical structure; reranked source passages provide ground truth for citation. The synthesizer cross-references both — using research notes to identify what matters, and source passages for evidence.
 
-**Eval.** Multi-branch semantic comparison via `diverge()`. Fork N branches from a shared frontier, generate independently with the same verify prompt, check convergence. Where branches agree, the model is confident. Where they diverge, the answer needs refinement.
-
 Full architectural walkthrough: [RIG Pipeline reference](https://docs.lloyal.ai/reference/rig/pipeline).
 
 ## Framework tools

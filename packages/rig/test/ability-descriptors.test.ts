@@ -40,3 +40,20 @@ describe('buildAbilityDescriptors', () => {
     expect(out[1].tools).toEqual(['corpus_search']);
   });
 });
+
+describe('iconUrl', () => {
+  it("carries the manifest's declared mark, which lives under hints", async () => {
+    const withIcon = {
+      ...manifest('jira', ['jira_search']),
+      hints: { shortName: 'Jira', iconUrl: 'https://apps.lloyal.ai/v1/abilities/assets/acme/jira/abc123.png' },
+    };
+    const registry = { enabled: () => [{ manifest: withIcon }] };
+    const configStore = { *get() { return undefined; } };
+
+    const out = await run(() =>
+      buildAbilityDescriptors(registry as never, configStore as never, [] as never));
+
+    expect(out[0].title).toBe('Jira');
+    expect(out[0].iconUrl).toBe('https://apps.lloyal.ai/v1/abilities/assets/acme/jira/abc123.png');
+  });
+});

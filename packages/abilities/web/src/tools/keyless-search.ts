@@ -355,8 +355,8 @@ function dedupResults(results: SearchResult[]): SearchResult[] {
  * ```ts
  * yield* initAgents(ctx);
  * const provider = yield* createKeylessSearchProvider();
- * const web = new WebSource(provider);
- * yield* web.bind({ reranker });
+ * const reranker = yield* RerankerCtx.expect();
+ * const web = new WebSource(provider, { reranker });
  * ```
  *
  * @category Rig

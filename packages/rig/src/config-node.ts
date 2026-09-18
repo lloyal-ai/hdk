@@ -5,9 +5,9 @@
  * review-hardened into (lloyal-ai#14, eight rounds): atomic 0600 writes that
  * tighten a loose file, a version guard that refuses to rebuild over content
  * it cannot understand, ENOENT-only "fresh", `git check-ignore` as the
- * gitignore authority, and boundary path resolution. The per-template
- * LAYERING (which yml keys exist, the rung chain, validation) stays in the
- * scaffold — that part genuinely is the developer's.
+ * gitignore authority, and boundary path resolution. The LAYERING (which
+ * keys exist, the rung chain, validation) is `config-layering`, run from the
+ * table an app declares with `defineConfig`.
  *
  * Node-only (`node:fs`/`node:path`/`node:os`/`node:child_process`) — import
  * from `@lloyal-labs/rig/node`.
@@ -26,7 +26,7 @@ import * as path from 'node:path';
  * input returns ''. Idempotent. Apply at the boundary between user input and
  * persisted/live state; persisted form is always absolute.
  */
-export function resolvePath(input: string): string {
+export function resolvePath(input: string, base: string = process.cwd()): string {
   if (!input) return '';
   const expanded =
     input === '~'
@@ -34,26 +34,26 @@ export function resolvePath(input: string): string {
       : input.startsWith('~/')
         ? path.join(os.homedir(), input.slice(2))
         : input;
-  return path.resolve(expanded);
+  return path.resolve(base, expanded);
 }
 
-/** Resolve path-shaped string values in one ability's config object, with no
- *  per-ability name knowledge: a value is a path when its property name ends
- *  in "Path" (case-insensitive) or the string starts with `~`, `/`, or `.`. */
+/** The ONE definition of "this ability config value is a path", with no
+ *  per-ability name knowledge: the property name ends in "Path"
+ *  (case-insensitive) or the string starts with `~`, `/`, or `.`. The resolver
+ *  resolves by it and the settings group checks existence by it, so the two
+ *  cannot drift. */
+export function isPathShaped(key: string, value: unknown): value is string {
+  return typeof value === 'string' && value !== '' && (/path$/i.test(key) || /^[~/.]/.test(value));
+}
+
+/** Resolve path-shaped string values in one ability's config object, by {@link isPathShaped}, against `base`. */
 export function resolveAppConfigPaths(
   cfg: Record<string, unknown>,
+  base: string = process.cwd(),
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(cfg)) {
-    if (
-      typeof value === 'string' &&
-      value !== '' &&
-      (/path$/i.test(key) || /^[~/.]/.test(value))
-    ) {
-      out[key] = resolvePath(value);
-    } else {
-      out[key] = value;
-    }
+    out[key] = isPathShaped(key, value) ? resolvePath(value, base) : value;
   }
   return out;
 }

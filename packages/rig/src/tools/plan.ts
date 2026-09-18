@@ -1,7 +1,7 @@
 import type { Operation } from 'effection';
 import { Tool, agent, renderTemplate } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema, Ability } from '@lloyal-labs/lloyal-agents';
-import { Session } from '@lloyal-labs/sdk';
+import type { Session, Branch } from '@lloyal-labs/sdk';
 import { TASK_ROUTING_KEY } from '../protocol';
 
 /**
@@ -12,8 +12,11 @@ import { TASK_ROUTING_KEY } from '../protocol';
 export interface PlanToolOpts {
   /** System prompt + user template. User template is rendered via Eta with `{ query, count, context? }`. */
   prompt: { system: string; user: string };
-  /** Active session whose trunk is used as the parent branch for generation. */
-  session: Session;
+  /** The session whose trunk the planning agent forks from, when `parent` is not given. */
+  session?: Session;
+  /** The branch the planning agent forks from. Takes precedence over `session`; a caller with a
+   *  branch in hand need not hold a Session. With neither, the plan is made cold. */
+  parent?: Branch;
   /** Maximum number of research tasks the planner may produce. Caps the
    *  `tasks` array via grammar `maxItems` and renders into the planner
    *  prompt as `it.count` so the model sees the limit. Does NOT bound
@@ -163,6 +166,16 @@ export function buildPlanSchema(protocolNames: readonly string[], maxTasks: numb
 }
 
 /**
+ * The plan an ask is: one task, the text itself, no planner. What a direct question runs as,
+ * and what a passthrough falls back to on a cold trunk.
+ *
+ * @category Rig
+ */
+export function singleTaskPlan(text: string): PlanResult {
+  return { intent: 'research', tasks: [{ description: text }], clarifyQuestions: [], tokenCount: 0, timeMs: 0 };
+}
+
+/**
  * Grammar-constrained query planner.
  *
  * Analyzes the user's query (with prior conversation in KV via warm session fork)
@@ -191,7 +204,8 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
   readonly fanout = false;
 
   private _prompt: { system: string; user: string };
-  private _session: Session;
+  private _session: Session | undefined;
+  private _parent: Branch | undefined;
   private _maxTasks: number;
   private _temperature: number;
   private _abilityProtocolNames: string[];
@@ -201,6 +215,7 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
     this._prompt = opts.prompt;
     this._temperature = opts.temperature ?? 0.3;
     this._session = opts.session;
+    this._parent = opts.parent;
     this._maxTasks = opts.maxTasks;
     this._abilityProtocolNames = (opts.availableAbilities ?? []).map(a => a.manifest.protocol.name);
   }
@@ -224,6 +239,7 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
       task: userContent,
       schema,
       params: { temperature: this._temperature },
+      parent: this._parent,
       session: this._session,
       // The planner is a grammar-constrained JSON decision over a warm
       // conversational trunk (clarify history). Thinking-on makes the model
