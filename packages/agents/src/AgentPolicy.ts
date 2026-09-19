@@ -64,13 +64,13 @@ export type ProduceAction =
 export type PromptText = Pick<AgentTaskSpec, 'systemPrompt' | 'content'>;
 
 /**
- * A prompt as a function of the facts it needs. The framework never renders an
- * app's prompt: it hands over the facts it alone knows (a reaped agent's word
+ * A prompt as a function of what it is told. The framework never renders an
+ * app's prompt: it hands over what it alone knows (a reaped agent's word
  * budget) and takes back the text. Where the words come from — a template
  * file, a literal — is the app's, and no framework word is in them.
  * @category Agents
  */
-export type PromptOf<F> = (facts: F) => PromptText;
+export type PromptOf<I> = (input: I) => PromptText;
 
 /**
  * What the app's {@link DefaultAgentPolicyOpts.nudge} is called with: why the
@@ -401,11 +401,11 @@ export interface DefaultAgentPolicyOpts {
    *  not fit — as a function of what the pool knows ({@link NudgeInput}). The app's words; the framework
    *  has none. Absent: no nudge is said — an agent over budget goes idle and a result that will not fit is
    *  dropped, and recovery, if the row has one, speaks. */
-  nudge?: (facts: NudgeInput) => string;
+  nudge?: (input: NudgeInput) => string;
   /** Recovery extraction for agents killed without reporting.
    *  Policy decides per-agent via {@link AgentPolicy.onRecovery}. */
   recovery?: {
-    /** What a reaped agent is told, given the one fact the policy knows: `budget`, the
+    /** What a reaped agent is told, given the one thing the policy knows: `budget`, the
      *  words its report may run to (see {@link tokenBudgetAsWords}). */
     prompt: PromptOf<{ budget: number }>;
     /** Skip extraction for agents with fewer tokens than this. @default 100 */
@@ -701,7 +701,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
     // Budget recovery's generation can consume: hardLimit reserve minus the
     // recovery prompt's own cost and the decoder's batch workspace. Expressed
     // as words (not tokens) and under-advertised so the model has slack —
-    // tokenizers vary across models but words are universal. The one fact the
+    // tokenizers vary across models but words are universal. The one thing the
     // app's prompt is given. In-loop recovery overrides this with its
     // per-recovery budget `b` (a headroom share across live agents) so the
     // advisory matches the pool's token-stop (graceful self-conclusion, not a

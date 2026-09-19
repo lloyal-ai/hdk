@@ -1,20 +1,20 @@
 /**
- * Facts about a markdown body, read with the grammar that renders it. `Markdown`
- * draws prose through remark; the headings and links a view derives from the
- * same prose — an outline, citation chips, the id a heading is given — come from
- * the same parser, so what the outline names is what the page shows, by
- * construction: a heading's `text` here is the string its rendered element
+ * The headings, links and heading ids of a markdown body, read with the grammar
+ * that renders it. `Markdown` draws prose through remark; what a view derives
+ * from the same prose — an outline, citation chips, the id a heading is given —
+ * comes from the same parser, so what the outline names is what the page shows,
+ * by construction: a heading's `text` here is the string its rendered element
  * contains, inline markup and all resolved.
  *
- * Two grammars are used on purpose, split by concern. Facts (this module's
- * `headingsOf`, `linksOf`) come from remark, once per body, memoized. The
+ * Two grammars are used on purpose, split by concern. Headings and links
+ * (`headingsOf`, `linksOf`) come from remark, once per body, memoized. The
  * streaming boundary (`splitStreaming`) comes from marked's block lexer, which
  * runs on every token over the whole buffer and is fifteen times cheaper — and
  * a boundary it misjudges costs one extra parse of one block, never a wrong
  * document, so it need not agree with the renderer to the byte.
  *
  * Framework-free: a node script, the Ink view and the browser page read the
- * same facts.
+ * same headings and links.
  *
  * @packageDocumentation
  * @category UI
@@ -58,8 +58,8 @@ const SAFE_PROTOCOL = /^(https?|ircs?|mailto|xmpp)$/i;
 
 /** The ONE url policy of a harness view: the content plane's scheme (`attachment://…`) is admitted, a relative
  *  url or a safe scheme passes, anything else (`javascript:`, `data:`) is stripped to `''`. `Markdown` renders
- *  through it and `linksOf` reports through it, so a citation built from a link fact carries the href the
- *  page carries. */
+ *  through it and `linksOf` reports through it, so a citation built from a link carries the href the page
+ *  carries. */
 export function admitUrl(url: string): string {
   if (url.startsWith('attachment://')) return url;
   const colon = url.indexOf(':');

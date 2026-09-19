@@ -89,7 +89,7 @@ export const defaultOnReturn = (i: OnReturnInput): ReturnDecision => ({ type: 'a
 /** The frame's gate, by the name the trace and `tool:authReject` know it by. */
 export const AUTH_REJECT_GUARD = 'auth_reject';
 
-/** What the model reads when a protected tool is called without a grant: the fact, and nothing the frame
+/** What the model reads when a protected tool is called without a grant: what happened, and nothing the frame
  *  cannot know — what else the agent might do is its app's to say. */
 export const AUTH_REJECT_MESSAGE =
   'This action is protected and requires authorization that has not been granted for this session.';

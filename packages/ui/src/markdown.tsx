@@ -1,7 +1,7 @@
 /**
  * Markdown in a harness view: GitHub-flavoured, with math set by KaTeX, links
  * left to the caller's renderers, and urls admitted by the view's one policy
- * (`admitUrl`, shared with the link facts) so a cited page
+ * (`admitUrl`, shared with `linksOf`) so a cited page
  * (`attachment://…/page/n`) reaches the caller's link component instead of
  * being stripped as unknown.
  *

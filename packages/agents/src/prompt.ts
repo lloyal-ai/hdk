@@ -11,7 +11,7 @@ const eta = new Eta({ autoEscape: false });
  *
  * This renders text an ABILITY ships (its skills and examples, through rig);
  * an app's own prompts are rendered by the app and handed to the framework
- * as functions of facts ({@link PromptOf}).
+ * as functions of what the framework knows ({@link PromptOf}).
  *
  * @param template - Eta template string
  * @param data - Variables available as `it.*` in the template

@@ -124,7 +124,7 @@ export interface HarnessSpec<T extends ConfigTable, C extends { type: string }, 
    *  events the wire has carried so far. A halted run returns normally with
    *  `halted: true`. */
   controls?: (c: { halt: () => Promise<void>; send: (c: C) => void; eventCount: () => number }) => void;
-  /** Every event the wire carries, as it arrives — for a script that must remember a fact the wire announced
+  /** Every event the wire carries, as it arrives — for a script that must remember something the wire announced
    *  (a revision number, a minted id) before a later step sends it back. */
   observe?: (ev: E) => void;
   /** Run once, non-interactive, with this query: the Runner's `oneshot` mode. The harness's own failure comes
