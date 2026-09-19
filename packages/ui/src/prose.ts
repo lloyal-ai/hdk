@@ -23,6 +23,7 @@ import { lexer } from 'marked';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
 import { toString } from 'mdast-util-to-string';
 import type { Root, Content } from 'mdast';
 
@@ -75,7 +76,9 @@ export function admitUrl(url: string): string {
   return '';
 }
 
-const parser = unified().use(remarkParse).use(remarkGfm);
+/** The renderer's grammar, exactly: `Markdown` parses with these two plugins, so a `$…$` span is math here as
+ *  it is there, never emphasis. */
+const parser = unified().use(remarkParse).use(remarkGfm).use(remarkMath);
 
 /** Parsed bodies, most recent last. A canvas reads the settled body, its exchanges and the sections in one pass,
  *  so a one-entry memo would thrash; an unbounded one would pin every body a session ever showed. */

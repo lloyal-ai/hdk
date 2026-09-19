@@ -17,6 +17,12 @@ describe('headingsOf / linksOf', () => {
     ]);
   });
 
+  it('math is math, as the renderer has it — underscores inside $…$ are not emphasis', () => {
+    const [h] = headingsOf('## Mass $m_1$ and $m_2$ summed');
+    expect(h.text).toBe('Mass m_1 and m_2 summed');
+    expect(anchorsOf([h], 'a')[0].anchor).toBe('a-mass-m-1-and-m-2-summed');
+  });
+
   it('links are every link the renderer would draw, in order, with their rendered text', () => {
     const md = 'See [Oslo](https://a.io/oslo) and [**A**](https://a.io) twice: [A](https://a.io).\n\n- [in a list](https://l.io)\n\n> [quoted](https://q.io)';
     expect(linksOf(md).map((l) => [l.href, l.text])).toEqual([
