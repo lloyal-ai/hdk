@@ -174,11 +174,20 @@ class CapturingTrace implements TraceWriter {
   flush(): void {}
 }
 
-/** A reranker that satisfies the ability factories and scores everything 0.
+/** A reranker that satisfies the ability factories and scores everything 0:
+ *  every chunk is admitted, in the order given, none ranked above another.
  *  Scenarios never assert on relevance — a real reranker is the platform's
- *  concern, not the application's. */
+ *  concern, not the application's. (Admission keeps the LAST batch a reranker
+ *  yields; a stub that yields none would admit nothing, and every retrieval
+ *  under the rig would come back empty whatever the fixtures held.) */
 export const stubReranker: Reranker = {
-  score: async function* () {},
+  score: async function* (_query, chunks) {
+    yield {
+      results: chunks.map((c) => ({ file: c.resource, heading: c.heading, section: c.section, snippet: c.text.slice(0, 200), score: 0, startLine: c.startLine, endLine: c.endLine })),
+      filled: chunks.length,
+      total: chunks.length,
+    };
+  },
   scoreBatch: async (_q, texts) => texts.map(() => 0),
   tokenizeChunks: async () => {},
   tokenize: async () => [],

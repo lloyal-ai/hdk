@@ -42,6 +42,13 @@ describe('defineOutput', () => {
     expect(submit.read({ result: raw })).toEqual(row);
   });
 
+  it('a complete <tool_call> block with trailing whitespace is untouched too: only an unclosed fragment is stripped', () => {
+    const submit = defineOutput('submit', columns);
+    const row = { headquarters: 'Oslo <tool_call>{}</tool_call>  ', sellsTo: 'both', evidence: [] };
+    const decision = submit.tool.hooks!.onReturn!({ agent, tool: 'submit', args: row, raw: JSON.stringify(row), result: '' });
+    expect(decision).toEqual({ type: 'accept', result: JSON.stringify(row) });
+  });
+
   it('a string without a fragment is untouched — trailing whitespace in typed data survives', () => {
     const submit = defineOutput('submit', columns);
     const row = { headquarters: 'Oslo, Norway  ', sellsTo: 'both', evidence: [] };
