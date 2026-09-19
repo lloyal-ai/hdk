@@ -50,6 +50,31 @@ export interface Anchor {
   depth: number;
 }
 
+/** The url schemes a link may carry: react-markdown's own rule (micromark's `sanitizeUri` without the encode
+ *  step — https://github.com/remarkjs/react-markdown, `defaultUrlTransform`), restated here because that module
+ *  imports React at scope and this one is framework-free. */
+const SAFE_PROTOCOL = /^(https?|ircs?|mailto|xmpp)$/i;
+
+/** The ONE url policy of a harness view: the content plane's scheme (`attachment://…`) is admitted, a relative
+ *  url or a safe scheme passes, anything else (`javascript:`, `data:`) is stripped to `''`. `Markdown` renders
+ *  through it and `linksOf` reports through it, so a citation built from a link fact carries the href the
+ *  page carries. */
+export function admitUrl(url: string): string {
+  if (url.startsWith('attachment://')) return url;
+  const colon = url.indexOf(':');
+  const questionMark = url.indexOf('?');
+  const numberSign = url.indexOf('#');
+  const slash = url.indexOf('/');
+  if (
+    colon === -1 ||                                       // no protocol: relative
+    (slash !== -1 && colon > slash) ||                    // the first colon is not a protocol's
+    (questionMark !== -1 && colon > questionMark) ||
+    (numberSign !== -1 && colon > numberSign) ||
+    SAFE_PROTOCOL.test(url.slice(0, colon))
+  ) return url;
+  return '';
+}
+
 const parser = unified().use(remarkParse).use(remarkGfm);
 
 /** Parsed bodies, most recent last. A canvas reads the settled body, its exchanges and the sections in one pass,
@@ -87,21 +112,22 @@ export function headingsOf(markdown: string): Heading[] {
 }
 
 /** Every link in document order, as the renderer draws them: inline links, the bare urls GFM links, and
- *  reference-style links resolved through their definitions (an unresolved reference renders as text and is
- *  not a link). */
+ *  reference-style links resolved through their definitions — the FIRST definition of an identifier, as
+ *  CommonMark resolves it (an unresolved reference renders as text and is not a link). Each href has passed
+ *  {@link admitUrl}, so a link whose scheme the renderer strips is reported with the same empty href. */
 export function linksOf(markdown: string): Link[] {
   const root = rootOf(markdown);
   const definitions = new Map<string, string>();
   for (const node of walk(root.children)) {
-    if (node.type === 'definition') definitions.set(node.identifier, node.url);
+    if (node.type === 'definition' && !definitions.has(node.identifier)) definitions.set(node.identifier, node.url);
   }
   const out: Link[] = [];
   for (const node of walk(root.children)) {
     const offset = node.position?.start.offset ?? 0;
-    if (node.type === 'link') out.push({ href: node.url, text: toString(node), offset });
+    if (node.type === 'link') out.push({ href: admitUrl(node.url), text: toString(node), offset });
     else if (node.type === 'linkReference') {
       const href = definitions.get(node.identifier);
-      if (href !== undefined) out.push({ href, text: toString(node), offset });
+      if (href !== undefined) out.push({ href: admitUrl(href), text: toString(node), offset });
     }
   }
   return out;

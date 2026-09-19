@@ -27,9 +27,10 @@ import { Tool, stripDanglingToolCall } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema, ToolLifecycleHooks } from '@lloyal-labs/lloyal-agents';
 import { weaveSourcesIntoResult } from './weave-sources';
 
-/** The validated value with every string the model wrote cleaned of a trailing unclosed tool call. */
+/** The validated value with every string the model wrote cleaned of a trailing unclosed tool call. A string
+ *  without one is returned as it is — the strip's own trailing trim would otherwise alter typed data. */
 function cleaned<T>(value: T): T {
-  if (typeof value === 'string') return stripDanglingToolCall(value) as T;
+  if (typeof value === 'string') return (value.includes('<tool_call>') ? stripDanglingToolCall(value) : value) as T;
   if (Array.isArray(value)) return value.map(cleaned) as T;
   if (value !== null && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, cleaned(v)])) as T;

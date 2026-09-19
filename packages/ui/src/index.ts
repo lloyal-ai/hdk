@@ -17,7 +17,7 @@
  */
 export { HarnessProvider, projectionFor, useHarness, useProjection, useSend, useConnection, useAvailability, useRecover, useContentOrigin } from './provider.js';
 export type { Harness } from './provider.js';
-export { Markdown, admitAttachmentUrls } from './markdown.js';
+export { Markdown } from './markdown.js';
 export type { MarkdownComponents } from './markdown.js';
 export { Lightbox } from './lightbox.js';
 export type { LightboxProps } from './lightbox.js';

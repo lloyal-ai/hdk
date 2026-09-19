@@ -5,7 +5,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { lexer } from 'marked';
-import { headingsOf, linksOf, anchorsOf, splitStreaming } from '../src/prose';
+import { headingsOf, linksOf, anchorsOf, splitStreaming, admitUrl } from '../src/prose';
 
 describe('headingsOf / linksOf', () => {
   it('a heading\'s text is the rendered text: inline markup resolved, at its offset, at its depth', () => {
@@ -29,9 +29,17 @@ describe('headingsOf / linksOf', () => {
     expect(linksOf('see https://bare.io/x now').map((l) => l.href)).toEqual(['https://bare.io/x']);
   });
 
-  it('a reference-style link resolves through its definition; an unresolved reference is text, not a link', () => {
-    const md = 'See [the paper][p] and [nothing][gone].\n\n[p]: https://p.io/paper';
+  it('a reference-style link resolves through its FIRST definition; an unresolved reference is text, not a link', () => {
+    const md = 'See [the paper][p] and [nothing][gone].\n\n[p]: https://p.io/paper\n[p]: https://p.io/other';
     expect(linksOf(md)).toEqual([{ href: 'https://p.io/paper', text: 'the paper', offset: 4 }]);
+  });
+
+  it('an href is what the renderer would carry: an unsafe scheme is stripped, the content plane\'s is admitted', () => {
+    const md = '[x](javascript:alert(1)) [y](https://ok.io) [z](attachment://r/page/2) [w](/relative) [v][d]\n\n[d]: data:text/html,hi';
+    expect(linksOf(md).map((l) => l.href)).toEqual(['', 'https://ok.io', 'attachment://r/page/2', '/relative', '']);
+    expect(admitUrl('mailto:a@b.c')).toBe('mailto:a@b.c');
+    expect(admitUrl('https://x/y:z')).toBe('https://x/y:z');
+    expect(admitUrl('vbscript:x')).toBe('');
   });
 
   it('the same body parses once: the facts come back identical while it stands', () => {

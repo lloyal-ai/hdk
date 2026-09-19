@@ -42,6 +42,13 @@ describe('defineOutput', () => {
     expect(submit.read({ result: raw })).toEqual(row);
   });
 
+  it('a string without a fragment is untouched — trailing whitespace in typed data survives', () => {
+    const submit = defineOutput('submit', columns);
+    const row = { headquarters: 'Oslo, Norway  ', sellsTo: 'both', evidence: [] };
+    const decision = submit.tool.hooks!.onReturn!({ agent, tool: 'submit', args: row, raw: JSON.stringify(row), result: '' });
+    expect(decision).toEqual({ type: 'accept', result: JSON.stringify(row) });
+  });
+
   it('a capture-less output is cleaned too: a fragment inside a string field cannot hide behind the closing brace', () => {
     const submit = defineOutput('submit', columns);
     const row = { headquarters: 'Oslo\n\n<tool_call>\n{"name": "web_se', sellsTo: 'both', evidence: [] };
