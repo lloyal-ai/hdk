@@ -11,11 +11,12 @@
  * `citedReport` is the research output on the same primitive: the `report`
  * terminal whose grammar-forced `sources` are woven into the findings at capture.
  *
- * The text the model put in the call is cleaned HERE, once, before any capture
- * reads it: a string that ends in an unclosed `<tool_call>` fragment loses the
+ * The text the model put in the call is cleaned HERE, once, before either
+ * branch: a string that ends in an unclosed `<tool_call>` fragment loses the
  * fragment. A capture that appends to the text (the citation weave's `Sources:`
- * list) would otherwise bury the fragment mid-result, where the framework's own
- * strip — which runs after the return, anchored to the end — cannot see it.
+ * list) would otherwise bury the fragment mid-result, and a capture-less
+ * output's JSON ends in `"}`, so the framework's own strip — which runs after
+ * the return, anchored to the end — can see neither.
  *
  * @category Rig
  */
@@ -73,7 +74,11 @@ class OutputTool<S extends ZodType> extends Tool<Record<string, unknown>> {
             message: `Your ${name} call did not match its schema — ${issues}. Call ${name} again with every field as specified.`,
           };
         }
-        return { type: 'accept', result: capture ? capture(cleaned(parsed.data), raw) : raw };
+        // Cleaned before either branch: a capture reads the clean value, and a capture-less output's result is
+        // the clean value serialized — a fragment inside a JSON string would otherwise survive the applier's
+        // end-anchored strip, which sees only the closing `"}`.
+        const value = cleaned(parsed.data);
+        return { type: 'accept', result: capture ? capture(value, raw) : JSON.stringify(value) };
       },
     };
   }

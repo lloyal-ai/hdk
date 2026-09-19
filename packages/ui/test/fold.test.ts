@@ -86,6 +86,18 @@ describe('foldAgents', () => {
     expect(extractStreamingReport(streamed)).toBeNull();
   });
 
+  it('a terminal whose field is null streams nothing: the report shows only when it is filed', () => {
+    const quiet = { spawn: () => ({ timeline: true, taskIndex: 0 }), terminal: 'report', terminalField: null, now };
+    const streamed = '<tool_call>\n<function=report>\n<parameter=result>\nEarly words';
+    expect(extractStreamingReport(streamed, { tool: 'report', field: null })).toBeNull();
+    const r = [
+      spawn(1), produce(1, 'x</think>', 1), produce(1, streamed, 4),
+      { type: 'agent:tool_call' as const, agentId: 1, tool: 'report', args: '{}' },
+      { type: 'agent:return' as const, agentId: 1, result: 'Early words' },
+    ].reduce((acc, ev) => foldAgents(acc, ev, quiet), emptyRoster());
+    expect(r.agents.get(1)!.timeline!.map((t) => t.kind)).toEqual(['think', 'report']);
+  });
+
   it('an ordinary tool that shares the terminal\'s argument name is a step of the work, not a report', () => {
     // `finish(body)` ends the turn; `write_file(body)` is just a tool. The argument name alone cannot tell them apart.
     const rows = { spawn: () => ({ timeline: true, taskIndex: 0 }), terminal: 'finish', terminalField: 'body', now };

@@ -29,6 +29,11 @@ describe('headingsOf / linksOf', () => {
     expect(linksOf('see https://bare.io/x now').map((l) => l.href)).toEqual(['https://bare.io/x']);
   });
 
+  it('a reference-style link resolves through its definition; an unresolved reference is text, not a link', () => {
+    const md = 'See [the paper][p] and [nothing][gone].\n\n[p]: https://p.io/paper';
+    expect(linksOf(md)).toEqual([{ href: 'https://p.io/paper', text: 'the paper', offset: 4 }]);
+  });
+
   it('the same body parses once: the facts come back identical while it stands', () => {
     const md = '## H\n\n[a](https://a)';
     expect(headingsOf(md)).toEqual(headingsOf(md));
@@ -41,6 +46,11 @@ describe('anchorsOf', () => {
     const headings = headingsOf('# Intro\n\n## Results\n\n## Results\n\n## Results\n\n## Über: café!');
     expect(anchorsOf(headings, 'a').map((x) => x.anchor)).toEqual(['a-intro', 'a-results', 'a-results-2', 'a-results-3', 'a-ber-caf']);
     expect(anchorsOf(headings, 's1')[0]).toEqual({ anchor: 's1-intro', text: 'Intro', depth: 1 });
+  });
+
+  it('ids are unique against those already given, not against the slug\'s count', () => {
+    const headings = headingsOf('## A\n\n## A\n\n## A-2\n\n## A');
+    expect(anchorsOf(headings, 'a').map((x) => x.anchor)).toEqual(['a-a', 'a-a-2', 'a-a-2-2', 'a-a-3']);
   });
 
   it('an empty or over-long slug is still an id', () => {
@@ -68,9 +78,11 @@ describe('splitStreaming', () => {
     expect(splitStreaming(longer)).toEqual({ head: 'before\n\n', tail: '````md\ncode\n\n```\nstill code\n\nmore' });
     const trailing = 'before\n\n```\ncode\n```not-a-close\nstill code\n\nmore';
     expect(splitStreaming(trailing)).toEqual({ head: 'before\n\n', tail: '```\ncode\n```not-a-close\nstill code\n\nmore' });
-    // A loose list is one block; a reference definition is its own.
+    // A loose list is one block.
     expect(splitStreaming('- a\n\n- b\n\n- c is still')).toEqual({ head: '', tail: '- a\n\n- b\n\n- c is still' });
-    expect(splitStreaming('[x][id]\n\n[id]: https://e\n\npara')).toEqual({ head: '[x][id]\n\n[id]: https://e\n\n', tail: 'para' });
+    // A reference definition resolves links in earlier blocks: a document that carries one is not split, else the
+    // memoized head would render its references as text until the whole settles.
+    expect(splitStreaming('[x][id]\n\n[id]: https://e\n\npara')).toEqual({ head: '', tail: '[x][id]\n\n[id]: https://e\n\npara' });
     // A blank line may hold spaces or tabs; CRLF is normalised before the split.
     expect(splitStreaming('first\n  \nsecond\n\t\nthird')).toEqual({ head: 'first\n  \nsecond\n\t\n', tail: 'third' });
     expect(splitStreaming('first\r\n\r\nsecond')).toEqual({ head: 'first\n\n', tail: 'second' });

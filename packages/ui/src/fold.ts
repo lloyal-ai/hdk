@@ -121,9 +121,10 @@ export interface FoldAgentsOptions {
   /** The tool whose call ends the turn. Its call is not a timeline row: the report streamed live and
    *  `agent:return` files it. */
   terminal?: string;
-  /** The argument of the terminal tool whose text is the report, streamed as the model writes it.
+  /** The argument of the terminal tool whose text is the report, streamed as the model writes it; `null` when
+   *  nothing is to be shown until the report is filed at `agent:return`.
    *  @default 'result' */
-  terminalField?: string;
+  terminalField?: string | null;
   /** The clock, for tests. */
   now?: () => number;
 }
@@ -139,7 +140,8 @@ export const DEFAULT_TERMINAL_FIELD = 'result';
  *  Name the terminal `tool` and only ITS call is read: an argument name says nothing about which tool it belongs
  *  to, and an ordinary tool may well share one (`write_file(body)` beside `finish(body)`). Without a tool, any
  *  call carrying the argument is read. */
-export function extractStreamingReport(buffer: string, terminal: { tool?: string; field?: string } = {}): string | null {
+export function extractStreamingReport(buffer: string, terminal: { tool?: string; field?: string | null } = {}): string | null {
+  if (terminal.field === null) return null;
   const OPEN = `<parameter=${terminal.field ?? DEFAULT_TERMINAL_FIELD}>`;
   let from = 0;
   if (terminal.tool !== undefined) {

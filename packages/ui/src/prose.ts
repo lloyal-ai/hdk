@@ -86,11 +86,23 @@ export function headingsOf(markdown: string): Heading[] {
   return out;
 }
 
-/** Every link in document order — inline links, and the bare urls the renderer links as GFM does. */
+/** Every link in document order, as the renderer draws them: inline links, the bare urls GFM links, and
+ *  reference-style links resolved through their definitions (an unresolved reference renders as text and is
+ *  not a link). */
 export function linksOf(markdown: string): Link[] {
+  const root = rootOf(markdown);
+  const definitions = new Map<string, string>();
+  for (const node of walk(root.children)) {
+    if (node.type === 'definition') definitions.set(node.identifier, node.url);
+  }
   const out: Link[] = [];
-  for (const node of walk(rootOf(markdown).children)) {
-    if (node.type === 'link') out.push({ href: node.url, text: toString(node), offset: node.position?.start.offset ?? 0 });
+  for (const node of walk(root.children)) {
+    const offset = node.position?.start.offset ?? 0;
+    if (node.type === 'link') out.push({ href: node.url, text: toString(node), offset });
+    else if (node.type === 'linkReference') {
+      const href = definitions.get(node.identifier);
+      if (href !== undefined) out.push({ href, text: toString(node), offset });
+    }
   }
   return out;
 }
@@ -99,28 +111,33 @@ const slugify = (text: string): string =>
   text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'h';
 
 /** The id each heading is given under `prefix`, in document order — the ONE derivation, so an outline that
- *  names an anchor and the prose that carries it cannot disagree. A repeated heading is numbered so ids stay
- *  unique. A renderer assigns these to its heading elements in the same order. */
+ *  names an anchor and the prose that carries it cannot disagree. A repeated heading is numbered from its
+ *  second appearance, and the number is taken against the ids already given out, not the slug's count: `A`,
+ *  `A`, `A-2` become `a`, `a-2`, `a-2-2`, never two `a-2`s. A renderer assigns these to its heading elements
+ *  in the same order. */
 export function anchorsOf(headings: readonly Heading[], prefix: string): Anchor[] {
-  const seen = new Map<string, number>();
+  const given = new Set<string>();
   return headings.map((h) => {
-    const slug = slugify(h.text);
-    const n = (seen.get(slug) ?? 0) + 1;
-    seen.set(slug, n);
-    return { anchor: `${prefix}-${slug}${n > 1 ? `-${n}` : ''}`, text: h.text, depth: h.depth };
+    const base = `${prefix}-${slugify(h.text)}`;
+    let anchor = base;
+    for (let n = 2; given.has(anchor); n++) anchor = `${base}-${n}`;
+    given.add(anchor);
+    return { anchor, text: h.text, depth: h.depth };
   });
 }
 
 /** Where streaming prose stops being finished. Everything up to the last block CommonMark recognises is
  *  complete, parsed once and kept while it stands; the last block is the one still being written, parsed per
  *  token. The boundaries are marked's — a spec-tested block tokenizer, used here only to find where the last
- *  block starts: a loose list is one block, a fence owns its blank lines, a reference definition stands alone.
- *  A block boundary this misjudges would cost one extra parse of one block, never a wrong document. */
+ *  block starts: a loose list is one block, a fence owns its blank lines. A block boundary this misjudges
+ *  would cost one extra parse of one block, never a wrong document — with one exception the split refuses: a
+ *  reference definition resolves links in EARLIER blocks, so a head rendered without it would show those
+ *  references as text; a document that carries one is kept whole in the tail. */
 export function splitStreaming(markdown: string): { head: string; tail: string } {
   // marked reports raw text with line endings normalised; normalise first so head + tail is the text parsed.
   const text = markdown.replace(/\r\n?/g, '\n');
   const tokens = lexer(text);
-  if (tokens.length < 2) return { head: '', tail: text };
+  if (tokens.length < 2 || tokens.some((t) => t.type === 'def')) return { head: '', tail: text };
   const cut = text.length - tokens[tokens.length - 1].raw.length;
   return { head: text.slice(0, cut), tail: text.slice(cut) };
 }

@@ -33,13 +33,21 @@ describe('defineOutput', () => {
     await expect(run(() => submit.tool.execute({}, {}))).rejects.toThrow(/ends the agent's turn.*terminal/);
   });
 
-  it('accepts a call that matches the schema with the raw arguments as the result, and reads them back typed', () => {
+  it('accepts a call that matches the schema with the validated value as the result, and reads it back typed', () => {
     const submit = defineOutput('submit', columns);
     const row = { headquarters: 'Oslo, Norway', sellsTo: 'both', evidence: [{ field: 'headquarters', url: 'https://a.io' }] };
     const raw = JSON.stringify(row);
     const decision = submit.tool.hooks!.onReturn!({ agent, tool: 'submit', args: row, raw, result: raw });
     expect(decision).toEqual({ type: 'accept', result: raw });
     expect(submit.read({ result: raw })).toEqual(row);
+  });
+
+  it('a capture-less output is cleaned too: a fragment inside a string field cannot hide behind the closing brace', () => {
+    const submit = defineOutput('submit', columns);
+    const row = { headquarters: 'Oslo\n\n<tool_call>\n{"name": "web_se', sellsTo: 'both', evidence: [] };
+    const decision = submit.tool.hooks!.onReturn!({ agent, tool: 'submit', args: row, raw: JSON.stringify(row), result: '' });
+    expect(decision).toEqual({ type: 'accept', result: JSON.stringify({ headquarters: 'Oslo', sellsTo: 'both', evidence: [] }) });
+    expect(submit.read({ result: (decision as { result: string }).result })).toEqual({ headquarters: 'Oslo', sellsTo: 'both', evidence: [] });
   });
 
   it('rejects a call that misses the shape, naming the field; read yields null for anything that is not the typed value', () => {

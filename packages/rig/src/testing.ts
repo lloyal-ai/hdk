@@ -396,6 +396,11 @@ export async function runHarness<T extends ConfigTable, C extends { type: string
         );
       }),
     ]);
+  } catch (err) {
+    // A timed-out run is still running: halt it so its fibers and context end with the scenario, not after.
+    halted = true;
+    await task.halt().catch(() => undefined);
+    throw err;
   } finally {
     clearTimeout(watchdog);
   }
