@@ -88,6 +88,22 @@ describe('runHarness over a harness of its own', () => {
       .rejects.toThrow(/returned with the script at step [01]\/2/);
   });
 
+  it('a one-shot harness returning on its own is the run\'s normal end, whatever the script still waits for', async () => {
+    // A one-shot run reads no commands and ends when its work does; the script's only job there is to keep the
+    // rig from sending `quit` (a step that never matches). Its unfinished script is not an early exit.
+    const once = function* (ctx: SessionContext, events: EventBus<Event>): Operation<void> {
+      const { wire } = yield* initializeHarness(ctx, events, { abilities: [], config: table });
+      yield* wire.send({ type: 'answer', text: yield* oneAgent('Q') });
+    };
+    const run = await runHarness<typeof table, Command, Event>({
+      ...spec, harness: once, oneshot: 'Q',
+      utterances: [{ text: 'forty-two', kind: 'text' }],
+      script: [{ on: () => false }],
+    });
+    expect(run.failure).toBeUndefined();
+    expect((run.events.find((e) => e.type === 'answer') as { text: string }).text).toBe('forty-two');
+  });
+
   it('two tool turns with the same text and different arguments are refused as a fixture — the text cannot tell them apart', async () => {
     const twoAgents = function* (text: string): Operation<string> {
       const tools = [new Search()];

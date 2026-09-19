@@ -9,6 +9,7 @@ import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
+import { toString } from 'mdast-util-to-string';
 import { headingsOf, linksOf, anchorsOf, splitStreaming, admitUrl } from '../src/prose';
 
 describe('headingsOf / linksOf', () => {
@@ -56,6 +57,45 @@ describe('headingsOf / linksOf', () => {
     const md = '## H\n\n[a](https://a)';
     expect(headingsOf(md)).toEqual(headingsOf(md));
     expect(linksOf(md)).toEqual(linksOf(md));
+  });
+
+  /** The facts of a body read whole by the renderer's own parser: what the split parse must reproduce. */
+  const whole = (md: string): { headings: unknown[]; links: unknown[] } => {
+    const root = unified().use(remarkParse).use(remarkGfm).use(remarkMath).parse(md) as { children: unknown[] };
+    const nodes: { type: string; depth?: number; url?: string; identifier?: string; children?: unknown[]; position?: { start: { offset: number } } }[] = [];
+    const walk = (list: unknown[]): void => { for (const n of list as typeof nodes) { nodes.push(n); if (n.children) walk(n.children); } };
+    walk(root.children);
+    const defs = new Map<string, string>();
+    for (const n of nodes) if (n.type === 'definition' && !defs.has(n.identifier!)) defs.set(n.identifier!, n.url!);
+    const text = (n: unknown): string => toString(n as Parameters<typeof toString>[0]);
+    return {
+      headings: nodes.filter((n) => n.type === 'heading').map((n) => ({ depth: n.depth, text: text(n), offset: n.position!.start.offset })),
+      links: nodes.flatMap((n) =>
+        n.type === 'link' ? [{ href: admitUrl(n.url!), text: text(n), offset: n.position!.start.offset }]
+        : n.type === 'linkReference' && defs.has(n.identifier!) ? [{ href: admitUrl(defs.get(n.identifier!)!), text: text(n), offset: n.position!.start.offset }]
+        : []),
+    };
+  };
+
+  it('replayed token by token, the facts at every cut are the whole body\'s — the split parse loses no heading or link at the seam and shifts every offset', () => {
+    // The parse is in two pieces (the finished blocks, kept; the block under the caret, fresh), so a fact read per
+    // token costs one block's parse — `splitStreaming`'s accounting below is the cost proof; this is the proof
+    // that the pieces say what the whole says, at every cut, on the shapes a brief carries: headings at a block
+    // boundary, links in lists and quotes, a fence with a `#` line inside, a bare url, a reference resolved
+    // through a definition (never split) and one that is not.
+    const document = [
+      '# Title', 'See [Oslo](https://a.io/oslo) and https://bare.io/x here.', '## Results', '- [in a list](https://l.io)\n- plain',
+      '```\n# not a heading\n[not](https://a.link)\n```', '> [quoted](https://q.io)\n> ## not a heading either', '### Deep [linked](https://d.io) heading',
+      'A [ref][r] and [none][gone].', '## Results', 'the end',
+    ].join('\n\n');
+    for (const md of [document, `${document}\n\n[r]: https://r.io`]) {
+      for (let n = 1; n <= md.length; n++) {
+        const cut = md.slice(0, n);
+        const expected = whole(cut);
+        expect(headingsOf(cut), `headings at ${n}`).toEqual(expected.headings);
+        expect(linksOf(cut), `links at ${n}`).toEqual(expected.links);
+      }
+    }
   });
 });
 

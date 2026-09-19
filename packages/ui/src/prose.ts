@@ -7,7 +7,9 @@
  * contains, inline markup and all resolved.
  *
  * Two grammars are used on purpose, split by concern. Headings and links
- * (`headingsOf`, `linksOf`) come from remark, once per body, memoized. The
+ * (`headingsOf`, `linksOf`) come from remark, memoized, and parsed in the two
+ * pieces the streaming view renders — the finished blocks and the block under
+ * the caret — so a fact read per token costs one block's parse. The
  * streaming boundary (`splitStreaming`) comes from marked's block lexer, which
  * runs on every token over the whole buffer and is fifteen times cheaper — and
  * a boundary it misjudges costs one extra parse of one block, never a wrong
@@ -80,10 +82,11 @@ export function admitUrl(url: string): string {
  *  it is there, never emphasis. */
 const parser = unified().use(remarkParse).use(remarkGfm).use(remarkMath);
 
-/** Parsed bodies, most recent last. A canvas reads the settled body, its exchanges and the sections in one pass,
- *  so a one-entry memo would thrash; an unbounded one would pin every body a session ever showed. */
+/** Parsed texts, most recent last. A body is parsed in two pieces (see {@link nodesOf}), and a canvas reads the
+ *  settled body, its exchanges and the sections in one pass, so a small memo would thrash; an unbounded one
+ *  would pin every body a session ever showed. */
 const parsed = new Map<string, Root>();
-const KEEP = 16;
+const KEEP = 32;
 
 function rootOf(markdown: string): Root {
   const hit = parsed.get(markdown);
@@ -105,11 +108,23 @@ function* walk(nodes: readonly Content[]): Generator<Content> {
   }
 }
 
+/** Every node of a body with where it starts, parsed the way the streaming view renders it: the finished
+ *  blocks as one piece, kept while they stand, and the block under the caret as another, parsed fresh. A fact
+ *  read per token — the outline of a section as it streams — then costs one block's parse, not the body's;
+ *  and a settled body costs its parse once. The pieces are {@link splitStreaming}'s, so a body it refuses to
+ *  split (a reference definition, display math) is one piece, and no block is ever read across the seam. The
+ *  offsets count into the body with its line endings normalised to `\n`, as the split normalises them. */
+function* nodesOf(markdown: string): Generator<{ node: Content; offset: number }> {
+  const { head, tail } = splitStreaming(markdown);
+  for (const node of walk(rootOf(head).children)) yield { node, offset: node.position?.start.offset ?? 0 };
+  for (const node of walk(rootOf(tail).children)) yield { node, offset: head.length + (node.position?.start.offset ?? 0) };
+}
+
 /** Every heading in document order. */
 export function headingsOf(markdown: string): Heading[] {
   const out: Heading[] = [];
-  for (const node of walk(rootOf(markdown).children)) {
-    if (node.type === 'heading') out.push({ depth: node.depth, text: toString(node), offset: node.position?.start.offset ?? 0 });
+  for (const { node, offset } of nodesOf(markdown)) {
+    if (node.type === 'heading') out.push({ depth: node.depth, text: toString(node), offset });
   }
   return out;
 }
@@ -119,14 +134,12 @@ export function headingsOf(markdown: string): Heading[] {
  *  CommonMark resolves it (an unresolved reference renders as text and is not a link). Each href has passed
  *  {@link admitUrl}, so a link whose scheme the renderer strips is reported with the same empty href. */
 export function linksOf(markdown: string): Link[] {
-  const root = rootOf(markdown);
   const definitions = new Map<string, string>();
-  for (const node of walk(root.children)) {
+  for (const { node } of nodesOf(markdown)) {
     if (node.type === 'definition' && !definitions.has(node.identifier)) definitions.set(node.identifier, node.url);
   }
   const out: Link[] = [];
-  for (const node of walk(root.children)) {
-    const offset = node.position?.start.offset ?? 0;
+  for (const { node, offset } of nodesOf(markdown)) {
     if (node.type === 'link') out.push({ href: admitUrl(node.url), text: toString(node), offset });
     else if (node.type === 'linkReference') {
       const href = definitions.get(node.identifier);

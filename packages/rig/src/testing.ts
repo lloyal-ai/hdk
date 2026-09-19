@@ -434,8 +434,9 @@ export async function runHarness<T extends ConfigTable, C extends { type: string
     clearTimeout(watchdog);
   }
   // A harness that returned on its own with steps still waiting did not run the scenario: an early exit must
-  // not pass as a run that met every expectation. A halt and a one-shot failure are the scenario's own ends.
-  if (!halted && failure === undefined && cursor < steps.length) {
+  // not pass as a run that met every expectation. A halt is the scenario's own end, and so is a one-shot run's
+  // return: it reads no commands and ends when its work does, whatever its script still waits for.
+  if (!halted && spec.oneshot === undefined && cursor < steps.length) {
     throw new Error(`runHarness: the harness returned with the script at step ${cursor}/${steps.length}; last event: ${events[events.length - 1]?.type}`);
   }
 
