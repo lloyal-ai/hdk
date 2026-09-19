@@ -7,7 +7,7 @@ import { foldAgents, emptyRoster, extractStreamingReport, summarizeResult } from
 import type { AgentEvent, AgentRoster, FoldAgentsOptions } from '../src/fold';
 
 const now = () => 1000;
-const research = { spawn: () => ({ taskIndex: 0, taskDescription: 'look' }), terminal: 'report', now };
+const research = { spawn: () => ({ timeline: true, taskIndex: 0, taskDescription: 'look' }), terminal: 'report', now };
 const fold = (r: AgentRoster, evs: AgentEvent[], opts: FoldAgentsOptions = research): AgentRoster => evs.reduce((acc, ev) => foldAgents(acc, ev, opts), r);
 const spawn = (agentId: number): AgentEvent => ({ type: 'agent:spawn', agentId });
 const produce = (agentId: number, text: string, tokenCount: number): AgentEvent => ({ type: 'agent:produce', agentId, text, tokenCount });
@@ -21,14 +21,32 @@ describe('foldAgents', () => {
     expect(a.timeline).toEqual([{ kind: 'think', id: 0, title: 'Thinking…', body: '', live: true, openedAt: 1000, closedAt: null }]);
     const s = fold(emptyRoster(), [spawn(7)], { now });
     expect(s.agents.get(7)!.phase).toBe('idle');
-    expect(s.agents.get(7)!.timeline).toEqual([]);
+    expect(s.agents.get(7)!.timeline).toBeNull();
     expect(s.agents.get(7)!.taskIndex).toBeNull();
+  });
+
+  it('a timeline is one fact and a task another: a settling pass keeps a timeline and belongs to no task', () => {
+    const settling = { spawn: () => ({ timeline: true, taskIndex: null }), terminal: 'report', now };
+    const r = fold(emptyRoster(), [spawn(1), produce(1, 'weighing it', 2), produce(1, ' up.</think>The brief', 6)], settling);
+    const a = r.agents.get(1)!;
+    expect(a.taskIndex).toBeNull();
+    expect(a.timeline!.map((t) => t.kind)).toEqual(['think']);
+    expect(a.timeline![0].kind === 'think' && a.timeline![0].body).toBe('weighing it up.');
+    expect(a.contentBuffer).toBe('The brief');
+    const done = fold(r, [{ type: 'agent:return', agentId: 1, result: 'The brief' }], settling).agents.get(1)!;
+    expect(done.timeline!.map((t) => t.kind)).toEqual(['think', 'report']);
+    expect(done.phase).toBe('done');
+    // And a task without a timeline is tracked by its numbers only.
+    const counted = fold(emptyRoster(), [spawn(2), produce(2, 'x', 4)], { spawn: () => ({ timeline: false, taskIndex: 3 }), now }).agents.get(2)!;
+    expect(counted.taskIndex).toBe(3);
+    expect(counted.timeline).toBeNull();
+    expect(counted.tokenCount).toBe(4);
   });
 
   it('a think block advances until </think>, then closes with a title and seeds the content buffer with the tail', () => {
     const r = fold(emptyRoster(), [spawn(1), produce(1, 'The plan is ', 3), produce(1, 'simple.</think><tool_call>', 8)]);
     const a = r.agents.get(1)!;
-    const think = a.timeline[0];
+    const think = a.timeline![0];
     expect(think.kind === 'think' && think.body).toBe('The plan is simple.');
     expect(think.kind === 'think' && think.title).toBe('The plan is simple.');
     expect(think.kind === 'think' && think.live).toBe(false);
@@ -45,10 +63,10 @@ describe('foldAgents', () => {
       produce(1, 'next', 5),
     ]);
     const a = r.agents.get(1)!;
-    expect(a.timeline.map((t) => t.kind)).toEqual(['think', 'tool_call', 'tool_result', 'think']);
-    const call = a.timeline[1];
+    expect(a.timeline!.map((t) => t.kind)).toEqual(['think', 'tool_call', 'tool_result', 'think']);
+    const call = a.timeline![1];
     expect(call.kind === 'tool_call' && call.argsSummary).toBe('"continuous batching"');
-    const result = a.timeline[2];
+    const result = a.timeline![2];
     expect(result.kind === 'tool_result' && result.callId).toBe(call.id);
     expect(result.kind === 'tool_result' && result.hosts).toEqual(['a.io']);
     expect(result.kind === 'tool_result' && result.sources?.[0]?.host).toBe('a.io');
@@ -57,27 +75,27 @@ describe('foldAgents', () => {
   });
 
   it('a terminal whose text lives in another argument streams from that argument, when the application names it', () => {
-    const rows = { spawn: () => ({ taskIndex: 0 }), terminal: 'enrich_row', terminalField: 'summary', now };
+    const rows = { spawn: () => ({ timeline: true, taskIndex: 0 }), terminal: 'enrich_row', terminalField: 'summary', now };
     const streamed = '<tool_call>\n<function=enrich_row>\n<parameter=summary>\nA row';
     const r = [
       spawn(1), produce(1, 'x</think>', 1), produce(1, streamed, 4),
       { type: 'agent:tool_call' as const, agentId: 1, tool: 'enrich_row', args: '{}' },
     ].reduce((acc, ev) => foldAgents(acc, ev, rows), emptyRoster());
-    expect(r.agents.get(1)!.timeline.filter((t) => t.kind === 'tool_call')).toEqual([]);
+    expect(r.agents.get(1)!.timeline!.filter((t) => t.kind === 'tool_call')).toEqual([]);
     expect(extractStreamingReport(streamed, { tool: 'enrich_row', field: 'summary' })).toBe('A row');
     expect(extractStreamingReport(streamed)).toBeNull();
   });
 
   it('an ordinary tool that shares the terminal\'s argument name is a step of the work, not a report', () => {
     // `finish(body)` ends the turn; `write_file(body)` is just a tool. The argument name alone cannot tell them apart.
-    const rows = { spawn: () => ({ taskIndex: 0 }), terminal: 'finish', terminalField: 'body', now };
+    const rows = { spawn: () => ({ timeline: true, taskIndex: 0 }), terminal: 'finish', terminalField: 'body', now };
     const writing = '<tool_call>\n<function=write_file>\n<parameter=path>\nnotes.md\n</parameter>\n<parameter=body>\nFILE CONTENTS';
     expect(extractStreamingReport(writing, { tool: 'finish', field: 'body' })).toBeNull();
     const r = [
       spawn(1), produce(1, 'x</think>', 1), produce(1, writing, 4),
       { type: 'agent:tool_call' as const, agentId: 1, tool: 'write_file', args: '{"path":"notes.md"}' },
     ].reduce((acc, ev) => foldAgents(acc, ev, rows), emptyRoster());
-    expect(r.agents.get(1)!.timeline.filter((t) => t.kind === 'tool_call').map((t) => t.kind === 'tool_call' && t.tool)).toEqual(['write_file']);
+    expect(r.agents.get(1)!.timeline!.filter((t) => t.kind === 'tool_call').map((t) => t.kind === 'tool_call' && t.tool)).toEqual(['write_file']);
     // And the terminal is still the terminal, after an ordinary call in the same buffer's history.
     const finishing = '<tool_call>\n<function=finish>\n<parameter=body>\nTHE FINDINGS';
     expect(extractStreamingReport(finishing, { tool: 'finish', field: 'body' })).toBe('THE FINDINGS');
@@ -99,7 +117,7 @@ describe('foldAgents', () => {
       { type: 'agent:return', agentId: 1, result: 'Findings' },
     ]);
     const a = r.agents.get(1)!;
-    expect(a.timeline.map((t) => t.kind)).toEqual(['think', 'report']);
+    expect(a.timeline!.map((t) => t.kind)).toEqual(['think', 'report']);
     expect(a.phase).toBe('done');
     expect(a.endedAt).toBe(1000);
     expect(a.contentBuffer).toBe('');
@@ -114,7 +132,7 @@ describe('foldAgents', () => {
       { type: 'agent:recovered', agentId: 1, result: 'What I found: enough.' },
     ]);
     const a = r.agents.get(1)!;
-    expect(a.timeline.map((t) => t.kind)).toEqual(['think', 'report']);
+    expect(a.timeline!.map((t) => t.kind)).toEqual(['think', 'report']);
     expect(a.recovering).toBe(false);
     expect(a.phase).toBe('done');
     const mid = fold(emptyRoster(), [spawn(1), produce(1, 'thinking', 1), { type: 'agent:done', agentId: 1 }, produce(1, 'What I found', 3)]).agents.get(1)!;
@@ -152,8 +170,8 @@ describe('foldAgents', () => {
   it('labels and timeline ids are stable across agents in one roster', () => {
     const r = fold(emptyRoster(), [spawn(3), spawn(5), produce(3, 'a</think>', 1), { type: 'agent:tool_call', agentId: 3, tool: 'grep', args: '{"pattern":"x"}' }]);
     expect([r.agents.get(3)!.label, r.agents.get(5)!.label]).toEqual(['A0', 'A1']);
-    expect(r.agents.get(3)!.timeline.map((t) => t.id)).toEqual([0, 2]);
-    expect(r.agents.get(5)!.timeline.map((t) => t.id)).toEqual([1]);
+    expect(r.agents.get(3)!.timeline!.map((t) => t.id)).toEqual([0, 2]);
+    expect(r.agents.get(5)!.timeline!.map((t) => t.id)).toEqual([1]);
     expect(r.nextTimelineId).toBe(3);
   });
 

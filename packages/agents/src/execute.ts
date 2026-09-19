@@ -687,8 +687,7 @@ export class Executor {
       // limit); the fallback diagnoses nothing.
       const exhausted = {
         error: decision.message
-          ?? `${tc.name} failed and will not be retried. ` +
-            `Do not call ${tc.name} again with these arguments — use other sources or proceed with your current findings.`,
+          ?? `${tc.name} failed and will not be retried. Do not call ${tc.name} again with these arguments.`,
       };
       const resultStr = JSON.stringify(exhausted);
       yield* d.emit.emit({ kind: 'toolTold', agent, tool: tc.name, resultStr });

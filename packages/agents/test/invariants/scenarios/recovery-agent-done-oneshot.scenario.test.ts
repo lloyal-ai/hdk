@@ -31,7 +31,7 @@ describe('scenario: agent:done is one-shot through defer→stall-break recovery'
       pressureThresholds: { softLimit: 20, hardLimit: 512 },
       onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
       hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
-      onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),
+      onRecovery: () => ({ type: 'extract', prompt: { systemPrompt: 's', content: 'u' } }),
     };
 
     // nCtx 700, default hardLimit 512: after root+suffix prefill (~31) + ~158

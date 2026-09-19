@@ -7,7 +7,8 @@
  * the one enlarged view of an asset, and what a root is. The generic agent
  * fold is framework-free and lives at `@lloyal-labs/ui/fold`, so a fold that
  * runs where React does not (a terminal, a desktop shell's own process) takes
- * that entry alone.
+ * that entry alone; the facts of a markdown body — its headings, links and the
+ * ids its headings are given — are `@lloyal-labs/ui/prose`, framework-free too.
  *
  * Browser-safe: nothing here imports a Node module.
  *
@@ -23,3 +24,4 @@ export type { LightboxProps } from './lightbox.js';
 export { resolveAsset, useAssets, pageFacts, pageList } from './assets.js';
 export type { Asset } from './assets.js';
 export * from './fold.js';
+export * from './prose.js';

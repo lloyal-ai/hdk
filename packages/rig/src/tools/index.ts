@@ -17,22 +17,23 @@
  */
 
 import { ReportTool } from './report';
+import type { Reports } from './report';
 
 export { TavilyProvider } from './web-search';
 export type { SearchProvider, SearchResult } from './web-search';
 export { createKeylessSearchProvider } from './keyless-search';
 export type { KeylessSearchOptions } from './keyless-search';
 export { ReportTool } from './report';
-export type { ReportToolOpts } from './report';
+export type { ReportToolOpts, Reports } from './report';
 export { DelegateTool } from './delegate';
 export type { DelegateToolOpts } from './delegate';
 export type { Reranker, ScoredChunk, ScoredResult } from './types';
-export { PlanTool, taskToContent, singleTaskPlan } from './plan';
+export { PlanTool, taskToContent, singleTaskPlan, taskKey, taskIndexOf } from './plan';
 export { defineOutput, citedReport } from './output';
 export type { Output, OutputOptions } from './output';
 export { weaveSourcesIntoResult } from './weave-sources';
 export type { WeaveSource } from './weave-sources';
-export type { PlanResult, PlanIntent, PlanToolOpts, ResearchTask } from './plan';
+export type { PlanResult, PlanIntent, PlanToolOpts, PlanPromptInput, ResearchTask } from './plan';
 
 /**
  * Shared {@link ReportTool} instance — the conventional terminal tool.
@@ -44,3 +45,11 @@ export type { PlanResult, PlanIntent, PlanToolOpts, ResearchTask } from './plan'
  * @category Rig
  */
 export const reportTool = new ReportTool();
+
+/**
+ * rig's own report tool as a view reads it ({@link Reports}) — and what a run that says
+ * nothing about its terminal is read as.
+ *
+ * @category Rig
+ */
+export const RIG_REPORT: Reports = { tool: reportTool.name, field: 'result' };

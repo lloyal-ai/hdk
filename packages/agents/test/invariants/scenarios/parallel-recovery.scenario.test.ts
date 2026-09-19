@@ -28,7 +28,7 @@ function idleNoResultPolicy(
   return {
     onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
     hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
-    onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),
+    onRecovery: () => ({ type: 'extract', prompt: { systemPrompt: 's', content: 'u' } }),
     shouldExit: () => false,
     recoveryShape: shape,
     ...(recoveryBudget !== undefined ? { recoveryBudget } : {}),
@@ -236,7 +236,7 @@ describe('scenario: parallel recovery (in-loop via SETTLE)', () => {
     const alwaysExit: AgentPolicy = {
       onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
       hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
-      onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),
+      onRecovery: () => ({ type: 'extract', prompt: { systemPrompt: 's', content: 'u' } }),
       shouldExit: () => true,
       recoveryShape: 'parallel',
     };

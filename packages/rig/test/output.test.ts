@@ -74,6 +74,21 @@ describe('citedReport', () => {
     expect(citedReport.read({ result: (decision as { result: string }).result })).toBe((decision as { result: string }).result);
   });
 
+  it('a dangling <tool_call> at the end of the findings is stripped BEFORE the sources are woven on, so the trailer stands and the fragment never rides into another prompt', () => {
+    const args = {
+      result: 'Oslo sits on the fjord, see https://a.io/oslo.\n\n<tool_call>\n{"name": "web_search", "argu',
+      sources: [{ title: 'Oslo', url: 'https://a.io/oslo' }],
+    };
+    const decision = citedReport.tool.hooks!.onReturn!({ agent, tool: 'report', args, raw: JSON.stringify(args), result: args.result });
+    expect(decision).toEqual({ type: 'accept', result: 'Oslo sits on the fjord, see [Oslo](https://a.io/oslo).\n\nSources:\n- [Oslo](https://a.io/oslo)' });
+  });
+
+  it('a complete <tool_call> block inside the findings is left alone', () => {
+    const args = { result: 'Findings <tool_call>{}</tool_call> end.', sources: [] };
+    const decision = citedReport.tool.hooks!.onReturn!({ agent, tool: 'report', args, raw: JSON.stringify(args), result: args.result });
+    expect(decision).toEqual({ type: 'accept', result: 'Findings <tool_call>{}</tool_call> end.' });
+  });
+
   it('a report without its sources is rejected, not accepted', () => {
     const decision = citedReport.tool.hooks!.onReturn!({ agent, tool: 'report', args: { result: 'findings' }, raw: '{"result":"findings"}', result: 'findings' });
     expect(decision).toMatchObject({ type: 'reject' });

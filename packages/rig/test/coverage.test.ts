@@ -14,11 +14,12 @@ import { NullAttachmentStore } from '@lloyal-labs/media';
 import { createAbilityRegistry } from '../src/registry';
 import { createInMemoryConfigStore } from '../src/config-store';
 import { coverage, sourceKey, sourceOf } from '../src/coverage';
+import type { CoveragePromptInput } from '../src/coverage';
 import { fakeAbility } from './helpers/fake-ability';
 
 const STOP = 999;
-const PROMPT = { system: 'probe', user: 'Probe <%= it.ability.name %> for <%= it.query %>' };
-const RECOVER = { system: 'r', user: 'report' };
+const PROMPT = ({ query, ability }: CoveragePromptInput) => ({ systemPrompt: 'probe', content: `Probe ${ability.name} for ${query}` });
+const RECOVER = () => ({ systemPrompt: 'r', content: 'report' });
 
 describe('coverage', () => {
   it('probes each source once, joins what they reported under their protocol names, and leaves a silent source out', async () => {
@@ -47,7 +48,7 @@ describe('coverage', () => {
       const sources: Ability[] = [];
       for (const name of ['web', 'wiki', 'corpus']) sources.push(yield* registry.enable(fakeAbility({ name })));
       return yield* scoped(() => coverage({
-        question: 'Q?', sources, prompt: PROMPT,
+        query: 'Q?', sources, prompt: PROMPT,
         budget: { maxTurns: 4, recovery: { prompt: RECOVER, minToolCalls: 1 } },
       }));
     });

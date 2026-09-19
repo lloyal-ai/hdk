@@ -22,7 +22,7 @@ export interface UseAgentOpts {
   /** System prompt defining the agent's role and behavior. */
   systemPrompt: string;
   /** User message content — the agent's task. */
-  task: string;
+  content: string;
   /** Tools available to the agent. Optional — pool degenerates cleanly without tools. */
   tools?: readonly Tool[];
   /**
@@ -92,7 +92,7 @@ export interface UseAgentOpts {
  * ```typescript
  * const agent = yield* useAgent({
  *   systemPrompt: "You answer from what your tools return.",
- *   task: "Find information about X",
+ *   content: "Find information about X",
  *   tools: [searchTool],
  *   terminal: reportTool,
  * });
@@ -144,7 +144,7 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
     const hasTools = toolkit.tools.length > 0;
     const sub = yield* useAgentPool({
       spine: root,
-      orchestrate: parallel([{ content: opts.task, systemPrompt: opts.systemPrompt }]),
+      orchestrate: parallel([{ content: opts.content, systemPrompt: opts.systemPrompt }]),
       toolsJson: hasTools ? toolkit.toolsJson : '',
       tools: toolkit.toolMap,
       terminalToolName: toolkit.terminalName,
@@ -202,7 +202,7 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
  * ```typescript
  * const a = yield* agent({
  *   systemPrompt: PLAN.system,
- *   task: query,
+ *   content: query,
  *   schema: planSchema,
  * });
  * const plan = JSON.parse(a.rawOutput);

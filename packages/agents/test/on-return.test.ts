@@ -132,7 +132,7 @@ describe('onReturn: the terminal tool decides its capture', () => {
       yield* contexts(w);
       return yield* pool(w, {
         tools: new Map([['submit', submit]]), toolsJson: JSON.stringify([submit.schema]), terminalToolName: 'submit',
-        budget: { time: { hardLimit: 0 }, recovery: { prompt: { system: 's', user: 'report now' }, minToolCalls: 0, minTokens: 0 } },
+        budget: { time: { hardLimit: 0 }, recovery: { prompt: () => ({ systemPrompt: 's', content: 'report now' }), minToolCalls: 0, minTokens: 0 } },
       });
     });
     expect(w.events.some((e) => e.type === 'agent:recovered')).toBe(true);
@@ -209,7 +209,7 @@ describe('acceptFreeText end to end, and a tool that throws', () => {
     const result = await run(function* () {
       yield* contexts(w);
       return yield* scoped(function* () {
-        const a = yield* useAgent({ systemPrompt: 's', task: 't', acceptFreeText: true });
+        const a = yield* useAgent({ systemPrompt: 's', content: 't', acceptFreeText: true });
         return a.result;
       });
     });

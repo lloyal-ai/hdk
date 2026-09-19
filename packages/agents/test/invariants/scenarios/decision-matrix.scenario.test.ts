@@ -167,7 +167,7 @@ describe('decision matrix: scattered kill/nudge paths', () => {
       terminalToolName: 'report',
       budget: { context: { softLimit: 256, hardLimit: 512 } },
       recovery: {
-        prompt: { system: 'recover', user: 'report' },
+        prompt: () => ({ systemPrompt: 'recover', content: 'report' }),
         minTokens: 0,
         minToolCalls: 0,
       },

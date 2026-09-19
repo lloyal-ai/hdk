@@ -347,7 +347,7 @@ describe('Explore/exploit decoupled from lifecycle', () => {
   it('exploit mode does not affect agent lifecycle — agent is active, not killed', () => {
     // Agent in exploit mode (low pressure → shouldExplore false)
     // but NOT nudged or killed (shouldExit false, onProduced returns tool_call)
-    const policy = new DefaultAgentPolicy({ shouldExplore: { context: 0.5 } });
+    const policy = new DefaultAgentPolicy({ shouldExplore: { context: 0.5 }, nudge: (f) => `call ${f.terminal} within ${f.words} words` });
     const branch = createMockBranch();
     const a = new Agent({
       id: 1, parentId: 0, branch: branch as any,
@@ -376,7 +376,7 @@ describe('Explore/exploit decoupled from lifecycle', () => {
 
   it('lifecycle nudge does not suppress explore mode', () => {
     // Agent nudged (over budget) while shouldExplore is true
-    const policy = new DefaultAgentPolicy();
+    const policy = new DefaultAgentPolicy({ nudge: (f) => `call ${f.terminal} within ${f.words} words` });
     const branch = createMockBranch();
     const a = new Agent({
       id: 1, parentId: 0, branch: branch as any,
@@ -404,7 +404,7 @@ describe('Explore/exploit decoupled from lifecycle', () => {
   });
 
   it('explore and lifecycle states do not bleed into each other', () => {
-    const policy = new DefaultAgentPolicy({ shouldExplore: { context: 0.4 } });
+    const policy = new DefaultAgentPolicy({ shouldExplore: { context: 0.4 }, nudge: (f) => `call ${f.terminal} within ${f.words} words` });
     const a = new Agent({
       id: 1, parentId: 0, branch: createMockBranch() as any,
       fmt: FMT,

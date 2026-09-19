@@ -7,7 +7,14 @@
 /** Strip a trailing UNCLOSED `<tool_call>` fragment from text captured as an
  *  agent result — a truncated call must not ride into another agent's prompt
  *  as an in-context demonstration of emitting tool calls. Complete blocks
- *  are left alone. */
+ *  are left alone.
+ *
+ *  Who strips: an output that CAPTURES (rig's `defineOutput`) strips the text
+ *  it derives before any capture appends to it — a trailer appended after the
+ *  fragment would hide it from this `$`-anchored match. The applier strips
+ *  what never passes a capture: a free-text return, the salvage of a terminal
+ *  call cut mid-argument (the schema rejects it, so no `onReturn` sees it),
+ *  and a return through an output that captures nothing. */
 export function stripDanglingToolCall(text: string): string {
   return text.replace(/<tool_call>(?:(?!<\/tool_call>)[\s\S])*$/, '').trimEnd();
 }

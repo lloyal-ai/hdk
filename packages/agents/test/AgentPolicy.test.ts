@@ -8,13 +8,22 @@
 import { describe, it, expect } from 'vitest';
 import { DefaultAgentPolicy } from '../src/AgentPolicy';
 import { ContextPressure } from '../src/pressure';
-import type { PolicyConfig } from '../src/AgentPolicy';
+import type { PolicyConfig, NudgeInput, DefaultAgentPolicyOpts } from '../src/AgentPolicy';
 import { Agent } from '../src/Agent';
 import { createMockBranch } from './helpers/mock-branch';
 
 import { FMT } from './helpers/format-config';
 
 const BASE_CONFIG: PolicyConfig = { maxTurns: 20, terminalToolName: 'report' };
+
+/** This test app's words for a nudge — the shape the framework used to write itself, now the app's. */
+const nudge = (f: NudgeInput): string => {
+  const why = f.reason === 'time' ? 'Time limit reached' : f.reason === 'turns' ? 'Turn limit reached' : f.reason === 'context' ? 'Context nearly full' : 'Tool result too large for the remaining context.';
+  return `${why} — call ${f.terminal} now within ${f.words} words.`;
+};
+
+/** The default policy with this app's nudge words. */
+const policyWith = (opts: DefaultAgentPolicyOpts = {}): DefaultAgentPolicy => new DefaultAgentPolicy({ nudge, ...opts });
 
 function makeAgent(overrides?: { toolCallCount?: number; turns?: number; toolHistory?: Array<{ name: string; args: string }> }) {
   const branch = createMockBranch();
@@ -34,7 +43,7 @@ function pressure(remaining = 5000, nCtx = 16384): ContextPressure {
 }
 
 describe('DefaultAgentPolicy', () => {
-  const policy = new DefaultAgentPolicy();
+  const policy = policyWith();
 
   describe('onProduced — no tool call', () => {
     it('returns free_text_return when agent has findings-worthy output', () => {
@@ -117,7 +126,7 @@ describe('DefaultAgentPolicy', () => {
     it('is a return however few tools were called: the evidence floor is the harness\'s, an onReturn contribution, never a number here', () => {
       const a = makeAgent({ toolCallCount: 0 });
       const tc = { name: 'report', arguments: '{"findings":"f"}', id: 'c1' };
-      const action = new DefaultAgentPolicy().onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      const action = policyWith().onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
       expect(action).toMatchObject({ type: 'return', call: tc });
     });
   });
@@ -131,17 +140,17 @@ describe('DefaultAgentPolicy', () => {
     });
 
     it('respects custom shouldExplore.context threshold', () => {
-      const lowThreshold = new DefaultAgentPolicy({ shouldExplore: { context: 0.2 } });
+      const lowThreshold = policyWith({ shouldExplore: { context: 0.2 } });
       // 30% > 20% → true
       expect(lowThreshold.shouldExplore(makeAgent(), pressure(5000))).toBe(true);
 
-      const highThreshold = new DefaultAgentPolicy({ shouldExplore: { context: 0.7 } });
+      const highThreshold = policyWith({ shouldExplore: { context: 0.7 } });
       // 48% < 70% → false
       expect(highThreshold.shouldExplore(makeAgent(), pressure(8000))).toBe(false);
     });
 
     it('setExploitMode(true) overrides to always false', () => {
-      const p = new DefaultAgentPolicy();
+      const p = policyWith();
       const highPressure = pressure(15000); // ~91% available
       expect(p.shouldExplore(makeAgent(), highPressure)).toBe(true);
 
@@ -150,7 +159,7 @@ describe('DefaultAgentPolicy', () => {
     });
 
     it('setExploitMode(false) reverts to pressure-driven', () => {
-      const p = new DefaultAgentPolicy();
+      const p = policyWith();
       p.setExploitMode(true);
       expect(p.shouldExplore(makeAgent(), pressure(15000))).toBe(false);
 
@@ -183,28 +192,28 @@ describe('DefaultAgentPolicy', () => {
     });
 
     it('no time budget → only pressure checked', () => {
-      const p = new DefaultAgentPolicy(); // no budget
+      const p = policyWith(); // no budget
       expect(p.shouldExit(makeAgent(), pressure(5000))).toBe(false);
       expect(p.shouldExit(makeAgent(), pressure(50))).toBe(true);
     });
 
     it('time hardLimit exceeded → returns true', () => {
-      const p = new DefaultAgentPolicy({ budget: { time: { hardLimit: 0 } } }); // 0ms = instant
+      const p = policyWith({ budget: { time: { hardLimit: 0 } } }); // 0ms = instant
       expect(p.shouldExit(makeAgent(), pressure(5000))).toBe(true);
     });
 
     it('time hardLimit not exceeded → returns false', () => {
-      const p = new DefaultAgentPolicy({ budget: { time: { hardLimit: 999_999 } } });
+      const p = policyWith({ budget: { time: { hardLimit: 999_999 } } });
       expect(p.shouldExit(makeAgent(), pressure(5000))).toBe(false);
     });
 
     it('pressure OK + time exceeded → exit', () => {
-      const p = new DefaultAgentPolicy({ budget: { time: { hardLimit: 0 } } });
+      const p = policyWith({ budget: { time: { hardLimit: 0 } } });
       expect(p.shouldExit(makeAgent(), pressure(5000))).toBe(true);
     });
 
     it('pressure critical + time OK → exit', () => {
-      const p = new DefaultAgentPolicy({ budget: { time: { hardLimit: 999_999 } } });
+      const p = policyWith({ budget: { time: { hardLimit: 999_999 } } });
       expect(p.shouldExit(makeAgent(), pressure(50))).toBe(true);
     });
   });
@@ -216,73 +225,72 @@ describe('DefaultAgentPolicy', () => {
     });
 
     it('returns skip when tokenCount < minTokens', () => {
-      const p = new DefaultAgentPolicy({ recovery: { prompt: { system: 's', user: 'u' }, minTokens: 200 } });
+      const p = policyWith({ recovery: { prompt: () => ({ systemPrompt: 's', content: 'u' }), minTokens: 200 } });
       const a = makeAgent({ toolCallCount: 5 }); // tokenCount=0 < 200
       expect(p.onRecovery!(a, pressure())).toEqual({ type: 'skip' });
     });
 
     it('returns skip when toolCallCount < minToolCalls', () => {
-      const p = new DefaultAgentPolicy({ recovery: { prompt: { system: 's', user: 'u' }, minToolCalls: 5 } });
+      const p = policyWith({ recovery: { prompt: () => ({ systemPrompt: 's', content: 'u' }), minToolCalls: 5 } });
       const a = makeAgent({ toolCallCount: 2 }); // 2 < 5
       expect(p.onRecovery!(a, pressure())).toEqual({ type: 'skip' });
     });
 
-    it('returns extract with prompt when guard passes', () => {
-      const prompt = { system: 'extract findings', user: 'report now' };
-      const p = new DefaultAgentPolicy({ recovery: { prompt } });
+    it('returns extract with the prompt the app renders when guard passes', () => {
+      const text = { systemPrompt: 'extract findings', content: 'report now' };
+      const p = policyWith({ recovery: { prompt: () => text } });
       const a = makeAgent({ toolCallCount: 3 });
       // Need tokenCount >= 100 — manually set via accumulating tokens
       for (let i = 0; i < 101; i++) a.accumulateToken('x');
-      // Prompt strings contain no eta tags → render returns them unchanged.
-      expect(p.onRecovery(a, pressure() as any)).toEqual({ type: 'extract', prompt });
+      expect(p.onRecovery(a, pressure() as any)).toEqual({ type: 'extract', prompt: text });
     });
 
     it('custom minTokens/minToolCalls respected', () => {
-      const prompt = { system: 's', user: 'u' };
-      const p = new DefaultAgentPolicy({ recovery: { prompt, minTokens: 10, minToolCalls: 1 } });
+      const text = { systemPrompt: 's', content: 'u' };
+      const p = policyWith({ recovery: { prompt: () => text, minTokens: 10, minToolCalls: 1 } });
       const a = makeAgent({ toolCallCount: 1 });
       for (let i = 0; i < 11; i++) a.accumulateToken('x');
-      expect(p.onRecovery(a, pressure() as any)).toEqual({ type: 'extract', prompt });
+      expect(p.onRecovery(a, pressure() as any)).toEqual({ type: 'extract', prompt: text });
     });
 
     it('defaults: minTokens=100, minToolCalls=2', () => {
-      const prompt = { system: 's', user: 'u' };
-      const p = new DefaultAgentPolicy({ recovery: { prompt } });
+      const prompt = () => ({ systemPrompt: 's', content: 'u' });
+      const p = policyWith({ recovery: { prompt } });
       // toolCallCount=1 < default 2 → skip
       const a = makeAgent({ toolCallCount: 1 });
       for (let i = 0; i < 101; i++) a.accumulateToken('x');
       expect(p.onRecovery(a, pressure() as any)).toEqual({ type: 'skip' });
     });
 
-    it('renders <%= it.budget %> with the computed word budget', () => {
-      const prompt = {
-        system: 'Budget: <%= it.budget %> words.',
-        user: 'Report within <%= it.budget %>.',
-      };
-      const p = new DefaultAgentPolicy({ recovery: { prompt } });
+    it('hands the prompt the computed word budget', () => {
+      const prompt = ({ budget }: { budget: number }) => ({
+        systemPrompt: `Budget: ${budget} words.`,
+        content: `Report within ${budget}.`,
+      });
+      const p = policyWith({ recovery: { prompt } });
       const a = makeAgent({ toolCallCount: 3 });
       for (let i = 0; i < 101; i++) a.accumulateToken('x');
       // pressure(remaining=5000) → budgetTokens = max(50, 5000-150-512) = 4338
       // → words = floor(4338 * 0.7 / 10) * 10 = 3030
       // …but the advisory is capped at 1200: past that, a big number reads
       // as an invitation to pad and repeat toward it.
-      const result = p.onRecovery(a, pressure() as any) as { type: 'extract'; prompt: { system: string; user: string } };
+      const result = p.onRecovery(a, pressure() as any) as { type: 'extract'; prompt: { systemPrompt: string; content: string } };
       expect(result.type).toBe('extract');
-      expect(result.prompt.system).toBe('Budget: 1200 words.');
-      expect(result.prompt.user).toBe('Report within 1200.');
+      expect(result.prompt.systemPrompt).toBe('Budget: 1200 words.');
+      expect(result.prompt.content).toBe('Report within 1200.');
     });
 
-    it('renders the exact budget when genuinely below the 1200-word cap', () => {
-      const prompt = {
-        system: 'Budget: <%= it.budget %> words.',
-        user: 'Report within <%= it.budget %>.',
-      };
-      const p = new DefaultAgentPolicy({ recovery: { prompt } });
+    it('hands the exact budget when genuinely below the 1200-word cap', () => {
+      const prompt = ({ budget }: { budget: number }) => ({
+        systemPrompt: `Budget: ${budget} words.`,
+        content: `Report within ${budget}.`,
+      });
+      const p = policyWith({ recovery: { prompt } });
       const a = makeAgent({ toolCallCount: 3 });
       for (let i = 0; i < 101; i++) a.accumulateToken('x');
       // budgetTokensOverride 1000 → words = floor(1000 * 0.7 / 10) * 10 = 700 (< cap)
-      const result = p.onRecovery(a, pressure() as any, 1000) as { type: 'extract'; prompt: { system: string } };
-      expect(result.prompt.system).toBe('Budget: 700 words.');
+      const result = p.onRecovery(a, pressure() as any, 1000) as { type: 'extract'; prompt: { systemPrompt: string } };
+      expect(result.prompt.systemPrompt).toBe('Budget: 700 words.');
     });
   });
 
@@ -294,19 +302,19 @@ describe('DefaultAgentPolicy', () => {
     });
 
     it('budget.context.softLimit overrides default', () => {
-      const p = new DefaultAgentPolicy({ budget: { context: { softLimit: 2048 } } });
+      const p = policyWith({ budget: { context: { softLimit: 2048 } } });
       expect(p.pressureThresholds.softLimit).toBe(2048);
       expect(p.pressureThresholds.hardLimit).toBe(512); // default
     });
 
     it('budget.context.hardLimit overrides default', () => {
-      const p = new DefaultAgentPolicy({ budget: { context: { hardLimit: 1024 } } });
+      const p = policyWith({ budget: { context: { hardLimit: 1024 } } });
       expect(p.pressureThresholds.hardLimit).toBe(1024);
       expect(p.pressureThresholds.softLimit).toBe(1024); // default
     });
 
     it('partial budget → other uses default', () => {
-      const p = new DefaultAgentPolicy({ budget: { context: { softLimit: 2048 } } });
+      const p = policyWith({ budget: { context: { softLimit: 2048 } } });
       expect(p.pressureThresholds).toEqual({ softLimit: 2048, hardLimit: 512 });
     });
 
@@ -330,7 +338,7 @@ describe('DefaultAgentPolicy', () => {
     });
 
     it('time softLimit exceeded → nudge with time message', () => {
-      const p = new DefaultAgentPolicy({ budget: { time: { softLimit: 0 } } }); // 0ms = instant
+      const p = policyWith({ budget: { time: { softLimit: 0 } } }); // 0ms = instant
       const a = makeAgent({ toolCallCount: 3 });
       const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
       const action = p.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
@@ -339,21 +347,31 @@ describe('DefaultAgentPolicy', () => {
     });
 
     it('time softLimit not exceeded → no time nudge', () => {
-      const p = new DefaultAgentPolicy({ budget: { time: { softLimit: 999_999 } } });
+      const p = policyWith({ budget: { time: { softLimit: 999_999 } } });
       const a = makeAgent({ toolCallCount: 3 });
       const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
       const action = p.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
       expect(action.type).toBe('tool_call');
     });
 
-    it('time nudge message distinct from pressure/turns (includes budget in words)', () => {
-      const p = new DefaultAgentPolicy({ budget: { time: { softLimit: 0 } } });
+    it('a time nudge hands the app its reason, the terminal and the word budget; the words are the app\'s', () => {
+      const asked: NudgeInput[] = [];
+      const p = new DefaultAgentPolicy({ budget: { time: { softLimit: 0 } }, nudge: (f) => { asked.push(f); return `mine: ${f.reason}`; } });
       const a = makeAgent({ toolCallCount: 3 });
       const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
       // pressure(remaining=5000, hardLimit=128) → budgetTokens = 4872
       // → uncapped words would be 3410; the advisory caps at 1200.
       const action = p.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
-      expect((action as any).message).toBe('Time limit reached — report your findings now within 1200 words.');
+      expect(action).toEqual({ type: 'nudge', message: 'mine: time' });
+      expect(asked).toEqual([{ reason: 'time', terminal: BASE_CONFIG.terminalToolName, words: 1200 }]);
+    });
+
+    it('over a limit with no words to say, the agent goes idle — the framework nudges with nothing of its own', () => {
+      const p = new DefaultAgentPolicy({ budget: { time: { softLimit: 0 } } });
+      const a = makeAgent({ toolCallCount: 3 });
+      const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
+      const action = p.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);
+      expect(action).toEqual({ type: 'idle', reason: 'pressure_softcut' });
     });
   });
 
@@ -366,7 +384,7 @@ describe('DefaultAgentPolicy', () => {
     });
 
     it('underPressure (time) + terminal tool → report accepted', () => {
-      const p = new DefaultAgentPolicy({ budget: { time: { softLimit: 0 } } });
+      const p = policyWith({ budget: { time: { softLimit: 0 } } });
       const a = makeAgent({ toolCallCount: 1 });
       const tc = { name: 'report', arguments: JSON.stringify({ result: 'r' }), id: 'c1' };
       const action = p.onProduced(a, { content: null, toolCalls: [tc] }, pressure(), BASE_CONFIG);

@@ -11,14 +11,30 @@
  * `citedReport` is the research output on the same primitive: the `report`
  * terminal whose grammar-forced `sources` are woven into the findings at capture.
  *
+ * The text the model put in the call is cleaned HERE, once, before any capture
+ * reads it: a string that ends in an unclosed `<tool_call>` fragment loses the
+ * fragment. A capture that appends to the text (the citation weave's `Sources:`
+ * list) would otherwise bury the fragment mid-result, where the framework's own
+ * strip — which runs after the return, anchored to the end — cannot see it.
+ *
  * @category Rig
  */
 import type { Operation } from 'effection';
 import { z } from 'zod';
 import type { ZodType } from 'zod';
-import { Tool } from '@lloyal-labs/lloyal-agents';
+import { Tool, stripDanglingToolCall } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema, ToolLifecycleHooks } from '@lloyal-labs/lloyal-agents';
 import { weaveSourcesIntoResult } from './weave-sources';
+
+/** The validated value with every string the model wrote cleaned of a trailing unclosed tool call. */
+function cleaned<T>(value: T): T {
+  if (typeof value === 'string') return stripDanglingToolCall(value) as T;
+  if (Array.isArray(value)) return value.map(cleaned) as T;
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, cleaned(v)])) as T;
+  }
+  return value;
+}
 
 /** A typed output: the terminal tool, and the reading of what it captured. */
 export interface Output<T> {
@@ -57,7 +73,7 @@ class OutputTool<S extends ZodType> extends Tool<Record<string, unknown>> {
             message: `Your ${name} call did not match its schema — ${issues}. Call ${name} again with every field as specified.`,
           };
         }
-        return { type: 'accept', result: capture ? capture(parsed.data, raw) : raw };
+        return { type: 'accept', result: capture ? capture(cleaned(parsed.data), raw) : raw };
       },
     };
   }

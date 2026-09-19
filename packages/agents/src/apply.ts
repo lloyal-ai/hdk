@@ -75,9 +75,7 @@ export class Applier {
       // through the normal path and the next reap recovers the report. It says
       // what the pool knows — the call was parked and the run is winding down —
       // and diagnoses nothing: any hook may ask for a retry, for any completion.
-      const result = { error:
-        `${r.tc.name} did not complete before the run began winding down — ` +
-        `report your findings with what you have.` };
+      const result = { error: `${r.tc.name} did not complete before the run began winding down.` };
       const resultStr = JSON.stringify(result);
       yield* this.d.emit.emit({ kind: 'toolTold', agent: r.agent, tool: r.tc.name, resultStr });
       const tokens = buildToolResultDelta(this.d.ctx, resultStr, r.callId, { enableThinking: r.agent.fmt.enableThinking });
@@ -148,7 +146,7 @@ export class Applier {
         // anything else happens, so it never passes through `idle` on the way
         // — an orchestrator waiting on it would otherwise resume against a
         // result that does not exist yet.
-        const tokens = buildUserDelta(this.d.ctx, recovery.action.prompt.user, { system: recovery.action.prompt.system, enableThinking: false });
+        const tokens = buildUserDelta(this.d.ctx, recovery.action.prompt.content, { system: recovery.action.prompt.systemPrompt, enableThinking: false });
         a.incrementTurns();
         if (a.status !== 'awaiting_tool') a.transition('awaiting_tool');
         a.markExtracting(recovery.budget, recovery.serial);

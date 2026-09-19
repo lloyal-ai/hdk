@@ -288,7 +288,7 @@ describe('afterAdmit runs at the booking, once per admitted item, with what the 
         if (tc?.name === 't') return { type: 'tool_call', tc };
         return { type: 'idle', reason: 'max_turns' };
       },
-      onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),
+      onRecovery: () => ({ type: 'extract', prompt: { systemPrompt: 's', content: 'u' } }),
       hooks: [{ afterAdmit: ({ outcome }) => { policySeen.push(outcome); return undefined; } }],
     });
     const r = await runPool({
