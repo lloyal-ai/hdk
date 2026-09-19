@@ -62,8 +62,7 @@ export function retryUpTo(n: number): NonNullable<ToolLifecycleHooks['afterExecu
       ? { type: 'retry', afterMs: completion.error.retryAfterMs }
       : {
           type: 'fail',
-          message: `${tool} is currently unavailable (rate-limited; retry failed). ` +
-            `Do not call ${tool} again — use other sources or proceed with your current findings.`,
+          message: `${tool} is currently unavailable (rate-limited; retry failed).`,
         };
   };
 }
@@ -90,11 +89,10 @@ export const defaultOnReturn = (i: OnReturnInput): ReturnDecision => ({ type: 'a
 /** The frame's gate, by the name the trace and `tool:authReject` know it by. */
 export const AUTH_REJECT_GUARD = 'auth_reject';
 
-/** What the model reads when a protected tool is called without a grant. */
+/** What the model reads when a protected tool is called without a grant: what happened, and nothing the frame
+ *  cannot know — what else the agent might do is its app's to say. */
 export const AUTH_REJECT_MESSAGE =
-  'This action is protected and requires authorization that has not been ' +
-  'granted for this session. Use the available read tools to gather what ' +
-  'you can, and report what blocks completion.';
+  'This action is protected and requires authorization that has not been granted for this session.';
 
 /** The frame: the framework's own contributor, with every default present so a walk always ends in a decision. */
 export interface Frame extends ToolLifecycleHooks {

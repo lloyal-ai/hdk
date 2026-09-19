@@ -188,7 +188,7 @@ export class DelegateTool extends Tool<Record<string, unknown>> {
           return {
             filtered,
             echoRejected: true,
-            error: 'Your sub-questions are too similar to your own task. You have already searched and read content on this topic. Call report() with what you found, including what you checked but could not find.',
+            error: 'Your sub-tasks are too similar to your own task; you have already searched and read content on this topic.',
           };
         }
 
@@ -212,7 +212,7 @@ export class DelegateTool extends Tool<Record<string, unknown>> {
               return {
                 filtered,
                 echoRejected: true,
-                error: 'Your sub-questions echo an ancestor task. Report what you found instead of re-delegating.',
+                error: 'Your sub-tasks echo an ancestor task.',
               };
             }
           }

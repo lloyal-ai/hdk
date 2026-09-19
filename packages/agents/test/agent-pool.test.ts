@@ -568,7 +568,7 @@ describe('recovery loop', () => {
         hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         onRecovery: () => ({
           type: 'extract',
-          prompt: { system: 'Extract findings from above.', user: 'Report.' },
+          prompt: { systemPrompt: 'Extract findings from above.', content: 'Report.' },
         }),
       }),
     });
@@ -614,7 +614,7 @@ describe('recovery loop', () => {
         hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         onRecovery: () => ({
           type: 'extract',
-          prompt: { system: 'x', user: 'y' },
+          prompt: { systemPrompt: 'x', content: 'y' },
         }),
       }),
     });
@@ -644,7 +644,7 @@ describe('recovery loop', () => {
         onRecovery: () => {
           recoveryCount++;
           if (recoveryCount <= 1) {
-            return { type: 'extract', prompt: { system: 'Extract', user: 'Report' } };
+            return { type: 'extract', prompt: { systemPrompt: 'Extract', content: 'Report' } };
           }
           return { type: 'skip' };
         },
@@ -939,7 +939,7 @@ describe('recovery edge cases', () => {
         onRecovery: () => ({
           type: 'extract',
           // Very long prompt that won't fit in remaining KV
-          prompt: { system: 'X'.repeat(5000), user: 'Y'.repeat(5000) },
+          prompt: { systemPrompt: 'X'.repeat(5000), content: 'Y'.repeat(5000) },
         }),
         pressureThresholds: { softLimit: 128, hardLimit: 512 },
       }),
@@ -963,7 +963,7 @@ describe('recovery edge cases', () => {
         hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         onRecovery: () => ({
           type: 'extract',
-          prompt: { system: '', user: '' },
+          prompt: { systemPrompt: '', content: '' },
         }),
       }),
     });
@@ -1467,7 +1467,7 @@ describe('SPLIT-SEMANTICS GATE: voluntary vs recovery emission', () => {
             hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
             onRecovery: () => ({
               type: 'extract',
-              prompt: { system: 'Extract findings.', user: 'Report.' },
+              prompt: { systemPrompt: 'Extract findings.', content: 'Report.' },
             }),
           }),
           maxTurns: 10,
@@ -2065,7 +2065,7 @@ describe('transient tool failure (park + retry)', () => {
     expect(toolResults).toHaveLength(1);
     const resultStr = (toolResults[0] as { result: string }).result;
     expect(resultStr).toContain('currently unavailable');
-    expect(resultStr).toContain('use other sources');
+    expect(resultStr).not.toContain('findings');   // the fact, and nothing the framework cannot know
     // Agent survived (not killed via tool_error path)
     expect(events.some(e => e.type === 'agent:done')).toBe(true);
   });
@@ -2117,7 +2117,7 @@ describe('transient tool failure (park + retry)', () => {
       forkTokenQueues: [[1, STOP]],
       parseChatOutputFn: callOnFirstTurn,
       policy: toolCallPolicy({
-        onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),
+        onRecovery: () => ({ type: 'extract', prompt: { systemPrompt: 's', content: 'u' } }),
       }),
       tools,
       trace: true,

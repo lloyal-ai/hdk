@@ -119,7 +119,7 @@ describe('new PlanTool(opts)', () => {
 
   it('is named "plan" with a required query param', () => {
     const tool = new PlanTool({
-      prompt: { system: 's', user: 'u' },
+      prompt: () => ({ systemPrompt: 's', content: 'u' }),
       session: fakeSession,
       maxTasks: 5,
     });
@@ -133,7 +133,7 @@ describe('new PlanTool(opts)', () => {
       { manifest: { protocol: { name: 'corpus_search' } } },
     ] as never[];
     const tool = new PlanTool({
-      prompt: { system: 's', user: 'u' },
+      prompt: () => ({ systemPrompt: 's', content: 'u' }),
       session: fakeSession,
       maxTasks: 5,
       availableAbilities: abilities,

@@ -42,6 +42,22 @@ describe('defineOutput', () => {
     expect(submit.read({ result: raw })).toEqual(row);
   });
 
+  it('a typed output is lossless: a program that contains the marker is still that program, whitespace and all', () => {
+    const code = defineOutput('code', z.object({ source: z.string(), note: z.string() }));
+    const row = { source: 'const opening = "<tool_call>";\nconsole.log(opening);\n', note: 'trailing  ' };
+    const decision = code.tool.hooks!.onReturn!({ agent, tool: 'code', args: row, raw: JSON.stringify(row), result: '' });
+    expect(decision).toEqual({ type: 'accept', result: JSON.stringify(row) });
+    expect(code.read({ result: JSON.stringify(row) })).toEqual(row);
+  });
+
+  it("a schema's transform runs once, at read — the accepted result is the model's own bytes", () => {
+    const bumped = defineOutput('n', z.object({ n: z.number().overwrite((n) => n + 1).max(4) }));
+    const raw = JSON.stringify({ n: 3 });
+    const decision = bumped.tool.hooks!.onReturn!({ agent, tool: 'n', args: { n: 3 }, raw, result: '' });
+    expect(decision).toEqual({ type: 'accept', result: raw });
+    expect(bumped.read({ result: raw })).toEqual({ n: 4 });
+  });
+
   it('rejects a call that misses the shape, naming the field; read yields null for anything that is not the typed value', () => {
     const submit = defineOutput('submit', columns);
     const bad = { headquarters: 'Oslo', sellsTo: 'everyone', evidence: [] };
@@ -72,6 +88,21 @@ describe('citedReport', () => {
     const decision = citedReport.tool.hooks!.onReturn!({ agent, tool: 'report', args, raw: JSON.stringify(args), result: args.result });
     expect(decision).toEqual({ type: 'accept', result: 'Oslo sits on the fjord, see [Oslo](https://a.io/oslo) and [A](https://a.io).\n\nSources:\n- [Oslo](https://a.io/oslo)\n- [A](https://a.io)' });
     expect(citedReport.read({ result: (decision as { result: string }).result })).toBe((decision as { result: string }).result);
+  });
+
+  it('a dangling <tool_call> at the end of the findings is stripped BEFORE the sources are woven on, so the trailer stands and the fragment never rides into another prompt', () => {
+    const args = {
+      result: 'Oslo sits on the fjord, see https://a.io/oslo.\n\n<tool_call>\n{"name": "web_search", "argu',
+      sources: [{ title: 'Oslo', url: 'https://a.io/oslo' }],
+    };
+    const decision = citedReport.tool.hooks!.onReturn!({ agent, tool: 'report', args, raw: JSON.stringify(args), result: args.result });
+    expect(decision).toEqual({ type: 'accept', result: 'Oslo sits on the fjord, see [Oslo](https://a.io/oslo).\n\nSources:\n- [Oslo](https://a.io/oslo)' });
+  });
+
+  it('a complete <tool_call> block inside the findings is left alone', () => {
+    const args = { result: 'Findings <tool_call>{}</tool_call> end.', sources: [] };
+    const decision = citedReport.tool.hooks!.onReturn!({ agent, tool: 'report', args, raw: JSON.stringify(args), result: args.result });
+    expect(decision).toEqual({ type: 'accept', result: 'Findings <tool_call>{}</tool_call> end.' });
   });
 
   it('a report without its sources is rejected, not accepted', () => {

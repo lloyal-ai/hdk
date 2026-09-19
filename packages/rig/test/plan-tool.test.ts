@@ -37,7 +37,7 @@ describe('PlanTool.parent', () => {
     await run(function* () {
       yield* initAgents(ctx);
       const parent = Branch.create(ctx, 0);
-      const tool = new PlanTool({ prompt: { system: 'plan', user: '<%= it.query %>' }, parent, maxTasks: 3 });
+      const tool = new PlanTool({ prompt: ({ query }) => ({ systemPrompt: 'plan', content: query }), parent, maxTasks: 3 });
       const plan = yield* tool.execute({ query: 'anything' });
       expect(plan).toHaveProperty('intent');
     });

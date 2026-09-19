@@ -30,7 +30,7 @@ const pressureAt = (percentAvailable: number): ContextPressure =>
 const agentWith = (over: Partial<{ startedAt: number; currentTool: string | null; turns: number; toolCallCount: number; result: string | null; tokenCount: number }>): Agent =>
   ({ startedAt: 0, currentTool: null, turns: 0, toolCallCount: 0, result: null, tokenCount: 0, ...over } as unknown as Agent);
 const call = (name: string, args: object): ParsedToolCall => ({ id: 'c1', name, arguments: JSON.stringify(args) });
-const PROMPT = { system: 'sys', user: 'usr' };
+const PROMPT = () => ({ systemPrompt: 'sys', content: 'usr' });
 
 describe('policyFromBudget', () => {
   it('every field of the row reaches the policy, with the pool\'s terminal and the harness\'s guards', () => {
@@ -174,7 +174,7 @@ describe('PoolDefaults', () => {
       yield* Events.set(createChannel<AgentEvent, void>() as never);
       yield* PoolDefaults.set({ pruneOnReturn: true });
       return yield* scoped(function* () {
-        const agent = yield* useAgent({ systemPrompt: 'You are an agent.', task: 'Task', tools: [report], terminal: report, policy: returnsViaReport });
+        const agent = yield* useAgent({ systemPrompt: 'You are an agent.', content: 'Task', tools: [report], terminal: report, policy: returnsViaReport });
         return { result: agent.result, disposed: agent.branch.disposed };
       });
     });

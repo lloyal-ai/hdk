@@ -11,12 +11,19 @@
  * `citedReport` is the research output on the same primitive: the `report`
  * terminal whose grammar-forced `sources` are woven into the findings at capture.
  *
+ * A typed output is LOSSLESS: what the model wrote is what is captured and read
+ * back, byte for byte — a program that contains the string `"<tool_call>"` is
+ * still that program. Only a capture that knows which of its strings is prose
+ * repairs it (`citedReport`: the findings lose a trailing unclosed call before
+ * the citation trailer is appended, or the trailer would bury it). The
+ * framework's own strip applies only to what the framework captures itself.
+ *
  * @category Rig
  */
 import type { Operation } from 'effection';
 import { z } from 'zod';
 import type { ZodType } from 'zod';
-import { Tool } from '@lloyal-labs/lloyal-agents';
+import { Tool, stripDanglingToolCall } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema, ToolLifecycleHooks } from '@lloyal-labs/lloyal-agents';
 import { weaveSourcesIntoResult } from './weave-sources';
 
@@ -57,6 +64,8 @@ class OutputTool<S extends ZodType> extends Tool<Record<string, unknown>> {
             message: `Your ${name} call did not match its schema — ${issues}. Call ${name} again with every field as specified.`,
           };
         }
+        // A capture-less output's result is the RAW arguments, so `read` validates the model's own bytes once —
+        // a schema's transforms run one time, at read, never twice.
         return { type: 'accept', result: capture ? capture(parsed.data, raw) : raw };
       },
     };
@@ -118,6 +127,8 @@ export const citedReport: Output<string> = defineOutput(
   {
     description:
       'Submit your final research findings with specific evidence, direct quotes, and data points. Cite each claim inline as [title](url) using the exact URL seen in tool results. Fill the sources field with the structured list of every source you used. State what you found AND what you checked but could not find. Do not summarize — preserve detail.',
-    capture: ({ result, sources }) => weaveSourcesIntoResult(result, sources),
+    // The findings are prose the model may have cut short: a trailing unclosed call goes BEFORE the trailer
+    // is appended, where the framework's end-anchored strip could no longer see it.
+    capture: ({ result, sources }) => weaveSourcesIntoResult(stripDanglingToolCall(result), sources),
   },
 );

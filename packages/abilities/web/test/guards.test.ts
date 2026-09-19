@@ -70,7 +70,7 @@ describe("query_dedup — web_search's gate", () => {
 
   it('is published under its name, with the message the model reads', () => {
     expect(queryDedup.name).toBe('query_dedup');
-    expect(queryDedup.message).toBe('This search was already attempted in this run. Refine the query or report your findings.');
+    expect(queryDedup.message).toBe('This search was already attempted in this run. Refine the query.');
   });
 });
 

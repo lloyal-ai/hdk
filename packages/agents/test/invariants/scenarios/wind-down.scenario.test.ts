@@ -16,7 +16,7 @@ function activePolicy(shape: 'staggered' | 'parallel'): AgentPolicy {
   return {
     onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
     hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
-    onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),
+    onRecovery: () => ({ type: 'extract', prompt: { systemPrompt: 's', content: 'u' } }),
     shouldExit: () => false,
     recoveryShape: shape,
   };

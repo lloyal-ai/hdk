@@ -97,7 +97,7 @@ export function* harness(
       return pool.agents.flatMap((a) => (a.result ? [a.result] : []));  // findings leave as data
     });
 
-    const synth = yield* useAgent({ parent: session.trunk, task: renderSynthesis(notes) });
+    const synth = yield* useAgent({ parent: session.trunk, content: renderSynthesis(notes) });
     yield* call(() => session.commitTurn(command.query, synth.result));  // durable, deliberately
 
     yield* each.next();
@@ -136,7 +136,7 @@ main(function* () {
 
   const a = yield* useAgent({
     systemPrompt: "You are a research assistant.",
-    task: "Who founded the city of Brasília, and when?",
+    content: "Who founded the city of Brasília, and when?",
     tools: [...wikipedia.tools],
     terminal: reportTool,
   });

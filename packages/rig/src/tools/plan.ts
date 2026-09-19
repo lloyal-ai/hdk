@@ -1,6 +1,6 @@
 import type { Operation } from 'effection';
-import { Tool, agent, renderTemplate } from '@lloyal-labs/lloyal-agents';
-import type { JsonSchema, Ability } from '@lloyal-labs/lloyal-agents';
+import { Tool, agent } from '@lloyal-labs/lloyal-agents';
+import type { JsonSchema, Ability, PromptOf } from '@lloyal-labs/lloyal-agents';
 import type { Session, Branch } from '@lloyal-labs/sdk';
 import { TASK_ROUTING_KEY } from '../protocol';
 
@@ -10,8 +10,8 @@ import { TASK_ROUTING_KEY } from '../protocol';
  * @category Rig
  */
 export interface PlanToolOpts {
-  /** System prompt + user template. User template is rendered via Eta with `{ query, count, context? }`. */
-  prompt: { system: string; user: string };
+  /** The planner's prompt, asked with one planning call's {@link PlanPromptInput}. */
+  prompt: PromptOf<PlanPromptInput>;
   /** The session whose trunk the planning agent forks from, when `parent` is not given. */
   session?: Session;
   /** The branch the planning agent forks from. Takes precedence over `session`; a caller with a
@@ -38,6 +38,21 @@ export interface PlanToolOpts {
    * `ability` field entirely and {@link ResearchTask.ability} stays undefined.
    */
   availableAbilities?: readonly Ability[];
+}
+
+/**
+ * What the planner's prompt is called with: the query, the clarification context if any, and the two
+ * things the tool owns because its grammar does — how many tasks it may emit (`count`) and the property a
+ * task's destination is written under (`routingKey`, {@link TASK_ROUTING_KEY}), so the prompt names what
+ * the grammar requires.
+ *
+ * @category Rig
+ */
+export interface PlanPromptInput {
+  query: string;
+  context: string | null;
+  count: number;
+  routingKey: string;
 }
 
 /**
@@ -70,6 +85,27 @@ export interface ResearchTask {
 export function taskToContent(task: ResearchTask): string {
   return task.description;
 }
+
+/**
+ * The key a research spawn carries (`agent:spawn.key`). It names the TASK, not the agent:
+ * the pool seats tasks in whatever order the context allows, and a healed task is a new
+ * agent under the same key. A view and a library both file an agent's work by reading it
+ * back ({@link taskIndexOf}), so an agent spawned without one belongs to no task. The
+ * sibling convention for source probes is `sourceKey`.
+ *
+ * @category Rig
+ */
+export const taskKey = (taskIndex: number): string => `task:${taskIndex}`;
+
+/**
+ * The task a spawn's key names; `null` for a spawn that is not a task's.
+ *
+ * @category Rig
+ */
+export const taskIndexOf = (key: string | undefined): number | null => {
+  const named = /^task:(\d+)$/.exec(key ?? '');
+  return named ? Number(named[1]) : null;
+};
 
 /**
  * Parse the planner's JSON, tolerant of a markdown code fence or surrounding
@@ -203,7 +239,7 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
   // fiber. See Tool.fanout.
   readonly fanout = false;
 
-  private _prompt: { system: string; user: string };
+  private _prompt: PromptOf<PlanPromptInput>;
   private _session: Session | undefined;
   private _parent: Branch | undefined;
   private _maxTasks: number;
@@ -225,18 +261,10 @@ export class PlanTool extends Tool<{ query: string; context?: string }> {
 
     const schema = buildPlanSchema(this._abilityProtocolNames, this._maxTasks);
 
-    const userContent = renderTemplate(this._prompt.user, {
-      query: args.query,
-      count: this._maxTasks,
-      context: args.context || null,
-      // The prompt must name the same property the grammar requires. Passing
-      // it keeps rule 6 from drifting out of step with the schema.
-      routingKey: TASK_ROUTING_KEY,
-    });
-
+    // The prompt must name the same property the grammar requires; handing it
+    // the key keeps the prompt from drifting out of step with the schema.
     const planAgent = yield* agent({
-      systemPrompt: this._prompt.system,
-      task: userContent,
+      ...this._prompt({ query: args.query, count: this._maxTasks, context: args.context || null, routingKey: TASK_ROUTING_KEY }),
       schema,
       params: { temperature: this._temperature },
       parent: this._parent,

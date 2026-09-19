@@ -1,7 +1,7 @@
 /**
  * Scenario: nudge messages carry the remaining budget as a word count.
  *
- * `DefaultAgentPolicy`'s `beforeAdmit` entry and `_handleOverBudget` convert
+ * `DefaultAgentPolicy` hands the app's `nudge` the word budget: its `beforeAdmit` entry and `_handleOverBudget` convert
  * `pressure.remaining - pressure.hardLimit` to a conservative word count
  * and interpolate it into their messages. Words (not tokens) because
  * tokenizers vary but words are universal.
@@ -33,6 +33,8 @@ describe('scenario: nudge message includes the remaining token budget', () => {
       terminalToolName: 'report',
       // hardLimit >= nBatch (512) required.
       budget: { context: { softLimit: 1024, hardLimit: 512 } },
+      // The app's words; the budget is the fact the framework hands it.
+      nudge: (f) => `Tool result too large for the remaining context. Call ${f.terminal} now within ${f.words} words.`,
     });
 
     const run = await runPool({

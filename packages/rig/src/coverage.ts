@@ -1,32 +1,34 @@
 /**
- * `coverage`: what each source covers for a question — one probe per source,
+ * `coverage`: what each source covers for a query — one probe per source,
  * in parallel on a shared spine, each searching its own source and reporting
  * which parts it holds. The joined text is what a planner routes with: it
  * routes by TRYING the sources, not by their descriptions. A probe is shallow
  * and its turn cap is firm: past `budget.maxTurns` the probe is reaped and its
  * coverage recovered, so a source always answers with a line instead of a loop.
- * The caller memoises (a question asked again after a clarification is not
- * probed again) and says what it means on its own wire.
+ * The caller memoises (a query asked again with more context is not probed
+ * again) and says what it means on its own wire.
  *
  * @category Rig
  */
 import type { Operation } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
-import { agentPool, parallel, renderTemplate, withSpine, DefaultAgentPolicy, budgetPolicyOpts } from '@lloyal-labs/lloyal-agents';
-import type { Ability, Agent, Budget, ContextPressure, GuardOverrides, ToolLifecycleHooks } from '@lloyal-labs/lloyal-agents';
+import { agentPool, parallel, withSpine, DefaultAgentPolicy, budgetPolicyOpts } from '@lloyal-labs/lloyal-agents';
+import type { Ability, Agent, Budget, ContextPressure, GuardOverrides, PromptOf, ToolLifecycleHooks } from '@lloyal-labs/lloyal-agents';
 import type { Attachment } from '@lloyal-labs/media';
 import { reportTool } from './tools';
 import { renderSpine } from './spine-render';
 import { abilityToc } from './participating';
 
 export interface CoverageOptions {
-  question: string;
+  /** What the sources are probed for. */
+  query: string;
   /** The sources to probe, one agent each. */
   sources: readonly Ability[];
   /** The branch the spine forks from; absent: a cold spine. */
   parent?: Branch;
-  /** The probe's prompt. `user` is rendered with `{ query, date, ability: { name, useWhen, tools, contents } }`. */
-  prompt: { system: string; user: string };
+  /** The probe's prompt, asked once per source with what a probe is about: the query and the source
+   *  as the model sees it (its protocol name, when to use it, its tools, and the contents it holds for this run). */
+  prompt: PromptOf<CoveragePromptInput>;
   /** The probe's row: `recovery` says what a probe reaped before reporting is told, and `maxTurns` is FIRM here — a probe past it is reaped, not nudged. */
   budget: Budget;
   /** The harness's scope for the sources' gates. */
@@ -35,6 +37,12 @@ export interface CoverageOptions {
   hooks?: readonly ToolLifecycleHooks[];
   /** The run's assets: what each source advertises for them, and what the probes may read. */
   reference?: readonly Attachment[];
+}
+
+/** What a probe's prompt is called with: the query, and the one source this probe reads. */
+export interface CoveragePromptInput {
+  query: string;
+  ability: { name: string; useWhen: string; tools: readonly string[]; contents: string | null };
 }
 
 export interface Coverage {
@@ -66,7 +74,6 @@ export function* coverage(opts: CoverageOptions): Operation<Coverage> {
   const t0 = performance.now();
   const reference = opts.reference ?? [];
   const tools = [...opts.sources.flatMap((a) => [...a.tools]), reportTool];
-  const date = new Date().toISOString().slice(0, 10);
   const policy = new ProbePolicy(
     budgetPolicyOpts(opts.budget, { terminalToolName: reportTool.name, guardOverrides: opts.guards, hooks: opts.hooks }),
     opts.budget.maxTurns,
@@ -78,15 +85,14 @@ export function* coverage(opts: CoverageOptions): Operation<Coverage> {
         parent: spine, tools, terminal: reportTool, attachments: reference,
         maxTurns: opts.budget.maxTurns, policy,
         orchestrate: parallel(opts.sources.map((ability, i) => ({
-          key: sourceKey(ability.manifest.name),
-          content: renderTemplate(opts.prompt.user, {
-            query: opts.question, date,
+          ...opts.prompt({
+            query: opts.query,
             ability: {
               name: ability.manifest.protocol.name, useWhen: ability.manifest.protocol.useWhen,
               tools: ability.manifest.protocol.tools, contents: abilityToc(ability, reference),
             },
           }),
-          systemPrompt: opts.prompt.system,
+          key: sourceKey(ability.manifest.name),
           assignedAbility: ability.manifest.name,
           seed: 2000 + i,
         }))),

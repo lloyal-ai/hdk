@@ -5,7 +5,7 @@
  * are literals, or the default policy where its own entry is the subject. No
  * pool, no store.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import type { Operation } from 'effection';
 import type { ParsedToolCall } from '@lloyal-labs/sdk';
 import { Agent } from '../src/Agent';
@@ -13,7 +13,7 @@ import type { ToolHistoryEntry } from '../src/Agent';
 import { Tool, ToolRetryError } from '../src/Tool';
 import type { Completion, ToolGuard, ToolLifecycleHooks } from '../src/Tool';
 import { DefaultAgentPolicy } from '../src/AgentPolicy';
-import type { AgentPolicy } from '../src/AgentPolicy';
+import type { AgentPolicy, NudgeInput } from '../src/AgentPolicy';
 import { ContextPressure } from '../src/pressure';
 import {
   makeFrame, decideBeforeDispatch, decideAfterExecute, decideBeforeAdmit, decideAfterAdmit,
@@ -226,17 +226,25 @@ describe('beforeAdmit: a result that does not fit', () => {
   });
 
   describe("the default policy's entry", () => {
-    const c = (policy: AgentPolicy = new DefaultAgentPolicy()) => ({ frame: open, tool: undefined, policy });
+    /** The app's words for a nudge, recording the facts it was handed. */
+    const asked: NudgeInput[] = [];
+    const nudge = (f: NudgeInput): string => { asked.push(f); return `${f.reason}: call ${f.terminal} within ${f.words} words`; };
+    const c = (policy: AgentPolicy = new DefaultAgentPolicy({ nudge })) => ({ frame: open, tool: undefined, policy });
+    beforeEach(() => { asked.length = 0; });
 
-    it('nudges when a terminal tool exists and the agent has called a tool', () => {
+    it('nudges with the app\'s words when a terminal tool exists and the agent has called a tool', () => {
       const r = decideBeforeAdmit(input(withCalls(3), 'report'), c());
-      expect(r.by).toBe('policy');
-      expect(r.decision.type).toBe('nudge');
-      expect((r.decision as { message: string }).message).toContain('Tool result too large');
+      expect(r).toEqual({ decision: { type: 'nudge', message: 'result: call report within 1200 words' }, by: 'policy' });
+      expect(asked).toEqual([{ reason: 'result', terminal: 'report', words: 1200 }]);
+    });
+
+    it('drops when the app has no words for it — the framework says nothing of its own', () => {
+      expect(decideBeforeAdmit(input(withCalls(3), 'report'), c(new DefaultAgentPolicy()))).toEqual({ decision: { type: 'drop' }, by: 'policy' });
     });
 
     it('drops when there is no terminal tool', () => {
       expect(decideBeforeAdmit(input(withCalls(3)), c())).toEqual({ decision: { type: 'drop' }, by: 'policy' });
+      expect(asked).toEqual([]);
     });
 
     it('drops when the agent has called nothing yet', () => {
@@ -245,10 +253,8 @@ describe('beforeAdmit: a result that does not fit', () => {
 
     it('caps the advertised budget at 1200 words', () => {
       // pressure(remaining=5000, hardLimit=128) → 4872 tokens → 3410 words uncapped; the advisory caps at 1200.
-      expect(decideBeforeAdmit(input(withCalls(2), 'report'), c()).decision).toEqual({
-        type: 'nudge',
-        message: 'Tool result too large for the remaining context. Report your findings now within 1200 words.',
-      });
+      decideBeforeAdmit(input(withCalls(2), 'report'), c());
+      expect(asked[0].words).toBe(1200);
     });
 
     it('a harness entry on the same policy precedes it', () => {
