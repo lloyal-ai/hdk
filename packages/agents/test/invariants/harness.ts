@@ -269,11 +269,17 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
     return handle;
   };
 
-  // parseChatOutput needs to know which agent's output it's parsing, but
-  // it only receives the raw string — not the branch handle. Track the
-  // last-sampled handle as a side channel so parseChatOutput can look up
-  // the script that produced those tokens.
+  // parseChatOutput receives the raw string of the turn it is parsing, not the
+  // branch handle. The turn's text identifies its branch: each branch's text
+  // since its last stop is kept, and the parse looks up the branch whose last
+  // turn produced exactly this output. The branch sampled LAST is only the
+  // fallback, for a turn nothing else could have produced — it is not the
+  // rule, because an extracting agent's strict parse is deferred past its
+  // siblings' samples (`apply.ts` `finishExtraction`), and two recoveries
+  // stopping in one tick would both read whichever branch sampled last.
   let lastSampledHandle = 0;
+  const turnText = new Map<number, string>();
+  const lastTurnText = new Map<number, string>();
   ctx._branchSample = (handle: number): number => {
     lastSampledHandle = handle;
     const fi = branchForkIndex.get(handle) ?? -1;
@@ -281,7 +287,19 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
     const tokens = script?.tokens ?? [STOP];
     const idx = branchSampleCount.get(handle) ?? 0;
     branchSampleCount.set(handle, idx + 1);
-    return idx < tokens.length ? tokens[idx] : STOP;
+    const token = idx < tokens.length ? tokens[idx] : STOP;
+    if (token === STOP) {
+      lastTurnText.set(handle, turnText.get(handle) ?? '');
+      turnText.set(handle, '');
+    } else {
+      turnText.set(handle, (turnText.get(handle) ?? '') + ctx.tokenToText(token));
+    }
+    return token;
+  };
+  const handleOf = (output: string): number => {
+    if (lastTurnText.get(lastSampledHandle) === output) return lastSampledHandle;
+    for (const [handle, text] of lastTurnText) if (text === output) return handle;
+    return lastSampledHandle;
   };
 
   ctx.parseChatOutput = (
@@ -289,7 +307,8 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
     _format: ChatFormat,
     opts?: ParseChatOutputOptions,
   ): ParseChatOutputResult => {
-    const fi = branchForkIndex.get(lastSampledHandle) ?? -1;
+    // A partial parse runs on the branch mid-turn, right after its own sample; a strict parse may not.
+    const fi = branchForkIndex.get(opts?.isPartial ? lastSampledHandle : handleOf(output)) ?? -1;
     const script = fi >= 0 ? spec.scripts[fi] : undefined;
     if (opts?.isPartial) {
       // Partial parse — if the script declares a partialToolCall, latch it

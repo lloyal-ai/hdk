@@ -86,6 +86,27 @@ describe('scenario: parallel recovery (in-loop via SETTLE)', () => {
     expect(r.result).toBeDefined();
   });
 
+  it('two agents recovered in ONE tick each keep their own report — the parse belongs to the output, not to the branch sampled last', async () => {
+    // Both stop on their main turn and are recovered together (`parallel`), so both recovery parses run
+    // after the tick's sampling. Distinct recovery tokens and distinct reports: a parse keyed on
+    // "the branch sampled last" hands one agent the other's report; a parse keyed on the output cannot.
+    const r = await runPool({
+      nCtx: 8192, cellsUsed: 0,
+      scripts: [
+        { tokens: [1, STOP, 2, STOP], content: 'prose', toolCall: { name: 'report', arguments: '{"result":"found A"}' } },
+        { tokens: [1, STOP, 3, STOP], content: 'prose', toolCall: { name: 'report', arguments: '{"result":"found B"}' } },
+      ],
+      policy: idleNoResultPolicy('parallel'),
+    });
+    const recovered = r.channelEvents.filter((e): e is Extract<typeof e, { type: 'agent:recovered' }> => e.type === 'agent:recovered');
+    expect(recovered.map(e => e.result).sort()).toEqual(['found A', 'found B']);
+    // Scripts are indexed by fork order, and `result.agents` is in spawn order: the first agent ran script 0.
+    const [first, second] = r.result.agents.map(a => a.agentId);
+    expect(recovered.find(e => e.agentId === first)?.result).toBe('found A');
+    expect(recovered.find(e => e.agentId === second)?.result).toBe('found B');
+    expect(r.result.agents.map(a => a.result)).toEqual(['found A', 'found B']);
+  });
+
   it('stall-regression: a killed agent\'s recovery decodes bin-packed in a COMMIT with a LIVE sibling', async () => {
     // Agent 0 keeps producing (the live sibling); agent 1 stops early and is
     // recovered MID-RUN. The regression (the bug this whole change fixes): the old
