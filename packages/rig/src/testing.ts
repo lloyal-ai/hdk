@@ -251,20 +251,18 @@ export async function runHarness<T extends ConfigTable, C extends { type: string
   ctx.parseChatOutput = (output, _format, opts) => {
     // The strict parse belongs to the OUTPUT, not to the branch sampled last: an extracting agent's parse is
     // deferred past its siblings' samples (`apply.ts` `finishExtraction`), so two recoveries stopping in one
-    // tick would otherwise both read the last branch's turn. The branch sampled last is asked first (its own
-    // parse follows its own sample); then any branch whose last turn produced this text. Two turns with the
-    // same text but different presentations (two tool calls with different arguments, say) are a fixture the
-    // rig cannot tell apart from the text alone, and it says so rather than guess.
+    // tick would otherwise both read the last branch's turn. Every branch whose last turn produced this text
+    // is a candidate; two candidates presented differently (two tool calls with different arguments, say)
+    // are a fixture the rig cannot tell apart from the text — refused, whatever the sampling order says,
+    // because a deferred parse has no order to lean on. Among candidates presented alike, the branch sampled
+    // last is preferred (its own parse follows its own sample) and any of them would do.
     const last = assigned.get(lastSampled)?.last;
-    let u: Utterance | undefined = last && producedBy(last) === output ? last : undefined;
-    if (!u) {
-      const candidates = [...assigned.values()].map((a) => a.last).filter((t): t is Utterance => !!t && producedBy(t) === output);
-      const distinct = new Set(candidates.map(presentation));
-      if (distinct.size > 1) {
-        throw new Error(`runHarness: ${distinct.size} scripted turns produce the same text ${JSON.stringify(output)} but are presented differently — give them distinct text`);
-      }
-      u = candidates[0] ?? last;
+    const candidates = [...assigned.values()].map((a) => a.last).filter((t): t is Utterance => !!t && producedBy(t) === output);
+    const distinct = new Set(candidates.map(presentation));
+    if (distinct.size > 1) {
+      throw new Error(`runHarness: ${distinct.size} scripted turns produce the same text ${JSON.stringify(output)} but are presented differently — give them distinct text`);
     }
+    const u: Utterance | undefined = last && producedBy(last) === output ? last : candidates[0] ?? last;
     if (opts?.isPartial || !u) {
       return { content: '', reasoningContent: '', toolCalls: [] };
     }

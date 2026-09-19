@@ -164,18 +164,17 @@ export function anchorsOf(headings: readonly Heading[], prefix: string): Anchor[
  *  - a reference definition (anywhere, a blockquote included) resolves links in EARLIER blocks, so a head
  *    rendered without it would show those references as text;
  *  - a display equation (`$$…$$`) may span a blank line, which marked reads as a block boundary; cut there,
- *    the renderer would draw an equation, a paragraph and an empty equation. An odd count of `$$` in the head
- *    means the cut fell inside one.
- *  A document that carries either is rendered whole until it does not. */
+ *    the renderer would draw an equation, a paragraph and an empty equation — and nothing short of the
+ *    renderer's grammar can say where one opens (a `$$` in inline code is not a delimiter; `$$$$` is).
+ *  A document that carries either is rendered whole: the split is refused for the document's whole life, and
+ *  the cost of that is paid only by documents with display math or reference definitions. */
 export function splitStreaming(markdown: string): { head: string; tail: string } {
   // marked reports raw text with line endings normalised; normalise first so head + tail is the text parsed.
   const text = markdown.replace(/\r\n?/g, '\n');
   const tokens = lexer(text);
-  if (tokens.length < 2 || hasDefinition(tokens)) return { head: '', tail: text };
+  if (tokens.length < 2 || text.includes('$$') || hasDefinition(tokens)) return { head: '', tail: text };
   const cut = text.length - tokens[tokens.length - 1].raw.length;
-  const head = text.slice(0, cut);
-  if ((head.match(/\$\$/g)?.length ?? 0) % 2 === 1) return { head: '', tail: text };
-  return { head, tail: text.slice(cut) };
+  return { head: text.slice(0, cut), tail: text.slice(cut) };
 }
 
 /** A reference definition at any depth of marked's token tree — a blockquote or list nests its own. */

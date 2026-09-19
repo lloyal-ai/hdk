@@ -79,24 +79,33 @@ describe('anchorsOf', () => {
   });
 });
 
-/** The renderer's grammar over the split: the head's nodes then the tail's must be the whole document's nodes. */
-const structure = (md: string): string[] =>
-  (unified().use(remarkParse).use(remarkGfm).use(remarkMath).parse(md) as { children: { type: string }[] }).children.map((n) => n.type);
-const splitStructure = (md: string): string[] => {
+/** The renderer's tree over the split, positions dropped: the head's nodes then the tail's must be the whole
+ *  document's nodes — the same types, text, hrefs and math, not just the same kinds. */
+const tree = (md: string): unknown[] => {
+  const strip = (n: unknown): unknown =>
+    Array.isArray(n) ? n.map(strip)
+    : n && typeof n === 'object' ? Object.fromEntries(Object.entries(n).filter(([k]) => k !== 'position').map(([k, v]) => [k, strip(v)]))
+    : n;
+  return strip((unified().use(remarkParse).use(remarkGfm).use(remarkMath).parse(md) as { children: unknown[] }).children) as unknown[];
+};
+const splitTree = (md: string): unknown[] => {
   const { head, tail } = splitStreaming(md);
-  return [...structure(head), ...structure(tail)];
+  return [...tree(head), ...tree(tail)];
 };
 
-describe('splitStreaming renders the same structure split as whole', () => {
+describe('splitStreaming renders the same tree split as whole', () => {
   it.each([
     'para one\n\n## Heading\n\n- a\n- b\n\npara two',
     'before\n\n```\ncode\n\nmore\n```\n\nafter',
     'intro\n\n$$\na = b\n\nc = d\n$$\n\nafter',
     'intro\n\n$$\na = b\n\nc = d',
+    'The marker is `$$`.\n\n$$\na = b\n\nc = d\n$$',
+    'intro\n\n$$$$\na = b\n\nc = d\n$$$$\n\nafter',
     '[x][id]\n\n> quoted\n>\n> [id]: https://e\n\npara',
     'text with $inline$ math\n\nand more',
+    'see [a](https://a.io) then\n\n[b][r]\n\n[r]: https://r.io',
   ])('%s', (md) => {
-    expect(splitStructure(md)).toEqual(structure(md));
+    expect(splitTree(md)).toEqual(tree(md));
   });
 });
 
@@ -123,10 +132,11 @@ describe('splitStreaming', () => {
     // split, else the memoized head would render its references as text until the whole settles.
     expect(splitStreaming('[x][id]\n\n[id]: https://e\n\npara')).toEqual({ head: '', tail: '[x][id]\n\n[id]: https://e\n\npara' });
     expect(splitStreaming('[x][id]\n\n> quoted\n>\n> [id]: https://e\n\npara').head).toBe('');
-    // A display equation spanning a blank line is one node to the renderer and two blocks to marked: not split
-    // while the cut would fall inside it, split again once it closes.
+    // A display equation spanning a blank line is one node to the renderer and two blocks to marked, and only
+    // the renderer's grammar knows a delimiter from a `$$` in inline code: a document with `$$` is never split.
     expect(splitStreaming('intro\n\n$$\na = b\n\nc = d').head).toBe('');
-    expect(splitStreaming('intro\n\n$$\na = b\n\nc = d\n$$\n\nafter')).toEqual({ head: 'intro\n\n$$\na = b\n\nc = d\n$$\n\n', tail: 'after' });
+    expect(splitStreaming('intro\n\n$$\na = b\n\nc = d\n$$\n\nafter').head).toBe('');
+    expect(splitStreaming('The marker is `$$`.\n\n$$\na = b\n\nc = d\n$$').head).toBe('');
     // A blank line may hold spaces or tabs; CRLF is normalised before the split.
     expect(splitStreaming('first\n  \nsecond\n\t\nthird')).toEqual({ head: 'first\n  \nsecond\n\t\n', tail: 'third' });
     expect(splitStreaming('first\r\n\r\nsecond')).toEqual({ head: 'first\n\n', tail: 'second' });

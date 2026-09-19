@@ -58,6 +58,14 @@ const oneAgent = function* (text: string): Operation<string> {
 };
 const spec = { config: { table, yml: (dir: string) => ({ sources: { outputDir: dir } }) } };
 const askThenAnswer = [{ on: (e: Event) => e.type === 'ready', send: { type: 'ask', text: 'Q' } as Command }, { on: (e: Event) => e.type === 'answer' }];
+/** A tool that records what it was asked. */
+const asked: string[] = [];
+class Search extends Tool<{ q: string }> {
+  readonly name = 'search';
+  readonly description = 'records what it was asked';
+  readonly parameters: JsonSchema = { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] };
+  *execute(args: { q: string }): Operation<unknown> { asked.push(args.q); return { hits: [] }; }
+}
 
 describe('runHarness over a harness of its own', () => {
   it('walks the script: sends, waits, answers, quits — and a text turn parses as content', async () => {
@@ -80,16 +88,26 @@ describe('runHarness over a harness of its own', () => {
       .rejects.toThrow(/returned with the script at step [01]\/2/);
   });
 
-  it("two tool turns with the same text and different arguments are each their own: the branch sampled last is asked first", async () => {
-    // The reviewer's reproduction: two scripted searches, alpha and beta, empty text both. Keyed on the first
-    // branch whose text matches, both parsed as alpha; keyed on the branch sampled last, each is its own.
-    const asked: string[] = [];
-    class Search extends Tool<{ q: string }> {
-      readonly name = 'search';
-      readonly description = 'records what it was asked';
-      readonly parameters: JsonSchema = { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] };
-      *execute(args: { q: string }): Operation<unknown> { asked.push(args.q); return { hits: [] }; }
-    }
+  it('two tool turns with the same text and different arguments are refused as a fixture — the text cannot tell them apart', async () => {
+    const twoAgents = function* (text: string): Operation<string> {
+      const tools = [new Search()];
+      const a = yield* spawn(() => useAgent({ systemPrompt: 's', content: text, tools, acceptFreeText: true }));
+      const b = yield* spawn(() => useAgent({ systemPrompt: 's', content: text, tools, acceptFreeText: true }));
+      yield* a; yield* b;
+      return 'both';
+    };
+    await expect(runHarness<typeof table, Command, Event>({
+      ...spec, harness: tiny(twoAgents),
+      utterances: [
+        { text: '', kind: 'tool', tool: { name: 'search', args: { q: 'alpha' } }, then: { text: 'A', kind: 'text' } },
+        { text: '', kind: 'tool', tool: { name: 'search', args: { q: 'beta' } }, then: { text: 'B', kind: 'text' } },
+      ],
+      script: askThenAnswer,
+    })).rejects.toThrow(/2 scripted turns produce the same text ""/);
+  });
+
+  it('two tool turns with distinct text and different arguments are each their own, whatever the sampling order', async () => {
+    asked.length = 0;
     const twoAgents = function* (text: string): Operation<string> {
       const tools = [new Search()];
       const a = yield* spawn(() => useAgent({ systemPrompt: 's', content: text, tools, acceptFreeText: true }));
@@ -100,8 +118,8 @@ describe('runHarness over a harness of its own', () => {
     const run = await runHarness<typeof table, Command, Event>({
       ...spec, harness: tiny(twoAgents),
       utterances: [
-        { text: '', kind: 'tool', tool: { name: 'search', args: { q: 'alpha' } }, then: { text: 'A', kind: 'text' } },
-        { text: '', kind: 'tool', tool: { name: 'search', args: { q: 'beta' } }, then: { text: 'B', kind: 'text' } },
+        { text: 'searching alpha', kind: 'tool', tool: { name: 'search', args: { q: 'alpha' } }, then: { text: 'A', kind: 'text' } },
+        { text: 'searching beta', kind: 'tool', tool: { name: 'search', args: { q: 'beta' } }, then: { text: 'B', kind: 'text' } },
       ],
       script: askThenAnswer,
     });
