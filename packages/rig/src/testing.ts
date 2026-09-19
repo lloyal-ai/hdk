@@ -145,7 +145,7 @@ export interface HarnessRun<E> {
   trace: TraceEvent[];
   /** The library/run-dir root this run wrote (a fresh temp dir). */
   outputDir: string;
-  /** `trace.length` at the moment quit was sent. Trace entries at or past
+  /** `trace.length` at the moment quit was sent, or the scenario halted the run. Trace entries at or past
    *  this index are SHUTDOWN work (scope teardown disposes the live trunk,
    *  which rightly emits a release) — a scenario asserting "the trunk was
    *  never released" means never released BEFORE this mark. */
@@ -244,9 +244,18 @@ export async function runHarness<T extends ConfigTable, C extends { type: string
     if (token >= UTTER_BASE) return turns[token - UTTER_BASE]?.text ?? '';
     return token === FILLER ? ' .' : '';
   };
+  /** The text a turn produced, as the pool accumulated it: its filler ticks, then its one fat token. */
+  const producedBy = (u: Utterance): string => ' .'.repeat(u.stallTokens ?? 0) + u.text;
   ctx.parseChatOutput = (output, _format, opts) => {
-    const a = assigned.get(lastSampled);
-    const u = a?.last;
+    // The strict parse belongs to the OUTPUT, not to the branch sampled last: an extracting agent's parse is
+    // deferred past its siblings' samples (`apply.ts` `finishExtraction`), so two recoveries stopping in one
+    // tick would otherwise both read the last branch's turn. Find the turn that produced this text; the
+    // sampling order is the fallback only for a turn nothing else could have produced.
+    let u: Utterance | undefined;
+    for (const a of assigned.values()) {
+      if (a.last && producedBy(a.last) === output) { u = a.last; break; }
+    }
+    u ??= assigned.get(lastSampled)?.last;
     if (opts?.isPartial || !u) {
       return { content: '', reasoningContent: '', toolCalls: [] };
     }
@@ -383,6 +392,7 @@ export async function runHarness<T extends ConfigTable, C extends { type: string
   spec.controls?.({
     halt: () => {
       halted = true;
+      shutdownTraceIndex = trace.events.length;   // what follows is teardown, as it is after quit
       return task.halt();
     },
     send: (c) => commands.send(c),
@@ -410,6 +420,7 @@ export async function runHarness<T extends ConfigTable, C extends { type: string
   } catch (err) {
     // A timed-out run is still running: halt it so its fibers and context end with the scenario, not after.
     halted = true;
+    if (shutdownTraceIndex < 0) shutdownTraceIndex = trace.events.length;
     await task.halt().catch(() => undefined);
     throw err;
   } finally {
