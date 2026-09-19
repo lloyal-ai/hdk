@@ -33,7 +33,7 @@ describe('defineOutput', () => {
     await expect(run(() => submit.tool.execute({}, {}))).rejects.toThrow(/ends the agent's turn.*terminal/);
   });
 
-  it('accepts a call that matches the schema with the validated value as the result, and reads it back typed', () => {
+  it('accepts a call that matches the schema with the raw arguments as the result, and reads them back typed', () => {
     const submit = defineOutput('submit', columns);
     const row = { headquarters: 'Oslo, Norway', sellsTo: 'both', evidence: [{ field: 'headquarters', url: 'https://a.io' }] };
     const raw = JSON.stringify(row);
@@ -42,26 +42,20 @@ describe('defineOutput', () => {
     expect(submit.read({ result: raw })).toEqual(row);
   });
 
-  it('a complete <tool_call> block with trailing whitespace is untouched too: only an unclosed fragment is stripped', () => {
-    const submit = defineOutput('submit', columns);
-    const row = { headquarters: 'Oslo <tool_call>{}</tool_call>  ', sellsTo: 'both', evidence: [] };
-    const decision = submit.tool.hooks!.onReturn!({ agent, tool: 'submit', args: row, raw: JSON.stringify(row), result: '' });
+  it('a typed output is lossless: a program that contains the marker is still that program, whitespace and all', () => {
+    const code = defineOutput('code', z.object({ source: z.string(), note: z.string() }));
+    const row = { source: 'const opening = "<tool_call>";\nconsole.log(opening);\n', note: 'trailing  ' };
+    const decision = code.tool.hooks!.onReturn!({ agent, tool: 'code', args: row, raw: JSON.stringify(row), result: '' });
     expect(decision).toEqual({ type: 'accept', result: JSON.stringify(row) });
+    expect(code.read({ result: JSON.stringify(row) })).toEqual(row);
   });
 
-  it('a string without a fragment is untouched — trailing whitespace in typed data survives', () => {
-    const submit = defineOutput('submit', columns);
-    const row = { headquarters: 'Oslo, Norway  ', sellsTo: 'both', evidence: [] };
-    const decision = submit.tool.hooks!.onReturn!({ agent, tool: 'submit', args: row, raw: JSON.stringify(row), result: '' });
-    expect(decision).toEqual({ type: 'accept', result: JSON.stringify(row) });
-  });
-
-  it('a capture-less output is cleaned too: a fragment inside a string field cannot hide behind the closing brace', () => {
-    const submit = defineOutput('submit', columns);
-    const row = { headquarters: 'Oslo\n\n<tool_call>\n{"name": "web_se', sellsTo: 'both', evidence: [] };
-    const decision = submit.tool.hooks!.onReturn!({ agent, tool: 'submit', args: row, raw: JSON.stringify(row), result: '' });
-    expect(decision).toEqual({ type: 'accept', result: JSON.stringify({ headquarters: 'Oslo', sellsTo: 'both', evidence: [] }) });
-    expect(submit.read({ result: (decision as { result: string }).result })).toEqual({ headquarters: 'Oslo', sellsTo: 'both', evidence: [] });
+  it("a schema's transform runs once, at read — the accepted result is the model's own bytes", () => {
+    const bumped = defineOutput('n', z.object({ n: z.number().overwrite((n) => n + 1).max(4) }));
+    const raw = JSON.stringify({ n: 3 });
+    const decision = bumped.tool.hooks!.onReturn!({ agent, tool: 'n', args: { n: 3 }, raw, result: '' });
+    expect(decision).toEqual({ type: 'accept', result: raw });
+    expect(bumped.read({ result: raw })).toEqual({ n: 4 });
   });
 
   it('rejects a call that misses the shape, naming the field; read yields null for anything that is not the typed value', () => {

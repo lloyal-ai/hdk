@@ -11,12 +11,12 @@
  * `citedReport` is the research output on the same primitive: the `report`
  * terminal whose grammar-forced `sources` are woven into the findings at capture.
  *
- * The text the model put in the call is cleaned HERE, once, before it is
- * validated: a string that ends in an unclosed `<tool_call>` fragment loses the
- * fragment, and the schema judges what will be captured. A capture that appends to the text (the citation weave's `Sources:`
- * list) would otherwise bury the fragment mid-result, and a capture-less
- * output's JSON ends in `"}`, so the framework's own strip — which runs after
- * the return, anchored to the end — can see neither.
+ * A typed output is LOSSLESS: what the model wrote is what is captured and read
+ * back, byte for byte — a program that contains the string `"<tool_call>"` is
+ * still that program. Only a capture that knows which of its strings is prose
+ * repairs it (`citedReport`: the findings lose a trailing unclosed call before
+ * the citation trailer is appended, or the trailer would bury it). The
+ * framework's own strip applies only to what the framework captures itself.
  *
  * @category Rig
  */
@@ -26,21 +26,6 @@ import type { ZodType } from 'zod';
 import { Tool, stripDanglingToolCall } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema, ToolLifecycleHooks } from '@lloyal-labs/lloyal-agents';
 import { weaveSourcesIntoResult } from './weave-sources';
-
-/** The validated value with every string the model wrote cleaned of a trailing unclosed tool call. A string
- *  without one — complete blocks included — is returned as it is: the strip's own trailing trim would
- *  otherwise alter typed data. */
-function cleaned<T>(value: T): T {
-  if (typeof value === 'string') {
-    const stripped = stripDanglingToolCall(value);
-    return (stripped === value.trimEnd() ? value : stripped) as T;   // equal means nothing was stripped, only trimmed
-  }
-  if (Array.isArray(value)) return value.map(cleaned) as T;
-  if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, cleaned(v)])) as T;
-  }
-  return value;
-}
 
 /** A typed output: the terminal tool, and the reading of what it captured. */
 export interface Output<T> {
@@ -71,9 +56,7 @@ class OutputTool<S extends ZodType> extends Tool<Record<string, unknown>> {
     this.parameters = parameters;
     this.hooks = {
       onReturn: ({ args, raw }) => {
-        // Cleaned BEFORE validation, so what is validated is what is captured: a string the strip shortens
-        // must still satisfy its own schema, or the return is refused now rather than read back as null later.
-        const parsed = schema.safeParse(cleaned(args));
+        const parsed = schema.safeParse(args);
         if (!parsed.success) {
           const issues = parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ');
           return {
@@ -81,10 +64,9 @@ class OutputTool<S extends ZodType> extends Tool<Record<string, unknown>> {
             message: `Your ${name} call did not match its schema — ${issues}. Call ${name} again with every field as specified.`,
           };
         }
-        // A capture reads the clean value; a capture-less output's result is the clean value serialized — a
-        // fragment inside a JSON string would otherwise survive the applier's end-anchored strip, which sees
-        // only the closing `"}`.
-        return { type: 'accept', result: capture ? capture(parsed.data, raw) : JSON.stringify(parsed.data) };
+        // A capture-less output's result is the RAW arguments, so `read` validates the model's own bytes once —
+        // a schema's transforms run one time, at read, never twice.
+        return { type: 'accept', result: capture ? capture(parsed.data, raw) : raw };
       },
     };
   }
@@ -145,6 +127,8 @@ export const citedReport: Output<string> = defineOutput(
   {
     description:
       'Submit your final research findings with specific evidence, direct quotes, and data points. Cite each claim inline as [title](url) using the exact URL seen in tool results. Fill the sources field with the structured list of every source you used. State what you found AND what you checked but could not find. Do not summarize — preserve detail.',
-    capture: ({ result, sources }) => weaveSourcesIntoResult(result, sources),
+    // The findings are prose the model may have cut short: a trailing unclosed call goes BEFORE the trailer
+    // is appended, where the framework's end-anchored strip could no longer see it.
+    capture: ({ result, sources }) => weaveSourcesIntoResult(stripDanglingToolCall(result), sources),
   },
 );

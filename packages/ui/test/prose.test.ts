@@ -5,6 +5,10 @@
  */
 import { describe, it, expect } from 'vitest';
 import { lexer } from 'marked';
+import { unified } from 'unified';
+import remarkParse from 'remark-parse';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
 import { headingsOf, linksOf, anchorsOf, splitStreaming, admitUrl } from '../src/prose';
 
 describe('headingsOf / linksOf', () => {
@@ -75,6 +79,27 @@ describe('anchorsOf', () => {
   });
 });
 
+/** The renderer's grammar over the split: the head's nodes then the tail's must be the whole document's nodes. */
+const structure = (md: string): string[] =>
+  (unified().use(remarkParse).use(remarkGfm).use(remarkMath).parse(md) as { children: { type: string }[] }).children.map((n) => n.type);
+const splitStructure = (md: string): string[] => {
+  const { head, tail } = splitStreaming(md);
+  return [...structure(head), ...structure(tail)];
+};
+
+describe('splitStreaming renders the same structure split as whole', () => {
+  it.each([
+    'para one\n\n## Heading\n\n- a\n- b\n\npara two',
+    'before\n\n```\ncode\n\nmore\n```\n\nafter',
+    'intro\n\n$$\na = b\n\nc = d\n$$\n\nafter',
+    'intro\n\n$$\na = b\n\nc = d',
+    '[x][id]\n\n> quoted\n>\n> [id]: https://e\n\npara',
+    'text with $inline$ math\n\nand more',
+  ])('%s', (md) => {
+    expect(splitStructure(md)).toEqual(structure(md));
+  });
+});
+
 describe('splitStreaming', () => {
   it('the tail is the last block CommonMark recognises — a fence owns its blank lines, a loose list is one block', () => {
     expect(splitStreaming('no blank line yet')).toEqual({ head: '', tail: 'no blank line yet' });
@@ -94,9 +119,14 @@ describe('splitStreaming', () => {
     expect(splitStreaming(trailing)).toEqual({ head: 'before\n\n', tail: '```\ncode\n```not-a-close\nstill code\n\nmore' });
     // A loose list is one block.
     expect(splitStreaming('- a\n\n- b\n\n- c is still')).toEqual({ head: '', tail: '- a\n\n- b\n\n- c is still' });
-    // A reference definition resolves links in earlier blocks: a document that carries one is not split, else the
-    // memoized head would render its references as text until the whole settles.
+    // A reference definition resolves links in earlier blocks: a document that carries one — at any depth — is not
+    // split, else the memoized head would render its references as text until the whole settles.
     expect(splitStreaming('[x][id]\n\n[id]: https://e\n\npara')).toEqual({ head: '', tail: '[x][id]\n\n[id]: https://e\n\npara' });
+    expect(splitStreaming('[x][id]\n\n> quoted\n>\n> [id]: https://e\n\npara').head).toBe('');
+    // A display equation spanning a blank line is one node to the renderer and two blocks to marked: not split
+    // while the cut would fall inside it, split again once it closes.
+    expect(splitStreaming('intro\n\n$$\na = b\n\nc = d').head).toBe('');
+    expect(splitStreaming('intro\n\n$$\na = b\n\nc = d\n$$\n\nafter')).toEqual({ head: 'intro\n\n$$\na = b\n\nc = d\n$$\n\n', tail: 'after' });
     // A blank line may hold spaces or tabs; CRLF is normalised before the split.
     expect(splitStreaming('first\n  \nsecond\n\t\nthird')).toEqual({ head: 'first\n  \nsecond\n\t\n', tail: 'third' });
     expect(splitStreaming('first\r\n\r\nsecond')).toEqual({ head: 'first\n\n', tail: 'second' });

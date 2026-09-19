@@ -9,12 +9,13 @@
  *  as an in-context demonstration of emitting tool calls. Complete blocks
  *  are left alone.
  *
- *  Who strips: an output that CAPTURES (rig's `defineOutput`) strips the text
- *  it derives before any capture appends to it — a trailer appended after the
- *  fragment would hide it from this `$`-anchored match. The applier strips
- *  what never passes a capture: a free-text return, the salvage of a terminal
- *  call cut mid-argument (the schema rejects it, so no `onReturn` sees it),
- *  and a return through an output that captures nothing. */
+ *  Who strips: the framework repairs only what it captured ITSELF — the
+ *  frame's default capture of a terminal call, a free-text return, the salvage
+ *  of a call cut mid-argument. A contributor's capture (a tool's `onReturn`, a
+ *  harness's) keeps its bytes: typed data may legitimately contain the marker,
+ *  and only the capture knows which of its strings is prose. A capture that
+ *  appends to prose (a citation trailer) strips first, itself, or the
+ *  fragment is buried where this end-anchored match cannot see it. */
 export function stripDanglingToolCall(text: string): string {
   return text.replace(/<tool_call>(?:(?!<\/tool_call>)[\s\S])*$/, '').trimEnd();
 }

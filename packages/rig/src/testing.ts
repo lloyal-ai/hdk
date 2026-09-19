@@ -246,16 +246,25 @@ export async function runHarness<T extends ConfigTable, C extends { type: string
   };
   /** The text a turn produced, as the pool accumulated it: its filler ticks, then its one fat token. */
   const producedBy = (u: Utterance): string => ' .'.repeat(u.stallTokens ?? 0) + u.text;
+  /** What a turn is presented as, for telling two turns with the same text apart. */
+  const presentation = (u: Utterance): string => JSON.stringify(u.kind === 'tool' ? u.tool : u.kind === 'report' ? [u.text, u.sources ?? []] : u.text);
   ctx.parseChatOutput = (output, _format, opts) => {
     // The strict parse belongs to the OUTPUT, not to the branch sampled last: an extracting agent's parse is
     // deferred past its siblings' samples (`apply.ts` `finishExtraction`), so two recoveries stopping in one
-    // tick would otherwise both read the last branch's turn. Find the turn that produced this text; the
-    // sampling order is the fallback only for a turn nothing else could have produced.
-    let u: Utterance | undefined;
-    for (const a of assigned.values()) {
-      if (a.last && producedBy(a.last) === output) { u = a.last; break; }
+    // tick would otherwise both read the last branch's turn. The branch sampled last is asked first (its own
+    // parse follows its own sample); then any branch whose last turn produced this text. Two turns with the
+    // same text but different presentations (two tool calls with different arguments, say) are a fixture the
+    // rig cannot tell apart from the text alone, and it says so rather than guess.
+    const last = assigned.get(lastSampled)?.last;
+    let u: Utterance | undefined = last && producedBy(last) === output ? last : undefined;
+    if (!u) {
+      const candidates = [...assigned.values()].map((a) => a.last).filter((t): t is Utterance => !!t && producedBy(t) === output);
+      const distinct = new Set(candidates.map(presentation));
+      if (distinct.size > 1) {
+        throw new Error(`runHarness: ${distinct.size} scripted turns produce the same text ${JSON.stringify(output)} but are presented differently — give them distinct text`);
+      }
+      u = candidates[0] ?? last;
     }
-    u ??= assigned.get(lastSampled)?.last;
     if (opts?.isPartial || !u) {
       return { content: '', reasoningContent: '', toolCalls: [] };
     }
@@ -425,6 +434,11 @@ export async function runHarness<T extends ConfigTable, C extends { type: string
     throw err;
   } finally {
     clearTimeout(watchdog);
+  }
+  // A harness that returned on its own with steps still waiting did not run the scenario: an early exit must
+  // not pass as a run that met every expectation. A halt and a one-shot failure are the scenario's own ends.
+  if (!halted && failure === undefined && cursor < steps.length) {
+    throw new Error(`runHarness: the harness returned with the script at step ${cursor}/${steps.length}; last event: ${events[events.length - 1]?.type}`);
   }
 
   return { events, trace: trace.events, outputDir, shutdownTraceIndex, halted, traceAt, ...(failure !== undefined ? { failure } : {}) };

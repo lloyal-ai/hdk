@@ -159,14 +159,31 @@ export function anchorsOf(headings: readonly Heading[], prefix: string): Anchor[
  *  complete, parsed once and kept while it stands; the last block is the one still being written, parsed per
  *  token. The boundaries are marked's — a spec-tested block tokenizer, used here only to find where the last
  *  block starts: a loose list is one block, a fence owns its blank lines. A block boundary this misjudges
- *  would cost one extra parse of one block, never a wrong document — with one exception the split refuses: a
- *  reference definition resolves links in EARLIER blocks, so a head rendered without it would show those
- *  references as text; a document that carries one is kept whole in the tail. */
+ *  would cost one extra parse of one block, never a wrong document — except for two constructs marked does not
+ *  see the way the renderer does, where the split is refused and the whole buffer is the tail:
+ *  - a reference definition (anywhere, a blockquote included) resolves links in EARLIER blocks, so a head
+ *    rendered without it would show those references as text;
+ *  - a display equation (`$$…$$`) may span a blank line, which marked reads as a block boundary; cut there,
+ *    the renderer would draw an equation, a paragraph and an empty equation. An odd count of `$$` in the head
+ *    means the cut fell inside one.
+ *  A document that carries either is rendered whole until it does not. */
 export function splitStreaming(markdown: string): { head: string; tail: string } {
   // marked reports raw text with line endings normalised; normalise first so head + tail is the text parsed.
   const text = markdown.replace(/\r\n?/g, '\n');
   const tokens = lexer(text);
-  if (tokens.length < 2 || tokens.some((t) => t.type === 'def')) return { head: '', tail: text };
+  if (tokens.length < 2 || hasDefinition(tokens)) return { head: '', tail: text };
   const cut = text.length - tokens[tokens.length - 1].raw.length;
-  return { head: text.slice(0, cut), tail: text.slice(cut) };
+  const head = text.slice(0, cut);
+  if ((head.match(/\$\$/g)?.length ?? 0) % 2 === 1) return { head: '', tail: text };
+  return { head, tail: text.slice(cut) };
+}
+
+/** A reference definition at any depth of marked's token tree — a blockquote or list nests its own. */
+function hasDefinition(tokens: readonly { type: string; tokens?: unknown[]; items?: unknown[] }[]): boolean {
+  for (const t of tokens) {
+    if (t.type === 'def') return true;
+    if (t.tokens && hasDefinition(t.tokens as typeof tokens)) return true;
+    if (t.items && hasDefinition(t.items as typeof tokens)) return true;
+  }
+  return false;
 }

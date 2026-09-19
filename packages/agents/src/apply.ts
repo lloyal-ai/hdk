@@ -179,14 +179,16 @@ export class Applier {
     // and has no turn left — so the first accept stands, else the policy's capture.
     const terminal = this.d.terminalToolName;
     const call = terminal ? parsed.toolCalls.find(c => c.name === terminal) : parsed.toolCalls[0];
-    const result = call ? (decideOnReturn(
+    const returned = call ? decideOnReturn(
         { agent: a, tool: call.name, args: parseHistoryArgs(call.arguments), raw: call.arguments, result: extractTerminalResult(call.arguments) },
         { frame: this.d.frame, tool: this.d.tools.get(call.name), policy: this.d.policy },
         { mayReject: false },
-      ).decision as { type: 'accept'; result: string }).result
+      ) : null;
+    const result = returned ? (returned.decision as { type: 'accept'; result: string }).result
       : !terminal && parsed.content ? parsed.content : '';
     if (result) {
-      a.setResult(stripDanglingToolCall(result), 'recovery');
+      // As at the voluntary return: the framework's own capture is repaired, a contributor's is kept whole.
+      a.setResult(!returned || returned.by === 'frame' ? stripDanglingToolCall(result) : result, 'recovery');
       yield* this.d.emit.emit({ kind: 'recovered', agent: a, result: a.result! });
       return true;
     }
@@ -286,7 +288,7 @@ export class Applier {
         // or the turn cap is exhausted — a rejected return costs a turn the agent
         // must have left.
         const exhausted = a.turns >= this.d.config.maxTurns || S.pressure.headroom < 0 || S.pressure.critical;
-        const { decision } = decideOnReturn(
+        const { decision, by } = decideOnReturn(
           { agent: a, tool: tc.name, args: parseHistoryArgs(tc.arguments), raw: tc.arguments, result: action.result },
           { frame: this.d.frame, tool: this.d.tools.get(tc.name), policy: this.d.policy },
           { mayReject: a.returnsRejected < MAX_RETURNS_REJECTED && !exhausted },
@@ -296,7 +298,10 @@ export class Applier {
           yield* this.nudge(a, decision.message, tc);
           return;
         }
-        a.setResult(stripDanglingToolCall(decision.result), 'voluntary_return');
+        // The framework repairs only what it captured itself — the default's free text, where a truncated
+        // call may trail. A contributor's capture (a tool's, a harness's) is its own bytes: typed data may
+        // legitimately contain the marker, and only the capture knows which of its strings is prose.
+        a.setResult(by === 'frame' ? stripDanglingToolCall(decision.result) : decision.result, 'voluntary_return');
         a.transition('idle');
         a.incrementToolCalls();
         this.d.totals.toolCalls++;
