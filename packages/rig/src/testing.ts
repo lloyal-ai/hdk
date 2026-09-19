@@ -59,22 +59,24 @@ const STOP = 999;
 const FILLER = 7;
 const UTTER_BASE = 50_000;
 
-export interface Utterance {
+/** What every utterance carries, whatever it is presented as. */
+interface Said {
   /** The branch's whole output — a plan's JSON, prose, the text of a terminal call. */
   text: string;
-  /** How parseChatOutput presents it (see module doc). */
-  kind: 'text' | 'report' | 'tool';
-  /** For kind 'tool': the call the turn makes. */
-  tool?: { name: string; args: Record<string, unknown> };
   /** The same branch's next turn — after a tool result, or the recovery turn a reaped agent is given. A function is
    *  asked when that turn begins, so a scenario can decide it from what the wire has said since. */
   then?: Utterance | (() => Utterance | undefined);
   /** Filler ticks streamed before the utterance — scheduling room for the
    *  command loop. A "live run" a scenario interrupts wants hundreds. */
   stallTokens?: number;
-  /** A report's grammar-forced sources; empty when absent. */
-  sources?: { title: string; url: string }[];
 }
+
+/** One scripted turn, by how parseChatOutput presents it (see module doc): a tool turn names its call, a
+ *  report may carry its grammar-forced sources. */
+export type Utterance =
+  | (Said & { kind: 'text' })
+  | (Said & { kind: 'report'; sources?: { title: string; url: string }[] })
+  | (Said & { kind: 'tool'; tool: { name: string; args: Record<string, unknown> } });
 
 /** A step's command may be a THUNK, resolved at fire time — for commands
  *  that need data only the wire revealed (a minted id captured by an
@@ -243,7 +245,7 @@ export async function runHarness<T extends ConfigTable, C extends { type: string
       return {
         content: '',
         reasoningContent: '',
-        toolCalls: [{ id: 'c1', name: u.tool!.name, arguments: JSON.stringify(u.tool!.args) }],
+        toolCalls: [{ id: 'c1', name: u.tool.name, arguments: JSON.stringify(u.tool.args) }],
       };
     }
     if (u.kind === 'report') {

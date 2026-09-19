@@ -62,7 +62,7 @@ export function retryUpTo(n: number): NonNullable<ToolLifecycleHooks['afterExecu
       ? { type: 'retry', afterMs: completion.error.retryAfterMs }
       : {
           type: 'fail',
-          message: `${tool} is currently unavailable (rate-limited; retry failed). Do not call ${tool} again.`,
+          message: `${tool} is currently unavailable (rate-limited; retry failed).`,
         };
   };
 }
