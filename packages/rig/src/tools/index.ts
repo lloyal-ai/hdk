@@ -48,8 +48,9 @@ export const reportTool = new ReportTool();
 
 /**
  * rig's own report tool as a view reads it ({@link Reports}) — and what a run that says
- * nothing about its terminal is read as.
+ * nothing about its terminal is read as. Its `field` is named, and the type says so: a
+ * test spec can hand it over as its `terminal` as it is.
  *
  * @category Rig
  */
-export const RIG_REPORT: Reports = { tool: reportTool.name, field: 'result' };
+export const RIG_REPORT = { tool: reportTool.name, field: 'result' } as const satisfies Reports;

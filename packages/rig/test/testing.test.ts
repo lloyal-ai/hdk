@@ -36,6 +36,7 @@ import type { JsonSchema } from '@lloyal-labs/lloyal-agents';
 import { defineConfig, modelSettings } from '../src/config';
 import { initializeHarness } from '../src/initialize-harness';
 import { runHarness } from '../src/testing';
+import { RIG_REPORT } from '../src/tools';
 
 const table = defineConfig({ ...modelSettings, 'sources.outputDir': { yml: 'sources.outputDir', path: true, default: 'out' } });
 type Command = { type: 'ask'; text: string } | { type: 'quit' };
@@ -71,6 +72,8 @@ describe('runHarness over a harness of its own', () => {
   it('walks the script: sends, waits, answers, quits — and a text turn parses as content', async () => {
     const run = await runHarness<typeof table, Command, Event>({
       ...spec, harness: tiny(oneAgent),
+      // rig's own report descriptor names a field, so it is a `terminal` a spec can hand over as it is.
+      terminal: RIG_REPORT,
       utterances: [{ text: 'forty-two', kind: 'text' }],
       script: askThenAnswer,
     });
