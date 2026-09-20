@@ -19,7 +19,7 @@ describe('scenario: in-loop recovery decode OOM emits agent:failed (no orphan)',
       pressureThresholds: { softLimit: 20, hardLimit: 512 },
       onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
       hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
-      onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),
+      onRecovery: () => ({ type: 'extract', prompt: { systemPrompt: 's', content: 'u' } }),
     };
 
     // Loose KV (nCtx 8000): free-text turn 1 (`1, 2, STOP`) → idle → cohort recovery

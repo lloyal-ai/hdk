@@ -18,14 +18,14 @@ export {
   reportTool, ReportTool,
   TavilyProvider, createKeylessSearchProvider,
   DelegateTool,
-  PlanTool, taskToContent, singleTaskPlan,
-  defineOutput, citedReport, weaveSourcesIntoResult,
+  PlanTool, taskToContent, singleTaskPlan, taskKey, taskIndexOf,
+  defineOutput, citedReport, weaveSourcesIntoResult, RIG_REPORT,
 } from './tools';
 export type {
   DelegateToolOpts,
   KeylessSearchOptions,
-  PlanToolOpts,
-  ReportToolOpts,
+  PlanToolOpts, PlanPromptInput,
+  ReportToolOpts, Reports,
   PlanResult, PlanIntent, ResearchTask,
   SearchProvider, SearchResult,
   Reranker, ScoredChunk, ScoredResult,
@@ -122,14 +122,14 @@ export type { Execution } from './execution';
 export { admitted } from './admitted';
 export type { Admitted } from './admitted';
 // The dispatcher: one loop, one handler per command type, the groups' handlers merged.
-export { serveCommands } from './serve-commands';
-export type { CommandGroup, Handlers, Flow, ServeCommandsOptions } from './serve-commands';
+export { serveCommands, serveDefaults } from './serve-commands';
+export type { CommandGroup, Handlers, Flow, ServeCommandsOptions, ServeDefaultsDeps } from './serve-commands';
 export { renderSpine, renderAgentPreamble } from './spine-render';
 export type { RenderSpineOptions } from './spine-render';
 // The sources a run can research with, what each advertises, and what each covers for a question.
 export { participating, abilityToc } from './participating';
 export { coverage, sourceKey, sourceOf } from './coverage';
-export type { CoverageOptions, Coverage } from './coverage';
+export type { CoverageOptions, CoveragePromptInput, Coverage } from './coverage';
 export { buildAbilityDescriptors, redactAbilityConfig } from './ability-descriptors';
 export type { AbilityDescriptor } from './ability-descriptors';
 export type { HostResourcesEvent } from './host-resources';

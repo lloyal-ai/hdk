@@ -75,9 +75,7 @@ export class Applier {
       // through the normal path and the next reap recovers the report. It says
       // what the pool knows — the call was parked and the run is winding down —
       // and diagnoses nothing: any hook may ask for a retry, for any completion.
-      const result = { error:
-        `${r.tc.name} did not complete before the run began winding down — ` +
-        `report your findings with what you have.` };
+      const result = { error: `${r.tc.name} did not complete before the run began winding down.` };
       const resultStr = JSON.stringify(result);
       yield* this.d.emit.emit({ kind: 'toolTold', agent: r.agent, tool: r.tc.name, resultStr });
       const tokens = buildToolResultDelta(this.d.ctx, resultStr, r.callId, { enableThinking: r.agent.fmt.enableThinking });
@@ -148,10 +146,14 @@ export class Applier {
         // anything else happens, so it never passes through `idle` on the way
         // — an orchestrator waiting on it would otherwise resume against a
         // result that does not exist yet.
-        const tokens = buildUserDelta(this.d.ctx, recovery.action.prompt.user, { system: recovery.action.prompt.system, enableThinking: false });
+        // A reaped agent is asked to report, not to deliberate. What the template makes of
+        // that is its own business — Qwen renders a CLOSED EMPTY reasoning block rather than
+        // omitting one — so the prompt it produced is kept verbatim and parsed against later,
+        // never re-derived from the agent's own.
+        const { tokens, generationPrompt } = buildUserDelta(this.d.ctx, recovery.action.prompt.content, { system: recovery.action.prompt.systemPrompt, enableThinking: false });
         a.incrementTurns();
         if (a.status !== 'awaiting_tool') a.transition('awaiting_tool');
-        a.markExtracting(recovery.budget, recovery.serial);
+        a.markExtracting(recovery.budget, recovery.serial, generationPrompt);
         a.resetTurn();
         this.d.pending.items.push({ kind: 'recovery', rail: 'token', agent: a, tokens, toolName: 'recovery', callId: `recovery:${a.id}`, args: '' });
         return;
@@ -169,8 +171,15 @@ export class Applier {
   /** Parse a recovery output, set the result (source `recovery`), announce. */
   *finishRecovery(a: Agent, output: string, producedTokens: number): Operation<boolean> {
     yield* this.d.emit.emit({ kind: 'recoveryProduce', agent: a, tokenCount: producedTokens, outputLength: output.length });
+    // Parse the turn that was actually BUILT. A salvage reads the agent's own report turn, so
+    // the agent's prompt is right; an `extract` turn was built from a different prompt, and
+    // parsing it against the agent's makes the parser read the whole answer — a complete
+    // terminal call included — as reasoning, and the report is discarded as absent. `null`
+    // is the only absence here: an empty prompt a formatter produced is a prompt.
+    const generationPrompt = a.extracting && a.recoveryGenerationPrompt !== null
+      ? a.recoveryGenerationPrompt : a.fmt.generationPrompt;
     const parsed = this.d.ctx.parseChatOutput(output, a.fmt.format, {
-      reasoningFormat: a.fmt.reasoningFormat, generationPrompt: a.fmt.generationPrompt, parser: a.fmt.parser,
+      reasoningFormat: a.fmt.reasoningFormat, generationPrompt, parser: a.fmt.parser,
     });
     // Read the way the voluntary path reads: with a terminal tool designated
     // the report MUST be that tool's call; without one, whatever the model
@@ -181,14 +190,16 @@ export class Applier {
     // and has no turn left — so the first accept stands, else the policy's capture.
     const terminal = this.d.terminalToolName;
     const call = terminal ? parsed.toolCalls.find(c => c.name === terminal) : parsed.toolCalls[0];
-    const result = call ? (decideOnReturn(
+    const returned = call ? decideOnReturn(
         { agent: a, tool: call.name, args: parseHistoryArgs(call.arguments), raw: call.arguments, result: extractTerminalResult(call.arguments) },
         { frame: this.d.frame, tool: this.d.tools.get(call.name), policy: this.d.policy },
         { mayReject: false },
-      ).decision as { type: 'accept'; result: string }).result
+      ) : null;
+    const result = returned ? (returned.decision as { type: 'accept'; result: string }).result
       : !terminal && parsed.content ? parsed.content : '';
     if (result) {
-      a.setResult(stripDanglingToolCall(result), 'recovery');
+      // As at the voluntary return: the framework's own capture is repaired, a contributor's is kept whole.
+      a.setResult(!returned || returned.by === 'frame' ? stripDanglingToolCall(result, a.fmt.thinkingEndTag) : result, 'recovery');
       yield* this.d.emit.emit({ kind: 'recovered', agent: a, result: a.result! });
       return true;
     }
@@ -259,7 +270,7 @@ export class Applier {
     const action = this.d.policy.onProduced(a, parsed, S.pressure, this.d.config);
     switch (action.type) {
       case 'free_text_return':
-        a.setResult(stripDanglingToolCall(action.content), 'free_text');
+        a.setResult(stripDanglingToolCall(action.content, a.fmt.thinkingEndTag), 'free_text');
         a.transition('idle');
         yield* this.d.emit.emit({ kind: 'returned', agent: a, via: 'free_text' });
         return;
@@ -288,7 +299,7 @@ export class Applier {
         // or the turn cap is exhausted — a rejected return costs a turn the agent
         // must have left.
         const exhausted = a.turns >= this.d.config.maxTurns || S.pressure.headroom < 0 || S.pressure.critical;
-        const { decision } = decideOnReturn(
+        const { decision, by } = decideOnReturn(
           { agent: a, tool: tc.name, args: parseHistoryArgs(tc.arguments), raw: tc.arguments, result: action.result },
           { frame: this.d.frame, tool: this.d.tools.get(tc.name), policy: this.d.policy },
           { mayReject: a.returnsRejected < MAX_RETURNS_REJECTED && !exhausted },
@@ -298,7 +309,10 @@ export class Applier {
           yield* this.nudge(a, decision.message, tc);
           return;
         }
-        a.setResult(stripDanglingToolCall(decision.result), 'voluntary_return');
+        // The framework repairs only what it captured itself — the default's free text, where a truncated
+        // call may trail. A contributor's capture (a tool's, a harness's) is its own bytes: typed data may
+        // legitimately contain the marker, and only the capture knows which of its strings is prose.
+        a.setResult(by === 'frame' ? stripDanglingToolCall(decision.result, a.fmt.thinkingEndTag) : decision.result, 'voluntary_return');
         a.transition('idle');
         a.incrementToolCalls();
         this.d.totals.toolCalls++;

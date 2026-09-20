@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest';
 import { run, createSignal, spawn, sleep, ensure, suspend, withResolvers } from 'effection';
 import type { Operation } from 'effection';
-import { serveCommands } from '../src/serve-commands';
+import { serveCommands, serveDefaults } from '../src/serve-commands';
 
 type Command =
   | { type: 'ask'; text: string }
@@ -164,5 +164,85 @@ describe('serveCommands', () => {
     });
     expect(seen).toHaveLength(1);
     expect(seen[0]).toMatch(/open/);
+  });
+});
+
+/** The matrix: {a handler threw, nobody handles, the owner poisoned} × {healthy owner, poisoned owner}. */
+describe('serveDefaults', () => {
+  const owner = (poisoned: boolean) => {
+    const { operation: whenPoisoned, resolve } = withResolvers<Error>();
+    return { run: { poisoned, whenPoisoned }, poison: (e: Error) => resolve(e) };
+  };
+  const recorder = () => {
+    const said: string[] = [];
+    return { said, wire: { *send(ev: { type: 'ui:error'; message: string }) { said.push(ev.message); } } };
+  };
+
+  it('a handler that threw on a healthy owner is said, the app abandons, and the loop goes on', async () => {
+    const { said, wire } = recorder();
+    const abandoned: number[] = [];
+    const log: string[] = [];
+    await run(function* () {
+      const commands = createSignal<Command, void>();
+      const g = { handlers: { *boom() { throw new Error('half done'); }, *ask() { log.push('ask'); } } };
+      const served = yield* spawn(() => serveCommands(commands, [g], serveDefaults({ wire, run: owner(false).run, *abandon() { abandoned.push(1); } })));
+      yield* sleep(0);
+      commands.send({ type: 'boom' });
+      commands.send({ type: 'ask', text: 'after' });
+      commands.send({ type: 'quit' });
+      yield* served;
+    });
+    expect(said).toEqual(['half done']);
+    expect(abandoned).toEqual([1]);
+    expect(log).toEqual(['ask']);
+  });
+
+  it('a handler that threw on a poisoned owner is said and ends the loop; nothing is abandoned', async () => {
+    const { said, wire } = recorder();
+    const abandoned: number[] = [];
+    const log: string[] = [];
+    await run(function* () {
+      const commands = createSignal<Command, void>();
+      const g = { handlers: { *boom() { throw new Error('teardown'); }, *ask() { log.push('ask'); } } };
+      const served = yield* spawn(() => serveCommands(commands, [g], serveDefaults({ wire, run: owner(true).run, *abandon() { abandoned.push(1); } })));
+      yield* sleep(0);
+      commands.send({ type: 'boom' });
+      commands.send({ type: 'ask', text: 'never' });
+      yield* served;
+    });
+    expect(said).toEqual(['teardown']);
+    expect(abandoned).toEqual([]);
+    expect(log).toEqual([]);
+  });
+
+  it('a command nobody handles is said, naming its type, and the loop goes on', async () => {
+    const { said, wire } = recorder();
+    const log: string[] = [];
+    await run(function* () {
+      const commands = createSignal<Command, void>();
+      const g = { handlers: { *ask() { log.push('ask'); } } };
+      const served = yield* spawn(() => serveCommands(commands, [g], serveDefaults({ wire, run: owner(false).run })));
+      yield* sleep(0);
+      commands.send({ type: 'open', id: 'x' });
+      commands.send({ type: 'ask', text: 'still' });
+      commands.send({ type: 'quit' });
+      yield* served;
+    });
+    expect(said).toEqual(['Nothing in this app handles "open".']);
+    expect(log).toEqual(['ask']);
+  });
+
+  it('the owner poisoning ends the loop with no command, having said why', async () => {
+    const { said, wire } = recorder();
+    const { run: owned, poison } = owner(false);
+    await run(function* () {
+      const commands = createSignal<Command, void>();
+      const g = { handlers: { *ask() {} } };
+      const served = yield* spawn(() => serveCommands(commands, [g], serveDefaults({ wire, run: owned })));
+      yield* sleep(0);
+      poison(new Error('the halt threw'));
+      yield* served;
+    });
+    expect(said).toEqual(['The session cannot continue: the halt threw']);
   });
 });

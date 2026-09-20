@@ -161,8 +161,6 @@ export interface Runner<
   dev: boolean;
   /** Replay-mode spine checkpoint; null normally + served. */
   replayCheckpoint: BranchCheckpoint | null;
-  /** A per-run findings cap (an edge flag); undefined = default. */
-  findingsMaxChars: number | undefined;
   /** 'oneshot' = non-TTY run-once; 'interactive' = the command loop. */
   mode: 'interactive' | 'oneshot';
   /** A query to auto-submit (interactive, first iteration) or run (oneshot). */
@@ -303,7 +301,6 @@ function makeRunner<
     attachmentStore: opts.attachmentStore ?? new NullAttachmentStore(),
     dev: opts.dev ?? false,
     replayCheckpoint: null,
-    findingsMaxChars: undefined,
     mode: 'interactive',
     initialQuery: undefined,
     isFirstIteration: true,

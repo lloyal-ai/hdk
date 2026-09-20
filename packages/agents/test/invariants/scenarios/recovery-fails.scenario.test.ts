@@ -26,7 +26,7 @@ describe('scenario: recovery generates no terminal call', () => {
       // Free-text every turn → idle drop → serial recovery runs (default staggered).
       onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
       hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
-      onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),
+      onRecovery: () => ({ type: 'extract', prompt: { systemPrompt: 's', content: 'u' } }),
       shouldExit: () => false,
     };
 
@@ -77,7 +77,7 @@ describe('scenario: recovery generates no terminal call', () => {
     const policy: AgentPolicy = {
       onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
       hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
-      onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),
+      onRecovery: () => ({ type: 'extract', prompt: { systemPrompt: 's', content: 'u' } }),
       shouldExit: () => true,
     };
 

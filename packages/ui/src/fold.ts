@@ -61,7 +61,7 @@ export interface AgentRuntime {
   startedAt: number;
   /** Wall-clock completion time (ms), set when the agent reaches `done` or `failed`. */
   endedAt: number | null;
-  /** The application's index for this agent's task. Null means the agent is tracked but keeps no timeline. */
+  /** The application's index for this agent's task; null for an agent that works no task of the plan (a settling pass, a probe). */
   taskIndex: number | null;
   taskDescription: string | null;
   /** A dependency hint for a chained task ("builds on Task 1"). */
@@ -79,7 +79,8 @@ export interface AgentRuntime {
   recovering: boolean;
   /** Set when the agent ended without a result: the terminal failure's reason. */
   failReason: string | null;
-  timeline: TimelineItem[];
+  /** Think blocks, tool rows, the report — or null for an agent tracked by its numbers only. */
+  timeline: TimelineItem[] | null;
 }
 
 /** What a roster holds beside its agents: the counters that keep timeline ids and labels stable. */
@@ -104,22 +105,26 @@ export type AgentEvent =
   | { type: 'agent:failed'; agentId: number; reason: string }
   | { type: 'agent:done'; agentId: number };
 
-/** What the application decides at a spawn: the agent's task, or nothing (tracked, no timeline). */
+/** What the application decides at a spawn — two facts, not one: whether the agent keeps a timeline, and which
+ *  task of the plan it works (null: none — a settling pass keeps a timeline and works no task; a helper the view
+ *  never shows keeps neither). */
 export interface SpawnDecision {
+  timeline: boolean;
   taskIndex: number | null;
   taskDescription?: string | null;
   dependencyHint?: string | null;
 }
 
 export interface FoldAgentsOptions {
-  /** The application's decision at `agent:spawn`. Default: every agent is tracked with no timeline. */
+  /** The application's decision at `agent:spawn`. Default: every agent is tracked by its numbers only, with no timeline and no task. */
   spawn?: (ev: Extract<AgentEvent, { type: 'agent:spawn' }>) => SpawnDecision;
   /** The tool whose call ends the turn. Its call is not a timeline row: the report streamed live and
    *  `agent:return` files it. */
   terminal?: string;
-  /** The argument of the terminal tool whose text is the report, streamed as the model writes it.
+  /** The argument of the terminal tool whose text is the report, streamed as the model writes it; `null` when
+   *  nothing is to be shown until the report is filed at `agent:return`.
    *  @default 'result' */
-  terminalField?: string;
+  terminalField?: string | null;
   /** The clock, for tests. */
   now?: () => number;
 }
@@ -135,7 +140,8 @@ export const DEFAULT_TERMINAL_FIELD = 'result';
  *  Name the terminal `tool` and only ITS call is read: an argument name says nothing about which tool it belongs
  *  to, and an ordinary tool may well share one (`write_file(body)` beside `finish(body)`). Without a tool, any
  *  call carrying the argument is read. */
-export function extractStreamingReport(buffer: string, terminal: { tool?: string; field?: string } = {}): string | null {
+export function extractStreamingReport(buffer: string, terminal: { tool?: string; field?: string | null } = {}): string | null {
+  if (terminal.field === null) return null;
   const OPEN = `<parameter=${terminal.field ?? DEFAULT_TERMINAL_FIELD}>`;
   let from = 0;
   if (terminal.tool !== undefined) {
@@ -261,7 +267,7 @@ function createAgent(r: AgentRoster, id: number, now: number, patch: Partial<Age
   const base: AgentRuntime = {
     id, label: `A${r.nextLabelIdx}`, phase: 'idle', startedAt: now, endedAt: null, tokenCount: 0, toolCallCount: 0,
     taskIndex: null, taskDescription: null, dependencyHint: null, currentThinkId: null, pendingToolCallId: null,
-    retry: null, contentBuffer: '', recovering: false, failReason: null, timeline: [],
+    retry: null, contentBuffer: '', recovering: false, failReason: null, timeline: null,
     ...patch,
   };
   const agents = new Map(r.agents);
@@ -269,9 +275,9 @@ function createAgent(r: AgentRoster, id: number, now: number, patch: Partial<Age
   return { ...r, agents, nextLabelIdx: r.nextLabelIdx + 1 };
 }
 
-const pushTimeline = (a: AgentRuntime, item: TimelineItem): AgentRuntime => ({ ...a, timeline: [...a.timeline, item] });
+const pushTimeline = (a: AgentRuntime, item: TimelineItem): AgentRuntime => ({ ...a, timeline: [...(a.timeline ?? []), item] });
 const updateTimeline = (a: AgentRuntime, id: number, update: (item: TimelineItem) => TimelineItem): AgentRuntime =>
-  ({ ...a, timeline: a.timeline.map((it) => (it.id === id ? update(it) : it)) });
+  ({ ...a, timeline: (a.timeline ?? []).map((it) => (it.id === id ? update(it) : it)) });
 
 /** Open a new live think block on this agent. */
 function openThink(r: AgentRoster, agentId: number, now: number): AgentRoster {
@@ -296,7 +302,7 @@ function closeThink(r: AgentRoster, agentId: number, finalBody: string, now: num
 function closeLiveThink(r: AgentRoster, agentId: number, now: number): AgentRoster {
   const agent = r.agents.get(agentId);
   if (!agent || agent.currentThinkId === null) return r;
-  const item = agent.timeline.find((it) => it.id === agent.currentThinkId);
+  const item = agent.timeline?.find((it) => it.id === agent.currentThinkId);
   return closeThink(r, agentId, item && item.kind === 'think' ? item.body : '', now);
 }
 
@@ -305,7 +311,7 @@ function advanceThink(r: AgentRoster, agentId: number, text: string, tokenCount:
   const agent = r.agents.get(agentId);
   if (!agent || agent.currentThinkId === null) return r;
   const thinkId = agent.currentThinkId;
-  const item = agent.timeline.find((it) => it.id === thinkId);
+  const item = agent.timeline?.find((it) => it.id === thinkId);
   if (!item || item.kind !== 'think') return r;
   const combined = item.body + text;
   const markerIdx = combined.indexOf(THINK_CLOSE);
@@ -325,20 +331,21 @@ export function foldAgents(r: AgentRoster, ev: AgentEvent, opts: FoldAgentsOptio
   const now = (opts.now ?? Date.now)();
   switch (ev.type) {
     case 'agent:spawn': {
-      const decision = opts.spawn?.(ev) ?? { taskIndex: null };
+      const decision = opts.spawn?.(ev) ?? { timeline: false, taskIndex: null };
       const next = createAgent(r, ev.agentId, now, {
-        phase: decision.taskIndex !== null ? 'thinking' : 'idle',
+        phase: decision.timeline ? 'thinking' : 'idle',
+        timeline: decision.timeline ? [] : null,
         taskIndex: decision.taskIndex,
         taskDescription: decision.taskDescription ?? null,
         dependencyHint: decision.dependencyHint ?? null,
       });
-      return decision.taskIndex !== null ? openThink(next, ev.agentId, now) : next;
+      return decision.timeline ? openThink(next, ev.agentId, now) : next;
     }
 
     case 'agent:produce': {
       const agent = r.agents.get(ev.agentId);
       if (!agent) return r;
-      if (agent.taskIndex === null) return replaceAgent(r, ev.agentId, (a) => ({ ...a, tokenCount: ev.tokenCount }));
+      if (agent.timeline === null) return replaceAgent(r, ev.agentId, (a) => ({ ...a, tokenCount: ev.tokenCount }));
       // Content-phase tokens (post-</think>, pre-tool_call): the model writing its tool-call JSON — the
       // terminal tool's body lives inside it, so it streams into the buffer a renderer can read live.
       if (agent.phase === 'content' || agent.recovering) {
@@ -356,7 +363,7 @@ export function foldAgents(r: AgentRoster, ev: AgentEvent, opts: FoldAgentsOptio
       const agent = r.agents.get(ev.agentId);
       if (!agent) return r;
       const working = closeLiveThink(r, ev.agentId, now);
-      if (agent.taskIndex === null) {
+      if (agent.timeline === null) {
         return replaceAgent(working, ev.agentId, (a) => ({ ...a, phase: 'tool', toolCallCount: a.toolCallCount + 1 }));
       }
       // The terminal tool fires at the stop token, but its report already streamed as content: no timeline row,
@@ -385,7 +392,7 @@ export function foldAgents(r: AgentRoster, ev: AgentEvent, opts: FoldAgentsOptio
     case 'agent:tool_result': {
       const agent = r.agents.get(ev.agentId);
       if (!agent) return r;
-      if (agent.taskIndex === null) return replaceAgent(r, ev.agentId, (a) => ({ ...a, phase: 'idle', retry: null }));
+      if (agent.timeline === null) return replaceAgent(r, ev.agentId, (a) => ({ ...a, phase: 'idle', retry: null }));
       const summary = summarizeResult(ev.tool, ev.result);
       const id = r.nextTimelineId;
       const next = replaceAgent(r, ev.agentId, (a) =>
@@ -401,7 +408,7 @@ export function foldAgents(r: AgentRoster, ev: AgentEvent, opts: FoldAgentsOptio
       const agent = r.agents.get(ev.agentId);
       if (!agent) return r;
       const working = closeLiveThink(r, ev.agentId, now);
-      if (agent.taskIndex === null) {
+      if (agent.timeline === null) {
         return replaceAgent(working, ev.agentId, (a) => ({ ...a, phase: 'done', endedAt: now, contentBuffer: '', recovering: false }));
       }
       const id = working.nextTimelineId;

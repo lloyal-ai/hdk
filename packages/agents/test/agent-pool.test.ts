@@ -568,7 +568,7 @@ describe('recovery loop', () => {
         hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         onRecovery: () => ({
           type: 'extract',
-          prompt: { system: 'Extract findings from above.', user: 'Report.' },
+          prompt: { systemPrompt: 'Extract findings from above.', content: 'Report.' },
         }),
       }),
     });
@@ -614,7 +614,7 @@ describe('recovery loop', () => {
         hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         onRecovery: () => ({
           type: 'extract',
-          prompt: { system: 'x', user: 'y' },
+          prompt: { systemPrompt: 'x', content: 'y' },
         }),
       }),
     });
@@ -644,7 +644,7 @@ describe('recovery loop', () => {
         onRecovery: () => {
           recoveryCount++;
           if (recoveryCount <= 1) {
-            return { type: 'extract', prompt: { system: 'Extract', user: 'Report' } };
+            return { type: 'extract', prompt: { systemPrompt: 'Extract', content: 'Report' } };
           }
           return { type: 'skip' };
         },
@@ -939,7 +939,7 @@ describe('recovery edge cases', () => {
         onRecovery: () => ({
           type: 'extract',
           // Very long prompt that won't fit in remaining KV
-          prompt: { system: 'X'.repeat(5000), user: 'Y'.repeat(5000) },
+          prompt: { systemPrompt: 'X'.repeat(5000), content: 'Y'.repeat(5000) },
         }),
         pressureThresholds: { softLimit: 128, hardLimit: 512 },
       }),
@@ -963,7 +963,7 @@ describe('recovery edge cases', () => {
         hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
         onRecovery: () => ({
           type: 'extract',
-          prompt: { system: '', user: '' },
+          prompt: { systemPrompt: '', content: '' },
         }),
       }),
     });
@@ -1467,7 +1467,7 @@ describe('SPLIT-SEMANTICS GATE: voluntary vs recovery emission', () => {
             hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
             onRecovery: () => ({
               type: 'extract',
-              prompt: { system: 'Extract findings.', user: 'Report.' },
+              prompt: { systemPrompt: 'Extract findings.', content: 'Report.' },
             }),
           }),
           maxTurns: 10,
@@ -1527,6 +1527,29 @@ describe('no-tool agent seams', () => {
 
     expect(result.agents[0].result).toBe('Findings summary.\n\n</think>');
     expect(result.agents[0].result).not.toContain('<tool_call>');
+  });
+
+  it('7a2: with a thinking template, the restart is stripped WHOLE — no close left at the tail', async () => {
+    // 7a above passes only because the mock template reports no thinking tag, so
+    // the repair cannot fire. A real reaped agent restarts its envelope inside the
+    // argument it was writing (`</think>` then a fresh `<tool_call>`), and stripping
+    // the call alone published the close as the last characters a reader saw —
+    // measured on Qwen3.5-4B, in the document and in the record on disk.
+    const dirty =
+      'Findings summary.\n\n</think>\n\n<tool_call>\n<function=read_file>\n<parameter=filename>\nfoo.md';
+    const { result } = await runPool({
+      forkTokenQueues: [[1, STOP]],
+      mutateCtx: (ctx) => {
+        const orig = ctx.formatChatSync.bind(ctx);
+        ctx.formatChatSync = (msgs: string, opts?: Parameters<typeof orig>[1]) =>
+          ({ ...orig(msgs, opts), supportsThinking: true, thinkingStartTag: '<think>', thinkingEndTag: '</think>' });
+      },
+      parseChatOutputFn: () => ({ content: dirty, reasoningContent: '', toolCalls: [] }),
+      policy: freeTextPolicy(),
+    });
+
+    expect(result.agents[0].result).toBe('Findings summary.');
+    expect(result.agents[0].result).not.toContain('</think>');
   });
 
   it('7b: complete <tool_call>…</tool_call> blocks in results are preserved', async () => {
@@ -2065,7 +2088,7 @@ describe('transient tool failure (park + retry)', () => {
     expect(toolResults).toHaveLength(1);
     const resultStr = (toolResults[0] as { result: string }).result;
     expect(resultStr).toContain('currently unavailable');
-    expect(resultStr).toContain('use other sources');
+    expect(resultStr).not.toContain('findings');   // the fact, and nothing the framework cannot know
     // Agent survived (not killed via tool_error path)
     expect(events.some(e => e.type === 'agent:done')).toBe(true);
   });
@@ -2117,7 +2140,7 @@ describe('transient tool failure (park + retry)', () => {
       forkTokenQueues: [[1, STOP]],
       parseChatOutputFn: callOnFirstTurn,
       policy: toolCallPolicy({
-        onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),
+        onRecovery: () => ({ type: 'extract', prompt: { systemPrompt: 's', content: 'u' } }),
       }),
       tools,
       trace: true,
@@ -2813,5 +2836,77 @@ describe('assets available to the run', () => {
     expect(shownTo(picture.events)).toContain('cannot see images');
     expect(picture.ctx.multimodalPrefills).toHaveLength(0);
     expect(booked(picture.trace)[0]?.attachments).toBeUndefined();
+  });
+});
+
+// ── A recovery turn is parsed the way it was BUILT ──────────────
+// The applier builds the recovery turn with `enableThinking: false` — a reaped
+// agent is asked to report, not to deliberate — so the template leaves out the
+// reasoning prefill. Parsing it against the AGENT's generation prompt (which
+// carries that prefill) makes the parser believe the turn opened inside a
+// reasoning block; the model, never prefilled, closes nothing, and the whole
+// output — a complete terminal call included — is classified as reasoning.
+//
+// Measured on a forced reap of Qwen3.5-4B (2026-09-20, brief
+// 2026-09-20T01-03-30-848-f766a218): 5,462 characters beginning
+// `<tool_call>\n<function=report>…`, replayed against that run's own
+// 15,268-byte parser —
+//   generation prompt              content  reasoning  toolCalls
+//   `…assistant\n<think>\n`            today        0      5,462  []        ← report lost
+//   `…assistant\n<think>\n\n</think>\n\n`  as built    0          0  [report]  ← report kept
+//
+// Note the prompt a reaped turn is actually built with: asked not to deliberate, Qwen's
+// template does not OMIT the reasoning block, it renders a CLOSED EMPTY one. That is why the
+// prompt is carried verbatim from the formatter rather than derived — a derivation that strips
+// the open tag produces `…assistant\n`, which no template ever emits.
+// Both inquiries failed that way; the brief settled with nothing kept.
+//
+// The mock cannot witness the native parser, so this asserts the field the
+// parser is HANDED — the thing the defect actually turned on.
+describe('recovery parses its own turn', () => {
+  it('hands the parser the recovery turn\'s generation prompt, not the agent\'s', async () => {
+    const parses: { raw: string; generationPrompt: string | undefined }[] = [];
+    const CALL = '<tool_call>\n<function=report>\n<parameter=result>\nthe findings\n</parameter>\n</function>\n</tool_call>';
+
+    const { events } = await runPool({
+      forkTokenQueues: [[STOP, 100, STOP]],
+      terminalTool: 'report',
+      maxTurns: 10,
+      mutateCtx: (ctx) => {
+        const orig = ctx.formatChatSync.bind(ctx);
+        ctx.formatChatSync = (msgs: string, opts?: Parameters<typeof orig>[1]) => {
+          const o = (typeof opts === 'object' && opts !== null ? opts : {}) as { enableThinking?: boolean };
+          return {
+            ...orig(msgs, opts),
+            // Mirrors the observed Qwen prefixes, not a convenient stand-in: thinking off closes
+            // an empty block rather than omitting one.
+            generationPrompt: o.enableThinking === false
+              ? '<|im_start|>assistant\n<think>\n\n</think>\n\n'
+              : '<|im_start|>assistant\n<think>\n',
+            supportsThinking: true, thinkingStartTag: '<think>', thinkingEndTag: '</think>',
+          };
+        };
+        const origText = ctx.tokenToText.bind(ctx);
+        ctx.tokenToText = (t: number): string => (t === 100 ? CALL : origText(t));
+      },
+      parseChatOutputFn: (raw, _f, opts) => {
+        parses.push({ raw, generationPrompt: opts?.generationPrompt });
+        return raw.includes('<function=report>')
+          ? { content: '', reasoningContent: '', toolCalls: [{ name: 'report', arguments: '{"result":"the findings"}', id: 'c1' }] }
+          : { content: '', reasoningContent: '', toolCalls: [] };
+      },
+      policy: stubPolicy({
+        shouldExit: () => false,
+        onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
+        hooks: [{ beforeAdmit: () => ({ type: 'drop' }) }],
+        onRecovery: () => ({ type: 'extract', prompt: { systemPrompt: 'Report now.', content: 'Report.' } }),
+      }),
+    });
+
+    const recoveryParse = parses.filter(p => p.raw.includes('<function=report>')).at(-1);
+    expect(recoveryParse, 'the recovery output was never parsed').toBeDefined();
+    expect(recoveryParse!.generationPrompt).toBe('<|im_start|>assistant\n<think>\n\n</think>\n\n');
+
+    expect(events.filter(e => e.type === 'agent:recovered').length).toBeGreaterThanOrEqual(1);
   });
 });

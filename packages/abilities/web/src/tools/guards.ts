@@ -42,5 +42,5 @@ export const queryDedup: ToolGuard = {
     const query = trimmed(args.query)?.toLowerCase();
     return !!query && attended().some((a) => trimmed(a.query)?.toLowerCase() === query);
   },
-  message: "This search was already attempted in this run. Refine the query or report your findings.",
+  message: "This search was already attempted in this run. Refine the query.",
 };

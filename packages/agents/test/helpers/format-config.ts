@@ -23,6 +23,7 @@ export const FMT: FormatConfig = {
   grammarLazy: false,
   grammarTriggers: [],
   enableThinking: false,
+  thinkingEndTag: '',
 };
 
 /** The same fixture with fields overridden — for the few tests that vary one. */

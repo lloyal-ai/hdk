@@ -37,7 +37,7 @@ describe('a halted scope closes its trace scope', () => {
       yield* Store.set(store as never);
       yield* Trace.set(trace);
       yield* Events.set(createChannel<AgentEvent, void>());
-      yield* useAgent({ systemPrompt: 'you are a test', task: 'do nothing', tools: [] });
+      yield* useAgent({ systemPrompt: 'you are a test', content: 'do nothing', tools: [] });
       reached();
       // Held open so the scope is torn down from OUTSIDE — a halt, not a
       // return. This is the path no caller covered.

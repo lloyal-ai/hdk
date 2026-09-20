@@ -474,6 +474,11 @@ export class MockSessionContext implements SessionContext {
       grammarTriggers: [],
       stopTokens: [],
       preservedTokens: [],
+      // The scripted model is not a thinking one: its turns are whatever a scenario wrote, and `parseChatOutput`
+      // hands them back as content. A scenario that needs reasoning tags overrides this.
+      supportsThinking: false,
+      thinkingStartTag: '',
+      thinkingEndTag: '',
     };
   }
 

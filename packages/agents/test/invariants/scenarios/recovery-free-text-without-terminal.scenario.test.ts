@@ -18,7 +18,7 @@ import { runPool, STOP } from '../harness';
 
 const policy: AgentPolicy = {
   onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
-  onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }),
+  onRecovery: () => ({ type: 'extract', prompt: { systemPrompt: 's', content: 'u' } }),
   shouldExit: () => false,
 };
 

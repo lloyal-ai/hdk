@@ -51,6 +51,47 @@ export interface ServeCommandsOptions<C extends { type: string } = { type: strin
   until?: Operation<unknown>;
 }
 
+/** What {@link serveDefaults} needs: where to say things, and the execution owner whose health decides. */
+export interface ServeDefaultsDeps {
+  wire: { send(event: { type: 'ui:error'; message: string }): Operation<void> };
+  run: { readonly poisoned: boolean; readonly whenPoisoned: Operation<Error> };
+  /**
+   * What the application abandons after a handler threw on a healthy owner: the
+   * handler may have stopped half way through a change of run, so the run is
+   * given up and the next ask starts clean. Absent: nothing more is done.
+   */
+  abandon?: () => Operation<void>;
+}
+
+/**
+ * The dispatcher's options as every application takes them, so an application
+ * states only what is its own (`abandon`). A handler that threw is said on the
+ * wire; a poisoned owner ends the loop, a healthy one is abandoned. A command no
+ * group handles is a view wired to something never offered: said, and the
+ * reader's run left alone. The loop ends when the owner poisons, having said why
+ * — a reader should not have to ask a question to learn their session is over.
+ *
+ * @category Rig
+ */
+export function serveDefaults<C extends { type: string }>(deps: ServeDefaultsDeps): Required<ServeCommandsOptions<C>> {
+  const { wire, run, abandon } = deps;
+  const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+  return {
+    *onError(err) {
+      yield* wire.send({ type: 'ui:error', message: message(err) });
+      if (run.poisoned) return 'exit';   // the model's state cannot be trusted: the host reaps the session, or the process ends
+      if (abandon) yield* abandon();
+    },
+    *onUnhandled(command) {
+      yield* wire.send({ type: 'ui:error', message: `Nothing in this app handles "${command.type}".` });
+    },
+    until: (function* () {
+      const err = yield* run.whenPoisoned;
+      yield* wire.send({ type: 'ui:error', message: `The session cannot continue: ${message(err)}` });
+    })(),
+  };
+}
+
 /**
  * Serve `commands` with the groups' handlers until `quit`, an `"exit"`, or an
  * error nobody handles.

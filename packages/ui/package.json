@@ -13,6 +13,10 @@
     "./fold": {
       "types": "./dist/fold.d.ts",
       "default": "./dist/fold.js"
+    },
+    "./prose": {
+      "types": "./dist/prose.d.ts",
+      "default": "./dist/prose.js"
     }
   },
   "publishConfig": {
@@ -45,11 +49,16 @@
   "dependencies": {
     "@lloyal-labs/binding": "0.2.0-alpha.6",
     "@lloyal-labs/media": "0.2.0-alpha.6",
+    "@types/mdast": "^4.0.4",
     "katex": "^0.16.22",
+    "marked": "^18.0.13",
+    "mdast-util-to-string": "^4.0.0",
     "react-markdown": "^10.1.0",
     "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1",
-    "remark-math": "^6.0.0"
+    "remark-math": "^6.0.0",
+    "remark-parse": "^11.0.0",
+    "unified": "^11.0.5"
   },
   "peerDependencies": {
     "react": "^18.3.0 || ^19.0.0"

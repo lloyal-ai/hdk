@@ -137,7 +137,12 @@ export function* priceSpawn(task: AgentTaskSpec, ctx: SessionContext, enableThin
   const fmtConfig: FormatConfig = {
     format: src.format, reasoningFormat: src.reasoningFormat, generationPrompt: src.generationPrompt,
     parser: src.parser, grammar: src.grammar, grammarLazy: src.grammarLazy, grammarTriggers: src.grammarTriggers,
-    enableThinking,
+    // The reasoning tag describes the MODEL'S TEMPLATE, not the shared header. A spine is
+    // formatted from a system turn alone, which a template may refuse (Qwen does) — and the
+    // retry that rescues it can report no declaration at all, leaving a format that claims not
+    // to think beside a generation prompt that opens a reasoning block. The agent's own suffix
+    // is formatted from a conversation the template accepts, so it carries the declaration.
+    enableThinking, thinkingEndTag: src.thinkingEndTag || fmt.thinkingEndTag,
   };
   return { suffixTokens, formattedPrompt: fmt.prompt, fmt: fmtConfig };
 }
@@ -687,8 +692,7 @@ export class Executor {
       // limit); the fallback diagnoses nothing.
       const exhausted = {
         error: decision.message
-          ?? `${tc.name} failed and will not be retried. ` +
-            `Do not call ${tc.name} again with these arguments — use other sources or proceed with your current findings.`,
+          ?? `${tc.name} failed and will not be retried.`,
       };
       const resultStr = JSON.stringify(exhausted);
       yield* d.emit.emit({ kind: 'toolTold', agent, tool: tc.name, resultStr });

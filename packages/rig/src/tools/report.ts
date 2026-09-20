@@ -49,6 +49,20 @@ export interface ReportToolOpts {
 }
 
 /**
+ * How a view reads an agent's findings as the model writes them: the tool whose call ends
+ * the turn, and the argument of that call whose text is the findings. The view needs both —
+ * the call is the end of the work, not a step of it, and the argument is what it can show
+ * as it streams. `field: null` shows working state until the findings are in — ui's fold
+ * takes the pair as `terminal` and `terminalField`, and streams nothing for `null`.
+ *
+ * @category Rig
+ */
+export interface Reports {
+  tool: string;
+  field: string | null;
+}
+
+/**
  * Terminal tool for submitting agent results.
  *
  * Used as the `terminalToolName` in agent pools — when an agent calls

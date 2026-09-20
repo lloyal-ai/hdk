@@ -23,7 +23,7 @@ const policy: AgentPolicy = {
   onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
   shouldExit: () => false,
   // ~3000 cells on the mock's chars/4 tokenizer: larger than the whole context.
-  onRecovery: () => ({ type: 'extract', prompt: { system: 'X'.repeat(12000), user: 'report' } }),
+  onRecovery: () => ({ type: 'extract', prompt: { systemPrompt: 'X'.repeat(12000), content: 'report' } }),
 };
 
 describe('scenario: a serial recovery prompt that cannot fit is skipped', () => {

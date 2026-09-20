@@ -11,12 +11,19 @@
  * `citedReport` is the research output on the same primitive: the `report`
  * terminal whose grammar-forced `sources` are woven into the findings at capture.
  *
+ * A typed output is LOSSLESS: what the model wrote is what is captured and read
+ * back, byte for byte — a program that contains the string `"<tool_call>"` is
+ * still that program. Only a capture that knows which of its strings is prose
+ * repairs it (`citedReport`: the findings lose a trailing unclosed call before
+ * the citation trailer is appended, or the trailer would bury it). The
+ * framework's own strip applies only to what the framework captures itself.
+ *
  * @category Rig
  */
 import type { Operation } from 'effection';
 import { z } from 'zod';
 import type { ZodType } from 'zod';
-import { Tool } from '@lloyal-labs/lloyal-agents';
+import { Tool, stripDanglingToolCall } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema, ToolLifecycleHooks } from '@lloyal-labs/lloyal-agents';
 import { weaveSourcesIntoResult } from './weave-sources';
 
@@ -30,8 +37,11 @@ export interface Output<T> {
 export interface OutputOptions<T> {
   /** What the model is told the tool is for. @default `Submit your <name>.` */
   description?: string;
-  /** Make the result text from the validated value (a report's citation weave). The output then reads as text. */
-  capture?: (value: T, raw: string) => string;
+  /** Make the result text from the validated value (a report's citation weave). The output then reads as text.
+   *  The third argument is the template's reasoning close (empty when it does not think) — a capture that
+   *  repairs prose needs it, because the framework's own repair cannot see a fragment once text is appended
+   *  after it. */
+  capture?: (value: T, raw: string, thinkingEndTag: string) => string;
 }
 
 class OutputTool<S extends ZodType> extends Tool<Record<string, unknown>> {
@@ -41,14 +51,14 @@ class OutputTool<S extends ZodType> extends Tool<Record<string, unknown>> {
     readonly name: string,
     readonly description: string,
     schema: S,
-    capture?: (value: z.output<S>, raw: string) => string,
+    capture?: (value: z.output<S>, raw: string, thinkingEndTag: string) => string,
   ) {
     super();
     // The schema is the grammar: what the model can emit is what `read` accepts.
     const { $schema: _dialect, ...parameters } = z.toJSONSchema(schema) as JsonSchema & { $schema?: string };
     this.parameters = parameters;
     this.hooks = {
-      onReturn: ({ args, raw }) => {
+      onReturn: ({ agent, args, raw }) => {
         const parsed = schema.safeParse(args);
         if (!parsed.success) {
           const issues = parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ');
@@ -57,7 +67,9 @@ class OutputTool<S extends ZodType> extends Tool<Record<string, unknown>> {
             message: `Your ${name} call did not match its schema — ${issues}. Call ${name} again with every field as specified.`,
           };
         }
-        return { type: 'accept', result: capture ? capture(parsed.data, raw) : raw };
+        // A capture-less output's result is the RAW arguments, so `read` validates the model's own bytes once —
+        // a schema's transforms run one time, at read, never twice.
+        return { type: 'accept', result: capture ? capture(parsed.data, raw, agent.fmt.thinkingEndTag) : raw };
       },
     };
   }
@@ -71,7 +83,7 @@ class OutputTool<S extends ZodType> extends Tool<Record<string, unknown>> {
 export function defineOutput<S extends ZodType>(
   name: string,
   schema: S,
-  opts: { description?: string; capture: (value: z.output<S>, raw: string) => string },
+  opts: { description?: string; capture: (value: z.output<S>, raw: string, thinkingEndTag: string) => string },
 ): Output<string>;
 export function defineOutput<S extends ZodType>(name: string, schema: S, opts?: { description?: string }): Output<z.output<S>>;
 export function defineOutput<S extends ZodType>(name: string, schema: S, opts: OutputOptions<z.output<S>> = {}): Output<unknown> {
@@ -118,6 +130,11 @@ export const citedReport: Output<string> = defineOutput(
   {
     description:
       'Submit your final research findings with specific evidence, direct quotes, and data points. Cite each claim inline as [title](url) using the exact URL seen in tool results. Fill the sources field with the structured list of every source you used. State what you found AND what you checked but could not find. Do not summarize — preserve detail.',
-    capture: ({ result, sources }) => weaveSourcesIntoResult(result, sources),
+    // The findings are prose the model may have cut short: a trailing unclosed call goes BEFORE the trailer
+    // is appended, where the framework's end-anchored strip could no longer see it. A reaped agent restarts
+    // its envelope inside the argument it was writing, so the close that opens that restart goes with it —
+    // which needs the template's own tag, since this capture, not the framework, is the one repairing here.
+    capture: ({ result, sources }, _raw, thinkingEndTag) =>
+      weaveSourcesIntoResult(stripDanglingToolCall(result, thinkingEndTag), sources),
   },
 );

@@ -2,8 +2,7 @@ import type { Agent } from './Agent';
 import type { ToolLifecycleHooks } from './Tool';
 import { ContextPressure } from './pressure';
 import type { ParsedToolCall } from '@lloyal-labs/sdk';
-import type { PressureThresholds } from './types';
-import { renderTemplate } from './prompt';
+import type { AgentTaskSpec, PressureThresholds } from './types';
 import { retryUpTo } from './hooks';
 import { extractTerminalResult } from './capture';
 
@@ -57,12 +56,44 @@ export type ProduceAction =
   | { type: 'free_text_return'; content: string };
 
 /**
+ * A prompt as the model is given it: the system prompt and the user turn — the
+ * pair every spawn carries ({@link AgentTaskSpec}), so a rendered prompt spreads
+ * into a spawn spec and is never re-keyed.
+ * @category Agents
+ */
+export type PromptText = Pick<AgentTaskSpec, 'systemPrompt' | 'content'>;
+
+/**
+ * A prompt as a function of what it is told. The framework never renders an
+ * app's prompt: it hands over what it alone knows (a reaped agent's word
+ * budget) and takes back the text. Where the words come from — a template
+ * file, a literal — is the app's, and no framework word is in them.
+ * @category Agents
+ */
+export type PromptOf<I> = (input: I) => PromptText;
+
+/**
+ * What the app's {@link DefaultAgentPolicyOpts.nudge} is called with: why the
+ * agent must wind its work up, the tool that ends its turn, and the room its
+ * last call has. The framework hands these over and writes no sentence of its own.
+ * @category Agents
+ */
+export interface NudgeInput {
+  /** `result`: a tool result will not fit the remaining context; the rest are the budget's limits. */
+  reason: 'result' | 'time' | 'turns' | 'context';
+  /** The tool whose call ends the turn. */
+  terminal: string;
+  /** The words the agent may still write (see {@link tokenBudgetAsWords}). */
+  words: number;
+}
+
+/**
  * Action returned by policy.onRecovery — what to do with an agent
  * that was killed without reporting.
  * @category Agents
  */
 export type RecoveryAction =
-  | { type: 'extract'; prompt: { system: string; user: string } }
+  | { type: 'extract'; prompt: PromptText }
   | { type: 'skip' };
 
 // ── The harness's part of the tool lifecycle: data ─────────
@@ -285,6 +316,8 @@ export interface Budget {
   context?: { softLimit?: number; hardLimit?: number };
   /** Wall time since the agent started, in ms: `softLimit` nudges, `hardLimit` kills. */
   time?: { softLimit?: number; hardLimit?: number };
+  /** What an agent is told when it must wind up — see {@link DefaultAgentPolicyOpts.nudge}. Absent: it is not told. */
+  nudge?: DefaultAgentPolicyOpts['nudge'];
   /** Recovery for an agent reaped without reporting: what it is told, and the
    *  floors below which it is not worth asking. Absent: a reaped agent is pruned. */
   recovery?: DefaultAgentPolicyOpts['recovery'];
@@ -329,6 +362,7 @@ export function budgetPolicyOpts(
     acceptFreeText: pool.acceptFreeText,
     hooks: pool.hooks,
     budget: { context: budget.context, time: budget.time },
+    nudge: budget.nudge,
     recovery: budget.recovery,
     recoveryShape: budget.recoveryShape,
     recoveryBudget: budget.recoveryBudget,
@@ -363,10 +397,17 @@ export interface DefaultAgentPolicyOpts {
      *  applies when `budget.time.softLimit` is set. @default 0.5 */
     time?: number;
   };
+  /** What an agent is told when it must wind its work up — over a limit, or holding a result that will
+   *  not fit — as a function of what the pool knows ({@link NudgeInput}). The app's words; the framework
+   *  has none. Absent: no nudge is said — an agent over budget goes idle and a result that will not fit is
+   *  dropped, and recovery, if the row has one, speaks. */
+  nudge?: (input: NudgeInput) => string;
   /** Recovery extraction for agents killed without reporting.
    *  Policy decides per-agent via {@link AgentPolicy.onRecovery}. */
   recovery?: {
-    prompt: { system: string; user: string };
+    /** What a reaped agent is told, given the one thing the policy knows: `budget`, the
+     *  words its report may run to (see {@link tokenBudgetAsWords}). */
+    prompt: PromptOf<{ budget: number }>;
     /** Skip extraction for agents with fewer tokens than this. @default 100 */
     minTokens?: number;
     /** Skip extraction for agents with fewer tool calls than this. @default 2 */
@@ -426,6 +467,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
   private _exploreContext: number;
   private _exploreTime: number;
   private _forceExploit = false;
+  private _nudge: DefaultAgentPolicyOpts['nudge'] | null;
   private _recovery: DefaultAgentPolicyOpts['recovery'] | null;
   private _recoveryShape: 'staggered' | 'parallel';
   private _recoveryBudget: number | null;
@@ -449,6 +491,7 @@ export class DefaultAgentPolicy implements AgentPolicy {
   constructor(opts?: DefaultAgentPolicyOpts) {
     this._exploreContext = opts?.shouldExplore?.context ?? 0.4;
     this._exploreTime = opts?.shouldExplore?.time ?? 0.5;
+    this._nudge = opts?.nudge ?? null;
     this._recovery = opts?.recovery ?? null;
     this._recoveryShape = opts?.recoveryShape ?? 'staggered';
     this._recoveryBudget = opts?.recoveryBudget ?? null;
@@ -466,12 +509,12 @@ export class DefaultAgentPolicy implements AgentPolicy {
     return {
       afterExecute: retryUpTo(this._maxToolRetries),
       beforeAdmit: ({ agent, pressure, terminal }) => {
-        // Nudge if possible — stateless, no escalation tracking.
-        if (terminal && agent.toolCallCount > 0) {
+        // Nudge if the app has words for it — stateless, no escalation tracking.
+        if (terminal && agent.toolCallCount > 0 && this._nudge) {
           const words = tokenBudgetAsWords(pressure.remaining - pressure.hardLimit);
-          return { type: 'nudge', message: `Tool result too large for the remaining context. Report your findings now within ${words} words.` };
+          return { type: 'nudge', message: this._nudge({ reason: 'result', terminal, words }) };
         }
-        // No terminal tool: the agent cannot be told to report; drop it.
+        // No terminal, or nothing to say: the agent cannot be told to wind up; drop it.
         return { type: 'drop' };
       },
     };
@@ -582,21 +625,17 @@ export class DefaultAgentPolicy implements AgentPolicy {
     const timeSoft = this._budget?.time?.softLimit;
     const timeNudge = timeSoft != null && this._elapsed(agent) >= timeSoft;
 
-    if (config.terminalToolName && agent.toolCallCount > 0 && !pressure.critical) {
+    if (config.terminalToolName && agent.toolCallCount > 0 && !pressure.critical && this._nudge) {
       if (!this._nudgedThisTick) {
         this._nudgedThisTick = true;
         // Budget the model can emit before `pressure.critical` kills it.
         // Overshoot → kill → the recovery turn extracts from the hardLimit reserve.
         // Expressed in words (not tokens) because tokenizers vary across
         // models but words are universal. Under-advertised + rounded down
-        // so the model has slack on the ceiling.
+        // so the model has slack on the ceiling. The words are the app's.
         const words = tokenBudgetAsWords(pressure.remaining - pressure.hardLimit);
-        const msg = timeNudge
-          ? `Time limit reached — report your findings now within ${words} words.`
-          : agent.turns >= config.maxTurns
-            ? `Turn limit reached — report your findings now within ${words} words.`
-            : `Context nearly full — report your findings now within ${words} words.`;
-        return { type: 'nudge', message: msg };
+        const reason = timeNudge ? 'time' : agent.turns >= config.maxTurns ? 'turns' : 'context';
+        return { type: 'nudge', message: this._nudge({ reason, terminal: config.terminalToolName, words }) };
       }
       return { type: 'tool_call', tc };
     }
@@ -662,21 +701,14 @@ export class DefaultAgentPolicy implements AgentPolicy {
     // Budget recovery's generation can consume: hardLimit reserve minus the
     // recovery prompt's own cost and the decoder's batch workspace. Expressed
     // as words (not tokens) and under-advertised so the model has slack —
-    // tokenizers vary across models but words are universal. Rendered into
-    // the prompt as `it.budget` so authors can reference it via `<%= it.budget %>`.
-    // In-loop recovery overrides this with its per-recovery budget `b` (a headroom
-    // share across live agents) so the advisory matches the pool's token-stop
-    // (graceful self-conclusion, not a guillotine).
+    // tokenizers vary across models but words are universal. The one thing the
+    // app's prompt is given. In-loop recovery overrides this with its
+    // per-recovery budget `b` (a headroom share across live agents) so the
+    // advisory matches the pool's token-stop (graceful self-conclusion, not a
+    // guillotine).
     const budgetTokens = budgetTokensOverride
       ?? Math.max(50, pressure.remaining - RECOVERY_PROMPT_OVERHEAD - BATCH_BUFFER);
     const budget = tokenBudgetAsWords(budgetTokens);
-    const tctx = { budget };
-    return {
-      type: 'extract',
-      prompt: {
-        system: renderTemplate(this._recovery.prompt.system, tctx),
-        user: renderTemplate(this._recovery.prompt.user, tctx),
-      },
-    };
+    return { type: 'extract', prompt: this._recovery.prompt({ budget }) };
   }
 }

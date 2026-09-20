@@ -336,9 +336,9 @@ export interface ToolLifecycleHooks {
  * no cost to its turns or its context, and the same call runs again after
  * `retryAfterMs` — from the model's side the tool call just took longer. How
  * many times is an `afterExecute` decision (the tool's, the harness's, else
- * the framework's default of one retry), after which an honest "unavailable,
- * use other sources" result is placed in the tool's stead, because at that
- * point the outage is a fact the model needs in order to pivot.
+ * the framework's default of one retry), after which an honest "unavailable"
+ * result is placed in the tool's stead, because at that point the outage is a
+ * fact the model needs — what to do about it is its app's to say.
  *
  * Observability: the pool emits `agent:tool_retry` and traces `tool:retry`
  * while the agent waits, so a waiting agent is never mistaken for a hung one.

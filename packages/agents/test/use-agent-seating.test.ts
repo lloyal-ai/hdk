@@ -54,7 +54,7 @@ describe('useAgent seating', () => {
     await run(function* () {
       yield* contexts(w);
       try {
-        yield* scoped(() => useAgent({ systemPrompt: 'S', task: 'T', parent: w.root, acceptFreeText: true }));
+        yield* scoped(() => useAgent({ systemPrompt: 'S', content: 'T', parent: w.root, acceptFreeText: true }));
       } catch (e) { caught = e; }
     });
     expect(caught).toBeInstanceOf(Error);
@@ -81,7 +81,7 @@ describe('useAgent seating', () => {
     await run(function* () {
       yield* contexts(w);
       try {
-        returned = yield* scoped(() => useAgent({ systemPrompt: 'S', task: 'T', acceptFreeText: true }));
+        returned = yield* scoped(() => useAgent({ systemPrompt: 'S', content: 'T', acceptFreeText: true }));
       } catch (e) { caught = e; }
     });
     expect(commits, 'the commit never threw — the scenario did not exercise a post-seating fatal').toBeGreaterThanOrEqual(2);
@@ -133,7 +133,7 @@ describe('useAgent seating', () => {
       yield* contexts(w);
       yield* scoped(function* () {
         const a = yield* useAgent({
-          systemPrompt: 'S', task: 'T', acceptFreeText: true,
+          systemPrompt: 'S', content: 'T', acceptFreeText: true,
           tools: [new MediaTool([PNG_BYTES])] as unknown as Tool[],
         });
         got = { id: a.id, result: a.result };
@@ -155,7 +155,7 @@ describe('useAgent seating', () => {
       yield* contexts(w);
       try {
         // Cold: no parent, so no turn separator — the first prefill is the spawn's suffix, inside the pool's tick.
-        yield* scoped(() => useAgent({ systemPrompt: 'S', task: 'T', acceptFreeText: true }));
+        yield* scoped(() => useAgent({ systemPrompt: 'S', content: 'T', acceptFreeText: true }));
       } catch (e) { caught = e; }
     });
     expect(calls).toEqual([1]);

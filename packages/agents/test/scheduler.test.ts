@@ -147,7 +147,7 @@ describe('DefaultScheduler.schedule', () => {
   });
 
   it('serial recovery is exempt from the soft reserve, not from the hard one: it fits what physically remains after earlier admissions', () => {
-    const withRecovery: AgentPolicy = { ...quiet, onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }) };
+    const withRecovery: AgentPolicy = { ...quiet, onRecovery: () => ({ type: 'extract', prompt: { systemPrompt: 's', content: 'u' } }) };
     const serial = () => scheduler({ recovery: 'serial' });
     // remaining 1000, hardLimit 512: a serial prompt may take 488 cells.
     const a = agent(1, 'awaiting_tool'); a.markExtracting(Infinity, true);
@@ -234,7 +234,7 @@ describe('DefaultScheduler.schedule', () => {
   });
 
   it('the stall-break waits while any sibling can still make progress, for a plain item and a serial recovery turn alike', () => {
-    const withRecovery: AgentPolicy = { ...quiet, onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }) };
+    const withRecovery: AgentPolicy = { ...quiet, onRecovery: () => ({ type: 'extract', prompt: { systemPrompt: 's', content: 'u' } }) };
     const serial = () => scheduler({ recovery: 'serial' });
     const tc = { name: 'web_search', arguments: '{}', id: 'c1' };
     // Two shapes of blocked owner: a plain oversized result, and a serial recovery prompt that cannot fit.
@@ -279,7 +279,7 @@ describe('DefaultScheduler.schedule', () => {
   });
 
   it('outstanding obligations are not progress: a prune-requested parent with blocked children, and an rc-deferred item that no longer fits', () => {
-    const withRecovery: AgentPolicy = { ...quiet, onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }) };
+    const withRecovery: AgentPolicy = { ...quiet, onRecovery: () => ({ type: 'extract', prompt: { systemPrompt: 's', content: 'u' } }) };
     // The parent cannot be pruned while its children live, and its children are the blocked ones.
     const parent = agent(9, 'idle'); parent.transition('active'); parent.transition('idle'); parent.pruneRequested = true;
     const a = agent(1, 'awaiting_tool'); const b = agent(2, 'awaiting_tool');
@@ -349,7 +349,7 @@ describe('DefaultScheduler.schedule', () => {
   it('the adaptive cohort budget is shared among agents that will still hold KV — agents cancelled this schedule are not among them', () => {
     // remaining 3500, hardLimit 512, BATCH_BUFFER 512, OVERHEAD 150: three shares
     // give floor(2476 / 3) − 150 = 675; one share gives 2476 − 150 = 2326 → clamped 2048.
-    const withRecovery: AgentPolicy = { ...quiet, onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }), shouldExit: () => true };
+    const withRecovery: AgentPolicy = { ...quiet, onRecovery: () => ({ type: 'extract', prompt: { systemPrompt: 's', content: 'u' } }), shouldExit: () => true };
     const a = agent(1); const b = agent(2); const c = agent(3);
     const cancelled = { paused: false, windDown: false, cancelled: [1, 2], orchestratorDone: false };
     const S = scheduler().schedule(state([a, b, c], 3500, { signals: cancelled }), withRecovery);
@@ -383,7 +383,7 @@ describe('DefaultScheduler.schedule', () => {
     const reported = agent(1, 'idle'); reported.setResult('r', 'voluntary_return');
     const discarded = agent(2, 'idle'); discarded.failed = 'user_cancel';
     const done = { paused: false, windDown: false, cancelled: [], orchestratorDone: true };
-    const withRecovery: AgentPolicy = { ...quiet, onRecovery: () => ({ type: 'extract', prompt: { system: 's', user: 'u' } }) };
+    const withRecovery: AgentPolicy = { ...quiet, onRecovery: () => ({ type: 'extract', prompt: { systemPrompt: 's', content: 'u' } }) };
 
     let S = scheduler().schedule(state([reported, discarded], 8000, { signals: done }), withRecovery);
     expect(S.close).toBe(true);

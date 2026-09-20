@@ -277,7 +277,7 @@ describe('B0 — tool-lifecycle baseline (real pool)', () => {
       yield* Trace.set(trace);
       yield* spawn(function* () { for (const ev of yield* each(ch)) { events.push(ev); yield* each.next(); } });
       return yield* scoped(function* () {
-        return yield* useAgent({ systemPrompt: 'You are an agent.', task: 'Task', tools: opts.tools, trace: true });
+        return yield* useAgent({ systemPrompt: 'You are an agent.', content: 'Task', tools: opts.tools, trace: true });
       });
     });
     return { agent, events, trace };
