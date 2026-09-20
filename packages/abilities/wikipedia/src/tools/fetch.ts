@@ -1,7 +1,9 @@
 import type { Operation } from "effection";
 import { call } from "effection";
-import { Tool } from "@lloyal-labs/lloyal-agents";
-import type { JsonSchema } from "@lloyal-labs/lloyal-agents";
+import { Tool, ToolRetryError } from "@lloyal-labs/lloyal-agents";
+import type { JsonSchema, ToolLifecycleHooks } from "@lloyal-labs/lloyal-agents";
+import { articleKey, titleDedup, trimmed } from "./guards";
+import { transient } from "./http";
 
 /**
  * Fetch a Wikipedia article's summary — title, lead paragraph, extract,
@@ -16,6 +18,11 @@ import type { JsonSchema } from "@lloyal-labs/lloyal-agents";
 export class WikipediaFetchTool extends Tool<{ title: string }> {
   readonly name = "wikipedia_fetch";
   readonly protected = false;
+  // Network-only (MediaWiki REST) — issues no op on the main llama_context, so
+  // it runs off the loop fiber under concurrent dispatch. See Tool.fanout.
+  readonly fanout = true;
+  /** This tool's gate: an article already attended is not fetched again. Scope is the harness's. */
+  readonly hooks: ToolLifecycleHooks = { beforeDispatch: [titleDedup] };
   readonly description =
     "Fetch the summary (lead paragraph + extract) of a single Wikipedia article by exact title. Use the title returned by wikipedia_search. Returns the curated lead content, not the full article wikitext.";
   readonly parameters: JsonSchema = {
@@ -38,11 +45,13 @@ export class WikipediaFetchTool extends Tool<{ title: string }> {
   }
 
   *execute(args: { title: string }): Operation<unknown> {
-    const title = args.title?.trim();
+    const title = trimmed(args.title);
     if (!title) return { error: "title must not be empty" };
 
     // Wikipedia's REST encodes spaces as underscores in the canonical path.
-    const path = encodeURIComponent(title.replace(/\s+/g, "_"));
+    // `articleKey` is that same normalisation, and `title_dedup` reads it too,
+    // so the gate and the fetch always agree on what one article is.
+    const path = encodeURIComponent(articleKey(title)!);
     const url = `https://en.wikipedia.org/api/rest_v1/page/summary/${path}`;
 
     let payload: unknown;
@@ -54,15 +63,21 @@ export class WikipediaFetchTool extends Tool<{ title: string }> {
             Accept: "application/json",
           },
         });
+        // A 404 is an answer about the article, not weather: the model should
+        // read it and pick another title.
         if (res.status === 404) {
           return null;
         }
+        const weather = transient(res);
+        if (weather) throw weather;
         if (!res.ok) {
           throw new Error(`Wikipedia REST HTTP ${res.status} ${res.statusText}`);
         }
         return res.json();
       });
     } catch (err) {
+      // Rate limiting is the pool's to wait out, not the model's to read.
+      if (err instanceof ToolRetryError) throw err;
       return {
         error: `wikipedia_fetch failed: ${err instanceof Error ? err.message : String(err)}`,
       };

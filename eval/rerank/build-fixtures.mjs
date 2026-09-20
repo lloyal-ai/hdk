@@ -22,7 +22,7 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { loadResources, chunkResources } from '@lloyal-labs/rig/node';
 import { createContext } from '@lloyal-labs/lloyal.node';
-import { BM25Index } from '../../packages/apps/corpus/dist/bm25.js';
+import { BM25Index } from '@lloyal-labs/rig';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const args = Object.fromEntries(
