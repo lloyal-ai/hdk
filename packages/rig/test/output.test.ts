@@ -18,7 +18,9 @@ const columns = z.object({
   sellsTo: z.enum(['businesses', 'consumers', 'both', 'unknown']),
   evidence: z.array(z.object({ field: z.string(), url: z.string() })),
 }).strict();
-const agent = {} as Agent;
+/** A capture is handed the template's reasoning close; a template that does not think reports ''. */
+const agentWith = (thinkingEndTag: string) => ({ fmt: { thinkingEndTag } }) as unknown as Agent;
+const agent = agentWith('');
 
 describe('defineOutput', () => {
   it('is a terminal tool whose parameters are the schema, and whose execute refuses: it ends the turn', async () => {
@@ -88,6 +90,30 @@ describe('citedReport', () => {
     const decision = citedReport.tool.hooks!.onReturn!({ agent, tool: 'report', args, raw: JSON.stringify(args), result: args.result });
     expect(decision).toEqual({ type: 'accept', result: 'Oslo sits on the fjord, see [Oslo](https://a.io/oslo) and [A](https://a.io).\n\nSources:\n- [Oslo](https://a.io/oslo)\n- [A](https://a.io)' });
     expect(citedReport.read({ result: (decision as { result: string }).result })).toBe((decision as { result: string }).result);
+  });
+
+  it("a reaped agent's restarted envelope is repaired with the TEMPLATE's close, before the trailer buries it", () => {
+    // A reap cuts the terminal argument mid-string and the model often begins the envelope
+    // again inside what it was writing — a close, then a fresh call. This capture appends the
+    // sources trailer, so the framework's end-anchored repair can no longer see the fragment
+    // afterwards: the repair has to happen here, and it needs the template's own tag.
+    const args = {
+      result: 'Oslo sits on the fjord, see https://a.io/oslo.\n</think>\n\n<tool_call>\n<function=report>\n<parameter=result>\nOslo si',
+      sources: [{ title: 'Oslo', url: 'https://a.io/oslo' }],
+    };
+    const call = { tool: 'report', args, raw: JSON.stringify(args), result: args.result };
+
+    const repaired = citedReport.tool.hooks!.onReturn!({ agent: agentWith('</think>'), ...call });
+    const text = (repaired as { result: string }).result;
+    expect(text).not.toContain('</think>');
+    expect(text).not.toContain('<tool_call>');
+    expect(text.startsWith('Oslo sits on the fjord, see [Oslo](https://a.io/oslo).')).toBe(true);
+    expect(text).toContain('\n\nSources:\n- [Oslo](https://a.io/oslo)');
+
+    // A template that declares no close leaves it alone — the tag is the template's fact,
+    // never a literal this package assumes.
+    const untagged = citedReport.tool.hooks!.onReturn!({ agent: agentWith(''), ...call });
+    expect((untagged as { result: string }).result).toContain('</think>');
   });
 
   it('a dangling <tool_call> at the end of the findings is stripped BEFORE the sources are woven on, so the trailer stands and the fragment never rides into another prompt', () => {

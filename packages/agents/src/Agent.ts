@@ -61,6 +61,9 @@ export interface FormatConfig {
    * Captured once at agent setup from the pool's `enableThinking` option.
    */
   enableThinking: boolean;
+  /** The template's reasoning close — Qwen `</think>`, Magistral `[/THINK]`; empty when it does not think.
+   *  Read when repairing a capture of our own, so no marker literal lives in this package. */
+  thinkingEndTag: string;
 }
 
 // ── Tool history ────────────────────────────────────────────
@@ -207,6 +210,9 @@ export class Agent {
   // `_recoveryTokenBase` snapshots the cumulative `_tokenCount` at recovery entry so
   // the cap counts ONLY the report's tokens (resetTurn clears rawOutput, not _tokenCount).
   private _recoveryBudget = 0;
+  /** The generation prompt the recovery turn was built with (see {@link markExtracting}).
+   *  `null` means no recovery turn was built — never "the prompt was empty". */
+  private _recoveryGenerationPrompt: string | null = null;
   private _recoveryTokenBase = 0;
   // Base for `turnTokens` — re-snapshotted by resetTurn, so the voluntary
   // report cap counts only the CURRENT turn's tokens.
@@ -331,16 +337,23 @@ export class Agent {
   get recoveryBudget(): number { return this._recoveryBudget; }
   /** Tokens produced SINCE recovery entry — what the token-stop backstop checks. */
   get recoveryTokens(): number { return this._tokenCount - this._recoveryTokenBase; }
+  /** The generation prompt the recovery turn was built with — what its output is parsed against;
+   *  `null` when no recovery turn was built. An empty string is a real prompt, not an absence. */
+  get recoveryGenerationPrompt(): string | null { return this._recoveryGenerationPrompt; }
   /** Tokens produced in the CURRENT turn — what the voluntary report cap checks. */
   get turnTokens(): number { return this._tokenCount - this._turnTokenBase; }
   /** Mark the agent as producing its recovery report (idempotent, one-way). Records
-   *  the per-recovery budget `b` (Infinity = uncapped) and snapshots the token base
-   *  for the cap. */
-  markExtracting(budget: number, serial = false): void {
+   *  the per-recovery budget `b` (Infinity = uncapped), snapshots the token base
+   *  for the cap, and keeps the generation prompt the recovery turn was BUILT with —
+   *  the recovery asks for a report rather than deliberation, so the template renders it
+   *  differently (Qwen closes an empty reasoning block) and its output must be parsed
+   *  against this prompt, whatever the formatter made of it. */
+  markExtracting(budget: number, serial = false, generationPrompt: string | null = null): void {
     this._extracting = true;
     this._recoveryBudget = budget;
     this._recoveryTokenBase = this._tokenCount;
     this.recoverySerial = serial;
+    this._recoveryGenerationPrompt = generationPrompt;
   }
 
   /** Accumulate generated token text into the current turn */

@@ -306,6 +306,7 @@ export function* withSpine<T>(
         grammarLazy: formatted.grammarLazy,
         grammarTriggers: formatted.grammarTriggers,
         enableThinking,
+        thinkingEndTag: formatted.thinkingEndTag,
       };
     }
     if (spineFmt) yield* SpineFmt.set(spineFmt);

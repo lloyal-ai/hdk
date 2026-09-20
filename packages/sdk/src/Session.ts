@@ -164,7 +164,7 @@ export class Session {
    * @param opts - Optional tools JSON string
    */
   async prefillUser(content: string, opts: { tools?: string } = {}): Promise<void> {
-    const tokens = buildUserDelta(this._ctx, content, opts);
+    const { tokens } = buildUserDelta(this._ctx, content, opts);
     await this._trunk!.prefill(tokens);
     this._userSidePending = true;
     this._onPrefill?.({ role: 'user', content, cells: tokens.length, branchHandle: this._trunk!.handle });
@@ -334,7 +334,7 @@ export class Session {
     if (!this._trunk) {
       throw new Error('Session.prefillAligned: no trunk');
     }
-    const tokens = buildUserDelta(this._ctx, content, {});
+    const { tokens } = buildUserDelta(this._ctx, content, {});
     const entries: [Branch, number[]][] = [
       [this._trunk, tokens],
       ...experts.map(e => [e, tokens] as [Branch, number[]]),
