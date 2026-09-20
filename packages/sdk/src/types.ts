@@ -494,6 +494,19 @@ export interface FormattedChatResult {
   grammarTriggers: GrammarTrigger[];
   /** Token strings preserved from grammar masking */
   preservedTokens: string[];
+
+  /**
+   * Whether this template renders a reasoning section at all. False for a model that does not think.
+   */
+  supportsThinking: boolean;
+  /**
+   * The tags this TEMPLATE opens and closes reasoning with — `<think>`/`</think>` for Qwen, `[THINK]`/`[/THINK]`
+   * for Magistral, a channel marker for gpt-oss; both empty when {@link supportsThinking} is false. Read them
+   * rather than assuming one model's tags: a view showing a raw token stream is the one reader that sees the
+   * markers, since {@link SessionContext.parseChatOutput} hands back reasoning and content already apart.
+   */
+  thinkingStartTag: string;
+  thinkingEndTag: string;
 }
 
 /**
