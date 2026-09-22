@@ -38,10 +38,10 @@ export interface SpineOptions {
    * tool schemas appear ONCE in physical KV regardless of how many agents
    * the pool spawns.
    *
-   * The resulting `FormatConfig` (parser/grammar/format/triggers) is set
-   * on the {@link SpineFmt} context so `setupAgent` can detect shared mode,
-   * skip its own system+tools formatting, and inherit the dispatch-side
-   * fmt from the spine.
+   * The resulting `FormatConfig` (parser/grammar/format/triggers) is the
+   * {@link SpineFmt} context's value while the body runs, so `setupAgent` can
+   * detect shared mode, skip its own system+tools formatting, and inherit the
+   * dispatch-side fmt from the spine. It reverts when the body ends.
    *
    * Use this for orchestrators where every agent shares the same role —
    * a chain of same-role steps, a same-role fan-out. Mixed-role pools
@@ -188,9 +188,9 @@ export function* withSpine<T>(
     // Shared role+tools mode: format the chat header once and prefill onto
     // the spine. Agents forking from this spine inherit system+tools tokens
     // via metadata-only prefix-share (no per-spawn re-prefill). The resulting
-    // FormatConfig is stashed on SpineFmt so setupAgent can detect shared
-    // mode and copy parser/grammar/format/triggers without re-emitting the
-    // tool schemas in each agent's suffix.
+    // FormatConfig is SpineFmt's value while the body runs, so setupAgent can
+    // detect shared mode and copy parser/grammar/format/triggers without
+    // re-emitting the tool schemas in each agent's suffix.
     let spineFmt: FormatConfig | null = null;
     if (opts.systemPrompt !== undefined) {
       const enableThinking = opts.enableThinking ?? true;
@@ -309,8 +309,11 @@ export function* withSpine<T>(
         thinkingEndTag: formatted.thinkingEndTag,
       };
     }
-    if (spineFmt) yield* SpineFmt.set(spineFmt);
-    return yield* body(spine, prefillTokens.length);
+    // The format is this spine's agents', for the body's lifetime: `with` restores what the caller had when the
+    // body ends, however it ends, so an agent started afterwards in the same scope formats its own tools.
+    return spineFmt
+      ? yield* SpineFmt.with(spineFmt, () => body(spine, prefillTokens.length))
+      : yield* body(spine, prefillTokens.length);
   } finally {
     if (!spine.disposed) {
       tw.write({

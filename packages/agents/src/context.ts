@@ -153,6 +153,8 @@ export const CallingAgent = createContext<Agent>('lloyal.callingAgent');
  *
  * Defaults to `null` so non-shared `withSpine` scopes leave it unset and
  * `setupAgent` falls back to formatting per-agent system+tools+user as today.
+ * A shared spine holds it only while its body runs: agents started after that
+ * body never descended from its header.
  *
  * @category Agents
  */
