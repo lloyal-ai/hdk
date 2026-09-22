@@ -1,13 +1,14 @@
+import { call } from 'effection';
 import type { Operation } from 'effection';
 import type { ToolLifecycleHooks } from './Tool';
 import type { Branch } from '@lloyal-labs/sdk';
 import type { Session } from '@lloyal-labs/sdk';
 import { Tool } from './Tool';
-import type { AgentPoolResult } from './types';
+import type { AgentPoolResult, JsonSchema } from './types';
 import type { AgentPolicy, Budget, GuardOverrides } from './AgentPolicy';
 import type { EntailmentScorer } from './source';
 import type { Orchestrator } from './orchestrators';
-import { Events, PoolDefaults } from './context';
+import { Ctx, Events, PoolDefaults } from './context';
 import { createToolkit } from './toolkit';
 import { withSpine } from './spine';
 import { useAgentPool } from './agent-pool';
@@ -48,6 +49,14 @@ export interface CreateAgentPoolOpts {
   guards?: GuardOverrides;
   /** Accept prose as an agent's result when it makes no tool call. On the policy the budget derives; not with `policy`. */
   acceptFreeText?: boolean;
+  /**
+   * The shape of every agent's answer, as JSON Schema — {@link UseAgentOpts.schema} for a pool. Compiled once
+   * to an eager grammar each agent decodes under in place of the tool-call grammar, so the answer is the value
+   * itself, with no call around it. That answer is the agent's result, and nothing reasons before it: a grammar
+   * on the answer cannot also admit a reasoning block. With a `policy` of your own, keeping the answer is the
+   * policy's decision.
+   */
+  schema?: JsonSchema;
   /** The harness's part of the tool lifecycle, as data ({@link ToolLifecycleHooks}): walked after the
    *  called tool's own hooks and before the framework's defaults — a floor on the return, a follow-up.
    *  On the policy the budget derives; not with `policy`. */
@@ -142,13 +151,22 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
   const broadcast = yield* Events.expect();
 
   const toolkit = createToolkit(opts.tools ?? [], opts.terminal);
+  if (opts.schema && (opts.enableThinking === true || opts.acceptFreeText === false)) {
+    throw new Error('agentPool: a schema answer is the agent\'s result and nothing reasons before it — drop `enableThinking` and `acceptFreeText`');
+  }
+  // Compiled once here; the pool installs it on each agent's branch as the agent activates.
+  const ctx = yield* Ctx.expect();
+  const eagerGrammar = opts.schema
+    ? yield* call(() => ctx.jsonSchemaToGrammar(JSON.stringify(opts.schema)))
+    : undefined;
 
   // Warm path priority: explicit parent > session trunk > cold
   const warmParent = opts.parent ?? opts.session?.trunk ?? undefined;
 
   const sharedMode = opts.systemPrompt !== undefined;
   // Resolved once, here, so the spine's header format and every agent's suffix agree.
-  const enableThinking = opts.enableThinking ?? (yield* PoolDefaults.expect()).enableThinking;
+  const enableThinking = opts.schema ? false : opts.enableThinking ?? (yield* PoolDefaults.expect()).enableThinking;
+  const acceptFreeText = opts.schema && !opts.policy ? true : opts.acceptFreeText;
 
   return yield* withSpine(
     {
@@ -194,8 +212,9 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
         policy: opts.policy,
         budget: opts.budget,
         guards: opts.guards,
-        acceptFreeText: opts.acceptFreeText,
+        acceptFreeText,
         hooks: opts.hooks,
+        eagerGrammar,
         scorer: opts.scorer,
         attachments: opts.attachments,
         enableThinking,
