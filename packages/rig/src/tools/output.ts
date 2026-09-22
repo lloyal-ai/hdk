@@ -88,7 +88,9 @@ export function defineOutput<S extends ZodType>(
 export function defineOutput<S extends ZodType>(
   name: string,
   schema: S,
-  opts?: { description?: string },
+  // `capture?: never` so options whose TYPE admits a capture cannot land here: they would be promised a
+  // `schema` the captured output does not carry, and a pool constrained by `undefined` decodes unconstrained.
+  opts?: { description?: string; capture?: never },
 ): Output<z.output<S>> & {
   /** The value's shape as JSON Schema — the tool's parameters. An agent can be constrained to generate the value
    *  alone (`agentPool({ schema })`, `useAgent({ schema })`), and `read` decodes an accepted answer as it decodes

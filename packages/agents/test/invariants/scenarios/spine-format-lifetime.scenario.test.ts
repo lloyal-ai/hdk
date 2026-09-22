@@ -89,8 +89,9 @@ describe('scenario: a shared spine\'s format lives as long as its body', () => {
 
   it('still reaches the non-shared children of its body, which fork from it', async () => {
     const { formats } = await withContexts(function* () {
-      yield* withSpine(SHARED, function* () {
-        yield* agentPool({ orchestrate: parallel([{ systemPrompt: 'a child', content: 'task' }]), tools: [new MockTool('shared_tool')] });
+      yield* withSpine(SHARED, function* (spine) {
+        // `parent` is what makes them children: they fork from the spine's KV, which already holds the header.
+        yield* agentPool({ parent: spine, orchestrate: parallel([{ systemPrompt: 'a child', content: 'task' }]), tools: [new MockTool('shared_tool')] });
       });
     });
     const child = formats.find((f) => f.system === 'a child');
