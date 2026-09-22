@@ -50,11 +50,11 @@ export interface CreateAgentPoolOpts {
   /** Accept prose as an agent's result when it makes no tool call. On the policy the budget derives; not with `policy`. */
   acceptFreeText?: boolean;
   /**
-   * The shape of every agent's answer, as JSON Schema — {@link UseAgentOpts.schema} for a pool. Compiled once
-   * to an eager grammar each agent decodes under in place of the tool-call grammar, so the answer is the value
-   * itself, with no call around it. That answer is the agent's result, and nothing reasons before it: a grammar
-   * on the answer cannot also admit a reasoning block. With a `policy` of your own, keeping the answer is the
-   * policy's decision.
+   * JSON Schema every agent's generation is constrained to — {@link UseAgentOpts.schema} for a pool. Compiled
+   * once to an eager grammar each agent decodes under in place of the tool-call grammar. It constrains what is
+   * generated and nothing more: whether an answer is kept is `acceptFreeText`'s or the policy's, and whether an
+   * agent reasons first is `enableThinking`'s. Set `enableThinking: false` when the answer is the value alone —
+   * the compiled grammar admits nothing before it.
    */
   schema?: JsonSchema;
   /** The harness's part of the tool lifecycle, as data ({@link ToolLifecycleHooks}): walked after the
@@ -151,9 +151,6 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
   const broadcast = yield* Events.expect();
 
   const toolkit = createToolkit(opts.tools ?? [], opts.terminal);
-  if (opts.schema && (opts.enableThinking === true || opts.acceptFreeText === false)) {
-    throw new Error('agentPool: a schema answer is the agent\'s result and nothing reasons before it — drop `enableThinking` and `acceptFreeText`');
-  }
   // Compiled once here; the pool installs it on each agent's branch as the agent activates.
   const ctx = yield* Ctx.expect();
   const eagerGrammar = opts.schema
@@ -165,8 +162,7 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
 
   const sharedMode = opts.systemPrompt !== undefined;
   // Resolved once, here, so the spine's header format and every agent's suffix agree.
-  const enableThinking = opts.schema ? false : opts.enableThinking ?? (yield* PoolDefaults.expect()).enableThinking;
-  const acceptFreeText = opts.schema && !opts.policy ? true : opts.acceptFreeText;
+  const enableThinking = opts.enableThinking ?? (yield* PoolDefaults.expect()).enableThinking;
 
   return yield* withSpine(
     {
@@ -212,7 +208,7 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
         policy: opts.policy,
         budget: opts.budget,
         guards: opts.guards,
-        acceptFreeText,
+        acceptFreeText: opts.acceptFreeText,
         hooks: opts.hooks,
         eagerGrammar,
         scorer: opts.scorer,

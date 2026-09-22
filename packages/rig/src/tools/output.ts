@@ -30,10 +30,6 @@ import { weaveSourcesIntoResult } from './weave-sources';
 /** A typed output: the terminal tool, and the reading of what it captured. */
 export interface Output<T> {
   readonly tool: Tool;
-  /** The value's shape as JSON Schema — the tool's parameters, and equally the grammar of an answer given with no
-   *  call around it (`agentPool({ schema })`). `read` takes that answer as it takes a call; a capture runs only
-   *  when the tool is called. */
-  readonly schema: JsonSchema;
   /** The value an outcome carries, or `null` when there is none or it is not the typed value. */
   read(outcome: { result: string | null }): T | null;
 }
@@ -89,13 +85,26 @@ export function defineOutput<S extends ZodType>(
   schema: S,
   opts: { description?: string; capture: (value: z.output<S>, raw: string, thinkingEndTag: string) => string },
 ): Output<string>;
-export function defineOutput<S extends ZodType>(name: string, schema: S, opts?: { description?: string }): Output<z.output<S>>;
-export function defineOutput<S extends ZodType>(name: string, schema: S, opts: OutputOptions<z.output<S>> = {}): Output<unknown> {
+export function defineOutput<S extends ZodType>(
+  name: string,
+  schema: S,
+  opts?: { description?: string },
+): Output<z.output<S>> & {
+  /** The value's shape as JSON Schema — the tool's parameters. An agent can be constrained to generate the value
+   *  alone (`agentPool({ schema })`, `useAgent({ schema })`), and `read` decodes an accepted answer as it decodes
+   *  a call. A captured output has none: its result is the capture's text, never the value. */
+  readonly schema: JsonSchema;
+};
+export function defineOutput<S extends ZodType>(
+  name: string,
+  schema: S,
+  opts: OutputOptions<z.output<S>> = {},
+): Output<unknown> & { readonly schema?: JsonSchema } {
   const tool = new OutputTool(name, opts.description ?? `Submit your ${name}.`, schema, opts.capture);
   if (opts.capture) {
     // Absence is `null` here as it is everywhere else: `''` is text the capture
     // can legitimately make, so it cannot also stand for "no outcome".
-    return { tool, schema: tool.parameters, read: (o) => o.result };
+    return { tool, read: (o) => o.result };
   }
   return {
     tool,

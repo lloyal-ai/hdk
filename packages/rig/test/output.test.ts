@@ -45,6 +45,12 @@ describe('defineOutput', () => {
     expect(pick.read({ result: null })).toBeNull();
   });
 
+  it('a captured output offers no schema: its result is the capture\'s text, never the value', () => {
+    const shout = defineOutput('shout', z.object({ result: z.string() }), { capture: ({ result }) => result.toUpperCase() });
+    expect('schema' in shout).toBe(false);
+    expect('schema' in citedReport).toBe(false);
+  });
+
   it('accepts a call that matches the schema with the raw arguments as the result, and reads them back typed', () => {
     const submit = defineOutput('submit', columns);
     const row = { headquarters: 'Oslo, Norway', sellsTo: 'both', evidence: [{ field: 'headquarters', url: 'https://a.io' }] };
