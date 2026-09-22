@@ -30,6 +30,10 @@ import { weaveSourcesIntoResult } from './weave-sources';
 /** A typed output: the terminal tool, and the reading of what it captured. */
 export interface Output<T> {
   readonly tool: Tool;
+  /** The value's shape as JSON Schema — the tool's parameters, and equally the grammar of an answer given with no
+   *  call around it (`agentPool({ schema })`). `read` takes that answer as it takes a call; a capture runs only
+   *  when the tool is called. */
+  readonly schema: JsonSchema;
   /** The value an outcome carries, or `null` when there is none or it is not the typed value. */
   read(outcome: { result: string | null }): T | null;
 }
@@ -91,10 +95,11 @@ export function defineOutput<S extends ZodType>(name: string, schema: S, opts: O
   if (opts.capture) {
     // Absence is `null` here as it is everywhere else: `''` is text the capture
     // can legitimately make, so it cannot also stand for "no outcome".
-    return { tool, read: (o) => o.result };
+    return { tool, schema: tool.parameters, read: (o) => o.result };
   }
   return {
     tool,
+    schema: tool.parameters,
     read: (o) => {
       if (o.result === null) return null;
       let value: unknown;

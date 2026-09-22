@@ -35,6 +35,16 @@ describe('defineOutput', () => {
     await expect(run(() => submit.tool.execute({}, {}))).rejects.toThrow(/ends the agent's turn.*terminal/);
   });
 
+  it('offers its value\'s shape as a schema, and reads an answer given under it as it reads a call', () => {
+    const pick = defineOutput('topic', z.number().int().min(0).max(8));
+    expect(pick.schema).toEqual(pick.tool.parameters);
+    expect(pick.schema).toEqual({ type: 'integer', minimum: 0, maximum: 8 });
+    expect(pick.read({ result: '3' })).toBe(3);
+    expect(pick.read({ result: '9' })).toBeNull();
+    expect(pick.read({ result: 'three' })).toBeNull();
+    expect(pick.read({ result: null })).toBeNull();
+  });
+
   it('accepts a call that matches the schema with the raw arguments as the result, and reads them back typed', () => {
     const submit = defineOutput('submit', columns);
     const row = { headquarters: 'Oslo, Norway', sellsTo: 'both', evidence: [{ field: 'headquarters', url: 'https://a.io' }] };
