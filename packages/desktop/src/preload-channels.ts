@@ -9,4 +9,11 @@ export const CHANNELS = {
   sessionNow: 'harness:session-now',
   /** The reader asking for a working engine. Main owns what that means. */
   recover: 'harness:recover',
+  /** …and what is being acquired right now, for a renderer that loaded after the
+   *  install began — or after a refusal ended the engine. Same shape as
+   *  `sessionNow`, for the same reason. */
+  installNow: 'harness:install-now',
+  /** The reader choosing a local file; main opens the system dialog and answers
+   *  the path, or null if they cancelled. */
+  chooseFile: 'harness:choose-file',
 } as const;

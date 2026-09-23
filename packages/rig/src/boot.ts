@@ -20,14 +20,15 @@
  *
  * @category Runtime
  */
-import { main, call, ensure, exit, suspend } from 'effection';
+import { main, call, ensure, exit, sleep, suspend } from 'effection';
 import type { Operation, Signal } from 'effection';
+import * as os from 'node:os';
 import { createServer } from 'node:http';
 import { parseArgs } from 'node:util';
 import { WebSocketServer } from 'ws';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import { Ingress, NSeqMax } from '@lloyal-labs/lloyal-agents';
-import type { AbilityFactory } from '@lloyal-labs/lloyal-agents';
+import type { AbilityFactory, Service } from '@lloyal-labs/lloyal-agents';
 import { createBus } from '@lloyal-labs/binding';
 import type { EventBus } from '@lloyal-labs/binding';
 import { ipc, ndjson } from '@lloyal-labs/binding/node';
@@ -35,9 +36,11 @@ import type { Binding } from '@lloyal-labs/binding/node';
 import { createContentIngress, MAX_DOCUMENT_BYTES, DOCUMENT_UPLOAD_TIMEOUT_MS } from '@lloyal-labs/media/node';
 import type { ConfigTable, ConfigOf, OriginOf } from './config';
 import { loadYml, runnerConfig } from './config-layering';
-import { resolveRuntimeModels } from './models';
+import { catalogEntry, isModelPresent, resolveRuntimeModels } from './models';
 import type { ModelRole, ModelSpec, RuntimeModels } from './models';
-import { provisionAbilityModels, resolveAbilityModels } from './provision';
+import { checkMachine, gb, installReporter, mockInstallFrames, planSteps, refusalMessage, rerankerStep } from './install';
+import type { InstallStep, InstallStepEvent, InstallStepId } from './install';
+import { declaredServices, provisionAbilityModels, resolveAbilityModels } from './provision';
 import type { AbilityModels } from './provision';
 import { useTraceWriter } from './trace-sink';
 import { createProjectMediaStore } from './media-store';
@@ -56,6 +59,20 @@ export interface HarnessApp<T extends ConfigTable, E, C> {
   harness(ctx: SessionContext, events: EventBus<E>, commands: Signal<C, void>): Operation<void>;
   abilities: readonly AbilityFactory[];
   config: T;
+  /**
+   * Auxiliary services THIS harness's own code consumes, beside whatever its
+   * abilities declare.
+   *
+   * Same vocabulary, same rule: a consumer declares the capability, and
+   * `harness.yml` names only which model backs it. An ability declares in its
+   * manifest; a harness declares here, because a harness is a consumer too — it
+   * owns the protocol that accepts an image, and it can read `RerankerCtx`
+   * directly without any ability involved.
+   *
+   * Absent means this harness needs none of its own. It does not mean none are
+   * provisioned: an ability that declares one still gets it.
+   */
+  services?: readonly Service[];
 }
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
@@ -110,23 +127,129 @@ export function bootEdge<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>, 
   const model = loaded.config.model as ModelBlock;
 
   main(function* () {
+    // The binding mounts FIRST — before the machine check, the fetch and the
+    // load. Nothing in a binding touches the context (each takes `(bus,
+    // dispatch, bootstrap)`), and mounting it last is what left a first run with
+    // no transport at all for the minutes it spent downloading. The command loop
+    // still arms later; `bufferedCommandSignal` exists for exactly that gap.
+    const dev = process.env.LLOYAL_DEV === '1';
+    const events = createBus<E>();
+    const commands = bufferedCommandSignal<C>();
+    const dispatch = (c: C): void => { commands.send(c); };
+    const bootstrap: E[] = [];
+    // ONE content store for this process. Neither it nor the ingress reads the
+    // model, so both come up with the transport rather than behind it.
+    const media = createProjectMediaStore(projectRoot);
+    const ingress = createContentIngress(media);
+    let dispose: () => void;
+    if (bridged) {
+      dispose = ipc<E, C>()(events, dispatch, bootstrap);
+      yield* ensure(serveIngest(ingress));
+    } else if (process.stdout.isTTY && opts.render) {
+      dispose = opts.render(events, dispatch, bootstrap);
+    } else {
+      dispose = ndjson<E, C>()(events, dispatch, bootstrap);
+    }
+    yield* ensure(() => dispose());
+
+    // Everything this run consumes, over both kinds of consumer — the abilities'
+    // manifests and this harness's own declaration. Asked once, before anything
+    // is fetched, so the installer can draw the whole list and the resolver
+    // fetches only what something asked for.
+    const wants = declaredServices(app.abilities, app.services);
+
+    // ── what this run must acquire, decided before it acquires anything ──
+    //
+    // INSTALL IS NOT BOOT. A run that already has its weights shows no installer
+    // at all; it only loads, which every run does. Presence is the same question
+    // `resolveModel` asks, through the same derivation, so the two cannot drift.
+    const entry = model.path || !model.id ? undefined : catalogEntry('llm', model.id);
+    const mmprojId = wants.has('vision')
+      ? model.mmproj ?? (model.path ? undefined : entry?.mmproj)
+      : undefined;
+    const needsModel = !model.path && !!model.id && !isModelPresent(projectRoot, 'llm', model.id);
+    const needsProjector = !!mmprojId && !isModelPresent(projectRoot, 'mmproj', mmprojId);
+    const installing = needsModel || needsProjector;
+
+    const steps: InstallStep[] = planSteps({ projector: needsProjector });
+    const report = installReporter((ev: InstallStepEvent) => { events.send(ev as unknown as E); }, steps);
+    if (installing) report.announce();
+
+    // ── the machine check, before a single byte is fetched ──
+    //
+    // Runs whether or not anything is being installed: weights carried onto a
+    // machine too small to hold them fail just as hard as ones downloaded onto
+    // it. A model with no class — a `path:` override, a hand-dropped weight — is
+    // trusted by possession and not gated.
+    const verdict = entry ? checkMachine(entry, os.totalmem()) : null;
+    if (verdict) {
+      report.set('machine', {
+        status: verdict.ok ? 'done' : 'failed',
+        note: `${gb(verdict.totalBytes)} · ${gb(verdict.neededBytes)} needed`,
+      });
+      if (!verdict.ok) {
+        const why = refusalMessage(verdict, entry?.label ?? String(model.id));
+        process.stderr.write(`\n${why}\n`);
+        // Effection's exit, not process.exit: it unwinds every `ensure` on the
+        // way out, which gives the binding its turn to carry the failed step to
+        // a view before the process is gone.
+        yield* exit(1, why);
+      }
+    }
+
+    // ── LLOYAL_MOCK_INSTALL=<seconds>: the screen, without the download ──
+    //
+    // Only where there is nothing to acquire, which is the point: the weights
+    // are already here, so the steps are replayed at their REAL sizes and the
+    // boot then proceeds normally. `resolveModel` and `fetchVerified` are not
+    // mocked — they are simply not reached — so no test path can drift from the
+    // real one. It says so on stderr, because a fake that stays quiet is how a
+    // fake gets mistaken for the thing.
+    const mockSeconds = Number(process.env.LLOYAL_MOCK_INSTALL);
+    if (Number.isFinite(mockSeconds) && mockSeconds > 0 && !installing && entry) {
+      const sizeOf = (id: InstallStepId): number =>
+        id === 'projector' ? (mmprojId ? catalogEntry('mmproj', mmprojId)?.sizeBytes ?? 0 : 0) : entry.sizeBytes;
+      const mock = planSteps({ projector: !!mmprojId });
+      const mockReport = installReporter((ev: InstallStepEvent) => { events.send(ev as unknown as E); }, mock);
+      process.stderr.write(`\nLLOYAL_MOCK_INSTALL=${mockSeconds} — replaying the install screen; nothing is downloaded.\n`);
+      mockReport.set('machine', {
+        status: 'done',
+        note: verdict ? `${gb(verdict.totalBytes)} · ${gb(verdict.neededBytes)} needed` : undefined,
+      });
+      for (const frame of mockInstallFrames(mock, sizeOf, mockSeconds)) {
+        mockReport.set(frame.id, { status: 'running', got: frame.got, total: frame.total });
+        yield* sleep(frame.afterMs);
+      }
+      for (const step of mock) if (step.id !== 'machine') mockReport.set(step.id, { status: 'done' });
+      // Cleared so the view leaves the installer and the app opens, exactly as
+      // it does when a real install finishes.
+      mockReport.clear();
+    }
+
     let modelPath: string;
     let mmprojPath: string | undefined;
     let fetching = false;
     try {
       const models = yield* call(() =>
         resolveRuntimeModels({
-          projectRoot, config: model, llmId: model.id,
-          onProgress: (role: ModelRole, got, total) => { fetching = true; progress(role)(got, total); },
+          projectRoot, config: model, llmId: model.id, vision: wants.has('vision'),
+          onProgress: (role: ModelRole, got, total) => {
+            fetching = true;
+            progress(role)(got, total);
+            report.set(role === 'mmproj' ? 'projector' : 'model', { status: 'running', got, total });
+          },
         }),
       );
       modelPath = models.modelPath;
       mmprojPath = models.mmprojPath;
     } catch (err) {
+      report.set(needsProjector && !needsModel ? 'projector' : 'model', { status: 'failed', note: message(err) });
       process.stderr.write(`\n${message(err)}\n`);
       process.exit(1);
     }
     if (fetching) process.stderr.write('\n');
+    if (needsModel) report.set('model', { status: 'done', note: entry?.label });
+    if (needsProjector) report.set('projector', { status: 'done' });
 
     const nCtx = model.nCtx ?? DEFAULT_N_CTX;
     const cfg = { ...loaded.config, model: { ...model, path: modelPath, nCtx } } as ConfigOf<T>;
@@ -138,22 +261,34 @@ export function bootEdge<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>, 
     let fetchingReranker = false;
     try {
       yield* provisionAbilityModels({
-        abilities: app.abilities, projectRoot,
+        abilities: app.abilities, projectRoot, services: app.services,
         reranker: rerankerSpec(model),
         rerankerLoad: { nSeqMax: 10, nCtx: 16384 },
-        onProgress: (got, total) => { fetchingReranker = true; progress('reranker')(got, total); },
+        onProgress: (got, total) => {
+          // Appended on its first byte, never planned: whether a harness needs a
+          // reranker is its abilities' to declare, and that is answered here.
+          if (!fetchingReranker) report.add(rerankerStep());
+          fetchingReranker = true;
+          progress('reranker')(got, total);
+          report.set('reranker', { status: 'running', got, total });
+        },
       });
     } catch (err) {
+      if (fetchingReranker) report.set('reranker', { status: 'failed', note: message(err) });
       process.stderr.write(`\n${message(err)}\n`);
       process.exit(1);
     }
-    if (fetchingReranker) process.stderr.write('\n');
+    if (fetchingReranker) {
+      process.stderr.write('\n');
+      report.set('reranker', { status: 'done' });
+    }
+    // Everything this run had to acquire is acquired. The installer goes; what
+    // remains is boot, which every run does and which the app shows in its own
+    // shell. Steps left standing at `done` would hold a finished screen in front
+    // of a working app.
+    if (installing) report.clear();
 
-    const dev = process.env.LLOYAL_DEV === '1';
-    const events = createBus<E>();
     const traceWriter = yield* useTraceWriter((cfg as { sources: { outputDir: string } }).sources.outputDir, dev, (ev) => events.send(ev as unknown as E));
-    const media = createProjectMediaStore(projectRoot);
-    const ingress = createContentIngress(media);
     yield* RunnerCtx.set({
       ...makeEdgeRunner<ConfigOf<T>, OriginOf<T>>(cfg, {
         traceWriter, attachmentStore: media, dev,
@@ -164,20 +299,6 @@ export function bootEdge<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>, 
     });
     yield* Ingress.set(ingress);
 
-    // Buffered: the binding dispatches from the moment it mounts; the command loop arms after boot.
-    const commands = bufferedCommandSignal<C>();
-    const dispatch = (c: C): void => { commands.send(c); };
-    const bootstrap: E[] = [];
-    let dispose: () => void;
-    if (bridged) {
-      dispose = ipc<E, C>()(events, dispatch, bootstrap);
-      yield* ensure(serveIngest(ingress));
-    } else if (process.stdout.isTTY && opts.render) {
-      dispose = opts.render(events, dispatch, bootstrap);
-    } else {
-      dispose = ndjson<E, C>()(events, dispatch, bootstrap);
-    }
-    yield* ensure(() => dispose());
     if (dev) yield* ensure(startHostResources((ev) => events.send(ev as unknown as E)));
 
     try {
@@ -242,6 +363,7 @@ export function bootServed<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>
       models = yield* call(() =>
         resolveRuntimeModels({
           projectRoot, config: model, llmId: model.id,
+          vision: declaredServices(app.abilities, app.services).has('vision'),
           onProgress: (role: ModelRole, g, t) => { fetching = true; progress(role)(g, t); },
         }),
       );
@@ -249,7 +371,7 @@ export function bootServed<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>
       // question the edge boot asks. A host whose abilities need no reranker fetches
       // none; one that does fails HERE, with its reason, rather than at the port.
       aux = yield* resolveAbilityModels({
-        abilities: app.abilities, projectRoot,
+        abilities: app.abilities, projectRoot, services: app.services,
         reranker: rerankerSpec(model),
         onProgress: (g, t) => { fetching = true; progress('reranker')(g, t); },
       });
@@ -282,7 +404,7 @@ export function bootServed<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>
         // Per session, off the paths the boot already fetched: the requirement is
         // read again from the same abilities, so nothing loads that nothing asked for.
         yield* provisionAbilityModels({
-          abilities: app.abilities, projectRoot,
+          abilities: app.abilities, projectRoot, services: app.services,
           reranker: aux.reranker ? { path: aux.reranker } : undefined,
           rerankerLoad: { nSeqMax: 10, nCtx: 16384 },
         });

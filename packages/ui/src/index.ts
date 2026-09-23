@@ -15,12 +15,14 @@
  * @packageDocumentation
  * @category UI
  */
-export { HarnessProvider, projectionFor, useHarness, useProjection, useSend, useConnection, useAvailability, useRecover, useContentOrigin } from './provider.js';
-export type { Harness } from './provider.js';
+export { HarnessProvider, projectionFor, useHarness, useProjection, useSend, useConnection, useAvailability, useRecover, useChooseFile, useInstall, useContentOrigin } from './provider.js';
+export type { Harness, ChooseFile, ChooseFileOpts } from './provider.js';
 export { Markdown } from './markdown.js';
 export type { MarkdownComponents } from './markdown.js';
 export { Lightbox } from './lightbox.js';
 export type { LightboxProps } from './lightbox.js';
+export { Installer } from './installer.js';
+export type { InstallerProps, InstallerStep } from './installer.js';
 export { resolveAsset, useAssets, pageFacts, pageList } from './assets.js';
 export type { Asset } from './assets.js';
 export * from './fold.js';

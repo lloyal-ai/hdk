@@ -50,6 +50,14 @@ export function preloadBridge<E, C, S>(contentOrigin = 'attachment://store'): vo
       // What a working session costs is the placement's business: here, a new engine process.
       void ipcRenderer.invoke(CHANNELS.recover);
     },
+    installNow(): Promise<unknown> {
+      return ipcRenderer.invoke(CHANNELS.installNow) as Promise<unknown>;
+    },
+    chooseFile(opts?: { extensions?: readonly string[]; title?: string }): Promise<string | null> {
+      // The dialog is main's: a renderer has no filesystem, and this answers a
+      // PATH, which is the one thing a browser could never hand back.
+      return ipcRenderer.invoke(CHANNELS.chooseFile, opts) as Promise<string | null>;
+    },
     contentOrigin(): string {
       return contentOrigin;
     },

@@ -28,6 +28,27 @@ import { pipeline } from 'node:stream/promises';
 export type ModelRole = 'llm' | 'reranker' | 'embedding' | 'mmproj';
 
 /**
+ * The size of machine a model is for. One application runs on all of them; this
+ * says which boxes can hold which weights, so a picker offers what the machine
+ * can run and a boot refuses what it cannot.
+ */
+export type MachineClass = 'edge' | 'appliance';
+
+/**
+ * Each class's MINIMUM memory, not its typical size — an appliance starts where
+ * edge tops out, and a 64 GB M5 is a roomy appliance, not the entry point.
+ *
+ * Declared, never derived. No formula yields both 10 GB for the 4B's 3.27 GB of
+ * weights and 24 GB for the 27B's 17.39 GB: the headroom a model needs beyond
+ * its weights is KV, context and runtime, and these figures are what the
+ * machines were observed to need. A new row states its class and inherits them.
+ */
+export const MACHINE_CLASS_FLOOR_BYTES: Readonly<Record<MachineClass, number>> = {
+  edge: 10 * 1024 ** 3,
+  appliance: 24 * 1024 ** 3,
+};
+
+/**
  * A curated default model. `sha256` is the platform trust root — every catalog
  * fetch is verified against it, fail-closed. It never lives in `harness.yml`; a
  * dropped or `path:`-referenced weight is trusted by possession.
@@ -52,6 +73,11 @@ export interface ModelCatalogEntry {
    *  into `createContext` — vision rides the llm choice, never a separate
    *  pick. */
   mmproj?: string;
+  /** LLM entries only: the smallest machine this model runs on. The boot
+   *  refuses a box under that class's floor BEFORE fetching anything, and a
+   *  picker offers only what the chosen targets can hold. A projector and a
+   *  reranker ride their llm's choice, so neither declares one. */
+  machineClass?: MachineClass;
 }
 
 const USER_AGENT = '@lloyal-labs/rig model-fetch';
@@ -72,6 +98,24 @@ function assertSafeSegment(kind: 'role' | 'id', value: string): void {
 }
 
 /**
+ * Where a catalog id lives once fetched. ONE derivation of the slot path, so a
+ * caller asking "is this already here?" and the resolver deciding "must I fetch
+ * this?" can never disagree.
+ */
+export function modelSlot(projectRoot: string, role: ModelRole, id: string): string {
+  assertSafeSegment('role', role);
+  assertSafeSegment('id', id);
+  return path.join(projectRoot, 'models', role, `${id}.gguf`);
+}
+
+/** Is this model already on disk? What the boot asks before deciding whether
+ *  there is an install to show at all — a run that acquires nothing shows no
+ *  installer, which is the whole line between install and boot. */
+export function isModelPresent(projectRoot: string, role: ModelRole, id: string): boolean {
+  return fs.existsSync(modelSlot(projectRoot, role, id));
+}
+
+/**
  * The platform's default catalog. Extend by adding an entry — no plumbing
  * change. `id`s name the model (`qwen3.5-4b`), matching the on-disk slot
  * `models/<role>/<id>.gguf`.
@@ -89,6 +133,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     sizeBytes: 2_600_000_000,
     recommendedContext: 32768,
     mmproj: 'qwen3.5-4b-mmproj',
+    machineClass: 'edge',
   },
   {
     id: 'qwen3.8-27b-q4',
@@ -104,18 +149,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     sizeBytes: 16_464_440_224,
     recommendedContext: 32768,
     mmproj: 'qwen3.8-27b-mmproj',
-  },
-  {
-    id: 'qwen3.8-27b-iq1',
-    role: 'llm',
-    label: 'Qwen3.8 27B · UD-IQ1_S',
-    urls: [
-      'https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-IQ1_S.gguf',
-    ],
-    sha256: '3895b6eaa91e705c06ad1938d16c22e86f073c6a67df86260a1da79be3d1f887',
-    sizeBytes: 6_192_222_208,
-    recommendedContext: 32768,
-    mmproj: 'qwen3.8-27b-mmproj',
+    machineClass: 'appliance',
   },
   {
     id: 'qwen3.5-4b-mmproj',
@@ -207,8 +241,7 @@ export async function resolveModel(opts: ResolveModelOpts): Promise<string> {
 
   // 2/3. configured id → slot; fetch + verify if absent
   if (spec?.id) {
-    assertSafeSegment('id', spec.id);
-    const slot = path.join(roleDir, `${spec.id}.gguf`);
+    const slot = modelSlot(projectRoot, role, spec.id);
     if (fs.existsSync(slot)) return slot;
     const entry = catalogEntry(role, spec.id);
     if (!entry) {
@@ -367,11 +400,20 @@ export interface RuntimeModels {
  * updated when vision landed — so the served host ran text-only however
  * capable its model was.
  *
- * **Vision is implicit by design.** The catalog pairs a projector with each
- * vision-capable llm, so choosing a model chooses vision with it;
- * `config.mmproj` only overrides that pairing. A text-only model has no
- * pairing, `mmprojPath` comes back undefined, and `createContext` then reports
- * `supportsVision() === false` rather than failing.
+ * **Vision is a declared service, like the reranker.** A projector is resolved
+ * only when a consumer declared `vision` — an ability in its manifest, or the
+ * harness in `app.ts`. The catalog's `mmproj` pairing says WHICH projector backs
+ * a vision-capable model, never WHETHER one is wanted, exactly as
+ * `model.reranker` names which reranker for a service an ability asked for.
+ *
+ * It used to ride the model: pairing alone decided, so a harness that could not
+ * send an image still fetched 672 MB for one — a fifth of the default template's
+ * first run, for a capability nothing in it could reach. Two derivation rules
+ * for two auxiliary models is one more than a reader should hold.
+ *
+ * Undeclared, or a text-only model with no pairing: `mmprojPath` comes back
+ * undefined and `createContext` reports `supportsVision() === false` rather
+ * than failing.
  *
  * Not the reranker: every boot reaches it through the abilities that declare
  * it (`resolveAbilityModels`), so no boot decides on its own that a harness
@@ -388,15 +430,23 @@ export async function resolveRuntimeModels(opts: {
   projectRoot: string;
   config: { path?: string | undefined; mmproj?: string | undefined };
   llmId: string | undefined;
+  /** Did a consumer declare `vision`? Absent is false: a projector is fetched
+   *  because something asked, never because the weights happened to support it. */
+  vision?: boolean;
   onProgress?: (role: ModelRole, got: number, total: number) => void;
+  /** Stand in for `fetch`, so a test can drive the whole boot — the gate, the
+   *  steps, the order — without a network. The default is the real one; nothing
+   *  about the verified path changes, because there is only one. */
+  fetchImpl?: typeof fetch;
 }): Promise<RuntimeModels> {
-  const { projectRoot, config, llmId, onProgress } = opts;
+  const { projectRoot, config, llmId, vision, onProgress, fetchImpl } = opts;
 
   const modelPath = await resolveModel({
     projectRoot,
     role: 'llm',
     spec: config.path ? { path: config.path } : { id: llmId },
     ...(onProgress ? { onProgress: (g: number, t: number) => onProgress('llm', g, t) } : {}),
+    ...(fetchImpl ? { fetchImpl } : {}),
   });
 
   // A path override points the runtime at bytes the catalog knows nothing
@@ -404,6 +454,8 @@ export async function resolveRuntimeModels(opts: {
   // from the id would load a projector for a model that is not running —
   // wrong dimensions at best, a failed context at worst. Vision with a
   // custom path takes an explicit `config.mmproj`.
+  // Nothing asked for vision → nothing to resolve, whatever the weights can do.
+  if (!vision) return { modelPath };
   const mmprojId = config.mmproj ??
     (config.path ? undefined : llmId ? catalogEntry('llm', llmId)?.mmproj : undefined);
   if (!mmprojId) return { modelPath };
@@ -413,6 +465,7 @@ export async function resolveRuntimeModels(opts: {
     role: 'mmproj',
     spec: { id: mmprojId },
     ...(onProgress ? { onProgress: (g: number, t: number) => onProgress('mmproj', g, t) } : {}),
+    ...(fetchImpl ? { fetchImpl } : {}),
   });
   return { modelPath, mmprojPath };
 }

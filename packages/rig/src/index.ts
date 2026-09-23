@@ -133,5 +133,7 @@ export type { CoverageOptions, CoveragePromptInput, Coverage } from './coverage'
 export { buildAbilityDescriptors, redactAbilityConfig } from './ability-descriptors';
 export type { AbilityDescriptor } from './ability-descriptors';
 export type { HostResourcesEvent } from './host-resources';
+export type { InstallStep, InstallStepId, InstallStepEvent, MachineVerdict } from './install';
+export { checkMachine, gb, refusalMessage } from './install';
 export { bufferedCommandSignal } from './buffered-command-signal';
 export { HarnessExit } from './harness-exit';
