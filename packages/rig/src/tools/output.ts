@@ -85,8 +85,23 @@ export function defineOutput<S extends ZodType>(
   schema: S,
   opts: { description?: string; capture: (value: z.output<S>, raw: string, thinkingEndTag: string) => string },
 ): Output<string>;
-export function defineOutput<S extends ZodType>(name: string, schema: S, opts?: { description?: string }): Output<z.output<S>>;
-export function defineOutput<S extends ZodType>(name: string, schema: S, opts: OutputOptions<z.output<S>> = {}): Output<unknown> {
+export function defineOutput<S extends ZodType>(
+  name: string,
+  schema: S,
+  // `capture?: never` so options whose TYPE admits a capture cannot land here: they would be promised a
+  // `schema` the captured output does not carry, and a pool constrained by `undefined` decodes unconstrained.
+  opts?: { description?: string; capture?: never },
+): Output<z.output<S>> & {
+  /** The value's shape as JSON Schema — the tool's parameters. An agent can be constrained to generate the value
+   *  alone (`agentPool({ schema })`, `useAgent({ schema })`), and `read` decodes an accepted answer as it decodes
+   *  a call. A captured output has none: its result is the capture's text, never the value. */
+  readonly schema: JsonSchema;
+};
+export function defineOutput<S extends ZodType>(
+  name: string,
+  schema: S,
+  opts: OutputOptions<z.output<S>> = {},
+): Output<unknown> & { readonly schema?: JsonSchema } {
   const tool = new OutputTool(name, opts.description ?? `Submit your ${name}.`, schema, opts.capture);
   if (opts.capture) {
     // Absence is `null` here as it is everywhere else: `''` is text the capture
@@ -95,6 +110,7 @@ export function defineOutput<S extends ZodType>(name: string, schema: S, opts: O
   }
   return {
     tool,
+    schema: tool.parameters,
     read: (o) => {
       if (o.result === null) return null;
       let value: unknown;

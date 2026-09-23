@@ -11,6 +11,7 @@ import { run } from 'effection';
 import { z } from 'zod';
 import type { Agent } from '@lloyal-labs/lloyal-agents';
 import { defineOutput, citedReport } from '../src/tools/output';
+import type { OutputOptions } from '../src/tools/output';
 import { weaveSourcesIntoResult } from '../src/tools/weave-sources';
 
 const columns = z.object({
@@ -33,6 +34,32 @@ describe('defineOutput', () => {
     expect(params.required).toEqual(['headquarters', 'sellsTo', 'evidence']);
     expect((params.properties.headquarters as { description: string }).description).toBe('city, country');
     await expect(run(() => submit.tool.execute({}, {}))).rejects.toThrow(/ends the agent's turn.*terminal/);
+  });
+
+  it('offers its value\'s shape as a schema, and reads an answer given under it as it reads a call', () => {
+    const pick = defineOutput('topic', z.number().int().min(0).max(8));
+    expect(pick.schema).toEqual(pick.tool.parameters);
+    expect(pick.schema).toEqual({ type: 'integer', minimum: 0, maximum: 8 });
+    expect(pick.read({ result: '3' })).toBe(3);
+    expect(pick.read({ result: '9' })).toBeNull();
+    expect(pick.read({ result: 'three' })).toBeNull();
+    expect(pick.read({ result: null })).toBeNull();
+  });
+
+  it('a captured output offers no schema: its result is the capture\'s text, never the value', () => {
+    const shout = defineOutput('shout', z.object({ result: z.string() }), { capture: ({ result }) => result.toUpperCase() });
+    expect('schema' in shout).toBe(false);
+    expect('schema' in citedReport).toBe(false);
+  });
+
+  it('options that COULD carry a capture are refused, rather than promised a schema that is not there', () => {
+    // Written as a variable, not a literal: a literal picks the capture overload by its own shape, while a
+    // variable is only as specific as its type — and `OutputOptions` admits a capture, so this must not
+    // compile as a capture-less output. It once did, typing `.schema` on an output that has none.
+    const opts: OutputOptions<{ result: string }> = { capture: ({ result }) => result.toUpperCase() };
+    // @ts-expect-error a capture the type admits cannot select the overload that promises a schema
+    const refused = defineOutput('report', z.object({ result: z.string() }), opts);
+    expect('schema' in refused).toBe(false);
   });
 
   it('accepts a call that matches the schema with the raw arguments as the result, and reads them back typed', () => {

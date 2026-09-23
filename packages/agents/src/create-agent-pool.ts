@@ -1,13 +1,14 @@
+import { call } from 'effection';
 import type { Operation } from 'effection';
 import type { ToolLifecycleHooks } from './Tool';
 import type { Branch } from '@lloyal-labs/sdk';
 import type { Session } from '@lloyal-labs/sdk';
 import { Tool } from './Tool';
-import type { AgentPoolResult } from './types';
+import type { AgentPoolResult, JsonSchema } from './types';
 import type { AgentPolicy, Budget, GuardOverrides } from './AgentPolicy';
 import type { EntailmentScorer } from './source';
 import type { Orchestrator } from './orchestrators';
-import { Events, PoolDefaults } from './context';
+import { Ctx, Events, PoolDefaults } from './context';
 import { createToolkit } from './toolkit';
 import { withSpine } from './spine';
 import { useAgentPool } from './agent-pool';
@@ -48,6 +49,14 @@ export interface CreateAgentPoolOpts {
   guards?: GuardOverrides;
   /** Accept prose as an agent's result when it makes no tool call. On the policy the budget derives; not with `policy`. */
   acceptFreeText?: boolean;
+  /**
+   * JSON Schema every agent's generation is constrained to — {@link UseAgentOpts.schema} for a pool. Compiled
+   * once to an eager grammar each agent decodes under in place of the tool-call grammar. It constrains what is
+   * generated and nothing more: whether an answer is kept is `acceptFreeText`'s or the policy's, and whether an
+   * agent reasons first is `enableThinking`'s. Set `enableThinking: false` when the answer is the value alone —
+   * the compiled grammar admits nothing before it.
+   */
+  schema?: JsonSchema;
   /** The harness's part of the tool lifecycle, as data ({@link ToolLifecycleHooks}): walked after the
    *  called tool's own hooks and before the framework's defaults — a floor on the return, a follow-up.
    *  On the policy the budget derives; not with `policy`. */
@@ -142,6 +151,11 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
   const broadcast = yield* Events.expect();
 
   const toolkit = createToolkit(opts.tools ?? [], opts.terminal);
+  // Compiled once here; the pool installs it on each agent's branch as the agent activates.
+  const ctx = yield* Ctx.expect();
+  const eagerGrammar = opts.schema
+    ? yield* call(() => ctx.jsonSchemaToGrammar(JSON.stringify(opts.schema)))
+    : undefined;
 
   // Warm path priority: explicit parent > session trunk > cold
   const warmParent = opts.parent ?? opts.session?.trunk ?? undefined;
@@ -196,6 +210,7 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
         guards: opts.guards,
         acceptFreeText: opts.acceptFreeText,
         hooks: opts.hooks,
+        eagerGrammar,
         scorer: opts.scorer,
         attachments: opts.attachments,
         enableThinking,
