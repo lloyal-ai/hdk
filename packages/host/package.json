@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/host",
-  "version": "0.2.0-alpha.6",
+  "version": "0.2.0-alpha.10",
   "description": "The box model-runtime host — one resident model, N native harness sessions, FIFO admission",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -39,8 +39,8 @@
     "effection": "^4.1.0"
   },
   "devDependencies": {
-    "@lloyal-labs/sdk": "4.0.0-alpha.6",
-    "@lloyal-labs/lloyal.node": "3.2.0-alpha.3"
+    "@lloyal-labs/sdk": "4.0.0-alpha.10",
+    "@lloyal-labs/lloyal.node": "3.2.0-alpha.10"
   },
   "files": [
     "dist/",
