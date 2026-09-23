@@ -50,7 +50,28 @@ export interface ProvisionAbilityModelsOpts {
    * hand-loading it — e.g. a larger `nCtx` for longer rerank inputs.
    */
   rerankerLoad?: RerankerLoadOpts;
+  /** Services the HARNESS's own code consumes, beside its abilities'. A harness
+   *  is a consumer too: it owns the protocol that accepts an image, and it can
+   *  read `RerankerCtx` without any ability involved. */
+  services?: readonly Service[];
   onProgress?: ModelProgress;
+}
+
+/**
+ * Everything this run consumes — the ONE derivation, over both kinds of consumer.
+ *
+ * An ability declares in its manifest; a harness declares in `app.ts`. Same
+ * vocabulary, same meaning, one answer — so nothing downstream has to ask twice
+ * or remember which kind of consumer it is dealing with.
+ */
+export function declaredServices(
+  abilities: readonly AbilityFactory[],
+  harness?: readonly Service[],
+): Set<Service> {
+  return new Set<Service>([
+    ...(harness ?? []),
+    ...abilities.flatMap((a) => a.manifest?.services ?? []),
+  ]);
 }
 
 /** The auxiliary models an ability set's declared Services need, on disk. Absent
@@ -72,7 +93,7 @@ export interface AbilityModels {
  * does both at once. Both ask this question, and get the same answer.
  */
 export function* resolveAbilityModels(opts: ProvisionAbilityModelsOpts): Operation<AbilityModels> {
-  const services = new Set<Service>(opts.abilities.flatMap((a) => a.manifest?.services ?? []));
+  const services = declaredServices(opts.abilities, opts.services);
 
   // Fail fast on unsupported services BEFORE resolving anything, so an
   // unimplemented requirement can't leave a half-loaded reranker behind.

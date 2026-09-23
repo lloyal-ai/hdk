@@ -72,21 +72,31 @@ export interface AbilityHints {
 }
 
 /**
- * The HDK **Services** an ability can declare it needs, via {@link AbilityManifest.services}.
+ * The HDK **Services** a consumer declares it needs, via {@link AbilityManifest.services}
+ * or a harness's own declaration.
+ *
  * A Service is an auxiliary platform capability the harness provides as a shared,
- * injected instance: the ability declares the *service* (not a model), and the platform
+ * injected instance: the consumer declares the *service* (not a model), and the platform
  * binds the implementation (which model backs it) one layer down at the
- * harness/deploy level. A closed set today (`reranker`, `embedding`); extensible as
- * the platform adds services. A disclosure sibling of {@link AbilityHints.authKind} and
- * the worker's `entitlements` taxonomy: the harness provisions each required service
- * and publishes the bound instance on the framework context the factory reads
- * (`RerankerCtx`) *before* the factory runs. The trunk `llm` is never listed — it is
- * the harness's own model, always present; abilities declare only the *auxiliary* services
- * they consume. `embedding` is reserved (no consumer yet).
+ * harness/deploy level. A disclosure sibling of {@link AbilityHints.authKind} and
+ * the worker's `entitlements` taxonomy.
+ *
+ * **ONE RULE: an auxiliary model is fetched because a consumer declared the
+ * capability.** A manifest or a harness says WHETHER; `harness.yml` says only
+ * WHICH model backs it. `vision` is listed for that reason: a projector is a
+ * separate file in its own role directory, fetched by the same resolver and
+ * attached separately, so it is an auxiliary service in every respect — and
+ * pairing it off the model instead meant a harness that could not send an image
+ * still paid 672 MB for one. Two derivation rules is one more than a reader
+ * should have to hold.
+ *
+ * The trunk `llm` is never listed — it is the harness's own model, always
+ * present; consumers declare only the *auxiliary* services they consume.
+ * `embedding` is reserved (no consumer yet).
  */
-export const SERVICES = ['reranker', 'embedding'] as const;
+export const SERVICES = ['reranker', 'embedding', 'vision'] as const;
 
-/** One of the closed {@link SERVICES} — an HDK service an ability can require. */
+/** One of the closed {@link SERVICES} — an HDK service a consumer can require. */
 export type Service = (typeof SERVICES)[number];
 
 /**

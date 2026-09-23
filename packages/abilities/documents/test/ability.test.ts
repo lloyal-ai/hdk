@@ -19,7 +19,7 @@ describe('createDocumentsAbility', () => {
       return yield* createDocumentsAbility();
     });
     expect(ability.manifest.protocol.name).toBe('document_research');
-    expect(ability.manifest.services).toEqual(['reranker']);
+    expect(ability.manifest.services).toEqual(['reranker', 'vision']);
     expect(ability.manifest.configSchema).toBeUndefined();
     expect(ability.source.name).toBe('documents');
     expect(ability.tools.map((t) => t.name).sort()).toEqual(['read_document', 'search_documents', 'view_page']);

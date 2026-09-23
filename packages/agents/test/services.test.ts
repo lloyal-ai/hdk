@@ -10,8 +10,14 @@ import { SERVICES } from '../src/index';
 import type { Ability, AbilityFactory, AbilityManifest, Service } from '../src/index';
 
 describe('ability services', () => {
-  it('SERVICES is the closed reranker+embedding set (trunk llm excluded)', () => {
-    expect(SERVICES).toEqual(['reranker', 'embedding']);
+  it('SERVICES is the closed auxiliary set (trunk llm excluded)', () => {
+    // `vision` joined so that ONE rule covers every auxiliary model: it is
+    // fetched because a consumer declared the capability. It used to ride the
+    // model's catalog pairing instead, so a harness that could not send an image
+    // still fetched a 672 MB projector for one.
+    expect(SERVICES).toEqual(['reranker', 'embedding', 'vision']);
+    // The trunk model is never a service: it is the harness's own, always
+    // present, and nothing declares it.
     expect(SERVICES).not.toContain('llm');
   });
 
