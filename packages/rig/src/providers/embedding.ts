@@ -13,6 +13,7 @@ import { createContext } from '@lloyal-labs/lloyal.node';
 import { PoolingType } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import { call, ensure, resource } from 'effection';
+import { acquire } from '../acquire';
 import type { Operation } from 'effection';
 import type { Embedder, EmbeddingPooling } from '../retrieval';
 
@@ -38,14 +39,11 @@ const POOLING: Record<EmbeddingPooling, PoolingType> = { mean: PoolingType.MEAN,
 export function createEmbedder(modelPath: string, opts: EmbedderLoadOpts): Operation<Embedder> {
   return resource(function* (provide) {
     const nCtx = opts.nCtx ?? 2048;
-    const ctx = yield* call(() => createContext({
-      modelPath,
-      nCtx,
-      nBatch: nCtx,
-      nSeqMax: 1,
-      embeddings: true,
-      poolingType: POOLING[opts.pooling],
-    }) as Promise<SessionContext>);
+    // Owned from the request: a halt while the model loads still frees the context when it arrives.
+    const ctx = yield* acquire(
+      () => createContext({ modelPath, nCtx, nBatch: nCtx, nSeqMax: 1, embeddings: true, poolingType: POOLING[opts.pooling] }) as Promise<SessionContext>,
+      (c) => c.dispose(),
+    );
 
     // The one queue every call joins. `settled` is the tail: what teardown waits for.
     let settled: Promise<unknown> = Promise.resolve();
@@ -89,12 +87,11 @@ export function createEmbedder(modelPath: string, opts: EmbedderLoadOpts): Opera
       },
     };
 
-    // Stop taking work at once; free the context only after the queue drains. `ensure` rather than `finally`:
-    // a `yield*` inside a finally loses a halt.
+    // Stop taking work at once and let the queue drain; registered after the acquisition, so it runs before the
+    // context is freed. `ensure` rather than `finally`: a `yield*` inside a finally loses a halt.
     yield* ensure(function* () {
       embedder.dispose();
       yield* call(() => settled);
-      try { ctx.dispose(); } catch { /* the context is gone either way */ }
     });
     yield* provide(embedder);
   });

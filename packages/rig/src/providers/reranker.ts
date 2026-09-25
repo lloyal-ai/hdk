@@ -1,7 +1,8 @@
 import { createContext } from "@lloyal-labs/lloyal.node";
 import { Rerank } from "@lloyal-labs/sdk";
 import type { SessionContext, KvCacheType, RerankInstruction } from "@lloyal-labs/sdk";
-import { resource, call } from "effection";
+import { resource } from "effection";
+import { acquire } from "../acquire";
 import type { Operation } from "effection";
 import type { Chunk, Reranker, ScoredResult } from "../retrieval";
 
@@ -49,10 +50,10 @@ export interface RerankerLoadOpts {
  *
  * **Lifecycle.** The reranker owns its underlying `SessionContext` + `Rerank`
  * and disposes them transitively when the yielding scope exits (success,
- * error, or halt). The provider binds it once per owning scope and
- * `service('reranker')` answers it. `dispose()` remains on the interface
- * for callers that manage teardown explicitly; it is idempotent so the
- * resource finally and an explicit call don't double-free.
+ * error, or halt) — owned from the moment they are requested, so a halt while
+ * the weights load still frees them. The provider binds it once per owning
+ * scope and `service('reranker')` answers it. `dispose()` remains on the
+ * interface for callers that manage teardown explicitly; it is idempotent.
  *
  * @param modelPath - Absolute path to the reranking model file (GGUF)
  * @param opts - Optional context sizing overrides ({@link RerankerLoadOpts})
@@ -80,28 +81,17 @@ export function createReranker(
     const nSeqMax = opts?.nSeqMax ?? 10;
     const nCtx = opts?.nCtx ?? 4096;
     const nBatch = opts?.nBatch ?? Math.floor(nCtx / nSeqMax);
-    const ctx = yield* call(() => createContext({
-      modelPath,
-      nCtx,
-      nSeqMax,
-      nBatch,
-      typeK: opts?.typeK ?? 'q8_0',
-      typeV: opts?.typeV ?? 'q8_0',
-    }));
-    const rerank = yield* call(() =>
-      Rerank.create(ctx as unknown as SessionContext, {
-        nSeqMax,
-        nCtx,
-        instruction: opts?.instruction,
-      }).catch((err: unknown) => {
-        // A failing smoke test is a NORMAL configuration outcome now that the
-        // instruction is a parameter. `Rerank.create` scrubs its own trunk and
-        // decode-owner mark but does NOT own the context, so without this the
-        // context leaks: the throw escapes before `provide`, so the
-        // try/finally below never runs.
-        ctx.dispose();
-        throw err;
-      }),
+    // Owned from the request, both of them: a halt while the weights load, or while the boot canary runs,
+    // still frees what arrives. The composition's dispose frees the context too; a second free is a no-op.
+    const ctx = yield* acquire(
+      () => createContext({ modelPath, nCtx, nSeqMax, nBatch, typeK: opts?.typeK ?? 'q8_0', typeV: opts?.typeV ?? 'q8_0' }),
+      (c) => c.dispose(),
+    );
+    // A failing smoke test is a normal configuration outcome now that the instruction is a parameter: the
+    // rejection is thrown and the context's own teardown frees it.
+    const rerank = yield* acquire(
+      () => Rerank.create(ctx as unknown as SessionContext, { nSeqMax, nCtx, instruction: opts?.instruction }),
+      (r) => r.dispose(),
     );
 
     let disposed = false;
@@ -170,10 +160,6 @@ export function createReranker(
     },
     };
 
-    try {
-      yield* provide(reranker);
-    } finally {
-      reranker.dispose();
-    }
+    yield* provide(reranker);
   });
 }

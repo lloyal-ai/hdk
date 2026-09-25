@@ -38,6 +38,7 @@ import type { ConfigTable, ConfigOf, ModelFamily, OriginOf } from './config';
 import { loadYml, runnerConfig } from './config-layering';
 import { bindServices, trunkOptions } from './provision';
 import { install } from './install';
+import { acquire } from './acquire';
 import type { Installed } from './install';
 import { isInstallCommand } from './install-protocol';
 import type { InstallCommand, InstallStepEvent } from './install-protocol';
@@ -161,8 +162,8 @@ export function bootEdge<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>, 
     const resident = { ...llm, path: acquired.llm, context: llm.context ?? DEFAULT_N_CTX };
     const cfg = { ...loaded.config, model: { ...model, llm: resident } } as ConfigOf<T>;
     prepareBackend(resident);
-    const ctx = yield* call(() => createResidentContext(resident, trunkOptions(acquired.services, model)));
-    yield* ensure(() => { try { ctx.dispose?.(); } catch { /* the context is gone either way */ } });
+    // Owned from the request: a halt while the weights load still frees the context when it arrives.
+    const ctx = yield* acquire(() => createResidentContext(resident, trunkOptions(acquired.services, model)), (c) => c.dispose?.());
     yield* NSeqMax.set(resident.branches ?? DEFAULT_N_SEQ_MAX);
     yield* bindServices(acquired.services, model);
 
