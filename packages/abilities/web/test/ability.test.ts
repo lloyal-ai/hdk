@@ -134,6 +134,27 @@ describe('fetch_page selects by query on the reranker', () => {
     }
   });
 
+  it('the same page asked with a different question is selected again — what was kept for one query is not the answer to another', async () => {
+    let fetches = 0;
+    vi.stubGlobal('fetch', async () => { fetches += 1; return new Response(page, { status: 200, headers: { 'content-type': 'text/html' } }); });
+    try {
+      const ability = await run(function* () {
+        yield* AbilityConfigStoreCtx.set(createInMemoryConfigStore());
+        yield* Trace.set(new NullTraceWriter());
+        yield* Services.set({ reranker: stubReranker });
+        return yield* createWebAbility();
+      });
+      const fetchPage = ability.tools.find((t) => t.name === 'fetch_page')!;
+      const ask = (query: string) => run(function* () { yield* Trace.set(new NullTraceWriter()); return yield* fetchPage.execute({ url: 'https://example.com/pets', query }, {} as ToolContext); });
+      await ask('when do cats sleep');
+      await ask('when do cats sleep');   // the same question again: kept
+      await ask('how do dogs behave');   // another question: selected afresh
+      expect(fetches).toBe(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('the result is what admission selected and nothing beside it — no excerpt rides past the budget', async () => {
     vi.stubGlobal('fetch', async () => new Response(page, { status: 200, headers: { 'content-type': 'text/html' } }));
     try {

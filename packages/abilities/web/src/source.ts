@@ -23,11 +23,13 @@ class BufferingFetchPage extends FetchPageTool {
   }
 
   *execute(args: { url: string; query: string }, context?: ToolContext): Operation<unknown> {
-    const cached = this._urlCache.get(args.url);
+    // What was selected for one question is not the answer to another: the page is kept per url AND query.
+    const key = `${args.url}\n${args.query}`;
+    const cached = this._urlCache.get(key);
     if (cached) return cached;
 
     const result = yield* super.execute(args, context);
-    this._urlCache.set(args.url, result);
+    this._urlCache.set(key, result);
 
     const r = result as Record<string, unknown>;
     if (typeof r?.content === "string" && r.content !== "") {
