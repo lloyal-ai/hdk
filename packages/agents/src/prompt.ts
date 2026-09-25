@@ -21,7 +21,8 @@ export interface MissingInput {
 export function guardedInput(prompt: string, data: Record<string, unknown>, onMissing: (miss: MissingInput) => void): Record<string, unknown> {
   return new Proxy(data, {
     get(target, key) {
-      if (typeof key === 'symbol' || key in target) return target[key as string];
+      // Given means an OWN key: `it.toString` is a typo, not `Object.prototype`'s function in a prompt.
+      if (typeof key === 'symbol' || Object.hasOwn(target, key)) return target[key as string];
       onMissing({ prompt, key });
       return '';
     },

@@ -43,6 +43,13 @@ describe('renderTemplate', () => {
 });
 
 describe('guardedInput', () => {
+  it('what the input has is its OWN keys — a template that reads `it.toString` or `it.constructor` reads nothing it was given', () => {
+    const misses: MissingInput[] = [];
+    const out = renderTemplate('<%= it.toString %>|<%= it.constructor %>|<%= it.hasOwnProperty %>', { name: 'W' }, { name: 't', onMissing: (m) => misses.push(m) });
+    expect(out).toBe('||');
+    expect(misses.map((m) => m.key)).toEqual(['toString', 'constructor', 'hasOwnProperty']);
+  });
+
   it('reads what was given, reports what was not, and answers a spread with the keys it has', () => {
     const misses: MissingInput[] = [];
     const g = guardedInput('p', { a: 1 }, (m) => misses.push(m));
