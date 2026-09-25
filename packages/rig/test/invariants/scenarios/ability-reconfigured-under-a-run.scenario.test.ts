@@ -118,6 +118,22 @@ describe('an ability reconfigured under a run', () => {
     });
   });
 
+  it('R4, excluded — a run holds only what it took: an ability it left out is superseded at once under it', async () => {
+    await run(function* () {
+      const built: Enable[] = [];
+      const torn: number[] = [];
+      const web = numberedAbility({ name: 'web', built, torn });
+      const corpus = numberedAbility({ name: 'corpus', built: [], torn: [] });
+      const w = yield* world({ abilities: [web, corpus], enable: ['web', 'corpus'] });
+      const running = yield* w.startRun(['web']);
+      expect(running.sources.map((a) => a.manifest.name)).toEqual(['corpus']);
+      yield* w.dispatch({ type: 'set_ability_config', name: 'web', values: { tavilyKey: 'k' } });
+      expect(torn).toEqual([1]);   // nothing held it
+      yield* running.end();
+      expect(torn).toEqual([1]);
+    });
+  });
+
   it('R4, two runs — an entry held by two runs ends when the second of them ends', async () => {
     await run(function* () {
       const built: Enable[] = [];

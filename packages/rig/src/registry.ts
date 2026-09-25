@@ -100,17 +100,18 @@ interface RegistryEntry {
 }
 
 /** What `participating()` reaches, beside the public registry: the hold a scope takes on the names it was handed. */
-const internals = new WeakMap<AbilityRegistry, { hold(): Operation<void> }>();
+const internals = new WeakMap<AbilityRegistry, { hold(names: readonly string[]): Operation<void> }>();
 
 /**
- * Hold every name currently enabled for the calling scope: no entry of those names — the ones enabled now, or
- * any a save enables meanwhile — ends before that scope does. Registered as an `ensure` in the caller — a run's
- * own operation, an agent's spawn — so a Stop, a replacement or a return releases it. A registry this module did
- * not create holds nothing.
+ * Hold the named abilities for the calling scope: no entry of those names — the ones enabled now, or any a
+ * save enables meanwhile — ends before that scope does. Only what the scope took: a name it left out is not
+ * held, and a save or a disable under the run replaces it at once. Registered as an `ensure` in the caller —
+ * a run's own operation — so a Stop, a replacement or a return releases it. A registry this module did not
+ * create holds nothing.
  */
-export function* holdEnabled(registry: AbilityRegistry): Operation<void> {
+export function* holdAbilities(registry: AbilityRegistry, names: readonly string[]): Operation<void> {
   const own = internals.get(registry);
-  if (own) yield* own.hold();
+  if (own) yield* own.hold(names);
 }
 
 /**
@@ -347,14 +348,15 @@ export function* createAbilityRegistry(
   };
 
   internals.set(registry, {
-    *hold() {
+    *hold(names) {
       const hold: Hold = {};
-      const names = [...current.keys()];
       for (const name of names) {
+        const entry = current.get(name);
+        if (!entry) continue;
         let holds = holdsOn.get(name);
         if (!holds) holdsOn.set(name, (holds = new Set()));
         holds.add(hold);
-        current.get(name)!.holders.add(hold);
+        entry.holders.add(hold);
       }
       yield* ensure(function* () {
         for (const name of names) holdsOn.get(name)?.delete(hold);

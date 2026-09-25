@@ -17,7 +17,7 @@
 import type { Operation } from 'effection';
 import { AbilityRegistryCtx } from './ability-types';
 import type { Ability } from './ability-types';
-import { holdEnabled } from './registry';
+import { holdAbilities } from './registry';
 import type { Attachment } from '@lloyal-labs/media';
 
 /** An ability's `toc` prompt datum for this run's assets, or `null` when it advertises none. */
@@ -35,7 +35,8 @@ export function abilityToc(ability: Ability, attachments: readonly Attachment[] 
  */
 export function* participating(excluded: readonly string[] = [], attachments: readonly Attachment[] = []): Operation<Ability[]> {
   const registry = yield* AbilityRegistryCtx.expect();
-  yield* holdEnabled(registry);
   const off = new Set(excluded);
-  return registry.enabled().filter((a) => !off.has(a.manifest.name) && abilityToc(a, attachments) !== '');
+  const taking = registry.enabled().filter((a) => !off.has(a.manifest.name) && abilityToc(a, attachments) !== '');
+  yield* holdAbilities(registry, taking.map((a) => a.manifest.name));   // only what this run takes
+  return taking;
 }

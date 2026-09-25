@@ -99,8 +99,9 @@ export interface World {
   registry: AbilityRegistry;
   /** Send one settings command through the group. */
   dispatch(command: SettingsCommand): Operation<'exit' | void>;
-  /** Start a run: an operation that takes its sources through `participating()` and then works until ended. */
-  startRun(): Operation<ScenarioRun>;
+  /** Start a run: an operation that takes its sources through `participating()` — minus `excluded`, by name —
+   *  and then works until ended. */
+  startRun(excluded?: readonly string[]): Operation<ScenarioRun>;
 }
 
 export function* world(spec: { abilities: AbilityFactory[]; enable?: string[]; config?: Record<string, Record<string, unknown>> }): Operation<World> {
@@ -116,12 +117,12 @@ export function* world(spec: { abilities: AbilityFactory[]; enable?: string[]; c
   return {
     sent, store, registry,
     dispatch: (c) => (group.handlers[c.type] as (c: SettingsCommand) => Operation<'exit' | void>)(c),
-    *startRun() {
+    *startRun(excluded = []) {
       let sources: readonly Ability[] = [];
       let taken!: () => void;
       const took = new Promise<void>((resolve) => { taken = resolve; });
       const task: Task<void> = yield* spawn(function* () {
-        sources = yield* participating();   // the hold, in the run's own scope
+        sources = yield* participating(excluded);   // the hold, in the run's own scope
         taken();
         yield* suspend();                    // …working, until ended
       });
