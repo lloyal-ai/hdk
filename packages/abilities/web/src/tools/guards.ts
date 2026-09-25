@@ -25,14 +25,19 @@ export function trimmed(v: unknown): string | undefined {
   return typeof v === "string" ? v.trim() : undefined;
 }
 
-/** `fetch_page`: a URL already attended is not fetched again. */
+/**
+ * `fetch_page`: a page already read for a question is not read for it again. The resource is the page AND
+ * the question — the tool selects sections by the query, so the same url asked something else is another
+ * selection, and admitted. The query is folded the way `query_dedup` folds it.
+ */
 export const urlDedup: ToolGuard = {
   name: "url_dedup",
   reject: ({ args, attended }) => {
     const url = trimmed(args.url);
-    return !!url && attended().some((a) => trimmed(a.url) === url);
+    const query = trimmed(args.query)?.toLowerCase();
+    return !!url && attended().some((a) => trimmed(a.url) === url && trimmed(a.query)?.toLowerCase() === query);
   },
-  message: "This URL was already attempted in this run. Try a different source.",
+  message: "This URL was already read for this question in this run. Ask it something else, or try a different source.",
 };
 
 /** `web_search`: a query already attended is not searched again; case folded, so a capitalisation-only variant is one query. */

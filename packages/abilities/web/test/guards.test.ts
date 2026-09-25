@@ -28,6 +28,13 @@ describe("url_dedup — fetch_page's gate", () => {
     expect(urlDedup.reject(seen('fetch_page', { url: 'https://example.com/b' }, [page]))).toBe(false);
   });
 
+  it('the resource is the page AND the question: the same url with another query is another selection, and admitted', () => {
+    const asked = { url: 'https://example.com/a', query: 'when do cats sleep' };
+    expect(urlDedup.reject(seen('fetch_page', asked, [asked]))).toBe(true);
+    expect(urlDedup.reject(seen('fetch_page', { url: 'https://example.com/a', query: 'how do dogs behave' }, [asked]))).toBe(false);
+    expect(urlDedup.reject(seen('fetch_page', { url: 'https://example.com/a', query: '  When do CATS sleep ' }, [asked]))).toBe(true);
+  });
+
   it('trims the way the tool trims: a whitespace-only variant is the same resource, on either side', () => {
     expect(urlDedup.reject(seen('fetch_page', { url: '  https://example.com/a  ' }, [page]))).toBe(true);
     expect(urlDedup.reject(seen('fetch_page', page, [{ url: ' https://example.com/a ' }]))).toBe(true);
@@ -44,7 +51,7 @@ describe("url_dedup — fetch_page's gate", () => {
 
   it('is published under its name, with the message the model reads', () => {
     expect(urlDedup.name).toBe('url_dedup');
-    expect(urlDedup.message).toBe('This URL was already attempted in this run. Try a different source.');
+    expect(urlDedup.message).toBe('This URL was already read for this question in this run. Ask it something else, or try a different source.');
   });
 });
 

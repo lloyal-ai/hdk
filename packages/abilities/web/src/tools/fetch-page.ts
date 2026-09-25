@@ -24,7 +24,7 @@ export class FetchPageTool extends Tool<{ url: string; query: string }> {
   // Network-only (HTTP fetch; the reranker runs on its own context) — no main-context op, so it runs off the
   // loop fiber under concurrent dispatch. See Tool.fanout.
   readonly fanout = true;
-  /** This tool's gate: a URL already attended is not fetched again. Scope is the harness's. */
+  /** This tool's gate: a page already read for a question is not read for it again. Scope is the harness's. */
   readonly hooks: ToolLifecycleHooks = { beforeDispatch: [urlDedup] };
   readonly description =
     "Fetch a web page and return the sections most relevant to a query, verbatim. Returns the title and the selected sections.";
