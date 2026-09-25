@@ -75,7 +75,7 @@ export class WebSource extends Source<Chunk> {
   /** @inheritDoc */
   readonly name = "web";
 
-  constructor(provider: SearchProvider, opts: WebSourceOpts) {
+  constructor(provider: () => Operation<SearchProvider>, opts: WebSourceOpts) {
     super();
     this._reranker = opts.reranker;
     this._fetchPage = new BufferingFetchPage(this._buffer, opts.reranker, opts.fetch);

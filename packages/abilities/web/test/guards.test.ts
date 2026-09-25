@@ -79,12 +79,12 @@ describe('the tools declare their gates', () => {
   it('fetch_page declares url_dedup; web_search declares query_dedup', () => {
     expect(new FetchPageTool(stubReranker).hooks.beforeDispatch).toEqual([urlDedup]);
     const provider: SearchProvider = { returnsFullContentMarkdown: false, search: async () => [] };
-    expect(new WebSearchTool(provider).hooks.beforeDispatch).toEqual([queryDedup]);
+    expect(new WebSearchTool(function* () { return provider; }).hooks.beforeDispatch).toEqual([queryDedup]);
   });
 
   it("the source's buffering fetch_page inherits the declaration", () => {
     const provider: SearchProvider = { returnsFullContentMarkdown: false, search: async () => [] };
-    const fetchPage = new WebSource(provider, { reranker: stubReranker }).tools.find((t) => t.name === 'fetch_page')!;
+    const fetchPage = new WebSource(function* () { return provider; }, { reranker: stubReranker }).tools.find((t) => t.name === 'fetch_page')!;
     expect(fetchPage.hooks?.beforeDispatch).toEqual([urlDedup]);
   });
 

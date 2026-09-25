@@ -30,6 +30,32 @@ describe('createWebAbility', () => {
   });
 });
 
+describe('web_search reads its key at the call', () => {
+  it('a key saved between two searches puts the second through Tavily with the new key — on the tool object an agent already holds', async () => {
+    const seen: string[] = [];
+    vi.stubGlobal('fetch', async (_url: string, init?: { headers?: Record<string, string> }) => {
+      seen.push(init?.headers?.Authorization ?? '');
+      return new Response(JSON.stringify({ results: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    try {
+      const store = createInMemoryConfigStore();
+      const ability = await run(function* () {
+        yield* store.set('web', { tavilyKey: 'k1' });
+        yield* AbilityConfigStoreCtx.set(store);
+        yield* Services.set({ reranker: stubReranker });
+        return yield* createWebAbility();
+      });
+      const search = ability.tools.find((t) => t.name === 'web_search')!;   // what an agent spread at spawn
+      await run(function* () { yield* search.execute({ query: 'first' }, {} as ToolContext); });
+      await run(function* () { yield* store.set('web', { tavilyKey: 'k2' }); });   // the save's write, the entry untouched
+      await run(function* () { yield* search.execute({ query: 'second' }, {} as ToolContext); });
+      expect(seen).toEqual(['Bearer k1', 'Bearer k2']);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe('the reranker is the requirement', () => {
   it('with no reranker bound the factory is refused by name, before any tool exists — there is no fallback to build one without', async () => {
     await expect(run(function* () {

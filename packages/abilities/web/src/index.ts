@@ -10,6 +10,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { Operation } from "effection";
 import { AbilityConfigStoreCtx } from "@lloyal-labs/rig";
 import { service } from "@lloyal-labs/rig";
 import type { Tool } from "@lloyal-labs/lloyal-agents";
@@ -29,23 +30,32 @@ const dir = join(__dirname, "..");
 const manifest = JSON.parse(readFileSync(join(dir, "ability.json"), "utf8")) as AbilityManifest;
 const skill = readFileSync(join(dir, "skill.eta"), "utf8");
 
+/** The Tavily key as the stored config says it now, else the environment's. */
+const tavilyKeyOf = (cfg: Record<string, unknown>): string | undefined =>
+  typeof cfg.tavilyKey === "string" ? cfg.tavilyKey : process.env.TAVILY_API_KEY;
+
 /**
  * Construct the web research ability. Provider selection: a `tavilyKey` in the
  * ability's stored config (or `TAVILY_API_KEY`) → Tavily; otherwise a keyless
- * DuckDuckGo provider. `services: ['reranker']` is the requirement: a harness
- * whose `model.reranker` block is absent does not enable this ability, so the
- * reranker below is always present.
+ * DuckDuckGo provider. The key is read AT EACH SEARCH, so a key saved while a run
+ * is live reaches the next search of every agent already holding the tool; the
+ * keyless provider owns a pacer and is built once here, only when no key is
+ * stored at enable. `services: ['reranker']` is the requirement: a harness whose
+ * `model.reranker` block is absent does not enable this ability, so the reranker
+ * below is always present.
  */
 export const createWebAbility = defineAbility(manifest, function* () {
   const cfgStore = yield* AbilityConfigStoreCtx.expect();
   const cfg = (yield* cfgStore.get(manifest.name)) ?? {};
-  const tavilyKey =
-    typeof cfg.tavilyKey === "string" ? cfg.tavilyKey : process.env.TAVILY_API_KEY;
   const reranker = yield* service('reranker');
 
-  const provider: SearchProvider = tavilyKey
-    ? new TavilyProvider(tavilyKey)
-    : yield* createKeylessSearchProvider();
+  const keyless: SearchProvider | undefined = tavilyKeyOf(cfg) ? undefined : yield* createKeylessSearchProvider();
+  const provider = function* (): Operation<SearchProvider> {
+    const key = tavilyKeyOf((yield* cfgStore.get(manifest.name)) ?? {});
+    if (key) return new TavilyProvider(key);
+    if (keyless) return keyless;
+    throw new Error("web search: the Tavily key was removed, and this build started without keyless search — save the web settings again");
+  };
 
   // The source's knobs, when the stored config carries them; the source's defaults otherwise.
   const topN = typeof cfg.topN === "number" ? cfg.topN : undefined;
