@@ -63,8 +63,8 @@ export function specOf(name: Service, model: ModelFamily): ModelSpec {
   return spec;
 }
 
-/** What the row says stops its block from being bound, before anything runs. */
-function refusalOf<K extends Service>(name: K, model: ModelFamily): string | undefined {
+/** What the row says stops its block from being bound, before anything runs — a refusal no file can answer. */
+export function refusalOf<K extends Service>(name: K, model: ModelFamily): string | undefined {
   const row: ProviderRow<K> = providers[name];
   return row.refuse?.((model[name] ?? {}) as ModelBlock<K>);
 }

@@ -74,6 +74,19 @@ describe('planInstall: the steps, from the model family alone', () => {
     expect(steps.map((s) => [s.id, s.file])).toEqual([['machine', undefined], ['llm', true], ['reranker', true], ['vision', true]]);
   });
 
+  it('the reasoning model\'s row is planned under the same leniency: an id no slot can hold is a failed, file-actionable step, not a throw before anything is published', () => {
+    const family = { llm: { id: 'Qwen/Qwen3-4B' } };
+    expect(() => planInstall(family)).toThrow(/Invalid model id/);
+    const llm = planInstall(family, { lenient: true }).find((s) => s.id === 'llm');
+    expect(llm).toMatchObject({ status: 'failed', file: true, note: expect.stringMatching(/Invalid model id/) });
+  });
+
+  it('a file is offered only for a refusal a file can answer: a block naming no model takes one; a tuning refusal — pooling nothing can say — does not', () => {
+    const lenient = planInstall({ llm: { id: 'qwen3.5-4b' }, reranker: { context: 16384 }, embedding: { path: '/e.gguf', context: 2048 } }, { lenient: true });
+    expect(lenient.find((s) => s.id === 'reranker')).toMatchObject({ status: 'failed', file: true });
+    expect(lenient.find((s) => s.id === 'embedding')).toMatchObject({ status: 'failed', file: false });
+  });
+
   it('a block that names nothing it can is refused before anything runs — and says when a derivation was tried', () => {
     expect(() => planInstall({ llm: { path: '/m.gguf' }, vision: {} })).toThrow('`model.vision` names no model and none follows from the llm — set `model.vision.id` (a catalog id) or `model.vision.path` in harness.yml');
     expect(() => planInstall({ llm: { id: 'unknown-llm' }, vision: {} })).toThrow(/none follows from the llm/);

@@ -28,7 +28,7 @@ import type { BaseHarnessConfig, ConfigPatch } from './runner';
 import { checkMachine, gb, refusalMessage } from './machine';
 import { catalogEntry, isModelPresent, resolveModel, slotOf } from './models';
 import type { ModelCatalogEntry, ModelRole, ModelSpec } from './models';
-import { configuredServices, specOf } from './provision';
+import { configuredServices, specOf, refusalOf } from './provision';
 import { providers } from './providers';
 import type { ServiceArtifacts } from './provision';
 import { SERVICES } from './services';
@@ -65,22 +65,33 @@ function acquires(role: ModelRole, spec: ModelSpec): Pick<InstallStep, 'model' |
  * beside it, the model's own name and the slot it fills, for the reader watching it arrive.
  */
 export function planInstall(model: ModelFamily, opts: { lenient?: boolean } = {}): PlannedStep[] {
+  // A step the derivation refuses: failed with the refusal as its note; a file is offered only where one could
+  // answer it — a block naming no model, an id no slot can hold — never for a tuning refusal a path leaves as it is.
+  const refuse = (step: PlannedStep, err: unknown, byFile: boolean): void => {
+    if (!opts.lenient) throw err;
+    step.status = 'failed';
+    step.refused = message(err);
+    step.note = step.refused;
+    step.file = step.file && byFile;
+  };
   const llm = model.llm ?? {};
   const llmSpec: ModelSpec | undefined = llm.path ? { path: llm.path } : llm.id ? { id: llm.id } : undefined;
-  const steps: PlannedStep[] = [
-    { id: 'machine', label: 'This machine', status: 'pending' },
-    { id: 'llm', label: 'Downloading the reasoning model', status: 'pending', role: 'llm', file: takesFile('llm'), ...(llmSpec ? { spec: llmSpec, ...acquires('llm', llmSpec) } : {}) },
-  ];
+  const llmStep: PlannedStep = { id: 'llm', label: 'Downloading the reasoning model', status: 'pending', role: 'llm', file: takesFile('llm') };
+  if (llmSpec) {
+    try {
+      Object.assign(llmStep, { spec: llmSpec }, acquires('llm', llmSpec));
+    } catch (err) {
+      refuse(llmStep, err, true);
+    }
+  }
+  const steps: PlannedStep[] = [{ id: 'machine', label: 'This machine', status: 'pending' }, llmStep];
   for (const name of configuredServices(model)) {
     const step: PlannedStep = { id: name, label: `Downloading the ${providers[name].name}`, status: 'pending', role: name, file: takesFile(name) };
     try {
       step.spec = specOf(name, model);
       Object.assign(step, acquires(name, step.spec));
     } catch (err) {
-      if (!opts.lenient) throw err;
-      step.status = 'failed';
-      step.refused = message(err);
-      step.note = step.refused;
+      refuse(step, err, refusalOf(name, model) === undefined);
     }
     steps.push(step);
   }
