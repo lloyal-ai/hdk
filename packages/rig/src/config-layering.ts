@@ -174,13 +174,26 @@ export function loadConfig<T extends ConfigTable>(
   const config: Bag = { version: CONFIG_VERSION, sources: {}, abilities: {}, model: {} };
   for (const name of Object.keys(table)) if (name.includes('.')) config[name.split('.')[0]] ??= {};
 
-  // A block is requested by either file naming it, before any key of it is read: a key a rung supplies makes
-  // its block too, while a default alone never does.
+  // A block is requested by ANY rung naming it, decided before a single key is read: a file naming the block
+  // (a mapping, or a bare key), or a cli / env value for a key of it. A default alone never does. A scalar where
+  // a block belongs is a value the key cannot take — loud from the committed rung, dropped from the local one.
+  const blocks = new Set<string>();
   for (const [name, key] of Object.entries(table)) {
     const block = blockOf(name);
+    if (!block) continue;
     const ymlBlock = key.yml && blockOf(key.yml);
-    if (block && (carriesBlock(getPath(local, block)) || (ymlBlock && carriesBlock(getPath(yml, ymlBlock))))) setPath(config, block, {});
+    if (ymlBlock) {
+      const committed = getPath(yml, ymlBlock);
+      if (committed !== undefined && !carriesBlock(committed)) {
+        throw new Error(`${YML_NAME}: ${ymlBlock} must be a block of keys (got ${JSON.stringify(committed)})`);
+      }
+      if (carriesBlock(committed)) blocks.add(block);
+    }
+    if (carriesBlock(getPath(local, block))) blocks.add(block);
+    if (key.cli && present(cli[key.cli]) !== undefined) blocks.add(block);
+    if (key.env && present(env[key.env]) !== undefined) blocks.add(block);
   }
+  for (const block of blocks) setPath(config, block, {});
 
   const origin: Record<string, ConfigOriginValue> = {};
   for (const [name, key] of Object.entries(table)) {

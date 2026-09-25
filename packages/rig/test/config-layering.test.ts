@@ -95,6 +95,33 @@ describe('a block is present when a rung says so — its presence is the request
     expect(origin['model.reranker.path']).toBe('cli');
   });
 
+  it('a block a cli or env key made takes its defaults whatever the table declares first: presence is decided before any key is read', () => {
+    // The default key BEFORE the key the cli supplies — the order that used to skip the default.
+    const reversed = defineConfig({
+      'model.reranker.context': modelSettings['model.reranker.context'],
+      'model.reranker.path': modelSettings['model.reranker.path'],
+      'model.llm.id': modelSettings['model.llm.id'],
+    });
+    expect(loadConfig(reversed, {}, { cli: { reranker: '/r.gguf' }, env: {}, cwd }).config.model.reranker).toEqual({ path: '/r.gguf', context: 16384 });
+    const viaEnv = defineConfig({
+      'model.llm.context': modelSettings['model.llm.context'],
+      'model.llm.id': modelSettings['model.llm.id'],
+    });
+    expect(loadConfig(viaEnv, {}, { env: { LLAMA_CTX_SIZE: '8192' }, cwd }).config.model.llm).toEqual({ context: 8192 });
+  });
+
+  it('a scalar where a block belongs is loud from the committed rung and dropped from the local one — never silently absent', () => {
+    expect(() => loadConfig(modelSettings, { model: { llm: { id: 'qwen3.5-4b' }, reranker: '' as unknown as object } }, { env: {}, cwd }))
+      .toThrow('harness.yml: model.reranker must be a block of keys (got "")');
+    expect(() => loadConfig(modelSettings, { model: { llm: { id: 'qwen3.5-4b' }, reranker: 'x' as unknown as object } }, { env: {}, cwd }))
+      .toThrow(/model\.reranker must be a block of keys/);
+    writeJson({ version: CONFIG_VERSION, sources: {}, abilities: {}, model: { reranker: 'x' } });
+    const { config } = loadConfig(modelSettings, { model: { llm: { id: 'qwen3.5-4b' } } }, { env: {}, cwd });
+    expect('reranker' in config.model).toBe(false);
+    writeJson({ version: CONFIG_VERSION, sources: {}, abilities: {}, model: { vision: null } });
+    expect(loadConfig(modelSettings, { model: { llm: { id: 'qwen3.5-4b' } } }, { env: {}, cwd }).config.model.vision).toEqual({});
+  });
+
   it("every top-level family the table declares is present, so an app reads `config.defaults` without a guard", () => {
     const own = defineConfig({ 'defaults.guards': { yml: 'defaults.guards', check: isGuardOverrides } });
     expect(loadConfig(own, {}, { env: {}, cwd }).config.defaults).toEqual({});
