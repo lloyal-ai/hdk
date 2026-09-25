@@ -1,7 +1,7 @@
 /**
  * A config as a bag of bags, and the dotted-path walk over it — the ONE copy every module that reads or
- * writes a layered config shares: the table's merge, the loader, the settings pane's patch resolution, the
- * overlay's migration. Node-free.
+ * writes a layered config shares: the table's merge, the loader, the settings pane's patch resolution.
+ * Node-free.
  *
  * @category Rig
  */

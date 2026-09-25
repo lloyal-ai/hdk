@@ -44,6 +44,12 @@ export type InstallCommand =
   | { type: 'install:use_file'; step: string; path: string }
   | { type: 'install:quit' };
 
-/** Whether a command is the install's — routed to it by the boot, never to the harness. */
-export const isInstallCommand = (c: unknown): c is InstallCommand =>
-  typeof c === 'object' && c !== null && typeof (c as { type?: unknown }).type === 'string' && (c as { type: string }).type.startsWith('install:');
+/** Whether a command is one of the install's three, whole — routed to the install by the boot, never to the
+ *  harness. Anything else that says `install:` is a view wired to something the install never offered, and
+ *  reaches the harness as the unknown command it is. */
+export const isInstallCommand = (c: unknown): c is InstallCommand => {
+  if (typeof c !== 'object' || c === null) return false;
+  const { type, step, path } = c as { type?: unknown; step?: unknown; path?: unknown };
+  if (type === 'install:retry' || type === 'install:quit') return true;
+  return type === 'install:use_file' && typeof step === 'string' && typeof path === 'string';
+};

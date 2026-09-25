@@ -19,8 +19,9 @@ import type { BaseHarnessConfig, ConfigOriginValue, ConfigPatch } from './runner
 import { isBag } from './config-paths';
 import type { Bag } from './config-paths';
 
-/** The shape `harness.json` is written in, and the live config carries. Version 1 wrote the model keys
- *  flat under `model`; version 2 writes one block per model. */
+/** The shape `harness.json` is written in, and the live config carries: one block per model. A version-1
+ *  file, written before alpha.10 with the model keys flat, is refused by name — nothing before the alpha is
+ *  carried forward. */
 export const CONFIG_VERSION = 2;
 
 /** When a change to a key takes effect. `session`: at once, for what runs next. `reload`: it names the
