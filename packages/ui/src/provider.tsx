@@ -95,12 +95,15 @@ function Acquiring({ children }: { children: ReactNode }): ReactElement {
   const recover = useRecover();
   const send = useSend<{ type: string; step?: string; path?: string }>();
   const chooseFile = useChooseFile();
-  // A file dialog answers on its own time: what it answers is sent only while this view is still the one that
-  // asked, and a dialog that fails is said here rather than left as an unhandled rejection.
-  const asking = useRef(true);
-  useEffect(() => { asking.current = true; return () => { asking.current = false; }; }, []);
   const [dialog, setDialog] = useState<string | null>(null);
   const view = installView(steps, availability);
+  // A file dialog answers on its own time: what it answers is sent only to the acquisition it was opened for.
+  // Each time this view stops acquiring — the install finished, the engine ended, a new engine's life began —
+  // the acquisition it showed is over, and a dialog opened under it is dropped. A dialog that fails is said
+  // here rather than left as an unhandled rejection.
+  const acquisition = useRef(0);
+  useEffect(() => { if (view !== 'acquiring') acquisition.current += 1; }, [view]);
+  useEffect(() => () => { acquisition.current += 1; }, []);
   if (view === 'app') return createElement(Fragment, null, children);
   if (view === 'refused') return createElement(Installer, { steps, footnote: 'This machine cannot run this model' });
   if (view === 'ended') {
@@ -117,9 +120,11 @@ function Acquiring({ children }: { children: ReactNode }): ReactElement {
     onStop: () => send({ type: 'install:quit' }),
     ...(chooseFile ? {
       onUseFile: (step: string) => {
+        const mine = acquisition.current;
+        const still = (): boolean => mine === acquisition.current;
         chooseFile({ extensions: ['gguf'], title: 'Choose a model file' }).then(
-          (path) => { if (path && asking.current) send({ type: 'install:use_file', step, path }); },
-          (err: unknown) => { if (asking.current) setDialog(`The file dialog failed: ${err instanceof Error ? err.message : String(err)}`); },
+          (path) => { if (path && still()) send({ type: 'install:use_file', step, path }); },
+          (err: unknown) => { if (still()) setDialog(`The file dialog failed: ${err instanceof Error ? err.message : String(err)}`); },
         );
       },
     } : {}),

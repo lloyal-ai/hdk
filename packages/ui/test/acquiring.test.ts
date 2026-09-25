@@ -14,23 +14,30 @@ import type { InstallerStep } from '../src/installer';
 
 type S = { n: number };
 
-/** A desktop-shaped bridge: a session plane, an install to ask, a new engine on offer. */
+/** A desktop-shaped bridge: a session plane, an install to ask, a file dialog that answers when told, a new engine on offer. */
 function desktopBridge(now: readonly InstallerStep[]): Bridge<unknown, unknown, S> & {
   push(steps: readonly InstallerStep[]): void;
   session(state: SessionState): void;
+  /** Answer the open file dialog. */
+  chosen(path: string | null): void;
+  sent: unknown[];
   recovered: number;
 } {
   const events = new Set<(f: Frame<unknown>) => void>();
   const sessions = new Set<(s: SessionState) => void>();
+  let answer: ((path: string | null) => void) | null = null;
   let seq = 0;
+  const sent: unknown[] = [];
   return {
     recovered: 0,
+    sent,
     onEvent(cb) { events.add(cb); return () => events.delete(cb); },
     onSession(cb) { sessions.add(cb); return () => sessions.delete(cb); },
-    send() {},
+    send: (c: unknown) => { sent.push(c); },   // unbound by the provider, as a real bridge's is
     requestSnapshot: () => Promise.resolve({ state: { n: 0 }, epoch: 1, seq }),
     installNow: () => Promise.resolve({ type: 'install:step', steps: now }),
-    chooseFile: () => Promise.resolve(null),
+    chooseFile: () => new Promise<string | null>((resolve) => { answer = resolve; }),
+    chosen(path) { answer?.(path); answer = null; },
     recover() { this.recovered += 1; },
     push(steps) { seq += 1; for (const cb of events) cb({ epoch: 1, seq, ev: { type: 'install:step', steps } }); },
     session(state) { for (const cb of sessions) cb(state); },
@@ -86,6 +93,27 @@ describe('the install view when the engine ends', () => {
     act(() => bridge.session({ phase: 'died', code: 1 }));
     expect(container.textContent).toContain('This machine cannot run this model');
     expect(container.querySelectorAll('button').length).toBe(0);
+    act(() => root.unmount());
+  });
+
+  it('a file chosen for an install that has since ended is dropped — the dialog answers only the acquisition it was opened for', async () => {
+    const bridge = desktopBridge(running);
+    mount(bridge);
+    await flush();
+    const useFile = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Use a file I already have') as HTMLButtonElement;
+    act(() => useFile.click());          // the dialog is open
+    act(() => bridge.session({ phase: 'died', code: 1 }));
+    await act(async () => { bridge.chosen('/weights/late.gguf'); await Promise.resolve(); });
+    expect(bridge.sent).toEqual([]);
+    // …and one opened for a live install still answers it.
+    bridge.installNow = () => Promise.resolve({ type: 'install:step', steps: running });
+    act(() => bridge.session({ phase: 'warming' }));
+    await flush();
+    act(() => bridge.session({ phase: 'live' }));
+    const again = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Use a file I already have') as HTMLButtonElement;
+    act(() => again.click());
+    await act(async () => { bridge.chosen('/weights/mine.gguf'); await Promise.resolve(); });
+    expect(bridge.sent).toEqual([{ type: 'install:use_file', step: 'llm', path: '/weights/mine.gguf' }]);
     act(() => root.unmount());
   });
 
