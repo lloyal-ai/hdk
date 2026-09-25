@@ -71,8 +71,11 @@ export function weaveSourcesIntoResult(result: unknown, sources: unknown): unkno
  * is read to the link's closing paren, not the first one: a Wikipedia title carries its own, `…/Alien_(film)`.
  */
 const LIST_LINK = /^\s*(?:[-*]|\d+[.)])?\s*\[[^\]]*\]\(((?:[^()\s]|\([^()\s]*\))+)\)\s*$/;
-/** The heading that names the list: "Sources", "References", plain, bold or a markdown heading, with or without a colon. */
-const LIST_HEAD = /^\s*(?:#{1,4}\s+|\*\*)?(?:sources|references)(?:\*\*)?\s*:?\s*$/i;
+/**
+ * The heading that names the list: "Sources", "References", plain, bold or a markdown heading (bold inside it too),
+ * with or without a colon — on either side of the closing emphasis.
+ */
+const LIST_HEAD = /^\s*(?:#{1,4}\s+)?(?:\*\*)?(?:sources|references)\s*:?\s*(?:\*\*)?\s*:?\s*$/i;
 
 /** An HTML anchor as a model writes one: the href in either quote, any other attributes, the text inside. */
 const HTML_ANCHOR = /<a\s+[^>]*?href=(["'])([^"']+)\1[^>]*>([\s\S]*?)<\/a>/gi;

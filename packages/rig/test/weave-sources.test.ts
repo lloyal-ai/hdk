@@ -65,5 +65,9 @@ describe('weaveOrdinalCitations', () => {
     expect(weaveOrdinalCitations(numbered)).toContain('Claim [2](https://two.io) and [1](https://one.io).');
     const refs = 'Claim [1].\n\n**References**\n- [Only](https://only.io)';
     expect(weaveOrdinalCitations(refs)).toContain('Claim [1](https://only.io).');
+    // The colon on either side of the closing emphasis, and a heading that is itself bold.
+    for (const head of ['**Sources:**', '**Sources**:', '## **Sources**', '### Sources:']) {
+      expect(weaveOrdinalCitations(`Claim [1].\n\n${head}\n- [Only](https://only.io)`), head).toContain('Claim [1](https://only.io).');
+    }
   });
 });
