@@ -1,6 +1,9 @@
 {
   "name": "@lloyal-labs/documents-ability",
   "version": "0.1.1",
+  "engines": {
+    "node": ">=24"
+  },
   "private": true,
   "description": "HDK reference ability — research over the documents attached to a conversation (PDFs through the content plane). Distributed via the signed-bundle channel, never public npm.",
   "license": "SEE LICENSE IN LICENSE",

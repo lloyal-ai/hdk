@@ -1,6 +1,9 @@
 {
   "name": "@lloyal-labs/desktop",
   "version": "0.1.0-alpha.10",
+  "engines": {
+    "node": ">=24"
+  },
   "description": "A harness in a native window: the Electron shell's main-process pieces — the engine over the project's own cli bin, the content scheme, the preload bridge and the window",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

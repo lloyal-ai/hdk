@@ -1,6 +1,9 @@
 {
   "name": "@lloyal-labs/relay",
   "version": "0.2.0-alpha.6",
+  "engines": {
+    "node": ">=24"
+  },
   "description": "The self-hostable framework-relay — serves a headless harness to remote frontends over wss",
   "repository": {
     "type": "git",
