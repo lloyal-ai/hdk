@@ -25,8 +25,14 @@ describe('the provider table', () => {
     expect(trunk!('/models/vision/p.gguf', { minTokens: 64, maxTokens: 512 })).toEqual({ mmprojPath: '/models/vision/p.gguf', imageMinTokens: 64, imageMaxTokens: 512 });
   });
 
+  it('every row names what it acquires, in a reader\'s words — the install\'s step label is made of it', () => {
+    expect(Object.fromEntries(Object.entries(providers).map(([k, row]) => [k, row.name]))).toEqual({
+      reranker: 'reranker', vision: 'vision projector', embedding: 'embedding model',
+    });
+  });
+
   it('the embedding row binds, and reads its pooling from the block, else the catalog, else refuses — at plan time through `refuse`, and again at bind', () => {
-    const row = providers.embedding as { bind: (artifact: string, block: Record<string, unknown>) => unknown; refuse: (block: Record<string, unknown>) => string | undefined };
+    const row = providers.embedding as unknown as { bind: (artifact: string, block: Record<string, unknown>) => unknown; refuse: (block: Record<string, unknown>) => string | undefined };
     expect(typeof row.bind).toBe('function');
     expect(row.refuse({ path: '/e.gguf', context: 2048 })).toMatch(/`model\.embedding\.pooling`/);
     expect(row.refuse({ id: 'not-in-the-catalog', context: 2048 })).toMatch(/`model\.embedding\.pooling`/);

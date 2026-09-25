@@ -117,10 +117,10 @@ describe('the state must be object-shaped', () => {
 });
 
 describe('the install in front of the view', () => {
-  const running = [{ id: 'llm', label: 'Getting the model', status: 'running' as const }];
+  const running = [{ id: 'llm', label: 'Downloading the reasoning model', status: 'running' as const }];
   const failed = [{ id: 'machine', label: 'This machine', status: 'failed' as const, note: '8 GB · 10 GB needed' }];
 
-  const failedLlm = [{ id: 'llm', label: 'Getting the model', status: 'failed' as const, note: 'Failed to fetch from any source' }];
+  const failedLlm = [{ id: 'llm', label: 'Downloading the reasoning model', status: 'failed' as const, note: 'Failed to fetch from any source' }];
 
   it('installView: the whole matrix — no steps is the app; steps with a live engine are the installer, failed or not; any list after the engine ended is an install that did not finish, handed to recovery — the download the engine died under included — unless the failed row is the machine\'s, which no engine can mend', async () => {
     const { installView } = await import('../src/provider');

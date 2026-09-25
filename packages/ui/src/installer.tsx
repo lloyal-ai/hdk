@@ -35,6 +35,9 @@ import type { CSSProperties, ReactElement } from 'react';
 export interface InstallerStep {
   id: string;
   label: string;
+  /** The model this step acquires, by name, and the slot it fills — the subtitle under the heading. */
+  model?: string;
+  slot?: string;
   status: 'pending' | 'running' | 'done' | 'failed';
   /** Bytes so far and expected, while a download runs. */
   got?: number;
@@ -81,6 +84,8 @@ const S: Record<string, CSSProperties> = {
   card: { flexGrow: 1, display: 'flex', flexDirection: 'column', background: T.bg, border: `1px solid ${T.rule}`, borderRadius: 12, overflow: 'hidden' },
   header: { padding: '26px 30px 22px', display: 'flex', flexDirection: 'column', gap: 14 },
   title: { display: 'flex', alignItems: 'center', gap: 11, fontSize: 16, fontWeight: 600, letterSpacing: '-0.01em' },
+  subtitle: { display: 'flex', alignItems: 'baseline', gap: 8, marginTop: -6, paddingLeft: 26, fontSize: 13, color: T.muted },
+  slot: { fontFamily: T.mono, fontSize: 12, color: T.faint },
   counter: { fontFamily: T.mono, fontSize: 12, color: T.faint, letterSpacing: '0.02em' },
   track: { height: 5, background: T.rule, borderRadius: 999, overflow: 'hidden' },
   bar: { height: '100%', background: T.accent, borderRadius: 999, transition: 'width .25s linear' },
@@ -94,7 +99,8 @@ const S: Record<string, CSSProperties> = {
   failure: { margin: '4px 30px 0', padding: '16px 18px', background: 'color-mix(in srgb, #C2410C 6%, transparent)', border: '1px solid color-mix(in srgb, #C2410C 20%, transparent)', borderRadius: 10, fontSize: 13.5, lineHeight: 1.55, whiteSpace: 'pre-line' },
   footer: { borderTop: `1px solid ${T.rule}`, padding: '15px 30px', display: 'flex', alignItems: 'center', gap: 10 },
   button: { background: T.fg, border: `1px solid ${T.fg}`, borderRadius: 7, padding: '8px 15px', cursor: 'pointer', fontFamily: T.font, fontSize: 13, fontWeight: 500, color: T.bg },
-  link: { background: 'none', border: 0, padding: 0, margin: 0, cursor: 'pointer', fontFamily: T.font, fontSize: 12.5, color: T.accent, textDecoration: 'underline', textUnderlineOffset: 2 },
+  // The file offer is a way out, not the way forward: quiet grey beside the row, never the accent that invites a click.
+  link: { background: 'none', border: 0, padding: 0, margin: 0, cursor: 'pointer', fontFamily: T.font, fontSize: 12.5, color: T.faint },
   quiet: { background: 'none', border: 0, padding: '8px 8px 8px 0', margin: 0, cursor: 'pointer', fontFamily: T.font, fontSize: 13, color: T.muted },
 };
 
@@ -216,6 +222,13 @@ export function Installer({ steps, footnote, onRetry, retryLabel = 'Try again', 
           <span style={{ flexGrow: 1 }}>{head?.label ?? 'Getting ready'}</span>
           <span style={S.counter}>{failed ? `STOPPED AT STEP ${position}` : `STEP ${position} OF ${steps.length}`}</span>
         </div>
+        {/* What is arriving, and where it lands: the model's name and its slot, under the heading. */}
+        {head?.model ? (
+          <div style={S.subtitle}>
+            <span>{head.model}</span>
+            {head.slot ? <span style={S.slot}>{head.slot}</span> : null}
+          </div>
+        ) : null}
         <div style={S.track}>
           <div style={{ ...S.bar, width: `${pct}%`, ...(failed ? { background: T.failure } : null) }} />
         </div>

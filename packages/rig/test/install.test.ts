@@ -49,6 +49,18 @@ describe('planInstall: the steps, from the model family alone', () => {
     expect(planInstall({}).map((s) => [s.id, s.spec])).toEqual([['machine', undefined], ['llm', undefined]]);
   });
 
+  it('each step says which model it acquires and the slot it fills — the catalog\'s name for an id, the file\'s own name and path for a path', () => {
+    const steps = planInstall({ llm: { id: 'qwen3.5-4b' }, vision: {}, reranker: { path: '/weights/my-reranker.gguf', context: 16384 } });
+    expect(steps.map((s) => [s.id, s.model, s.slot])).toEqual([
+      ['machine', undefined, undefined],
+      ['llm', 'Qwen3.5 4B · Q4_K_M', 'models/llm/qwen3.5-4b.gguf'],
+      ['reranker', 'my-reranker.gguf', '/weights/my-reranker.gguf'],
+      ['vision', expect.any(String), 'models/vision/qwen3.5-4b-mmproj.gguf'],
+    ]);
+    // A block that selects nothing names nothing.
+    expect(planInstall({ llm: { id: 'q' }, reranker: { context: 16384 } }, { lenient: true })[2]).not.toHaveProperty('model');
+  });
+
   it('a block whose selection the row still cannot bind is refused at plan time — before a byte is fetched — and marked failed when the plan is lenient', () => {
     expect(() => planInstall({ llm: { id: 'qwen3.5-4b' }, embedding: { path: '/e.gguf', context: 2048 } })).toThrow(/`model\.embedding\.pooling`/);
     const lenient = planInstall({ llm: { id: 'qwen3.5-4b' }, embedding: { path: '/e.gguf', context: 2048 } }, { lenient: true });

@@ -26,6 +26,9 @@ export type ModelBlock<K extends Service> = NonNullable<ModelFamily[K]>;
 
 /** What a contributor writes for a service. */
 export interface ProviderRow<K extends Service> {
+  /** What a reader calls the thing this row acquires — "the reranker", "the vision projector" — as the install
+   *  names its step. Framework words for what the model IS, never the harness's. */
+  name: string;
   /** Which model backs it when the block names none — only a row with a derivation has one. `undefined`
    *  refuses, naming `model.<name>.id`. */
   derive?(of: { llm: { id?: string; path?: string } }): ModelSpec | undefined;
@@ -42,9 +45,11 @@ export interface ProviderRow<K extends Service> {
 
 export const providers: { [K in Service]: ProviderRow<K> } = {
   reranker: {
+    name: 'reranker',
     bind: (artifact, block) => createReranker(artifact, { nCtx: block.context, instruction: block.instruction }),
   },
   vision: {
+    name: 'vision projector',
     // One vision tower serves every quant of the same model, so the catalog's pairing stands in for an id. A
     // `path:` llm is bytes the catalog knows nothing about, and a projector inferred from its id would load for
     // a model that is not running.
@@ -56,6 +61,7 @@ export const providers: { [K in Service]: ProviderRow<K> } = {
     trunk: (artifact, block) => ({ mmprojPath: artifact, imageMinTokens: block.minTokens, imageMaxTokens: block.maxTokens }),
   },
   embedding: {
+    name: 'embedding model',
     refuse: (block) => (embeddingPooling(block) ? undefined : UNKNOWN_POOLING),
     bind: (artifact, block) => {
       const pooling = embeddingPooling(block);

@@ -46,8 +46,8 @@ function desktopBridge(now: readonly InstallerStep[]): Bridge<unknown, unknown, 
 
 const running: InstallerStep[] = [
   { id: 'machine', label: 'This machine', status: 'done', note: '16 GB · 10 GB needed' },
-  { id: 'llm', label: 'Getting the model', status: 'running', got: 1024 ** 3, total: 2 * 1024 ** 3, file: true },
-  { id: 'reranker', label: 'Getting the reranker', status: 'pending', file: true },
+  { id: 'llm', label: 'Downloading the reasoning model', status: 'running', got: 1024 ** 3, total: 2 * 1024 ** 3, file: true },
+  { id: 'reranker', label: 'Downloading the reranker', status: 'pending', file: true },
 ];
 
 const flush = (): Promise<void> => act(async () => { await Promise.resolve(); });
@@ -85,7 +85,7 @@ describe('the install view when the engine ends', () => {
   it('a machine this model cannot run on: the refusal, and nothing a new engine would repeat', async () => {
     const refused: InstallerStep[] = [
       { id: 'machine', label: 'This machine', status: 'failed', note: 'Run this harness on a machine with at least 16 GB.' },
-      { id: 'llm', label: 'Getting the model', status: 'pending', file: true },
+      { id: 'llm', label: 'Downloading the reasoning model', status: 'pending', file: true },
     ];
     const bridge = desktopBridge(refused);
     mount(bridge);

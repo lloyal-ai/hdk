@@ -26,9 +26,10 @@ import { modelSettings } from './config';
 import type { ModelFamily } from './config';
 import type { BaseHarnessConfig, ConfigPatch } from './runner';
 import { checkMachine, gb, refusalMessage } from './machine';
-import { catalogEntry, isModelPresent, resolveModel } from './models';
+import { catalogEntry, isModelPresent, resolveModel, slotOf } from './models';
 import type { ModelCatalogEntry, ModelRole, ModelSpec } from './models';
 import { configuredServices, specOf } from './provision';
+import { providers } from './providers';
 import type { ServiceArtifacts } from './provision';
 import { SERVICES } from './services';
 import type { Service } from './services';
@@ -48,23 +49,33 @@ const takesFile = (id: string): boolean => `model.${id}.path` in modelSettings;
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
+/** What a spec acquires and where it goes, for a reader: the catalog's name and the slot, or the file's own name and path. */
+function acquires(role: ModelRole, spec: ModelSpec): Pick<InstallStep, 'model' | 'slot'> {
+  if (spec.path) return { model: spec.path.split('/').pop() ?? spec.path, slot: spec.path };
+  if (spec.id) return { model: catalogEntry(role, spec.id)?.label ?? spec.id, slot: slotOf(role, spec.id) };
+  return {};
+}
+
 /**
  * The steps this run performs, in order, from the model family alone: the machine, the reasoning model, then
  * every service whose block is present, each with its spec. A block that selects nothing it can — a
  * `reranker: {}`, a vision block under a `path:` llm — is refused before anything runs; mid-walk, where a
  * persisted change re-derives the steps, `lenient` returns that step as failed with the refusal as its note
- * instead. A step's label is framework words: the model, and each service's model by the service's name.
+ * instead. A step's label is framework words: the model, and each service's model by the service's name;
+ * beside it, the model's own name and the slot it fills, for the reader watching it arrive.
  */
 export function planInstall(model: ModelFamily, opts: { lenient?: boolean } = {}): PlannedStep[] {
   const llm = model.llm ?? {};
+  const llmSpec: ModelSpec | undefined = llm.path ? { path: llm.path } : llm.id ? { id: llm.id } : undefined;
   const steps: PlannedStep[] = [
     { id: 'machine', label: 'This machine', status: 'pending' },
-    { id: 'llm', label: 'Getting the model', status: 'pending', role: 'llm', file: takesFile('llm'), ...(llm.path || llm.id ? { spec: llm.path ? { path: llm.path } : { id: llm.id } } : {}) },
+    { id: 'llm', label: 'Downloading the reasoning model', status: 'pending', role: 'llm', file: takesFile('llm'), ...(llmSpec ? { spec: llmSpec, ...acquires('llm', llmSpec) } : {}) },
   ];
   for (const name of configuredServices(model)) {
-    const step: PlannedStep = { id: name, label: `Getting the ${name} model`, status: 'pending', role: name, file: takesFile(name) };
+    const step: PlannedStep = { id: name, label: `Downloading the ${providers[name].name}`, status: 'pending', role: name, file: takesFile(name) };
     try {
       step.spec = specOf(name, model);
+      Object.assign(step, acquires(name, step.spec));
     } catch (err) {
       if (!opts.lenient) throw err;
       step.status = 'failed';

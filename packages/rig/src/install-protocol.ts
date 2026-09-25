@@ -11,8 +11,13 @@
 export interface InstallStep {
   /** The step's name: `machine`, `llm`, `vision`, or a service's. */
   id: string;
-  /** Framework words — "Getting the model". A view may relabel; rig never names the harness. */
+  /** Framework words — "Downloading the reasoning model". A view may relabel; rig never names the harness. */
   label: string;
+  /** The model this step acquires, as the catalog names it — or the file's own name for a `path`. Absent on a
+   *  step that acquires no model (the machine) and on a block that selects nothing. */
+  model?: string;
+  /** Where it goes, relative to the project — `models/llm/qwen3.5-4b.gguf` — or the file's own path. */
+  slot?: string;
   status: 'pending' | 'running' | 'done' | 'failed';
   /** Bytes so far and expected, while a download runs. Absent on a step that moves no bytes,
    *  and on one that has not started. */

@@ -78,9 +78,15 @@ function assertSafeSegment(kind: 'role' | 'id', value: string): void {
 /** Where a catalog id lives once fetched — ONE derivation of the slot, so a caller asking "is this here?"
  *  and the resolver deciding "must I fetch this?" can never disagree. */
 export function modelSlot(projectRoot: string, role: ModelRole, id: string): string {
+  return path.join(projectRoot, slotOf(role, id));
+}
+
+/** The slot a catalog model fills, relative to the project: `models/<role>/<id>.gguf` — the ONE spelling of
+ *  the layout, which {@link modelSlot} roots and the install shows a reader. */
+export function slotOf(role: ModelRole, id: string): string {
   assertSafeSegment('role', role);
   assertSafeSegment('id', id);
-  return path.join(projectRoot, 'models', role, `${id}.gguf`);
+  return path.posix.join('models', role, `${id}.gguf`);
 }
 
 /** Whether a catalog id is already on disk — what a boot asks before deciding whether there is anything to
