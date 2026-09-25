@@ -17,9 +17,11 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import {
   resolveModel,
   fetchVerified,
+  sweepAbandonedPartials,
   modelSlot,
   isModelPresent,
   MODEL_CATALOG,
@@ -145,6 +147,50 @@ describe('the catalog names its projectors by the service they back', () => {
     for (const llm of MODEL_CATALOG.filter((e) => e.role === 'llm' && e.vision)) {
       expect(MODEL_CATALOG.find((e) => e.role === 'vision' && e.id === llm.vision), llm.id).toBeDefined();
     }
+  });
+});
+
+describe('the partials nobody owns', () => {
+  const bytes = new TextEncoder().encode('GGUF-TEST-BYTES');
+  const entry: ModelCatalogEntry = { id: 't', role: 'llm', label: 'Test Model', urls: ['mock://ok'], sha256: sha256(bytes), sizeBytes: bytes.length };
+  /** A pid that is certainly not alive: the one a process that has already exited had. */
+  const deadPid = (): number => {
+    const { pid } = spawnSync('true');
+    if (typeof pid !== 'number') throw new Error('no pid');
+    return pid;
+  };
+
+  it('a partial whose process is gone is removed before the fetch into that slot; one whose process is alive, and a file of another shape, are left alone', async () => {
+    const dest = path.join(root, 'models/llm/t.gguf');
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    const abandoned = `${dest}.${deadPid()}.deadbeef.partial`;
+    const inFlight = `${dest}.${process.pid}.cafef00d.partial`;
+    const other = path.join(path.dirname(dest), 'other.gguf.1.abcd.partial');
+    for (const f of [abandoned, inFlight, other]) fs.writeFileSync(f, 'x'.repeat(16));
+    expect(sweepAbandonedPartials(dest)).toEqual([path.basename(abandoned)]);
+    expect(fs.existsSync(abandoned)).toBe(false);
+    expect(fs.existsSync(inFlight)).toBe(true);
+    expect(fs.existsSync(other)).toBe(true);
+    // The fetch itself sweeps: a second abandoned partial planted before it is gone once the slot is written.
+    const again = `${dest}.${deadPid()}.00000001.partial`;
+    fs.writeFileSync(again, 'y');
+    await fetchVerified(entry, dest, { fetchImpl: mockFetch({ 'mock://ok': bytes }) });
+    expect(fs.existsSync(again)).toBe(false);
+    expect(fs.existsSync(inFlight)).toBe(true);
+    expect(fs.readFileSync(dest)).toEqual(Buffer.from(bytes));
+  });
+
+  it('a slot already full is swept too, on the resolve that adopts it — a partial left by a killed download does not outlive the download that later completed', async () => {
+    const dest = put('models/llm/qwen3.5-4b.gguf');
+    const abandoned = `${dest}.${deadPid()}.0badf00d.partial`;
+    fs.writeFileSync(abandoned, 'z');
+    const out = await resolveModel({ projectRoot: root, role: 'llm', spec: { id: 'qwen3.5-4b' } });
+    expect(out).toBe(dest);
+    expect(fs.existsSync(abandoned)).toBe(false);
+  });
+
+  it('a slot directory that does not exist yet sweeps nothing and throws nothing', () => {
+    expect(sweepAbandonedPartials(path.join(root, 'models/nowhere/t.gguf'))).toEqual([]);
   });
 });
 

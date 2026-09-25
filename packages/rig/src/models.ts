@@ -260,9 +260,12 @@ export async function resolveModel(opts: ResolveModelOpts): Promise<string> {
     return p;
   }
 
-  // 2/3. configured id → slot; fetch + verify if absent
+  // 2/3. configured id → slot; fetch + verify if absent. Every resolve of a slot sweeps the partials nobody
+  // owns beside it, full or not — a slot filled by the download that finally completed is never fetched
+  // again, so the fetch alone would leave what earlier, killed attempts left there for good.
   if (spec?.id) {
     const slot = modelSlot(projectRoot, role, spec.id);
+    sweepAbandonedPartials(slot);
     if (fs.existsSync(slot)) return slot;
     const entry = catalogEntry(role, spec.id);
     if (!entry) {
@@ -318,6 +321,34 @@ export class DownloadStopped extends Error {
   }
 }
 
+/** Whether a process is alive: the zero signal probes without sending. `EPERM` is a live process we may not signal. */
+function alive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch (err) { return (err as NodeJS.ErrnoException).code === 'EPERM'; }
+}
+
+/**
+ * Remove the partials nobody owns: a download's partial is named for the process writing it, so one whose
+ * process is gone — killed mid-download, crashed, the machine off — belongs to nobody and would sit in the
+ * slot at model size for good. Swept on every resolve of the slot — the one moment it is looked at, full or
+ * not — and before every fetch into it. A partial whose process is alive is another fetch in flight and is
+ * left alone. Returns what was removed.
+ *
+ * @category Rig
+ */
+export function sweepAbandonedPartials(dest: string): string[] {
+  const dir = path.dirname(dest);
+  const base = path.basename(dest);
+  const removed: string[] = [];
+  let names: string[];
+  try { names = fs.readdirSync(dir); } catch { return removed; }
+  for (const name of names) {
+    const m = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.(\\d+)\\.[0-9a-f]+\\.partial$`).exec(name);
+    if (!m || alive(Number(m[1]))) continue;
+    try { fs.unlinkSync(path.join(dir, name)); removed.push(name); } catch { /* gone already, or not ours to remove */ }
+  }
+  return removed;
+}
+
 /**
  * Stream a catalog entry into `dest`, verify sha256 fail-closed, atomic rename.
  * Walks `entry.urls` in fallback order; a truncated or tampered download is
@@ -329,6 +360,7 @@ export async function fetchVerified(
   opts: FetchVerifiedOpts = {},
 ): Promise<string> {
   fs.mkdirSync(path.dirname(dest), { recursive: true });
+  sweepAbandonedPartials(dest);
   // Per-invocation temp name so concurrent fetches of the same model never
   // race on — or delete — each other's partial.
   const tmp = `${dest}.${process.pid}.${randomBytes(4).toString('hex')}.partial`;
