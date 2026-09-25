@@ -18,7 +18,9 @@
  * It takes the harness's theme through CSS custom properties, each with the platform's own
  * value as its default: `--harness-accent`, `--harness-fg`, `--harness-bg` (the card), `--harness-ground`
  * (the page behind it), `--harness-muted`, `--harness-faint`, `--harness-rule`, `--harness-font`,
- * `--harness-mono`. A harness sets them on its root and passes nothing. It fills the window: the card sits
+ * `--harness-mono`. A harness sets them on an ancestor of the provider — the document root, or the element the
+ * provider mounts under — and passes nothing; the installer stands in for the view, so properties set inside
+ * the view never reach it. It fills the window: the card sits
  * in a gutter on the ground, and the step list takes whatever height the header and footer leave.
  *
  * @category UI
@@ -187,7 +189,9 @@ export function Installer({ steps, footnote, onRetry, retryLabel = 'Try again', 
   if (steps.length === 0) return null;
 
   const position = head ? steps.indexOf(head) + 1 : steps.filter((x) => x.status === 'done').length;
-  const pct = active && active.total ? Math.min(100, ((active.got ?? 0) / active.total) * 100) : failed ? 100 : 0;
+  // The bar shows what was measured, for a failed step too: where it stopped, or nothing where nothing arrived.
+  const shown = active ?? failed;
+  const pct = shown && shown.total ? Math.min(100, ((shown.got ?? 0) / shown.total) * 100) : 0;
   const left = active && active.total && rate ? duration((active.total - (active.got ?? 0)) / rate) : '';
   const fileFor = (step: InstallerStep): boolean => !!onUseFile && !!step.file && (step.status === 'running' || step.status === 'failed');
 

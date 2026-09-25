@@ -26,7 +26,7 @@ import { modelSettings } from './config';
 import type { ModelFamily } from './config';
 import type { BaseHarnessConfig, ConfigPatch } from './runner';
 import { checkMachine, gb, refusalMessage } from './machine';
-import { carryOverVisionSlot, catalogEntry, isModelPresent, resolveModel } from './models';
+import { catalogEntry, isModelPresent, resolveModel } from './models';
 import type { ModelCatalogEntry, ModelRole, ModelSpec } from './models';
 import { configuredServices, specOf } from './provision';
 import type { ServiceArtifacts } from './provision';
@@ -113,8 +113,6 @@ export interface InstallOpts {
    *  save takes — answering the re-layered model family. Required beside `controls`. */
   persist?: (patch: ConfigPatch<BaseHarnessConfig>) => ModelFamily;
   fetchImpl?: typeof fetch;
-  /** Where a one-time note goes. Default: stderr. */
-  say?: (line: string) => void;
 }
 
 /** What the install acquired: the reasoning model, every service's artifact, and the model family as it now stands. */
@@ -135,7 +133,6 @@ type Attempt = { artifact: string } | { command: InstallCommand } | { error: unk
 export function* install(opts: InstallOpts): Operation<Installed> {
   let model = opts.model;
   const steps = planInstall(model);
-  const say = opts.say ?? ((line: string): void => { process.stderr.write(`${line}\n`); });
   // Subscribed once, before anything runs: a command a view sends between one attempt and the next is
   // buffered here, where a fresh subscription per attempt would have missed it.
   const controls: Subscription<InstallCommand, void> | undefined = opts.controls ? yield* opts.controls : undefined;
@@ -166,10 +163,6 @@ export function* install(opts: InstallOpts): Operation<Installed> {
   }
   machine.status = 'done';
   if (steps.some((step) => fetches(opts.projectRoot, step))) publish();
-
-  // A slot from before the role was named for its service is carried over once, before the walk — a migration
-  // with a sunset: every project scaffolded since cut 10 has the new slot, so this goes with the cut after next.
-  carryOverVisionSlot(opts.projectRoot, say);
 
   const artifacts: Record<string, string> = {};
   // The walk resumes from the earliest step not yet done, so a step a persisted change sent back to pending —

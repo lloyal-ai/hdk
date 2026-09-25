@@ -67,7 +67,6 @@ export type { ProvisionOpts, ServiceArtifacts } from './provision';
 // atomic 0600 writes, the writer's version guard, git check-ignore append,
 // boundary path resolution. The per-template LAYERING stays in the scaffold.
 export {
-  V1_MODEL_KEYS,
   resolvePath,
   isPathShaped,
   resolveAppConfigPaths,

@@ -15,7 +15,7 @@ const { resolveModel, present } = vi.hoisted(() => ({
 }));
 vi.mock('../src/models', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/models')>();
-  return { ...actual, resolveModel, isModelPresent: (_root: string, role: string, id: string) => present.has(`${role}/${id}`), carryOverVisionSlot: () => {} };
+  return { ...actual, resolveModel, isModelPresent: (_root: string, role: string, id: string) => present.has(`${role}/${id}`) };
 });
 const { install, planInstall } = await import('../src/install');
 

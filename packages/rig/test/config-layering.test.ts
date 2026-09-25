@@ -262,27 +262,12 @@ describe('the abilities family, layered for every app', () => {
   });
 });
 
-describe('a version-1 harness.json, which wrote the model keys flat', () => {
-  const v1 = { version: 1, sources: {}, abilities: {}, model: { path: '/m.gguf', nCtx: 4096, gpu: 'cuda', reranker: '/r.gguf', rerankerId: 'qwen3-reranker-0.6b-q8', mmproj: 'qwen3.5-4b-mmproj', imageMaxTokens: 512 } };
-
-  it('is read at the blocks its keys now live in — a previously selected model never vanishes from resolution', () => {
-    writeJson(v1);
-    const { config, origin } = loadConfig(app, {}, { env: {}, cwd });
-    expect(config.model).toEqual({
-      llm: { path: '/m.gguf', context: 4096, gpu: 'cuda' },
-      reranker: { path: '/r.gguf', id: 'qwen3-reranker-0.6b-q8', context: 16384 },
-      vision: { id: 'qwen3.5-4b-mmproj', maxTokens: 512 },
-    });
-    expect(origin['model.reranker.path']).toBe('file');
-  });
-
-  it('is rewritten at the current version on the first save, its keys migrated with it', () => {
-    writeJson(v1);
-    saveLocalConfig(app, { defaults: { effort: 'low' } }, cwd);
-    expect(readJson()).toEqual({
-      version: CONFIG_VERSION, sources: {}, abilities: {}, defaults: { effort: 'low' },
-      model: { llm: { path: '/m.gguf', context: 4096, gpu: 'cuda' }, reranker: { path: '/r.gguf', id: 'qwen3-reranker-0.6b-q8' }, vision: { id: 'qwen3.5-4b-mmproj', maxTokens: 512 } },
-    });
+describe('a version-1 harness.json, written before alpha.10', () => {
+  it('is refused loud by the loader and by a save, naming the fix — never read at a shape it does not have, never silently ignored', () => {
+    writeJson({ version: 1, sources: {}, abilities: {}, model: { path: '/m.gguf', reranker: '/r.gguf' } });
+    expect(() => loadConfig(app, {}, { env: {}, cwd })).toThrow('harness.json is version 1, written before alpha.10 — delete it and relaunch.');
+    expect(() => saveLocalConfig(app, { defaults: { effort: 'low' } }, cwd)).toThrow(/version 1, written before alpha\.10/);
+    expect(readJson().version).toBe(1);
   });
 });
 

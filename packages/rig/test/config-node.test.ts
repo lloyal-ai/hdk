@@ -56,45 +56,13 @@ describe('resolveAppConfigPaths', () => {
   });
 });
 
-describe('a version-1 file: the model keys flat, where the blocks now are', () => {
-  const v1 = { version: 1, model: { id: 'q', path: '/m', nCtx: 4096, gpu: 'cuda', branches: 8, kvCache: 'q8_0', reranker: '/r', rerankerId: 'rr', mmproj: 'mm', imageMinTokens: 64, imageMaxTokens: 512, other: 1 }, defaults: { effort: 'low' } };
-  const v2 = {
-    version: 2,
-    model: { llm: { id: 'q', path: '/m', context: 4096, gpu: 'cuda', branches: 8, kvCache: 'q8_0' }, reranker: { path: '/r', id: 'rr' }, vision: { id: 'mm', minTokens: 64, maxTokens: 512 }, other: 1 },
-    defaults: { effort: 'low' },
-  };
-  it('the loader reads it migrated; the writer hands it over migrated, so the next save writes the current version', () => {
+describe('a version-1 file, written before alpha.10', () => {
+  it('is refused by name with the fix, by the loader and the writer alike — nothing from before the alpha is carried forward', () => {
     const p = path.join(dir, 'harness.json');
-    fs.writeFileSync(p, JSON.stringify(v1));
-    expect(readJsonOverlay(p)).toEqual(v2);
-    expect(readJsonForWrite(p)).toEqual(v2);
-    fs.writeFileSync(p, JSON.stringify({ version: 1, model: {} }));
-    expect(readJsonOverlay(p)).toEqual({ version: 2, model: {} });
-    fs.writeFileSync(p, JSON.stringify({ version: 1 }));
-    expect(readJsonOverlay(p)).toEqual({ version: 2 });
-  });
-
-  it('preserves what version 1 meant: a cleared value migrates to absence, never to a request with an empty selection', () => {
-    const p = path.join(dir, 'harness.json');
-    const said: string[] = [];
-    fs.writeFileSync(p, JSON.stringify({ version: 1, model: { id: 'q', reranker: '', rerankerId: null, mmproj: '' } }));
-    expect(readJsonOverlay(p, (line) => said.push(line))).toEqual({ version: 2, model: { llm: { id: 'q' } } });
-    expect(said).toEqual([]);
-  });
-
-  it('vision tuning under a catalog llm keeps its block (version 1 paired the projector implicitly); under a `path:` llm it is dropped, and the read says so once', () => {
-    const p = path.join(dir, 'harness.json');
-    const said: string[] = [];
-    fs.writeFileSync(p, JSON.stringify({ version: 1, model: { id: 'q', imageMaxTokens: 512 } }));
-    expect(readJsonOverlay(p, (line) => said.push(line))).toEqual({ version: 2, model: { llm: { id: 'q' }, vision: { maxTokens: 512 } } });
-    expect(said).toEqual([]);
-    fs.writeFileSync(p, JSON.stringify({ version: 1, model: { path: '/m', imageMinTokens: 64, imageMaxTokens: 512 } }));
-    expect(readJsonOverlay(p, (line) => said.push(line))).toEqual({ version: 2, model: { llm: { path: '/m' } } });
-    expect(said).toEqual(['harness.json: imageMinTokens, imageMaxTokens dropped — version 1 paired no projector with a `path:` model, and version 2 would request one']);
-    // …and a projector version 1 DID name keeps its tuning beside it, whatever the llm.
-    fs.writeFileSync(p, JSON.stringify({ version: 1, model: { path: '/m', mmproj: 'mm', imageMaxTokens: 512 } }));
-    expect(readJsonForWrite(p, 'harness.json', (line) => said.push(line))).toEqual({ version: 2, model: { llm: { path: '/m' }, vision: { id: 'mm', maxTokens: 512 } } });
-    expect(said).toHaveLength(1);
+    fs.writeFileSync(p, JSON.stringify({ version: 1, model: { id: 'q', reranker: '/r', mmproj: 'mm' } }));
+    expect(() => readJsonOverlay(p)).toThrow('harness.json is version 1, written before alpha.10 — delete it and relaunch.');
+    expect(() => readJsonForWrite(p)).toThrow('harness.json is version 1, written before alpha.10 — delete it and relaunch.');
+    expect(JSON.parse(fs.readFileSync(p, 'utf8')).version).toBe(1);   // untouched
   });
 });
 

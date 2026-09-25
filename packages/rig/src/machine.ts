@@ -65,7 +65,7 @@ export function refusalMessage(v: MachineVerdict, label: string): string {
     `Nothing was downloaded.\n` +
     (v.machineClass === 'edge'
       ? `That is below the minimum lloyal runs on, so there is no smaller model to fall back to. ` +
-        `Close what you can spare and try again, or run this harness on a larger machine.`
+        `Run this harness on a machine with at least ${gb(MACHINE_CLASS_FLOOR_BYTES.edge)}.`
       : `Choose an edge-class model for this machine, or run this harness on an appliance ` +
         `(${gb(MACHINE_CLASS_FLOOR_BYTES.appliance)} or more).`)
   );

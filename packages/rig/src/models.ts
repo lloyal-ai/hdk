@@ -405,16 +405,3 @@ async function streamOne(
   return dest;
 }
 
-
-/** The slot projectors were kept in before the role was named for its service. */
-const LEGACY_VISION_ROLE = 'mmproj';
-
-/** Carry a `models/mmproj/` slot over to `models/vision/`, once: the directory is renamed when no vision slot
- *  exists yet, and left where it is otherwise — a slot already named for its service is never overwritten. */
-export function carryOverVisionSlot(projectRoot: string, say: (line: string) => void): void {
-  const legacy = path.join(projectRoot, 'models', LEGACY_VISION_ROLE);
-  const current = path.join(projectRoot, 'models', 'vision');
-  if (!fs.existsSync(legacy) || fs.existsSync(current)) return;
-  fs.renameSync(legacy, current);
-  say(`[rig] models/${LEGACY_VISION_ROLE}/ is now models/vision/ — the slot is named for the service it backs; moved once.`);
-}
