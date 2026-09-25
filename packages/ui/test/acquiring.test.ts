@@ -62,7 +62,7 @@ describe('the install view when the engine ends', () => {
     document.body.appendChild(container);
     root = createRoot(container);
     act(() => {
-      root.render(createElement(HarnessProvider, { bridge, initialState: { n: 0 }, reduce: (s: S) => s }, createElement('main', null, 'the app')));
+      root.render(createElement(HarnessProvider<unknown, unknown, S>, { bridge, initialState: { n: 0 }, reduce: (s: S) => s, children: createElement('main', null, 'the app') }));
     });
   }
 
