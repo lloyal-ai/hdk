@@ -153,6 +153,25 @@ describe('the install view when the engine ends', () => {
     act(() => root.unmount());
   });
 
+  it('a replaced bridge starts unknown — the steps of the bridge before it are never shown through the new one', async () => {
+    const first = desktopBridge(running);
+    mount(first);
+    await flush();
+    expect(container.textContent).toContain('STEP 2 OF 3');
+    // A bridge that can neither be asked nor announces a session — a web placement — replaces it.
+    const web: Bridge<unknown, unknown, S> = {
+      onEvent() { return () => {}; },
+      send: () => {},
+      requestSnapshot: () => Promise.resolve({ state: { n: 0 }, epoch: 1, seq: 0 }),
+    };
+    act(() => {
+      root.render(createElement(HarnessProvider<unknown, unknown, S>, { bridge: web, initialState: { n: 0 }, reduce: (s: S) => s, children: createElement('main', null, 'the app') }));
+    });
+    await flush();
+    expect(container.textContent).toBe('the app');
+    act(() => root.unmount());
+  });
+
   it('a new engine that acquires nothing: the steps clear at warming and the app is shown', async () => {
     const bridge = desktopBridge(running);
     mount(bridge);

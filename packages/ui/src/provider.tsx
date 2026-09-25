@@ -298,10 +298,19 @@ export function useRecover(): (() => void) | null {
 export function useInstall(): readonly InstallerStep[] | null {
   const { bridge } = useHarness();
   // Unknown until a placement that can be asked has answered; a placement with nothing to ask holds nothing.
-  const [steps, setSteps] = useState<readonly InstallerStep[] | null>(() => (bridge.installNow ? null : []));
-  useEffect(() => subscribeInstall(bridge, setSteps), [bridge]);
+  const [steps, setSteps] = useState<readonly InstallerStep[] | null>(() => initialSteps(bridge));
+  useEffect(() => {
+    // The steps are this bridge's: a bridge that replaces another starts where a first mount does, never with
+    // what the one before it showed.
+    setSteps(initialSteps(bridge));
+    return subscribeInstall(bridge, setSteps);
+  }, [bridge]);
   return steps;
 }
+
+/** One empty list for every bridge that holds nothing, so a reset to it is no change. */
+const NO_STEPS: readonly InstallerStep[] = [];
+const initialSteps = (bridge: Pick<Bridge<unknown, unknown, unknown>, 'installNow'>): readonly InstallerStep[] | null => (bridge.installNow ? null : NO_STEPS);
 
 /**
  * The install as the bridge tells it, from both sources, with one rule between them: the push wins. The
