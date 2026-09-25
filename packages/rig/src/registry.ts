@@ -175,6 +175,15 @@ export function* createAbilityRegistry(
             }),
         );
 
+        // The requirement is the manifest the registry registers. The static check above refused before
+        // construction where it could; a factory that carries no static manifest declares in the one it returns,
+        // and that declaration is held to the same bag before anything is registered.
+        for (const name of ability.manifest.services ?? []) {
+          if (!bound?.[name as keyof typeof bound]) {
+            throw new Error(`${ability.manifest.name} requires \`${name}\`, which is not configured — add \`model.${name}\` to harness.yml`);
+          }
+        }
+
         const declared = ability.manifest.abilityProtocolVersion ?? '3.0';
         if (!SUPPORTED_ABILITY_PROTOCOL_VERSIONS.includes(declared)) {
           throw new Error(

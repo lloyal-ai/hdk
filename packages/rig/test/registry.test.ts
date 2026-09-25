@@ -194,6 +194,24 @@ describe('createAbilityRegistry', () => {
     expect(ran).toBe(true);
   });
 
+  it('a factory with no static manifest is held to the manifest it returns: the requirement is what the registry registers', async () => {
+    const plain: AbilityFactory = function* () {
+      return { ...fakeApp({ name: 'seer' }), manifest: { name: 'seer', protocol: { name: 'seer_p', useWhen: 'seeing', tools: ['t'] }, services: ['vision'] } as AbilityManifest };
+    };
+    expect(plain.manifest).toBeUndefined();
+    await expect(run(function* () {
+      const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
+      yield* registry.enable(plain);
+    })).rejects.toThrow('seer requires `vision`, which is not configured — add `model.vision` to harness.yml');
+    const state = await run(function* () {
+      yield* Services.set({ vision: { artifact: '/v.gguf' } });
+      const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
+      yield* registry.enable(plain);
+      return registry.stateOf('seer');
+    });
+    expect(state).toBe('enabled');
+  });
+
   it('runs the factory body (setup) when enabled', async () => {
     const onSetup = vi.fn();
     await run(function* () {
