@@ -16,14 +16,15 @@
  *   crashes the harness. The harness does **not** call a per-ability register
  *   verb at boot; it just calls `enable` for each boot ability.
  * - A name resolves to ONE handle for the registry's life; every enable of that name registers a new
- *   GENERATION and points the handle at it. Enabling a name already enabled supersedes it: the new
- *   entry is registered first, then the name resolves to it, and the one it replaces leaves the roster
- *   without ending while a run holds it — a run that captured the handle at frame time spreads the new tools
- *   at its next spawn, and an agent that spread the old ones keeps them. `registry.disable(name)` retires the
- *   same way.
- * - A run holds what `participating()` handed it, for its own scope's life; a retired entry ends the
- *   moment nothing holds it — at retirement, or at the last run's release — best-effort: a throwing teardown
- *   is logged, never strands a sibling, never crashes the session. Nobody is asked whether a run is live.
+ *   ENTRY and points the handle at it. Enabling a name already enabled supersedes it: the new entry is
+ *   registered first, then the name resolves to it, and the one it replaces leaves the roster without ending
+ *   while a scope holds it — a run that captured the handle spreads the new tools at its next take, and an
+ *   agent that spread the old ones keeps them. `registry.disable(name)` retires the same way.
+ * - A scope that took its sources through `participating()` holds their NAMES for its own life: every entry
+ *   enabled under a held name, then or by any save meanwhile, outlives the scope, since its handle may be
+ *   dereferenced at any time while it lives. A retired entry ends the moment nothing holds it — at retirement,
+ *   or at the last release — best-effort: a throwing teardown is logged, never strands a sibling, never crashes
+ *   the session. Nobody is asked whether a run is live.
  *
  * There are no install/uninstall/enable/disable hooks on the Ability. A
  * factory that throws (or whose manifest fails validation) tears down its
@@ -81,26 +82,31 @@ export interface CreateAbilityRegistryOpts {
   grantStore?: GrantStore;
 }
 
+/** One scope's hold on the names it took through `participating()`: an identity, nothing more. */
+type Hold = object;
+
 /** One enable of an ability: the instance, the end of its detached scope, and who still holds it. */
 interface RegistryEntry {
   name: string;
   ability: Ability;
   /** Halts the ability's detached scope, firing its factory `ensure`s. */
   destroy: () => Promise<void>;
-  /** Runs that took this entry through `participating()` and have not ended. */
-  holds: number;
-  /** Left the roster — superseded or disabled. Ends when `holds` reaches zero. */
+  /** The holds open on this entry's NAME when it was enabled, less those released since: a scope that took
+   *  the name may dereference its handle at any time while it lives, so every entry enabled under the name
+   *  meanwhile is the scope's to hold. */
+  holders: Set<Hold>;
+  /** Left the roster — superseded or disabled. Ends when `holders` empties. */
   retired: boolean;
 }
 
-/** What `participating()` reaches, beside the public registry: the hold a run takes on the entries it was handed. */
+/** What `participating()` reaches, beside the public registry: the hold a scope takes on the names it was handed. */
 const internals = new WeakMap<AbilityRegistry, { hold(): Operation<void> }>();
 
 /**
- * Hold every entry currently enabled for the calling scope: none of them ends before that scope does,
- * however many saves supersede them meanwhile. Registered as an `ensure` in the caller — a run's own
- * operation — so a Stop, a replacement or a return releases it. A registry this module did not create holds
- * nothing.
+ * Hold every name currently enabled for the calling scope: no entry of those names — the ones enabled now, or
+ * any a save enables meanwhile — ends before that scope does. Registered as an `ensure` in the caller — a run's
+ * own operation, an agent's spawn — so a Stop, a replacement or a return releases it. A registry this module did
+ * not create holds nothing.
  */
 export function* holdEnabled(registry: AbilityRegistry): Operation<void> {
   const own = internals.get(registry);
@@ -110,7 +116,9 @@ export function* holdEnabled(registry: AbilityRegistry): Operation<void> {
 /**
  * The one object a name resolves to for the registry's life — what a run captures at frame time — forwarding
  * to the entry the last enable registered. A holder that dereferenced it (an agent that spread its `tools`
- * at spawn) keeps what it took; the next dereference sees the current entry.
+ * at spawn) keeps what it took; the next dereference sees the current entry. A value a tool reads at the
+ * call — its ability's stored config — follows the store, not the entry: that is how a save reaches an agent
+ * mid-run, and it is the ability's to read there.
  */
 class Handle implements Ability {
   private target: Ability;
@@ -160,9 +168,11 @@ export function* createAbilityRegistry(
   const current = new Map<string, RegistryEntry>();
   /** One handle per name for the registry's life, whether or not the name is enabled right now. */
   const handles = new Map<string, Handle>();
-  /** Entries that left the roster while a run still held them: they end at the run's release, or at
+  /** Entries that left the roster while a scope still held their name: they end at the last release, or at
    *  the registry's exit, whichever comes first. */
   const lingering = new Set<RegistryEntry>();
+  /** The holds open on each name, whether or not the name is enabled right now. */
+  const holdsOn = new Map<string, Set<Hold>>();
   const order: string[] = [];
 
   const end = function* (entry: RegistryEntry, when: string): Operation<void> {
@@ -176,7 +186,7 @@ export function* createAbilityRegistry(
   /** An entry leaves the roster: it ends now if nothing holds it, else when its last holder releases. */
   const retire = function* (entry: RegistryEntry): Operation<void> {
     entry.retired = true;
-    if (entry.holds === 0) yield* end(entry, 'on retirement');
+    if (entry.holders.size === 0) yield* end(entry, 'on retirement');
     else lingering.add(entry);
   };
 
@@ -314,7 +324,7 @@ export function* createAbilityRegistry(
         const name = ability.manifest.name;
         const prior = current.get(name);
         if (!prior) order.push(name);
-        current.set(name, { name, ability, destroy, holds: 0, retired: false });
+        current.set(name, { name, ability, destroy, holders: new Set(holdsOn.get(name)), retired: false });
         let handle = handles.get(name);
         if (handle) handle.rebind(ability);
         else {
@@ -338,12 +348,20 @@ export function* createAbilityRegistry(
 
   internals.set(registry, {
     *hold() {
-      const held = [...current.values()];
-      for (const entry of held) entry.holds += 1;
+      const hold: Hold = {};
+      const names = [...current.keys()];
+      for (const name of names) {
+        let holds = holdsOn.get(name);
+        if (!holds) holdsOn.set(name, (holds = new Set()));
+        holds.add(hold);
+        current.get(name)!.holders.add(hold);
+      }
       yield* ensure(function* () {
-        for (const entry of held) {
-          entry.holds -= 1;
-          if (entry.retired && entry.holds === 0) yield* end(entry, 'at its last holder\'s release');
+        for (const name of names) holdsOn.get(name)?.delete(hold);
+        // Every entry of the held names — the one serving and the ones that left the roster meanwhile.
+        for (const entry of [...names.map((n) => current.get(n)), ...lingering]) {
+          if (!entry || !entry.holders.delete(hold)) continue;
+          if (entry.retired && entry.holders.size === 0) yield* end(entry, 'at its last holder\'s release');
         }
       });
     },

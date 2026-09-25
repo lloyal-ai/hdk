@@ -21,10 +21,13 @@ the mechanism — whenever the promise is new.
 - **R2 — a name resolves to its current entry.** `byName` and `enabled` answer one handle per name for
   the registry's life; the handle's `tools`, `source` and `skill` forward to the entry the last save
   built.
-- **R3 — a holder keeps what it took.** A tool object dereferenced before a save (an agent's spread at spawn)
-  keeps answering, on the entry it took, until the run that took it ends.
-- **R4 — teardown when the last holder ends.** A superseded entry's scope ends once, when the last run holding it ends; an
-  entry nothing holds ends at once.
+- **R3 — a holder keeps what it took.** A scope that took its sources holds their NAMES: a tool object
+  dereferenced before a save (an agent's spread at spawn) keeps answering, on the entry it took, and so does one
+  dereferenced after — every entry enabled under a held name while the hold is open, by a save or before a
+  disable, lives until the scope ends. A value a tool reads at the call — its ability's stored config — follows
+  the store, not the entry; that is the ability's side (the web ability's tests hold it for the search key).
+- **R4 — teardown when the last holder ends.** A superseded entry's scope ends once, when the last run holding
+  its name ends; an entry nothing holds ends at once.
 - **R5 — a failed rebuild changes nothing.** A factory that refuses its new configuration under a run leaves
   the current entry serving, restores the stored config, and says why.
 

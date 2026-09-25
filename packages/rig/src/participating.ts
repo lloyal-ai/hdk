@@ -28,9 +28,10 @@ export function abilityToc(ability: Ability, attachments: readonly Attachment[] 
 
 /**
  * The enabled abilities that can take part in a run: not switched off (`excluded`, by manifest name), with
- * something to read for this run. The run HOLDS what it took: the entries behind these handles live
- * until the calling scope ends — however many saves supersede them meanwhile — so an agent that spread their
- * tools at spawn keeps working tools. Call it inside the run's own operation, where a Stop reaches.
+ * something to read for this run. The calling scope HOLDS what it took: every entry behind these handles, and
+ * every entry a save enables under their names meanwhile, lives until that scope ends — so whatever spread
+ * their tools keeps working tools. Call it in the run's own operation, where a Stop reaches. A save reaches
+ * the next take of the sources; a value a tool reads from its ability's store at the call, it reaches at once.
  */
 export function* participating(excluded: readonly string[] = [], attachments: readonly Attachment[] = []): Operation<Ability[]> {
   const registry = yield* AbilityRegistryCtx.expect();

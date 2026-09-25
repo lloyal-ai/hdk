@@ -28,7 +28,7 @@ describe('an ability whose rebuild fails under a run', () => {
       expect(yield* w.store.get('web')).toEqual({ tavilyKey: 'good' });
       expect(w.registry.byName('web')).toBe(handle);
       expect(w.registry.stateOf('web')).toBe('enabled');
-      expect((handle.tools[0] as EnableTool).nth).toBe(1);
+      expect(yield* handle.tools[0].execute({})).toEqual({ nth: 1 });   // through the tool object, as an agent would ask
       expect(yield* spread[0].execute({})).toEqual({ nth: 1 });
       expect(torn).toEqual([]);
       expect(built.map((b) => b.nth)).toEqual([1]);   // the refused enable never became an entry

@@ -344,8 +344,8 @@ export interface AbilityRegistry {
    * per-ability detached scope (seeded with `Ability*Ctx`), validates the manifest, and adds it. Returns the
    * name's HANDLE — one object per name for the registry's life, forwarding to the entry this call
    * built. A name already enabled is superseded: the new entry is registered first, then the name resolves
-   * to it, and the one it replaces leaves the roster — ending at once if no run holds it, else when the
-   * last run that took it through `participating()` ends.
+   * to it, and the one it replaces leaves the roster — ending at once if no scope holds its name, else when
+   * the last scope that took it through `participating()` ends; a holder keeps what it took.
    * Throws — and tears down the partial scope, leaving the current entry in place — if the factory
    * throws or validation fails.
    */
