@@ -231,11 +231,22 @@ export interface ResolveModelOpts {
   signal?: AbortSignal;
 }
 
+/** The first four bytes of every GGUF file spell its name. */
+function isGguf(p: string): boolean {
+  const fd = fs.openSync(p, 'r');
+  try {
+    const head = Buffer.alloc(4);
+    return fs.readSync(fd, head, 0, 4, 0) === 4 && head.toString('latin1') === 'GGUF';
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 /**
  * Resolve a `(role, spec)` to a concrete local `.gguf` path, fetching +
  * verifying if needed. The walk (dx.md §3.2):
  *
- *   explicit `path:`                  → use as-is (no copy; trusted by possession)
+ *   explicit `path:`                  → use as-is (no copy; trusted by possession — a file, opening as a GGUF)
  *   `models/<role>/<id>.gguf` present → use it
  *   `id:`                             → catalog fetch + fail-closed digest → write the slot
  *   no id                             → exactly one `.gguf` in the role dir → adopt; >1 → fail clearly
@@ -256,6 +267,10 @@ export async function resolveModel(opts: ResolveModelOpts): Promise<string> {
     }
     if (!stat.isFile()) {
       throw new Error(`Model path for role "${role}" is not a file: ${p}`);
+    }
+    // The one thing a reader can be told before the load fails on it: a GGUF file opens with its own name.
+    if (!isGguf(p)) {
+      throw new Error(`Model path for role "${role}" is not a GGUF model file: ${p}`);
     }
     return p;
   }

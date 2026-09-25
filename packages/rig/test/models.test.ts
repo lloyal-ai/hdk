@@ -38,6 +38,8 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+/** What every GGUF file opens with. */
+const GGUF = 'GGUF\u0003\u0000\u0000\u0000';
 function put(rel: string, content = 'x'): string {
   const p = path.join(root, rel);
   fs.mkdirSync(path.dirname(p), { recursive: true });
@@ -60,7 +62,7 @@ function mockFetch(map: Record<string, Uint8Array | Error>): typeof fetch {
 
 describe('resolveModel — filesystem walk', () => {
   it('explicit path: resolves absolute, no copy', async () => {
-    put('weights/my.gguf');
+    put('weights/my.gguf', GGUF);
     const out = await resolveModel({ projectRoot: root, role: 'llm', spec: { path: 'weights/my.gguf' } });
     expect(out).toBe(path.join(root, 'weights/my.gguf'));
   });
@@ -69,6 +71,15 @@ describe('resolveModel — filesystem walk', () => {
     await expect(
       resolveModel({ projectRoot: root, role: 'llm', spec: { path: 'nope.gguf' } }),
     ).rejects.toThrow(/not found/);
+  });
+
+  it('explicit path: a file that is not a GGUF model is refused by name — the one thing a reader can be told before the load fails', async () => {
+    put('weights/notes.txt', 'these are not weights');
+    await expect(
+      resolveModel({ projectRoot: root, role: 'llm', spec: { path: 'weights/notes.txt' } }),
+    ).rejects.toThrow(/is not a GGUF model file/);
+    put('weights/real.gguf', GGUF);
+    expect(await resolveModel({ projectRoot: root, role: 'llm', spec: { path: 'weights/real.gguf' } })).toBe(path.join(root, 'weights/real.gguf'));
   });
 
   it('explicit path: pointing at a directory → rejected (must be a file)', async () => {
