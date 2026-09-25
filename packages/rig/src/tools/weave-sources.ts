@@ -65,3 +65,56 @@ export function weaveSourcesIntoResult(result: unknown, sources: unknown): unkno
   if (lines.length > 0) out = out + '\n\nSources:\n' + lines.join('\n');
   return out;
 }
+
+/** A list line: an optional bullet or number, then a markdown link — what a model writes under "Sources". */
+const LIST_LINK = /^\s*(?:[-*]|\d+[.)])?\s*\[[^\]]*\]\(([^)\s]+)\)\s*$/;
+/** The heading that names the list: "Sources", "References", plain, bold or a markdown heading, with or without a colon. */
+const LIST_HEAD = /^\s*(?:#{1,4}\s+|\*\*)?(?:sources|references)(?:\*\*)?\s*:?\s*$/i;
+
+/** An HTML anchor as a model writes one: the href in either quote, any other attributes, the text inside. */
+const HTML_ANCHOR = /<a\s+[^>]*?href=(["'])([^"']+)\1[^>]*>([\s\S]*?)<\/a>/gi;
+
+/**
+ * The other half of the weave, for prose that cites its own way: a settled answer whose claims say `[2]`
+ * with the links only in a trailing "Sources" list, or whose links are HTML anchors. An anchor becomes the
+ * markdown link it means, since the renderer draws markdown links and nothing else. Then each bare `[n]` —
+ * not already a link's text, not a reference definition — becomes `[n](url)`, the url being the nth entry of
+ * that list in the order the model wrote it, so the reader meets a link at the claim, as the weave gives a
+ * report. The list stays; a body with neither is returned unchanged. Pure.
+ *
+ * @category Rig
+ */
+export function weaveOrdinalCitations(result: string): string {
+  // An anchor whose text is itself a bracketed number, `<a href>[2]</a>`, sheds the brackets: `[2](url)`, the
+  // weave's own bare-citation form, not a link whose text is "[2]".
+  const unanchored = result.replace(HTML_ANCHOR, (_m, _q, url: string, text: string) => {
+    const t = text.trim();
+    const bare = /^\[(\d+)\]$/.exec(t);
+    return `[${bare ? bare[1] : t}](${url})`;
+  });
+  const lines = unanchored.split('\n');
+  let end = lines.length;
+  while (end > 0 && lines[end - 1].trim() === '') end--;
+  // Read the list from the bottom: link lines, blank lines between them, then the heading that names it.
+  const urls: string[] = [];
+  let i = end;
+  while (i > 0) {
+    const line = lines[i - 1];
+    const m = LIST_LINK.exec(line);
+    if (m) { urls.unshift(m[1]); i--; continue; }
+    if (line.trim() === '' && urls.length > 0) { i--; continue; }
+    break;
+  }
+  while (i > 0 && lines[i - 1].trim() === '') i--;
+  if (urls.length === 0 || i < 1 || !LIST_HEAD.test(lines[i - 1])) return unanchored;
+  // Only the prose above the heading is woven; a `[n]` is bare when nothing links or defines it — not a
+  // markdown link's text (`[n](`), not a definition (`[n]:`), not an HTML anchor's text (`>[n]</a>`), which a
+  // model that weaves its own links writes as readily as markdown.
+  const head = lines.slice(0, i - 1).join('\n');
+  const tail = lines.slice(i - 1).join('\n');
+  const woven = head.replace(/(^|[^\]\\>[])\[(\d+)\](?![(:])/g, (m, before: string, n: string) => {
+    const url = urls[Number(n) - 1];
+    return url ? `${before}[${n}](${url})` : m;
+  });
+  return woven === head ? unanchored : `${woven}\n${tail}`;
+}
