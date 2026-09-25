@@ -66,8 +66,11 @@ export function weaveSourcesIntoResult(result: unknown, sources: unknown): unkno
   return out;
 }
 
-/** A list line: an optional bullet or number, then a markdown link — what a model writes under "Sources". */
-const LIST_LINK = /^\s*(?:[-*]|\d+[.)])?\s*\[[^\]]*\]\(([^)\s]+)\)\s*$/;
+/**
+ * A list line: an optional bullet or number, then a markdown link — what a model writes under "Sources". The url
+ * is read to the link's closing paren, not the first one: a Wikipedia title carries its own, `…/Alien_(film)`.
+ */
+const LIST_LINK = /^\s*(?:[-*]|\d+[.)])?\s*\[[^\]]*\]\(((?:[^()\s]|\([^()\s]*\))+)\)\s*$/;
 /** The heading that names the list: "Sources", "References", plain, bold or a markdown heading, with or without a colon. */
 const LIST_HEAD = /^\s*(?:#{1,4}\s+|\*\*)?(?:sources|references)(?:\*\*)?\s*:?\s*$/i;
 
@@ -109,10 +112,12 @@ export function weaveOrdinalCitations(result: string): string {
   if (urls.length === 0 || i < 1 || !LIST_HEAD.test(lines[i - 1])) return unanchored;
   // Only the prose above the heading is woven; a `[n]` is bare when nothing links or defines it — not a
   // markdown link's text (`[n](`), not a definition (`[n]:`), not an HTML anchor's text (`>[n]</a>`), which a
-  // model that weaves its own links writes as readily as markdown.
+  // model that weaves its own links writes as readily as markdown — and never inside code, a span or a fence,
+  // where `list[2]` is an index.
   const head = lines.slice(0, i - 1).join('\n');
   const tail = lines.slice(i - 1).join('\n');
-  const woven = head.replace(/(^|[^\]\\>[])\[(\d+)\](?![(:])/g, (m, before: string, n: string) => {
+  const woven = head.replace(/(```[\s\S]*?```|`[^`\n]*`)|(^|[^\]\\>[])\[(\d+)\](?![(:])/g, (m, code: string | undefined, before: string, n: string) => {
+    if (code !== undefined) return code;
     const url = urls[Number(n) - 1];
     return url ? `${before}[${n}](${url})` : m;
   });

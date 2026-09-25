@@ -42,6 +42,19 @@ describe('weaveOrdinalCitations', () => {
     expect(out).not.toContain('<a ');
   });
 
+  it('a list entry whose url carries parentheses is read whole — a Wikipedia title is a common one', () => {
+    const body = 'The film [1].\n\n## Sources\n\n- [Alien (film)](https://en.wikipedia.org/wiki/Alien_(film))';
+    expect(weaveOrdinalCitations(body)).toContain('The film [1](https://en.wikipedia.org/wiki/Alien_(film)).');
+  });
+
+  it('a bracketed number inside code — a span or a fence — is code, not a citation, and is left alone', () => {
+    const body = 'Read `items[1]` then [1].\n\n```js\nconst x = list[2];\n```\n\nAlso [2].' + list;
+    const out = weaveOrdinalCitations(body);
+    expect(out).toContain('Read `items[1]` then [1](https://one.io/a).');
+    expect(out).toContain('const x = list[2];');
+    expect(out).toContain('Also [2](https://two.io/b).');
+  });
+
   it('a body with no trailing list, or no bare number, is returned unchanged', () => {
     expect(weaveOrdinalCitations('Nothing to do [1].')).toBe('Nothing to do [1].');
     expect(weaveOrdinalCitations(`No numbers here.${list}`)).toBe(`No numbers here.${list}`);
