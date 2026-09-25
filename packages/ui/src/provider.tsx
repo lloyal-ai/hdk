@@ -73,7 +73,11 @@ export function HarnessProvider<E, C, S extends object>({ bridge, initialState, 
  * engine refuses identically: that list is shown with its refusal and no remedy at all. No steps at all is
  * the app.
  */
-export function installView(steps: readonly InstallerStep[], availability: Availability): 'app' | 'acquiring' | 'ended' | 'refused' {
+export function installView(steps: readonly InstallerStep[] | null, availability: Availability): 'waiting' | 'app' | 'acquiring' | 'ended' | 'refused' {
+  // Not yet known: the placement has an install to report and has not answered. Neither the app nor the
+  // installer mounts until it does — an app mounted for a moment runs its effects under an installer about
+  // to replace it, and an empty list must mean "this run acquires nothing", never "nobody has said yet".
+  if (steps === null) return 'waiting';
   if (steps.length === 0) return 'app';
   if (availability === 'ended' || availability === 'lost') {
     return steps.some((s) => s.status === 'failed' && s.id === 'machine') ? 'refused' : 'ended';
@@ -89,7 +93,7 @@ export function asEnded(steps: readonly InstallerStep[]): readonly InstallerStep
 }
 
 /** The installer while the run acquires; the harness's view once it is done — or at once, on a run that acquires nothing. */
-function Acquiring({ children }: { children: ReactNode }): ReactElement {
+function Acquiring({ children }: { children: ReactNode }): ReactElement | null {
   const steps = useInstall();
   const availability = useAvailability();
   const recover = useRecover();
@@ -104,6 +108,7 @@ function Acquiring({ children }: { children: ReactNode }): ReactElement {
   const acquisition = useRef(0);
   useEffect(() => { if (view !== 'acquiring') acquisition.current += 1; }, [view]);
   useEffect(() => () => { acquisition.current += 1; }, []);
+  if (view === 'waiting' || steps === null) return null;
   if (view === 'app') return createElement(Fragment, null, children);
   if (view === 'refused') return createElement(Installer, { steps, footnote: 'This machine cannot run this model' });
   if (view === 'ended') {
@@ -290,9 +295,10 @@ export function useRecover(): (() => void) | null {
  * the gate reports once and the run ends — so the placement is also asked what it is holding, exactly as
  * `onSession` is paired with a "now" channel. Empty on every run that acquires nothing.
  */
-export function useInstall(): readonly InstallerStep[] {
+export function useInstall(): readonly InstallerStep[] | null {
   const { bridge } = useHarness();
-  const [steps, setSteps] = useState<readonly InstallerStep[]>([]);
+  // Unknown until a placement that can be asked has answered; a placement with nothing to ask holds nothing.
+  const [steps, setSteps] = useState<readonly InstallerStep[] | null>(() => (bridge.installNow ? null : []));
   useEffect(() => subscribeInstall(bridge, setSteps), [bridge]);
   return steps;
 }
@@ -307,7 +313,7 @@ export function useInstall(): readonly InstallerStep[] {
  * holds, an answer from the old one never applied. A bridge with no session plane has one life, asked once.
  * Returns the unsubscribe.
  */
-export function subscribeInstall(bridge: Pick<Bridge<unknown, unknown, unknown>, 'onEvent' | 'installNow' | 'onSession'>, set: (steps: readonly InstallerStep[]) => void): () => void {
+export function subscribeInstall(bridge: Pick<Bridge<unknown, unknown, unknown>, 'onEvent' | 'installNow' | 'onSession'>, set: (steps: readonly InstallerStep[] | null) => void): () => void {
   let live = true;
   let pushed = false;
   let life = 0;
@@ -321,8 +327,8 @@ export function subscribeInstall(bridge: Pick<Bridge<unknown, unknown, unknown>,
     // A placement with no `installNow` has nothing to report; one that HAS it and fails to answer is a broken
     // wiring, shown as a failed step rather than as a run that acquires nothing.
     void bridge.installNow?.().then((now) => {
-      const steps = stepsOf(now);
-      if (live && mine === life && !pushed && steps) set(steps);
+      // An answer with no frame in it is an engine that retained none: this run acquires nothing.
+      if (live && mine === life && !pushed) set(stepsOf(now) ?? []);
     }, (err: unknown) => {
       if (live && mine === life && !pushed) {
         set([{ id: 'install', label: 'Asking what this run needs', status: 'failed', note: err instanceof Error ? err.message : String(err) }]);
@@ -337,7 +343,8 @@ export function subscribeInstall(bridge: Pick<Bridge<unknown, unknown, unknown>,
   });
   const offSession = bridge.onSession?.((state: SessionState) => {
     if (!live || state.phase !== 'warming') return;
-    set([]);
+    // A new life: what it holds is unknown until it answers — and known to be nothing where nothing can be asked.
+    set(bridge.installNow ? null : []);
     ask();
   });
   ask();

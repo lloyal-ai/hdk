@@ -126,6 +126,9 @@ describe('the install in front of the view', () => {
     const { installView } = await import('../src/provider');
     expect(installView([], 'ready')).toBe('app');
     expect(installView([], 'ended')).toBe('app');
+    // Not yet known — the placement has an install to report and has not answered — is neither: nothing mounts.
+    expect(installView(null, 'ready')).toBe('waiting');
+    expect(installView(null, 'warming')).toBe('waiting');
     for (const live of ['connecting', 'warming', 'queued', 'ready'] as const) {
       expect(installView(running, live), live).toBe('acquiring');
       expect(installView(failedLlm, live), live).toBe('acquiring');   // retry / a file / stop are on offer
@@ -197,13 +200,14 @@ describe('the install in front of the view', () => {
     announce({ phase: 'warming' });
     announce({ phase: 'live' });
     await new Promise((r) => setTimeout(r, 0));
-    expect(seen).toEqual([failed, []]);
+    // Unknown at the new life, then nothing: the replacement retained no frame, so it acquires nothing.
+    expect(seen).toEqual([failed, null, []]);
     expect(asked).toEqual([{ type: 'install:step', steps: failed }, null]);
     // A replacement that fails again pushes its own rows, and they show.
     announce({ phase: 'draining' });
     announce({ phase: 'warming' });
     for (const cb of subs) cb({ epoch: 2, seq: 1, ev: { type: 'install:step', steps: running } });
-    expect(seen).toEqual([failed, [], [], running]);
+    expect(seen).toEqual([failed, null, [], null, running]);
     off();
   });
 
@@ -225,7 +229,8 @@ describe('the install in front of the view', () => {
     answers[0]({ type: 'install:step', steps: failed });   // the old engine's answer, late
     answers[1](null);
     await new Promise((r) => setTimeout(r, 0));
-    expect(seen).toEqual([[]]);
+    // Unknown at the new life, then nothing — the late answer from the old engine never lands between.
+    expect(seen).toEqual([null, []]);
   });
 
   it('subscribeInstall: after unsubscribing, neither source is heard', async () => {

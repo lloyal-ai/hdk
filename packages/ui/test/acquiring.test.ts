@@ -117,6 +117,18 @@ describe('the install view when the engine ends', () => {
     act(() => root.unmount());
   });
 
+  it('until the placement has said what this run acquires, nothing is mounted — neither the app nor the installer', async () => {
+    const bridge = desktopBridge(running);
+    let answer!: (steps: readonly InstallerStep[]) => void;
+    bridge.installNow = () => new Promise((resolve) => { answer = (steps) => resolve({ type: 'install:step', steps }); });
+    mount(bridge);
+    await flush();
+    expect(container.textContent).toBe('');   // the app's own effects have not run under an installer that is about to replace it
+    await act(async () => { answer([]); await Promise.resolve(); });
+    expect(container.textContent).toBe('the app');
+    act(() => root.unmount());
+  });
+
   it('a new engine that acquires nothing: the steps clear at warming and the app is shown', async () => {
     const bridge = desktopBridge(running);
     mount(bridge);
