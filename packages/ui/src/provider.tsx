@@ -68,7 +68,8 @@ export function HarnessProvider<E, C, S extends object>({ bridge, initialState, 
  * be acted on. Steps with a live engine are the installer and its remedies. Steps after the engine ended are an
  * install that did not finish — a finished one publishes the empty list — shown as the same list, offered the
  * app's own recovery (a new engine) and nothing that would be sent to a process that is gone; a row still
- * `running` there is the download the engine died under. Unless the failed row is the MACHINE's, which a new
+ * `running` there is the download the engine died under, shown as the failure it is ({@link asEnded}) so the
+ * remedy has a row to stand beside. Unless the failed row is the MACHINE's, which a new
  * engine refuses identically: that list is shown with its refusal and no remedy at all. No steps at all is
  * the app.
  */
@@ -78,6 +79,13 @@ export function installView(steps: readonly InstallerStep[], availability: Avail
     return steps.some((s) => s.status === 'failed' && s.id === 'machine') ? 'refused' : 'ended';
   }
   return 'acquiring';
+}
+
+/** The steps as an engine that ended leaves them: the one it was running has failed, and its note says why.
+ *  The list then says what happened on its own, and the installer draws it by its one rule — a failed step is
+ *  where the remedies go. */
+export function asEnded(steps: readonly InstallerStep[]): readonly InstallerStep[] {
+  return steps.map((s) => (s.status === 'running' ? { ...s, status: 'failed', note: 'The engine ended during this step' } : s));
 }
 
 /** The installer while the run acquires; the harness's view once it is done — or at once, on a run that acquires nothing. */
@@ -97,7 +105,7 @@ function Acquiring({ children }: { children: ReactNode }): ReactElement {
   if (view === 'refused') return createElement(Installer, { steps, footnote: 'This machine cannot run this model' });
   if (view === 'ended') {
     return createElement(Installer, {
-      steps,
+      steps: asEnded(steps),
       footnote: 'The engine ended',
       ...(recover ? { onRetry: recover, retryLabel: 'Start a new engine' } : {}),
     });
