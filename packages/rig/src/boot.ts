@@ -113,13 +113,12 @@ export function bootEdge<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>, 
   const oneShot = !bridged && !process.stdout.isTTY;
   const loaded = loadOrExit(app.config, projectRoot, bootEnv);
   let model = loaded.config.model as ModelFamily;
+  let origin = loaded.origin;
 
   main(function* () {
-    // The binding mounts FIRST — before the machine check, the fetch and the load. Nothing in a binding
-    // touches the context, and mounting it last is what left a first run with no transport at all for the
-    // minutes it spent downloading. The command loop still arms later; `bufferedCommandSignal` holds that gap.
-    // The install's own commands are routed at this boundary, never by subscribing — a subscriber would
-    // drain the harness's backlog.
+    // The binding mounts FIRST — before anything that can take minutes. Nothing in a binding touches the
+    // context. The command loop still arms later; `bufferedCommandSignal` holds that gap. The install's own
+    // commands are routed at this boundary, never by subscribing — a subscriber would drain the harness's backlog.
     const dev = process.env.LLOYAL_DEV === '1';
     const events = createBus<E>();
     const commands = bufferedCommandSignal<C>();
@@ -149,11 +148,15 @@ export function bootEdge<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>, 
         report: (ev) => { events.send(ev as unknown as E); progress(ev); },
         ...(bridged ? {
           controls: installCommands,
-          persist: (patch) => loaded.persist!(patch as ConfigPatch<ConfigOf<T>>).config.model as ModelFamily,
+          // Provenance follows the save: the re-layered origin is what the runner reports from here on.
+          persist: (patch) => {
+            const saved = loaded.persist!(patch as ConfigPatch<ConfigOf<T>>);
+            origin = saved.origin;
+            return saved.config.model as ModelFamily;
+          },
         } : {}),
       });
     } catch (err) {
-      process.stderr.write(`\n${message(err)}\n`);
       return yield* exit(1, message(err));
     }
     model = acquired.model;
@@ -171,7 +174,7 @@ export function bootEdge<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>, 
     yield* RunnerCtx.set({
       ...makeEdgeRunner<ConfigOf<T>, OriginOf<T>>(cfg, {
         traceWriter, attachmentStore: media, dev,
-        table: loaded.table, origin: loaded.origin, persist: loaded.persist, sessionOriginMap: loaded.sessionOriginMap, frozen: loaded.frozen,
+        table: loaded.table, origin, persist: loaded.persist, sessionOriginMap: loaded.sessionOriginMap, frozen: loaded.frozen,
       }),
       mode: oneShot ? 'oneshot' : 'interactive',
       initialQuery,
@@ -240,7 +243,6 @@ export function bootServed<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>
     try {
       acquired = yield* install({ projectRoot, model, totalBytes: os.totalmem(), report: progressOnStderr() });
     } catch (err) {
-      process.stderr.write(`\n${message(err)}\n`);
       return yield* exit(1, message(err));
     }
     model = acquired.model;

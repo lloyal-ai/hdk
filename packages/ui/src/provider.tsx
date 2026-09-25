@@ -19,9 +19,8 @@
  *
  * @category UI
  */
-import { createContext, createElement, useContext, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { Fragment, createContext, createElement, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { ReactElement, ReactNode } from 'react';
-import { Fragment } from 'react';
 import { connectProjection, availabilityOf } from '@lloyal-labs/binding';
 import type { Availability, Bridge, Frame, Projection, SessionState, WireStatus } from '@lloyal-labs/binding';
 import { Installer } from './installer.js';
@@ -66,14 +65,18 @@ export function HarnessProvider<E, C, S extends object>({ bridge, initialState, 
 
 /**
  * What the provider shows in front of the harness's view: the installer only for an acquisition that can still
- * be acted on. Steps with a live engine are the installer and its remedies. Steps with a FAILED row after the
- * engine ended — a machine refusal exits the engine with its row published — are the same list, offered the
- * app's own recovery (a new engine) and nothing that would be sent to a process that is gone. Steps with
- * nothing failed after the engine ended, or no steps at all, are the app.
+ * be acted on. Steps with a live engine are the installer and its remedies. Steps after the engine ended are an
+ * install that did not finish — a finished one publishes the empty list — shown as the same list, offered the
+ * app's own recovery (a new engine) and nothing that would be sent to a process that is gone; a row still
+ * `running` there is the download the engine died under. Unless the failed row is the MACHINE's, which a new
+ * engine refuses identically: that list is shown with its refusal and no remedy at all. No steps at all is
+ * the app.
  */
-export function installView(steps: readonly InstallerStep[], availability: Availability): 'app' | 'acquiring' | 'ended' {
+export function installView(steps: readonly InstallerStep[], availability: Availability): 'app' | 'acquiring' | 'ended' | 'refused' {
   if (steps.length === 0) return 'app';
-  if (availability === 'ended' || availability === 'lost') return steps.some((s) => s.status === 'failed') ? 'ended' : 'app';
+  if (availability === 'ended' || availability === 'lost') {
+    return steps.some((s) => s.status === 'failed' && s.id === 'machine') ? 'refused' : 'ended';
+  }
   return 'acquiring';
 }
 
@@ -84,8 +87,14 @@ function Acquiring({ children }: { children: ReactNode }): ReactElement {
   const recover = useRecover();
   const send = useSend<{ type: string; step?: string; path?: string }>();
   const chooseFile = useChooseFile();
+  // A file dialog answers on its own time: what it answers is sent only while this view is still the one that
+  // asked, and a dialog that fails is said here rather than left as an unhandled rejection.
+  const asking = useRef(true);
+  useEffect(() => { asking.current = true; return () => { asking.current = false; }; }, []);
+  const [dialog, setDialog] = useState<string | null>(null);
   const view = installView(steps, availability);
   if (view === 'app') return createElement(Fragment, null, children);
+  if (view === 'refused') return createElement(Installer, { steps, footnote: 'This machine cannot run this model' });
   if (view === 'ended') {
     return createElement(Installer, {
       steps,
@@ -95,14 +104,15 @@ function Acquiring({ children }: { children: ReactNode }): ReactElement {
   }
   return createElement(Installer, {
     steps,
-    footnote: 'First run only',
+    footnote: dialog ?? 'First run only',
     onRetry: () => send({ type: 'install:retry' }),
     onStop: () => send({ type: 'install:quit' }),
     ...(chooseFile ? {
       onUseFile: (step: string) => {
-        void chooseFile({ extensions: ['gguf'], title: 'Choose a model file' }).then((path) => {
-          if (path) send({ type: 'install:use_file', step, path });
-        });
+        chooseFile({ extensions: ['gguf'], title: 'Choose a model file' }).then(
+          (path) => { if (path && asking.current) send({ type: 'install:use_file', step, path }); },
+          (err: unknown) => { if (asking.current) setDialog(`The file dialog failed: ${err instanceof Error ? err.message : String(err)}`); },
+        );
       },
     } : {}),
   });
@@ -295,10 +305,16 @@ export function subscribeInstall(bridge: Pick<Bridge<unknown, unknown, unknown>,
   const ask = (): void => {
     const mine = ++life;
     pushed = false;
+    // A placement with no `installNow` has nothing to report; one that HAS it and fails to answer is a broken
+    // wiring, shown as a failed step rather than as a run that acquires nothing.
     void bridge.installNow?.().then((now) => {
       const steps = stepsOf(now);
       if (live && mine === life && !pushed && steps) set(steps);
-    }).catch(() => { /* a placement that cannot answer has nothing to report */ });
+    }, (err: unknown) => {
+      if (live && mine === life && !pushed) {
+        set([{ id: 'install', label: 'Asking what this run needs', status: 'failed', note: err instanceof Error ? err.message : String(err) }]);
+      }
+    });
   };
   const off = bridge.onEvent((frame: Frame<unknown>) => {
     const steps = stepsOf(frame.ev);

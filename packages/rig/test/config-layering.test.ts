@@ -128,8 +128,21 @@ describe('a block is present when a rung says so — its presence is the request
     writeJson({ version: CONFIG_VERSION, sources: {}, abilities: {}, model: { reranker: 'x' } });
     const { config } = loadConfig(modelSettings, { model: { llm: { id: 'qwen3.5-4b' } } }, { env: {}, cwd });
     expect('reranker' in config.model).toBe(false);
+  });
+
+  it('`null` means one thing per file: in harness.json it is a clear, at a block as at a key — `{}` is the request there; a bare key is YAML\'s', () => {
     writeJson({ version: CONFIG_VERSION, sources: {}, abilities: {}, model: { vision: null } });
+    expect(loadConfig(modelSettings, { model: { llm: { id: 'qwen3.5-4b' } } }, { env: {}, cwd }).config.model.vision).toBeUndefined();
+    // A clear withdraws the overlay's word only: a block the committed file names stays requested.
+    expect(loadConfig(modelSettings, { model: { llm: { id: 'qwen3.5-4b' }, vision: {} } }, { env: {}, cwd }).config.model.vision).toEqual({});
+    writeJson({ version: CONFIG_VERSION, sources: {}, abilities: {}, model: { vision: {} } });
     expect(loadConfig(modelSettings, { model: { llm: { id: 'qwen3.5-4b' } } }, { env: {}, cwd }).config.model.vision).toEqual({});
+  });
+
+  it('a cli or env value the key REFUSES requests nothing: presence and acceptance are one rule', () => {
+    const viaEnv = defineConfig({ 'model.llm.context': modelSettings['model.llm.context'], 'model.llm.id': modelSettings['model.llm.id'] });
+    expect(loadConfig(viaEnv, {}, { env: { LLAMA_CTX_SIZE: '12k' }, cwd }).config.model.llm).toBeUndefined();
+    expect(loadConfig(viaEnv, {}, { env: { LLAMA_CTX_SIZE: '8192' }, cwd }).config.model.llm).toEqual({ context: 8192 });
   });
 
   it("every top-level family the table declares is present, so an app reads `config.defaults` without a guard", () => {

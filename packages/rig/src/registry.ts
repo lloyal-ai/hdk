@@ -36,7 +36,22 @@ import type { Operation } from 'effection';
 import { GrantStoreCtx, Attachments } from '@lloyal-labs/lloyal-agents';
 import { AbilityRegistryCtx } from './ability-types';
 import { AbilityConfigStoreCtx } from './ability-config';
-import { Services } from './services';
+import { SERVICES, Services } from './services';
+import type { Service, ServiceMap } from './services';
+
+/** The requirement, held to the bag: every service a manifest declares is bound, or the ability is refused
+ *  naming the block whose presence would bind it — or, for a name no row provides, saying so. The one check,
+ *  run on the static manifest before the factory and on the manifest the factory returns. */
+function requireBound(bound: Partial<ServiceMap> | undefined, ability: string, services: readonly string[] | undefined): void {
+  for (const name of services ?? []) {
+    if (!(SERVICES as readonly string[]).includes(name)) {
+      throw new Error(`${ability} requires \`${name}\`, which is not a service this platform provides`);
+    }
+    if (!bound?.[name as Service]) {
+      throw new Error(`${ability} requires \`${name}\`, which is not configured — add \`model.${name}\` to harness.yml`);
+    }
+  }
+}
 import type { GrantStore } from '@lloyal-labs/lloyal-agents';
 import type { Ability, AbilityFactory, AbilityRegistry } from './ability-types';
 import type { AbilityConfigStore } from './ability-config';
@@ -116,11 +131,7 @@ export function* createAbilityRegistry(
       // manifest requires must be among them, or the factory does not run: the refusal names the block
       // whose presence would bind it, before an unset context can be the thing that reports it.
       const bound = yield* Services.get();
-      for (const name of factory.manifest?.services ?? []) {
-        if (!bound?.[name as keyof typeof bound]) {
-          throw new Error(`${factory.manifest!.name} requires \`${name}\`, which is not configured — add \`model.${name}\` to harness.yml`);
-        }
-      }
+      if (factory.manifest) requireBound(bound, factory.manifest.name, factory.manifest.services);
 
       // The stored config is checked against the manifest BEFORE the factory
       // runs: a factory handed a malformed config must not be the thing that
@@ -178,11 +189,7 @@ export function* createAbilityRegistry(
         // The requirement is the manifest the registry registers. The static check above refused before
         // construction where it could; a factory that carries no static manifest declares in the one it returns,
         // and that declaration is held to the same bag before anything is registered.
-        for (const name of ability.manifest.services ?? []) {
-          if (!bound?.[name as keyof typeof bound]) {
-            throw new Error(`${ability.manifest.name} requires \`${name}\`, which is not configured — add \`model.${name}\` to harness.yml`);
-          }
-        }
+        requireBound(bound, ability.manifest.name, ability.manifest.services);
 
         const declared = ability.manifest.abilityProtocolVersion ?? '3.0';
         if (!SUPPORTED_ABILITY_PROTOCOL_VERSIONS.includes(declared)) {

@@ -44,9 +44,10 @@ import { MockSessionContext } from '@lloyal-labs/sdk/dist/testing.js';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import { createBus } from '@lloyal-labs/binding';
 import type { EventBus } from '@lloyal-labs/binding';
-import { Services } from './services';
+import { SERVICES, Services } from './services';
+import type { Service, ServiceMap } from './services';
 import type { TraceWriter, TraceEvent } from '@lloyal-labs/lloyal-agents';
-import type { Reranker } from './retrieval';
+import type { Embedder, Reranker } from './retrieval';
 import type { AttachmentStore } from '@lloyal-labs/media';
 import { bufferedCommandSignal } from './buffered-command-signal';
 import { makeServedRunner, RunnerCtx } from './runner';
@@ -194,6 +195,21 @@ export const stubReranker: Reranker = {
   tokenizeChunks: async () => {},
   tokenize: async () => [],
   dispose: () => {},
+};
+
+/** The embedder a scenario runs against: one vector per text, none nearer than another. */
+export const stubEmbedder: Embedder = {
+  dimension: 2,
+  *embed(texts) { return texts.map(() => new Float32Array([1, 0])); },
+  *tokenize(text) { return Array.from(text, (_, i) => i); },
+  dispose: () => {},
+};
+
+/** What stands in for each service under the rig. */
+const STUBS: { [K in Service]: ServiceMap[K] } = {
+  reranker: stubReranker,
+  vision: { artifact: 'the stub projector' },
+  embedding: stubEmbedder,
 };
 
 /** The document folders under a library root, sorted. */
@@ -392,13 +408,13 @@ export async function runHarness<T extends ConfigTable, C extends { type: string
   let failure: unknown;
   const task = run(function* () {
     yield* RunnerCtx.set(runner);
-    // What the configuration names is what is in reach, as a boot provisions it: a `model.reranker` block puts
-    // the stub there; no block, and an ability that needs one finds nothing — under the rig as in the run.
-    const family = cfg.model as { reranker?: unknown; vision?: unknown };
-    yield* Services.set({
-      ...(family.reranker !== undefined ? { reranker: stubReranker } : {}),
-      ...(family.vision !== undefined ? { vision: { artifact: 'the stub projector' } } : {}),
-    });
+    // What the configuration names is what is in reach, as a boot provisions it: a present block puts that
+    // service's stub there; no block, and an ability that needs one finds nothing — under the rig as in the run.
+    // Every service, from the one list: a new service without a stub does not compile.
+    const family = cfg.model as Partial<Record<Service, unknown>>;
+    const inReach: Partial<ServiceMap> = {};
+    for (const name of SERVICES) if (family[name] !== undefined) (inReach as Record<string, unknown>)[name] = STUBS[name];
+    yield* Services.set(inReach);
     yield* spec.harness(ctx as unknown as SessionContext, bus, rawCommands);
   });
   spec.controls?.({

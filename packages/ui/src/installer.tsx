@@ -112,24 +112,37 @@ function duration(seconds: number): string {
   return s > 0 ? `about ${m} min ${s} s left` : `about ${m} min left`;
 }
 
+/** One reading of a step's position, and when it was taken. */
+export interface Sample { at: number; got: number }
+
+/** The rate ONE step's samples imply: bytes per second across the window, once a second has passed and bytes
+ *  have moved; null before that, and null for a step that has not moved. */
+export function rateOf(samples: readonly Sample[], now: number): number | null {
+  if (samples.length === 0) return null;
+  const first = samples[0];
+  const last = samples[samples.length - 1];
+  const seconds = (now - first.at) / 1000;
+  return seconds >= 1 && last.got > first.got ? (last.got - first.got) / seconds : null;
+}
+
 /**
  * Bytes per second, from what actually arrived. The engine reports position, never speed: rate is
  * wall-clock, and the clock that matters is the one in front of the reader. Averaged over a short window
- * so the figure is readable rather than twitching every tick.
+ * so the figure is readable rather than twitching every tick. Measured PER STEP: the window empties when the
+ * active step changes, and a step with no position — finished, failed, not yet begun — has no rate.
  */
-function useRate(got: number | undefined): number | null {
-  const samples = useRef<{ at: number; got: number }[]>([]);
+function useRate(step: string | undefined, got: number | undefined): number | null {
+  const window = useRef<{ step: string | undefined; samples: Sample[] }>({ step: undefined, samples: [] });
   const [rate, setRate] = useState<number | null>(null);
   useEffect(() => {
-    if (got === undefined) return;
+    const w = window.current;
+    if (w.step !== step) { w.step = step; w.samples = []; }
+    if (got === undefined) { setRate(null); return; }
     const now = Date.now();
-    const s = samples.current;
-    s.push({ at: now, got });
-    while (s.length > 2 && now - s[0].at > 6000) s.shift();
-    const first = s[0];
-    const seconds = (now - first.at) / 1000;
-    setRate(seconds >= 1 && got > first.got ? (got - first.got) / seconds : null);
-  }, [got]);
+    w.samples.push({ at: now, got });
+    while (w.samples.length > 2 && now - w.samples[0].at > 6000) w.samples.shift();
+    setRate(rateOf(w.samples, now));
+  }, [step, got]);
   return rate;
 }
 
@@ -170,7 +183,7 @@ export function Installer({ steps, footnote, onRetry, retryLabel = 'Try again', 
   const active = steps.find((x) => x.status === 'running');
   const failed = steps.find((x) => x.status === 'failed');
   const head = failed ?? active;
-  const rate = useRate(active?.got);
+  const rate = useRate(active?.id, active?.got);
   if (steps.length === 0) return null;
 
   const position = head ? steps.indexOf(head) + 1 : steps.filter((x) => x.status === 'done').length;

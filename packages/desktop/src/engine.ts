@@ -47,6 +47,10 @@ export interface CreateEngineOpts<E, S> {
   /** Added to the engine's environment. `RR_BRIDGE` is set for you: it is what makes the cli boot mount the ipc binding. */
   env?: Record<string, string>;
   initialState: S;
+  /** The harness's fold. The engine's stream carries the PLATFORM's events beside the harness's own — the
+   *  install's steps, trace and host-resource events — through this same reducer, so it must return its state
+   *  unchanged for an event it does not know; the platform's events are read from the stream, never from the
+   *  fold. Every template holds this with a row in its own tests. */
   reduce: (state: S, ev: E) => S;
   /** Where a frame goes: the renderer, when its window is alive. */
   forward: (frame: Frame<E>) => void;

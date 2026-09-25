@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import { createElement } from 'react';
 import { renderToString } from 'react-dom/server';
-import { Installer } from '../src/installer';
+import { Installer, rateOf } from '../src/installer';
 import type { InstallerStep } from '../src/installer';
 
 const steps: InstallerStep[] = [
@@ -45,6 +45,16 @@ describe('Installer', () => {
     expect(html).toContain('Try again');
     expect(html).toContain('>Stop<');
     expect(renderToString(createElement(Installer, { steps: [] }))).toBe('');
+  });
+
+  it('the rate is measured from one step\'s samples: none before a second has passed, none for a step whose bytes have not moved, and a fresh window says nothing', () => {
+    expect(rateOf([], 1000)).toBeNull();
+    expect(rateOf([{ at: 0, got: 0 }], 500)).toBeNull();                                  // under a second
+    expect(rateOf([{ at: 0, got: 100 }, { at: 1000, got: 100 }], 1000)).toBeNull();      // nothing moved
+    expect(rateOf([{ at: 0, got: 0 }, { at: 2000, got: 4096 }], 2000)).toBe(2048);
+    // A new step's first sample is a fresh window — what `useRate` empties on a step change — so a step that
+    // finished at 2 GB never lends its speed to the one that just began at 0.
+    expect(rateOf([{ at: 5000, got: 0 }], 5000)).toBeNull();
   });
 
   it('takes the harness theme from custom properties, with the platform values as defaults', () => {

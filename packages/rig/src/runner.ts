@@ -49,7 +49,8 @@ export interface BaseHarnessConfig {
  *  changes, so a local overlay never pins untouched values over the layers
  *  beneath it. How deep a patch merges is the table's to say (`mergeConfig`);
  *  `""` clears a key at any depth, a whole block included (`model.vision: ""`
- *  withdraws the request for vision). */
+ *  withdraws THIS rung's request for vision; a block the committed file names
+ *  stays requested, since presence is any rung's). */
 export type ConfigPatch<C> = {
   [K in keyof C]?: '' | (C[K] extends readonly unknown[] ? C[K] : NonNullable<C[K]> extends object ? ConfigPatch<NonNullable<C[K]>> : C[K]);
 };
@@ -116,13 +117,17 @@ export interface RunnerConfigOpts<
   sessionOriginMap: Record<string, keyof O & string>;
   /** Boot-frozen on every save: these keys describe the RUNNING residency,
    *  which a save cannot change (that is `reloadRuntime` + a relaunch).
-   *  Default: the `model` and `surface` families, and every origin key under
-   *  `model.`; keys absent from a given shape are ignored. */
+   *  Default: {@link FROZEN_FAMILIES} and every origin key under `model.`
+   *  ({@link frozenOriginOf}); keys absent from a given shape are ignored. */
   frozen?: { config?: readonly string[]; origin?: readonly string[] };
 }
 
-const DEFAULT_FROZEN_CONFIG: readonly string[] = ['model', 'surface'];
-const frozenOriginOf = (origin: Record<string, unknown>): readonly string[] => Object.keys(origin).filter((k) => k.startsWith('model.'));
+/** The families a boot freezes: the resident model, which a save cannot change. The ONE derivation —
+ *  `runnerConfig` and the runner's default read it here. */
+export const FROZEN_FAMILIES: readonly string[] = ['model'];
+/** The origin keys of the frozen families. */
+export const frozenOriginOf = (origin: Record<string, unknown>): readonly string[] =>
+  Object.keys(origin).filter((k) => FROZEN_FAMILIES.some((family) => k.startsWith(`${family}.`)));
 
 /** The runner ↔ harness contract. See the module docblock. */
 export interface Runner<
@@ -238,7 +243,7 @@ function makeRunner<
   const windDown = createSignal<void, void>();
   const cancelAgent = createSignal<{ agentId: number }, void>();
   const pauseRun = createSignal<boolean, void>();
-  const frozenConfig = opts.frozen?.config ?? DEFAULT_FROZEN_CONFIG;
+  const frozenConfig = opts.frozen?.config ?? FROZEN_FAMILIES;
   const frozenOrigin = opts.frozen?.origin ?? frozenOriginOf(opts.origin);
   void servedPath;
   /** In-memory only (served, or an edge boot without persistence): touched fields read `session`; `path: null`

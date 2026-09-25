@@ -122,6 +122,12 @@ export interface Projection<S> {
   dispose(): void;
 }
 
+/**
+ * Fold a bridge's stream into a state, seeded from the bridge's snapshot. `reduce` is the harness's fold, and
+ * the stream carries the PLATFORM's events beside the harness's own — the install's steps, trace and
+ * host-resource events — so it must return its state unchanged for an event it does not know; the platform
+ * reads those events from the stream, never from the fold.
+ */
 export function connectProjection<E, C, S>(
   bridge: Bridge<E, C, S>,
   initialState: S,

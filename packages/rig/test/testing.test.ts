@@ -90,6 +90,21 @@ describe('the rig provisions what the configuration names, as a boot does', () =
     expect(present(unnamed)).toBe(false);
   });
 
+  it('every service, from the one list: a `model.embedding` block puts the stub embedder in reach, as a boot would bind one', async () => {
+    let dimension: number | undefined;
+    const asksForEmbedding = function* (ctx: SessionContext, events: EventBus<Event>): Operation<void> {
+      yield* initializeHarness(ctx, events, { abilities: [], config: table });
+      const embedder = yield* service('embedding');
+      dimension = embedder.dimension;
+      events.send({ type: 'ready' });
+    };
+    await runHarness<typeof table, Command, Event>({
+      config: { table, yml: (dir) => ({ sources: { outputDir: dir }, model: { embedding: { id: 'nomic-embed-text-v1.5-q4' } } }) },
+      harness: asksForEmbedding, oneshot: 'Q', script: [{ on: () => false }],
+    });
+    expect(dimension).toBe(2);
+  });
+
   it('an override merges by the table: a block of the model family takes the override\'s keys beside its own', async () => {
     let seen: unknown;
     const reads = function* (ctx: SessionContext, events: EventBus<Event>): Operation<void> {

@@ -120,15 +120,31 @@ describe('the install in front of the view', () => {
   const running = [{ id: 'llm', label: 'Getting the model', status: 'running' as const }];
   const failed = [{ id: 'machine', label: 'This machine', status: 'failed' as const, note: '8 GB · 10 GB needed' }];
 
-  it('installView: no steps is the app; steps with a live engine are the installer; a failed list after the engine ended is handed to recovery; an ended engine with nothing failed is the app', async () => {
+  const failedLlm = [{ id: 'llm', label: 'Getting the model', status: 'failed' as const, note: 'Failed to fetch from any source' }];
+
+  it('installView: the whole matrix — no steps is the app; steps with a live engine are the installer, failed or not; any list after the engine ended is an install that did not finish, handed to recovery — the download the engine died under included — unless the failed row is the machine\'s, which no engine can mend', async () => {
     const { installView } = await import('../src/provider');
     expect(installView([], 'ready')).toBe('app');
-    expect(installView(running, 'connecting')).toBe('acquiring');
-    expect(installView(running, 'ready')).toBe('acquiring');
-    expect(installView(failed, 'ended')).toBe('ended');
-    expect(installView(failed, 'lost')).toBe('ended');
-    expect(installView(running, 'ended')).toBe('app');
     expect(installView([], 'ended')).toBe('app');
+    for (const live of ['connecting', 'warming', 'queued', 'ready'] as const) {
+      expect(installView(running, live), live).toBe('acquiring');
+      expect(installView(failedLlm, live), live).toBe('acquiring');   // retry / a file / stop are on offer
+      expect(installView(failed, live), live).toBe('acquiring');
+    }
+    for (const gone of ['ended', 'lost'] as const) {
+      expect(installView(failedLlm, gone), gone).toBe('ended');
+      expect(installView(failed, gone), gone).toBe('refused');
+      expect(installView(running, gone), gone).toBe('ended');   // the engine died mid-download: not the app
+    }
+  });
+
+  it('subscribeInstall: a placement that has installNow and fails to answer is a failed step, never a run that acquires nothing', async () => {
+    const { subscribeInstall } = await import('../src/provider');
+    const b = { onEvent() { return () => {}; }, installNow: () => Promise.reject(new Error("No handler registered for 'harness:install-now'")) };
+    const seen: unknown[] = [];
+    subscribeInstall(b, (steps) => seen.push(steps));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(seen).toEqual([[{ id: 'install', label: 'Asking what this run needs', status: 'failed', note: "No handler registered for 'harness:install-now'" }]]);
   });
 
   it('subscribeInstall: the push wins — an answer that arrives after a frame never overwrites it; an answer with no frame stands', async () => {

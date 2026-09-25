@@ -49,6 +49,14 @@ describe('planInstall: the steps, from the model family alone', () => {
     expect(planInstall({}).map((s) => [s.id, s.spec])).toEqual([['machine', undefined], ['llm', undefined]]);
   });
 
+  it('a block whose selection the row still cannot bind is refused at plan time — before a byte is fetched — and marked failed when the plan is lenient', () => {
+    expect(() => planInstall({ llm: { id: 'qwen3.5-4b' }, embedding: { path: '/e.gguf', context: 2048 } })).toThrow(/`model\.embedding\.pooling`/);
+    const lenient = planInstall({ llm: { id: 'qwen3.5-4b' }, embedding: { path: '/e.gguf', context: 2048 } }, { lenient: true });
+    expect(lenient.find((s) => s.id === 'embedding')).toMatchObject({ status: 'failed', note: expect.stringMatching(/`model\.embedding\.pooling`/) });
+    // The block that says its pooling, or names a catalog id, plans.
+    expect(planInstall({ llm: { id: 'qwen3.5-4b' }, embedding: { path: '/e.gguf', context: 2048, pooling: 'mean' } }).find((s) => s.id === 'embedding')).toMatchObject({ status: 'pending', spec: { path: '/e.gguf' } });
+  });
+
   it('a step whose block takes a path says a file may stand in; the machine step never does', () => {
     const steps = planInstall({ llm: { id: 'qwen3.5-4b' }, vision: {}, reranker: { path: '/r', context: 16384 } });
     expect(steps.map((s) => [s.id, s.file])).toEqual([['machine', undefined], ['llm', true], ['reranker', true], ['vision', true]]);
@@ -80,7 +88,8 @@ describe('install: a run that acquires nothing reports nothing', () => {
       .rejects.toThrow(/needs about 10 GB of memory and this machine has 8 GB/);
     expect(sent).toHaveLength(1);
     expect(ids(sent[0])).toBe('machine:failed llm:pending');
-    expect(sent[0].steps[0].note).toBe('8 GB · 10 GB needed');
+    // The row carries the whole refusal — the one thing a view has to show, since no remedy of its own applies.
+    expect(sent[0].steps[0].note).toMatch(/^Qwen3.5 4B · Q4_K_M needs about 10 GB of memory and this machine has 8 GB\. Nothing was downloaded\./);
     expect(resolveModel).not.toHaveBeenCalled();
   });
 });
@@ -252,6 +261,46 @@ describe('install: a run that acquires', () => {
     // The llm's download was interrupted by the command and re-run from its unchanged spec; the reranker resolved from the file.
     expect(asked.map((a) => [a.role, a.spec])).toEqual([['llm', { id: 'qwen3.5-4b' }], ['llm', { id: 'qwen3.5-4b' }], ['reranker', { path: '/weights/reranker.gguf' }]]);
     expect(acquired.services.reranker).toBe('/proj/models/reranker//weights/reranker.gguf.gguf');
+  });
+
+  it('a file for a step that cannot take one — no such step, the machine — is said in the held row, and the hold continues', async () => {
+    resolveModel.mockRejectedValueOnce(new Error('offline'));
+    const sent: InstallStepEvent[] = [];
+    const controls = createSignal<InstallCommand, void>();
+    const persist = vi.fn(() => ({}));
+    const acquired = await run(function* () {
+      const task = yield* spawn(() => install({ projectRoot: '/proj', model: { llm: { id: 'qwen3.5-4b' } }, totalBytes: 16 * GB, report: (ev) => sent.push(ev), controls, persist }));
+      yield* sleep(10);
+      controls.send({ type: 'install:use_file', step: 'nothing', path: '/weights/mine.gguf' });
+      yield* sleep(10);
+      expect(sent.at(-1)!.steps[1]).toMatchObject({ id: 'llm', status: 'failed', note: 'no step is called "nothing"' });
+      controls.send({ type: 'install:use_file', step: 'machine', path: '/weights/mine.gguf' });
+      yield* sleep(10);
+      expect(sent.at(-1)!.steps[1]).toMatchObject({ id: 'llm', status: 'failed', note: '"This machine" does not take a file' });
+      controls.send({ type: 'install:retry' });
+      return yield* task;
+    });
+    expect(persist).not.toHaveBeenCalled();           // nothing from the wire reached the disk
+    expect(acquired.llm).toBe('/proj/models/llm/qwen3.5-4b.gguf');
+  });
+
+  it('a file that cannot be remembered — the save fails — is that step\'s failure, and the hold continues where a view can act', async () => {
+    resolveModel.mockRejectedValueOnce(new Error('offline'));
+    const sent: InstallStepEvent[] = [];
+    const controls = createSignal<InstallCommand, void>();
+    const persist = vi.fn()
+      .mockImplementationOnce(() => { throw new Error('EROFS: read-only file system'); })
+      .mockImplementationOnce(() => ({ llm: { path: '/weights/mine.gguf' } }));
+    const acquired = await run(function* () {
+      const task = yield* spawn(() => install({ projectRoot: '/proj', model: { llm: { id: 'qwen3.5-4b' } }, totalBytes: 16 * GB, report: (ev) => sent.push(ev), controls, persist }));
+      yield* sleep(10);
+      controls.send({ type: 'install:use_file', step: 'llm', path: '/weights/mine.gguf' });
+      yield* sleep(10);
+      expect(sent.at(-1)!.steps[1]).toMatchObject({ status: 'failed', note: 'the file could not be remembered: EROFS: read-only file system' });
+      controls.send({ type: 'install:use_file', step: 'llm', path: '/weights/mine.gguf' });
+      return yield* task;
+    });
+    expect(acquired.llm).toBe('/proj/models/llm//weights/mine.gguf.gguf');
   });
 
   it('a file chosen with nothing to remember it is refused, never silently forgotten', async () => {

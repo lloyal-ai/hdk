@@ -35,6 +35,9 @@ export interface ProviderRow<K extends Service> {
   /** The options the artifact contributes to the resident context — for a service that is a capability of the
    *  trunk. `service(name)` then answers the {@link Trunk} marker. */
   trunk?: ServiceMap[K] extends Trunk ? (artifact: string, block: ModelBlock<K>) => Partial<ContextOptions> : never;
+  /** Why a block that selects a model still cannot be bound — a tuning the row needs that neither the block nor
+   *  the catalog says — said at plan time, before a byte is fetched or the trunk loads. Nothing to say: `undefined`. */
+  refuse?(block: ModelBlock<K>): string | undefined;
 }
 
 export const providers: { [K in Service]: ProviderRow<K> } = {
@@ -53,15 +56,20 @@ export const providers: { [K in Service]: ProviderRow<K> } = {
     trunk: (artifact, block) => ({ mmprojPath: artifact, imageMinTokens: block.minTokens, imageMaxTokens: block.maxTokens }),
   },
   embedding: {
-    bind: (artifact, block) => createEmbedder(artifact, { nCtx: block.context, pooling: embeddingPooling(block) }),
+    refuse: (block) => (embeddingPooling(block) ? undefined : UNKNOWN_POOLING),
+    bind: (artifact, block) => {
+      const pooling = embeddingPooling(block);
+      if (!pooling) throw new Error(UNKNOWN_POOLING);
+      return createEmbedder(artifact, { nCtx: block.context, pooling });
+    },
   },
 };
 
+const UNKNOWN_POOLING = '`model.embedding` names a model whose pooling the catalog does not know — set `model.embedding.pooling` (mean, cls or last) in harness.yml';
+
 /** How the embedding model pools: the block's own word, else the catalog's for its id. A `path:` model the
  *  catalog knows nothing about must say, because a wrong pooling answers vectors that are merely wrong. */
-function embeddingPooling(block: ModelBlock<'embedding'>): EmbeddingPooling {
+function embeddingPooling(block: ModelBlock<'embedding'>): EmbeddingPooling | undefined {
   if (block.pooling) return block.pooling;
-  const fromCatalog = block.path || !block.id ? undefined : catalogEntry('embedding', block.id)?.pooling;
-  if (fromCatalog) return fromCatalog;
-  throw new Error('`model.embedding` names a model whose pooling the catalog does not know — set `model.embedding.pooling` (mean, cls or last) in harness.yml');
+  return block.path || !block.id ? undefined : catalogEntry('embedding', block.id)?.pooling;
 }

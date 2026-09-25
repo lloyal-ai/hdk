@@ -12,7 +12,7 @@
 import { createContext } from '@lloyal-labs/lloyal.node';
 import { PoolingType } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
-import { call, ensure, resource } from 'effection';
+import { call, ensure, resource, until } from 'effection';
 import { acquire } from '../acquire';
 import type { Operation } from 'effection';
 import type { Embedder, EmbeddingPooling } from '../retrieval';
@@ -45,10 +45,12 @@ export function createEmbedder(modelPath: string, opts: EmbedderLoadOpts): Opera
       (c) => c.dispose(),
     );
 
-    // The one queue every call joins. `settled` is the tail: what teardown waits for.
+    // The one queue EVERY call joins — tokenize as much as embed, since both reach the native context — refused
+    // once disposed. `settled` is the tail: what teardown waits for.
     let settled: Promise<unknown> = Promise.resolve();
     let disposed = false;
     const serialized = <T>(work: () => Promise<T>): Promise<T> => {
+      if (disposed) return Promise.reject(new Error('the embedder is disposed'));
       const next = settled.then(work, work);
       settled = next.then(() => undefined, () => undefined);
       return next;
@@ -60,9 +62,8 @@ export function createEmbedder(modelPath: string, opts: EmbedderLoadOpts): Opera
       dimension: ctx.getEmbeddingDimension(),
       // The model's own special tokens, as its file declares them: last-token pooling reads the end-of-text token
       // Qwen3-Embedding appends, and the runtime's default tokenize adds a leading token only.
-      tokenize: (text) => call(() => ctx.tokenize(text, true)),
+      tokenize: (text) => call(() => serialized(() => ctx.tokenize(text, true))),
       embed: (texts) => call(() => {
-        if (disposed) return Promise.reject(new Error('the embedder is disposed'));
         return serialized(async () => {
           // Measure first, run second: an oversized text is refused with nothing touched, so the call after
           // it finds the context exactly as it was.
@@ -91,7 +92,7 @@ export function createEmbedder(modelPath: string, opts: EmbedderLoadOpts): Opera
     // context is freed. `ensure` rather than `finally`: a `yield*` inside a finally loses a halt.
     yield* ensure(function* () {
       embedder.dispose();
-      yield* call(() => settled);
+      yield* until(settled);
     });
     yield* provide(embedder);
   });

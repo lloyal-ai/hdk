@@ -28,7 +28,9 @@ import { parse } from 'yaml';
 import { CONFIG_VERSION, mergeConfig } from './config';
 import type { ConfigKey, ConfigTable, ConfigOf, OriginOf, CliOf, YmlOf } from './config';
 import type { BaseHarnessConfig, ConfigOriginValue, ConfigPatch, LoadedConfig, RunnerConfigOpts, SaveResult } from './runner';
-import { rung } from './runner';
+import { FROZEN_FAMILIES, frozenOriginOf, rung } from './runner';
+import { getPath, isBag, setPath } from './config-paths';
+import type { Bag } from './config-paths';
 import {
   resolvePath,
   resolveAppConfigPaths,
@@ -41,13 +43,8 @@ import {
 const JSON_NAME = 'harness.json';
 const YML_NAME = 'harness.yml';
 
-type Bag = Record<string, unknown>;
-
-/** A family holds keys; a scalar — or an array — is one value, however deep the table goes. */
-const isFamily = (v: unknown): v is Bag => v !== null && typeof v === 'object' && !Array.isArray(v);
-
-/** Whether a rung carries a block: a mapping, or a bare key with nothing under it. */
-const carriesBlock = (v: unknown): boolean => v === null || isFamily(v);
+/** Whether the committed file carries a block: a mapping, or a bare key — `vision:` — which YAML reads as null. */
+const carriesBlock = (v: unknown): boolean => v === null || isBag(v);
 
 /** The block a key lives in — the family a three-level key sits under, `model.vision` — or nothing for a
  *  shallower key. As the key names it, or as the yml does. */
@@ -61,26 +58,6 @@ export interface ConfigSource<T extends ConfigTable> {
   cli?: CliOf<T>;
   env?: NodeJS.ProcessEnv;
   cwd?: string;
-}
-
-function getPath(bag: unknown, dotted: string): unknown {
-  let node: unknown = bag;
-  for (const seg of dotted.split('.')) {
-    if (node === null || typeof node !== 'object') return undefined;
-    node = (node as Bag)[seg];
-  }
-  return node;
-}
-
-function setPath(bag: Bag, dotted: string, value: unknown): void {
-  const segs = dotted.split('.');
-  let node = bag;
-  for (const seg of segs.slice(0, -1)) {
-    const next = node[seg];
-    if (next === null || typeof next !== 'object') node[seg] = {};
-    node = node[seg] as Bag;
-  }
-  node[segs[segs.length - 1]] = value;
 }
 
 /** Absent, null and the empty string are all "nothing here": a clear. */
@@ -178,9 +155,11 @@ export function loadConfig<T extends ConfigTable>(
   const config: Bag = { version: CONFIG_VERSION, sources: {}, abilities: {}, model: {} };
   for (const name of Object.keys(table)) if (name.includes('.')) config[name.split('.')[0]] ??= {};
 
-  // A block is requested by ANY rung naming it, decided before a single key is read: a file naming the block
-  // (a mapping, or a bare key), or a cli / env value for a key of it. A default alone never does. A scalar where
-  // a block belongs is a value the key cannot take — loud from the committed rung, dropped from the local one.
+  // A block is requested by ANY rung naming it, decided before a single key is read: the committed file naming
+  // the block (a mapping, or a bare key), the overlay carrying a mapping (`null` there is a clear, as at a key),
+  // or a cli / env value for a key of it that the key TAKES — presence and acceptance are one rule, so a value
+  // the key refuses requests nothing. A default alone never does. A scalar where a block belongs is a value the
+  // key cannot take — loud from the committed rung, dropped from the local one.
   const blocks = new Set<string>();
   for (const [name, key] of Object.entries(table)) {
     const block = blockOf(name);
@@ -193,9 +172,9 @@ export function loadConfig<T extends ConfigTable>(
       }
       if (carriesBlock(committed)) blocks.add(block);
     }
-    if (carriesBlock(getPath(local, block))) blocks.add(block);
-    if (key.cli && given(cli[key.cli]) !== undefined) blocks.add(block);
-    if (key.env && given(env[key.env]) !== undefined) blocks.add(block);
+    if (isBag(getPath(local, block))) blocks.add(block);
+    if (key.cli && accept(key, cli[key.cli], process.cwd()) !== undefined) blocks.add(block);
+    if (key.env && accept(key, env[key.env], process.cwd(), true) !== undefined) blocks.add(block);
   }
   for (const block of blocks) setPath(config, block, {});
 
@@ -268,6 +247,6 @@ export function runnerConfig<T extends ConfigTable>(
       return { ...saved, config: relayered.config, origin: relayered.origin };
     },
     sessionOriginMap: Object.fromEntries(keys.map((k) => [k, k])) as Record<string, keyof OriginOf<T> & string>,
-    frozen: { config: ['model'], origin: keys.filter((k) => k.startsWith('model.')) },
+    frozen: { config: FROZEN_FAMILIES, origin: frozenOriginOf(Object.fromEntries(keys.map((k) => [k, true]))) },
   };
 }

@@ -20,6 +20,8 @@ import type { AbilityConfigStore } from './ability-config';
 import type { AbilityFactory, AbilityRegistry } from './ability-types';
 import type { ConfigTable } from './config';
 import { isPathShaped, resolveAppConfigPaths, resolvePath } from './config-node';
+import { getPath, withPath } from './config-paths';
+import type { Bag } from './config-paths';
 import { buildAbilityDescriptors } from './ability-descriptors';
 import { abilityRequiresConfig } from './registry';
 import type { BaseHarnessConfig, ConfigOriginValue, ConfigPatch, Runner } from './runner';
@@ -42,26 +44,14 @@ export interface SettingsDeps<C extends BaseHarnessConfig, O extends Record<stri
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
-type Bag = Record<string, unknown>;
-const isBag = (v: unknown): v is Bag => v !== null && typeof v === 'object' && !Array.isArray(v);
-
-/** The bag with the value at `segs` replaced, every level along the way copied; the bag itself when the path is not there. */
-function withPath(bag: Bag, segs: readonly string[], value: unknown): Bag {
-  const [head, ...rest] = segs;
-  if (rest.length === 0) return { ...bag, [head]: value };
-  const inner = bag[head];
-  return isBag(inner) ? { ...bag, [head]: withPath(inner, rest, value) } : bag;
-}
-
 /** A patch with its declared path keys resolved (`~` expanded, made absolute), at whatever depth the table
  *  declares them; `""` stays a clear. */
 function resolvePatchPaths<C>(table: ConfigTable, patch: ConfigPatch<C>): ConfigPatch<C> {
   let out = patch as Bag;
   for (const [key, decl] of Object.entries(table)) {
     if (!decl.path) continue;
-    const segs = key.split('.');
-    const v = segs.reduce<unknown>((node, seg) => (isBag(node) ? node[seg] : undefined), out);
-    if (typeof v === 'string' && v !== '') out = withPath(out, segs, resolvePath(v));
+    const v = getPath(out, key);
+    if (typeof v === 'string' && v !== '') out = withPath(out, key.split('.'), resolvePath(v));
   }
   return out as ConfigPatch<C>;
 }

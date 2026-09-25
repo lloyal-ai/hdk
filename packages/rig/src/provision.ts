@@ -47,18 +47,26 @@ export type ServiceArtifacts = Partial<Record<Service, string>>;
 
 /** The block's selection: `path`, else `id`, else what the row derives from the llm. A block that names neither
  *  and derives nothing asked for a service and chose no model — a request nothing can satisfy, refused by the
- *  keys that would. */
+ *  keys that would. A selection the row still cannot bind is refused here too, on the first step that can know. */
 export function specOf(name: Service, model: ModelFamily): ModelSpec {
   const block: ModelSpec | undefined = model[name];
-  if (block?.path) return { path: block.path };
-  if (block?.id) return { id: block.id };
   const row = providers[name];
-  const derived = row.derive?.({ llm: model.llm ?? {} });
-  if (derived) return derived;
-  throw new Error(
-    `\`model.${name}\` names no model${row.derive ? ' and none follows from the llm' : ''} — ` +
-      `set \`model.${name}.id\` (a catalog id) or \`model.${name}.path\` in harness.yml`,
-  );
+  const spec = block?.path ? { path: block.path } : block?.id ? { id: block.id } : row.derive?.({ llm: model.llm ?? {} });
+  if (!spec) {
+    throw new Error(
+      `\`model.${name}\` names no model${row.derive ? ' and none follows from the llm' : ''} — ` +
+        `set \`model.${name}.id\` (a catalog id) or \`model.${name}.path\` in harness.yml`,
+    );
+  }
+  const refused = refusalOf(name, model);
+  if (refused) throw new Error(refused);
+  return spec;
+}
+
+/** What the row says stops its block from being bound, before anything runs. */
+function refusalOf<K extends Service>(name: K, model: ModelFamily): string | undefined {
+  const row: ProviderRow<K> = providers[name];
+  return row.refuse?.((model[name] ?? {}) as ModelBlock<K>);
 }
 
 /**

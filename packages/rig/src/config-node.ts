@@ -20,6 +20,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { CONFIG_VERSION } from './config';
+import { isBag } from './config-paths';
+import type { Bag } from './config-paths';
 
 /**
  * Resolve a user-typed path to an absolute path: `~`/`~/x` expand against the
@@ -59,8 +61,6 @@ export function resolveAppConfigPaths(
   return out;
 }
 
-type Bag = Record<string, unknown>;
-
 /** Where version 1 wrote each model key, flat under `model`, and the block it lives in now. Exported so a mirror
  *  of it elsewhere (the CLI reads `harness.json` without depending on rig) can be held to it. */
 export const V1_MODEL_KEYS: Record<string, [block: string, key: string]> = {
@@ -69,36 +69,54 @@ export const V1_MODEL_KEYS: Record<string, [block: string, key: string]> = {
   mmproj: ['vision', 'id'], imageMinTokens: ['vision', 'minTokens'], imageMaxTokens: ['vision', 'maxTokens'],
 };
 
-/** A version-1 file at the current version: its flat model keys moved into their blocks, every other key kept.
- *  Pure — the loader reads the result, the writer merges over it, and the next save writes it. */
-function migrateV1<T>(parsed: Partial<T> & { version?: number }): Partial<T> & { version?: number } {
+/** Where a one-line note about a migrated file goes. Default: stderr. */
+export type Say = (line: string) => void;
+const toStderr: Say = (line) => { process.stderr.write(`${line}\n`); };
+
+/**
+ * A version-1 file at the current version: its flat model keys moved into their blocks, every other key kept.
+ * The migration preserves what version 1 MEANT, because in version 2 a block's presence requests a model:
+ * a value version 1 had cleared (`""`, `null`) migrates to absence, never to a request with an empty selection;
+ * vision tuning under a catalog llm keeps its block, which is what version 1 did (the projector paired
+ * implicitly); under a `path:` llm the tuning keys are dropped — version 1 paired no projector there either,
+ * and version 2 would refuse the request — and `say` hears which, once. Pure otherwise — the loader reads the
+ * result, the writer merges over it, and the next save writes it.
+ */
+function migrateV1<T>(parsed: Partial<T> & { version?: number }, say: Say): Partial<T> & { version?: number } {
   const model = (parsed as Bag).model;
-  if (model === null || typeof model !== 'object') return { ...parsed, version: CONFIG_VERSION };
+  if (!isBag(model)) return { ...parsed, version: CONFIG_VERSION };
+  const cleared = (v: unknown): boolean => v === '' || v === null;
+  const pathLlm = typeof model.path === 'string' && model.path !== '';
+  const projector = !cleared(model.mmproj) && model.mmproj !== undefined;
   const next: Bag = {};
-  for (const [key, value] of Object.entries(model as Bag)) {
+  const dropped: string[] = [];
+  for (const [key, value] of Object.entries(model)) {
     const moved = V1_MODEL_KEYS[key];
     if (!moved) { next[key] = value; continue; }
+    if (cleared(value)) continue;
     const [block, at] = moved;
+    if (block === 'vision' && key !== 'mmproj' && pathLlm && !projector) { dropped.push(key); continue; }
     next[block] = { ...((next[block] as Bag | undefined) ?? {}), [at]: value };
   }
+  if (dropped.length > 0) say(`harness.json: ${dropped.join(', ')} dropped — version 1 paired no projector with a \`path:\` model, and version 2 would request one`);
   return { ...parsed, version: CONFIG_VERSION, model: next } as Partial<T> & { version?: number };
 }
 
 /** A parsed file at the current version, or null when this runtime does not write the version it carries. */
-function atCurrentVersion<T>(parsed: unknown): (Partial<T> & { version?: number }) | null {
+function atCurrentVersion<T>(parsed: unknown, say: Say): (Partial<T> & { version?: number }) | null {
   if (parsed === null || typeof parsed !== 'object') return null;
   const file = parsed as Partial<T> & { version?: number };
   if (file.version === CONFIG_VERSION) return file;
-  if (file.version === 1) return migrateV1(file);
+  if (file.version === 1) return migrateV1(file, say);
   return null;
 }
 
 /** Read the JSON overlay for the LOADER: absent, unreadable, or
  *  future-versioned ⇒ null — the overlay is ignorable; the layers beneath it
  *  still describe a runnable harness. A version-1 file is read migrated. */
-export function readJsonOverlay<T>(p: string): (Partial<T> & { version?: number }) | null {
+export function readJsonOverlay<T>(p: string, say: Say = toStderr): (Partial<T> & { version?: number }) | null {
   try {
-    return atCurrentVersion<T>(JSON.parse(fs.readFileSync(p, 'utf8')));
+    return atCurrentVersion<T>(JSON.parse(fs.readFileSync(p, 'utf8')), say);
   } catch {
     return null;
   }
@@ -114,6 +132,7 @@ export function readJsonOverlay<T>(p: string): (Partial<T> & { version?: number 
 export function readJsonForWrite<T>(
   p: string,
   displayName: string = path.basename(p),
+  say: Say = toStderr,
 ): (Partial<T> & { version?: number }) | null {
   let raw: string;
   try {
@@ -130,7 +149,7 @@ export function readJsonForWrite<T>(
   } catch {
     throw new Error(`${displayName} is not valid JSON — fix or delete it; nothing was saved.`);
   }
-  const current = atCurrentVersion<T>(parsed);
+  const current = atCurrentVersion<T>(parsed, say);
   if (!current) {
     const version = parsed === null || typeof parsed !== 'object' ? undefined : (parsed as { version?: number }).version;
     throw new Error(

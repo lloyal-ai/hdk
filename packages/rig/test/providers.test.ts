@@ -25,12 +25,15 @@ describe('the provider table', () => {
     expect(trunk!('/models/vision/p.gguf', { minTokens: 64, maxTokens: 512 })).toEqual({ mmprojPath: '/models/vision/p.gguf', imageMinTokens: 64, imageMaxTokens: 512 });
   });
 
-  it('the embedding row binds, and reads its pooling from the block, else the catalog, else refuses a path: model', () => {
-    const row = providers.embedding as { bind: (artifact: string, block: Record<string, unknown>) => unknown };
+  it('the embedding row binds, and reads its pooling from the block, else the catalog, else refuses — at plan time through `refuse`, and again at bind', () => {
+    const row = providers.embedding as { bind: (artifact: string, block: Record<string, unknown>) => unknown; refuse: (block: Record<string, unknown>) => string | undefined };
     expect(typeof row.bind).toBe('function');
-    // The rule lives in the row's helper; the binding itself is mocked in embedder.test.ts. Here: the refusal.
+    expect(row.refuse({ path: '/e.gguf', context: 2048 })).toMatch(/`model\.embedding\.pooling`/);
+    expect(row.refuse({ id: 'not-in-the-catalog', context: 2048 })).toMatch(/`model\.embedding\.pooling`/);
+    expect(row.refuse({ path: '/e.gguf', pooling: 'last' })).toBeUndefined();
+    expect(row.refuse({ id: 'nomic-embed-text-v1.5-q4' })).toBeUndefined();
+    // The binding itself is mocked in embedder.test.ts; here the last-line refusal, for a block handed to bind directly.
     expect(() => row.bind('/e.gguf', { path: '/e.gguf', context: 2048 })).toThrow(/`model\.embedding\.pooling`/);
-    expect(() => row.bind('/e.gguf', { id: 'not-in-the-catalog', context: 2048 })).toThrow(/`model\.embedding\.pooling`/);
   });
 
   it('every service has its block in the model family: an id and a path to select by', () => {

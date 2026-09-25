@@ -194,6 +194,16 @@ describe('createAbilityRegistry', () => {
     expect(ran).toBe(true);
   });
 
+  it('a requirement no row provides is refused as such — never told to add a block the platform does not know', async () => {
+    const factory: AbilityFactory = Object.assign(function* () { return fakeApp({ name: 'hearer' }); }, {
+      manifest: { name: 'hearer', protocol: { name: 'hearer_p', useWhen: 'hearing', tools: ['t'] }, services: ['whisper'] } as unknown as AbilityManifest,
+    });
+    await expect(run(function* () {
+      const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
+      yield* registry.enable(factory);
+    })).rejects.toThrow('hearer requires `whisper`, which is not a service this platform provides');
+  });
+
   it('a factory with no static manifest is held to the manifest it returns: the requirement is what the registry registers', async () => {
     const plain: AbilityFactory = function* () {
       return { ...fakeApp({ name: 'seer' }), manifest: { name: 'seer', protocol: { name: 'seer_p', useWhen: 'seeing', tools: ['t'] }, services: ['vision'] } as AbilityManifest };

@@ -16,6 +16,8 @@
  */
 import type { RerankInstruction } from '@lloyal-labs/sdk';
 import type { BaseHarnessConfig, ConfigOriginValue, ConfigPatch } from './runner';
+import { isBag } from './config-paths';
+import type { Bag } from './config-paths';
 
 /** The shape `harness.json` is written in, and the live config carries. Version 1 wrote the model keys
  *  flat under `model`; version 2 writes one block per model. */
@@ -131,14 +133,11 @@ export function configFamilies(table: ConfigTable): Set<string> {
   return families;
 }
 
-type Bag = Record<string, unknown>;
-const isBag = (v: unknown): v is Bag => v !== null && typeof v === 'object' && !Array.isArray(v);
-
 function mergeInto(families: Set<string>, base: Bag, patch: Bag, at: string): Bag {
   const out: Bag = { ...base };
   for (const [key, value] of Object.entries(patch)) {
     const here = at ? `${at}.${key}` : key;
-    if (value === '') delete out[key];
+    if (value === '' || value === null) delete out[key];
     else if (families.has(here) && isBag(value)) out[key] = mergeInto(families, isBag(base[key]) ? base[key] : {}, value, here);
     else out[key] = value;
   }
@@ -148,7 +147,7 @@ function mergeInto(families: Set<string>, base: Bag, patch: Bag, at: string): Ba
 /**
  * Merge a patch into a config by the table: a family takes the patch's keys one by one, however deep the table
  * declares it, and everything else is one value replaced whole — an object-valued key such as `defaults.guards`,
- * an ability's config, an array. `""` clears a key at any depth. Never mutates either side.
+ * an ability's config, an array. `""` — or `null` — clears a key at any depth. Never mutates either side.
  *
  * @category Rig
  */

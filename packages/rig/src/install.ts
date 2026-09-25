@@ -158,8 +158,11 @@ export function* install(opts: InstallOpts): Operation<Installed> {
   const verdict = entry ? checkMachine(entry, opts.totalBytes) : null;
   if (verdict) machine.note = `${gb(verdict.totalBytes)} · ${gb(verdict.neededBytes)} needed`;
   if (verdict && !verdict.ok) {
-    set(machine, { status: 'failed' });
-    throw new Error(refusalMessage(verdict, entry!.label));
+    // The row carries the whole refusal: it is the one thing a view has to show, and no remedy of the view's
+    // — a retry, a file, a new engine — changes the machine.
+    const refusal = refusalMessage(verdict, entry!.label);
+    set(machine, { status: 'failed', note: refusal });
+    throw new Error(refusal);
   }
   machine.status = 'done';
   if (steps.some((step) => fetches(opts.projectRoot, step))) publish();
@@ -188,23 +191,32 @@ export function* install(opts: InstallOpts): Operation<Installed> {
       set(step, { status: 'done', got: undefined, total: undefined, ...(step.spec?.id ? { note: catalogEntry(step.role!, step.spec.id)?.label ?? step.spec.id } : {}) });
       continue;
     }
-    let command: InstallCommand;
-    if ('command' in attempt) {
-      command = attempt.command;
-    } else {
-      set(step, { status: 'failed', note: message(attempt.error) });
-      if (!controls) throw attempt.error;
-      command = yield* nextCommand(controls);
-    }
-    if (command.type === 'install:quit') throw new Error('the install was stopped');
-    if (command.type === 'install:use_file') {
+    if ('error' in attempt) set(step, { status: 'failed', note: message(attempt.error) });
+    if (!controls) throw 'error' in attempt ? attempt.error : new Error('a command arrived with nothing to carry it');
+    // Hold for a command the walk can act on. A command it cannot act on — a file for a step that takes none,
+    // a file nothing could remember — is said in this step's row, and the hold continues; nothing from the wire
+    // reaches the walk or the disk unchecked.
+    let command: InstallCommand | undefined = 'command' in attempt ? attempt.command : undefined;
+    for (;;) {
+      command ??= yield* nextCommand(controls);
+      if (command.type === 'install:quit') throw new Error('the install was stopped');
+      if (command.type === 'install:retry') break;
+      const refused = fileRefusal(steps, command.step);
+      if (refused) { set(step, { status: 'failed', note: refused }); command = undefined; continue; }
       if (!opts.persist) throw new Error('install: a file was chosen, but nothing here can remember it — `persist` is required beside `controls`');
       // Remembered first, then the steps derived again from what was remembered: the file's own step, and
       // every step whose selection followed from the one that changed.
-      model = opts.persist({ model: { [command.step]: { path: command.path } } });
+      try {
+        model = opts.persist({ model: { [command.step]: { path: command.path } } });
+      } catch (err) {
+        set(step, { status: 'failed', note: `the file could not be remembered: ${message(err)}` });
+        command = undefined;
+        continue;
+      }
       reconcile(steps, planInstall(model, { lenient: true }), artifacts);
       if (steps.some((s) => s.status === 'failed')) publish();
       else if (announced) send();
+      break;
     }
     // A retry runs this step again from its spec as it now stands; a file runs the walk again from the earliest
     // step it touched.
@@ -217,6 +229,14 @@ export function* install(opts: InstallOpts): Operation<Installed> {
   const services: ServiceArtifacts = {};
   for (const name of SERVICES) if (artifacts[name] !== undefined) services[name as Service] = artifacts[name];
   return { model, llm: artifacts.llm!, services };
+}
+
+/** Why a file cannot stand in for the step a command names: no such step, or a step whose block takes no file. */
+function fileRefusal(steps: readonly PlannedStep[], id: string): string | undefined {
+  const target = steps.find((s) => s.id === id);
+  if (!target) return `no step is called "${id}"`;
+  if (!target.file) return `"${target.label}" does not take a file`;
+  return undefined;
 }
 
 /** Run one step under its controls: a command that arrives while it downloads stops the download and is the outcome. */

@@ -11,7 +11,8 @@ const { createContext, fakeCtx, log, gate } = vi.hoisted(() => {
   // Every encode parks on this until the test opens it — how a test holds native work "in flight".
   const gate = { open: Promise.resolve(), release: () => {} };
   const fakeCtx = {
-    tokenize: async (text: string, addSpecial?: boolean) => { log.push(`tokenize:${text}${addSpecial ? '+special' : ''}`); return Array.from({ length: text.length }, (_, i) => i); },
+    // Parks on the gate like encode: a tokenize is native work too, and teardown must wait for it the same way.
+    tokenize: async (text: string, addSpecial?: boolean) => { await gate.open; log.push(`tokenize:${text}${addSpecial ? '+special' : ''}`); return Array.from({ length: text.length }, (_, i) => i); },
     kvCacheClear: async () => { log.push('clear'); },
     encode: async (tokens: number[]) => { await gate.open; log.push(`encode:${tokens.length}`); },
     getEmbeddings: (_normalize?: boolean) => { log.push('get'); return new Float32Array([log.length, 0.5]); },
@@ -125,13 +126,45 @@ describe('teardown', () => {
     expect(afterScope.indexOf('encode:1')).toBeLessThan(afterScope.indexOf('dispose'));
   });
 
-  it('after dispose, embed refuses rather than queueing onto a freed context', async () => {
+  it('after dispose, embed AND tokenize refuse rather than queueing onto a freed context', async () => {
     await run(function* () {
       const e = yield* createEmbedder('/e.gguf', { pooling: 'mean' });
       e.dispose();
       let refused: unknown;
       try { yield* e.embed(['a']); } catch (err) { refused = err; }
       expect(String(refused)).toMatch(/disposed/);
+      refused = undefined;
+      try { yield* e.tokenize('a'); } catch (err) { refused = err; }
+      expect(String(refused)).toMatch(/disposed/);
     });
+    expect(log).not.toContain('tokenize:a+special');
+  });
+
+  it('a tokenize in flight is native work the teardown waits for, like an encode — every call is in the one queue', async () => {
+    let release!: () => void;
+    gate.open = new Promise<void>((resolve) => { release = resolve; });
+    let afterScope: string[] = [];
+    const done = run(function* () {
+      yield* scoped(function* () {
+        const e = yield* createEmbedder('/e.gguf', { pooling: 'mean' });
+        yield* spawn(() => e.tokenize('a'));   // parks on the gate inside tokenize
+        yield* sleep(0);
+      });
+      afterScope = [...log];
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(log).not.toContain('dispose');
+    release();
+    await done;
+    expect(afterScope).toEqual(['tokenize:a+special', 'dispose']);
+  });
+
+  it('nothing to embed answers nothing, and touches the context for nothing', async () => {
+    const out = await run(function* () {
+      const e = yield* createEmbedder('/e.gguf', { pooling: 'mean' });
+      return yield* e.embed([]);
+    });
+    expect(out).toEqual([]);
+    expect(log.filter((l) => l === 'clear' || l.startsWith('encode'))).toEqual([]);
   });
 });

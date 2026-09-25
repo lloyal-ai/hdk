@@ -145,13 +145,13 @@ describe('edge runner (persist + reconcile)', () => {
 
   it('a frozen key ABSENT at boot stays absent — a relayered file cannot bring it live', () => {
     const boot: BasicConfig = {
-      version: CONFIG_VERSION, sources: {}, abilities: {}, // no `surface` at boot
-      model: { llm: { path: '/m.gguf' } },
+      version: CONFIG_VERSION, sources: {}, abilities: {},
+      model: { llm: { path: '/m.gguf' } },                          // no gpu at boot
     };
     const origin: BasicOrigin = { 'model.llm.path': 'yml', 'model.reranker.path': 'default', 'model.llm.context': 'default', 'model.llm.gpu': 'default', 'sources.outputDir': 'default' };
     const relayered: BasicConfig = {
-      version: CONFIG_VERSION, sources: {}, abilities: {}, surface: 'web', // file introduces it
-      model: { llm: { path: '/other.gguf' } },
+      version: CONFIG_VERSION, sources: {}, abilities: {},
+      model: { llm: { path: '/other.gguf', gpu: 'cuda' } },        // the file introduces it
     };
     const r = makeEdgeRunner(boot, {
       table: BASIC,
@@ -160,27 +160,29 @@ describe('edge runner (persist + reconcile)', () => {
       persist: () => ({ path: '/p/harness.json', gitignored: false, skipped: [], config: relayered, origin }),
     });
     const saved = r.saveConfig({ sources: { outputDir: '/d' } });
-    expect('surface' in saved.config).toBe(false);
+    expect(saved.config.model.llm?.gpu).toBeUndefined();
     expect(saved.config.model.llm?.path).toBe('/m.gguf'); // frozen value also held
   });
 
-  it('basic shape: `surface` is boot-frozen by default; absent keys ignored', () => {
+  it('the model family is boot-frozen by default and nothing else is; a harness freezes its own keys by declaring them', () => {
     const boot: BasicConfig = {
       version: CONFIG_VERSION, sources: {}, abilities: {}, surface: 'cli',
       model: { llm: { path: '/m.gguf', id: 'qwen', sizeBytes: 42 } },
     };
     const origin: BasicOrigin = { 'model.llm.path': 'yml', 'model.reranker.path': 'default', 'model.llm.context': 'yml', 'model.llm.gpu': 'default', 'sources.outputDir': 'default' };
     const relayered: BasicConfig = { version: CONFIG_VERSION, sources: { outputDir: '/d' }, abilities: {}, model: {} };
-    const r = makeEdgeRunner(boot, {
+    const opts = {
       table: BASIC,
       origin,
-      sessionOriginMap: { 'sources.outputDir': 'sources.outputDir', 'model.llm.path': 'model.llm.path' },
+      sessionOriginMap: { 'sources.outputDir': 'sources.outputDir', 'model.llm.path': 'model.llm.path' } as const,
       persist: () => ({ path: '/p/harness.json', gitignored: true, skipped: [], config: relayered, origin }),
-    });
-    const saved = r.saveConfig({ sources: { outputDir: '/d' } });
-    expect(saved.config.surface).toBe('cli');           // frozen, though relayer omitted it
-    expect(saved.config.model.llm?.id).toBe('qwen');    // measured boot facts survive
-    expect(saved.gitignored).toBe(true);
+    };
+    const byDefault = makeEdgeRunner(boot, opts).saveConfig({ sources: { outputDir: '/d' } });
+    expect(byDefault.config.model.llm?.id).toBe('qwen');    // measured boot facts survive
+    expect('surface' in byDefault.config).toBe(false);      // the relayer's word stands for everything else
+    expect(byDefault.gitignored).toBe(true);
+    const declared = makeEdgeRunner(boot, { ...opts, frozen: { config: ['model', 'surface'] } }).saveConfig({ sources: { outputDir: '/d' } });
+    expect(declared.config.surface).toBe('cli');            // frozen, though the relayer omitted it
   });
 });
 

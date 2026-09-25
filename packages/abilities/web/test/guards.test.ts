@@ -11,6 +11,7 @@ import { FetchPageTool } from '../src/tools/fetch-page';
 import { WebSearchTool } from '../src/tools/web-search';
 import type { SearchProvider } from '../src/tools/web-search';
 import { WebSource } from '../src/source';
+import { stubReranker } from './helpers/stub-reranker';
 
 /** A call as a gate sees it, over the arguments this scope already attended. */
 const seen = (tool: string, args: Record<string, unknown>, attended: Record<string, unknown>[]): GuardInput =>
@@ -76,14 +77,14 @@ describe("query_dedup — web_search's gate", () => {
 
 describe('the tools declare their gates', () => {
   it('fetch_page declares url_dedup; web_search declares query_dedup', () => {
-    expect(new FetchPageTool().hooks.beforeDispatch).toEqual([urlDedup]);
+    expect(new FetchPageTool(stubReranker).hooks.beforeDispatch).toEqual([urlDedup]);
     const provider: SearchProvider = { returnsFullContentMarkdown: false, search: async () => [] };
     expect(new WebSearchTool(provider).hooks.beforeDispatch).toEqual([queryDedup]);
   });
 
   it("the source's buffering fetch_page inherits the declaration", () => {
     const provider: SearchProvider = { returnsFullContentMarkdown: false, search: async () => [] };
-    const fetchPage = new WebSource(provider).tools.find((t) => t.name === 'fetch_page')!;
+    const fetchPage = new WebSource(provider, { reranker: stubReranker }).tools.find((t) => t.name === 'fetch_page')!;
     expect(fetchPage.hooks?.beforeDispatch).toEqual([urlDedup]);
   });
 

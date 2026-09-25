@@ -73,6 +73,29 @@ describe('a version-1 file: the model keys flat, where the blocks now are', () =
     fs.writeFileSync(p, JSON.stringify({ version: 1 }));
     expect(readJsonOverlay(p)).toEqual({ version: 2 });
   });
+
+  it('preserves what version 1 meant: a cleared value migrates to absence, never to a request with an empty selection', () => {
+    const p = path.join(dir, 'harness.json');
+    const said: string[] = [];
+    fs.writeFileSync(p, JSON.stringify({ version: 1, model: { id: 'q', reranker: '', rerankerId: null, mmproj: '' } }));
+    expect(readJsonOverlay(p, (line) => said.push(line))).toEqual({ version: 2, model: { llm: { id: 'q' } } });
+    expect(said).toEqual([]);
+  });
+
+  it('vision tuning under a catalog llm keeps its block (version 1 paired the projector implicitly); under a `path:` llm it is dropped, and the read says so once', () => {
+    const p = path.join(dir, 'harness.json');
+    const said: string[] = [];
+    fs.writeFileSync(p, JSON.stringify({ version: 1, model: { id: 'q', imageMaxTokens: 512 } }));
+    expect(readJsonOverlay(p, (line) => said.push(line))).toEqual({ version: 2, model: { llm: { id: 'q' }, vision: { maxTokens: 512 } } });
+    expect(said).toEqual([]);
+    fs.writeFileSync(p, JSON.stringify({ version: 1, model: { path: '/m', imageMinTokens: 64, imageMaxTokens: 512 } }));
+    expect(readJsonOverlay(p, (line) => said.push(line))).toEqual({ version: 2, model: { llm: { path: '/m' } } });
+    expect(said).toEqual(['harness.json: imageMinTokens, imageMaxTokens dropped — version 1 paired no projector with a `path:` model, and version 2 would request one']);
+    // …and a projector version 1 DID name keeps its tuning beside it, whatever the llm.
+    fs.writeFileSync(p, JSON.stringify({ version: 1, model: { path: '/m', mmproj: 'mm', imageMaxTokens: 512 } }));
+    expect(readJsonForWrite(p, 'harness.json', (line) => said.push(line))).toEqual({ version: 2, model: { llm: { path: '/m' }, vision: { id: 'mm', maxTokens: 512 } } });
+    expect(said).toHaveLength(1);
+  });
 });
 
 describe('readJsonOverlay (loader: ignorable)', () => {
