@@ -76,26 +76,26 @@ an ephemeral fork to attend over the fetched page and extract summary +
 links via grammar-constrained generation, then prunes the fork — zero net
 KV cost per extraction.
 
-Apps are composable through the registry:
+Abilities are composable through the registry:
 
 ```typescript
-import {
-  createAppRegistry,
-  createInMemoryConfigStore,
-} from "@lloyal-labs/rig";
-import { bindServices } from "@lloyal-labs/rig/node";
-import { createWebApp } from "@lloyal-labs/web-ability";
-import { createCorpusApp } from "@lloyal-labs/corpus-ability";
+import { createAbilityRegistry, createInMemoryConfigStore } from "@lloyal-labs/rig";
+import { install, bindServices } from "@lloyal-labs/rig/node";
+import { createWebAbility } from "@lloyal-labs/web-ability";
+import { createCorpusAbility } from "@lloyal-labs/corpus-ability";
 
-// The services the manifest names, bound into reach — an ability reads one with `service('reranker')`.
-yield* bindServices(artifacts, model);
+// What `harness.yml` names is acquired into `models/`, then bound into reach —
+// an ability reads a service with `service('reranker')`.
+const installed = yield* install({ projectRoot, model, totalBytes: os.totalmem(), report: (ev) => channel.send(ev) });
+yield* bindServices(installed.services, installed.model);
+
 const configStore = createInMemoryConfigStore();
 if (tavilyKey) yield* configStore.set("web", { tavilyKey });
 if (corpusDir) yield* configStore.set("corpus", { corpusPath: corpusDir });
-const registry = yield* createAppRegistry({ configStore });
+const registry = yield* createAbilityRegistry({ configStore });
 
-if (corpusDir) yield* registry.enable(createCorpusApp);
-yield* registry.enable(createWebApp);  // keyless fallback if no tavilyKey
+if (corpusDir) yield* registry.enable(createCorpusAbility);
+yield* registry.enable(createWebAbility);  // keyless search when no tavilyKey is stored
 ```
 
 When multiple apps are enabled, their sources run sequentially — each gets
