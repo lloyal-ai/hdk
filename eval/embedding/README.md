@@ -15,8 +15,13 @@ text is: nomic takes `search_query: ` / `search_document: ` prefixes; Qwen takes
 line for the query and bare documents.
 
 ```
-node eval/embedding/compare.mjs            # writes results.json
+node eval/embedding/compare.mjs --candidates <dir> --resident <project>/models   # writes results.json
+node eval/embedding/compare.mjs --candidates <dir> --no-resident                  # the encoders alone
 ```
+
+`--candidates` is a directory holding `nomic-embed-text-v1.5.Q4_K_M.gguf` and `Qwen3-Embedding-0.6B-Q8_0.gguf`;
+`--resident` is a research project's `models/` tree (`llm/`, `vision/`, `reranker/`, one GGUF each), the system
+the encoder is measured beside. The script refuses, naming the flag, when either is missing.
 
 ## Run of 2026-09-25
 

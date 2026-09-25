@@ -8,46 +8,63 @@
  * the judge would confirm": recall@10 of the reranker's top five, and Spearman rank correlation over all forty.
  * Latency is per text; memory is the process's peak RSS while the encoder works, over the resident baseline.
  *
- *   node eval/embedding/compare.mjs [--no-resident]
+ *   node eval/embedding/compare.mjs --candidates <dir> --resident <project>/models   # writes results.json
+ *   node eval/embedding/compare.mjs --candidates <dir> --no-resident
+ *
+ * `--candidates` holds the two GGUFs named in MODELS; `--resident` is a research project's `models/` tree
+ * (`llm/`, `vision/`, `reranker/`), the system the encoder is measured beside.
+ *
+ * Loaded with `require`, not `import`: rig is CommonJS and holds Effection's CommonJS build, and an `import`
+ * from this module would take the ESM build — a second module instance in the process. One graph, one `run`.
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { resolve, dirname } from 'node:path';
-import { homedir } from 'node:os';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+
+const require = createRequire(import.meta.url);
+const { createContext } = require('@lloyal-labs/lloyal.node');
+const { createEmbedder, createReranker } = require('@lloyal-labs/rig/node');
+const { run } = require('effection');
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, '../..');
-const args = new Set(process.argv.slice(2));
-const RESIDENT = !args.has('--no-resident');
 
-const NODE = pathToFileURL(resolve(root, 'node_modules/@lloyal-labs/lloyal.node/dist/index.js')).href;
-const RIG = pathToFileURL(resolve(root, 'packages/rig/dist/node.js')).href;
-const EFFECTION = pathToFileURL("/Users/zuhairnaqvi/dev/apps/lloyal-sdk/node_modules/effection/script/mod.js").href;
-const { createContext } = await import(NODE);
-const { createEmbedder, createReranker } = await import(RIG);
-const { run } = await import(EFFECTION);
+const argv = process.argv.slice(2);
+const flag = (name) => { const i = argv.indexOf(name); return i === -1 ? undefined : argv[i + 1]; };
+const RESIDENT = !argv.includes('--no-resident');
+const candidates = flag('--candidates');
+const residentDir = flag('--resident');
+const usage = 'usage: node eval/embedding/compare.mjs --candidates <dir> (--resident <project>/models | --no-resident)';
+if (!candidates || !existsSync(candidates)) { process.stderr.write(`${usage}\n--candidates: a directory holding the candidate GGUFs\n`); process.exit(1); }
+if (RESIDENT && !(residentDir && existsSync(residentDir))) { process.stderr.write(`${usage}\n--resident: a project's models/ tree, or pass --no-resident\n`); process.exit(1); }
+
+/** The one GGUF in a slot of the resident project's models tree. */
+const slot = (role) => {
+  const dir = resolve(residentDir, role);
+  const files = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.gguf')) : [];
+  if (files.length !== 1) { process.stderr.write(`--resident: expected one .gguf in ${dir}, found ${files.length}\n`); process.exit(1); }
+  return resolve(dir, files[0]);
+};
+const resident = RESIDENT ? { llm: slot('llm'), mmproj: slot('vision'), reranker: slot('reranker') } : null;
 
 const fixtures = JSON.parse(readFileSync(resolve(root, 'eval/rerank/fixtures.json'), 'utf8'));
 const verdicts = JSON.parse(readFileSync(resolve(root, 'eval/rerank/scores-post-n10.json'), 'utf8'));
-const resident = {
-  llm: resolve(homedir(), 'dev/apps/casework/e2e-0923-research/models/llm/qwen3.5-4b.gguf'),
-  mmproj: resolve(homedir(), 'dev/apps/casework/e2e-0923-research/models/mmproj/qwen3.5-4b-mmproj.gguf'),
-  reranker: resolve(homedir(), 'dev/apps/casework/e2e-0923-research/models/reranker/qwen3-reranker-0.6b-q8.gguf'),
-};
 
 /** Each candidate prepares its text the way its card says: the encoder never guesses which side a text is. */
 const MODELS = [
   {
     id: 'nomic-embed-text-v1.5-q4', pooling: 'mean', nCtx: 2048,
-    path: resolve(homedir(), 'dev/apps/lloyal-node/models/nomic-embed-text-v1.5.Q4_K_M.gguf'),
+    path: resolve(candidates, 'nomic-embed-text-v1.5.Q4_K_M.gguf'),
     query: (q) => `search_query: ${q}`, doc: (d) => `search_document: ${d}`,
   },
   {
     id: 'qwen3-embedding-0.6b-q8', pooling: 'last', nCtx: 2048,
-    path: resolve(homedir(), 'dev/apps/lloyal-node/models/Qwen3-Embedding-0.6B-Q8_0.gguf'),
+    path: resolve(candidates, 'Qwen3-Embedding-0.6B-Q8_0.gguf'),
     query: (q) => `Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: ${q}`, doc: (d) => d,
   },
 ];
+for (const m of MODELS) if (!existsSync(m.path)) { process.stderr.write(`--candidates: ${m.path} is not there\n`); process.exit(1); }
 
 const cosine = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; };
 const rankOf = (scores) => { const order = scores.map((s, i) => [s, i]).sort((x, y) => y[0] - x[0]); const r = new Array(scores.length); order.forEach(([, i], pos) => { r[i] = pos; }); return r; };
@@ -59,7 +76,7 @@ const verdictOf = new Map(verdicts.results.map((r) => [r.id, r]));
 const out = { ranAt: new Date().toISOString(), resident: RESIDENT, models: [] };
 
 const held = [];
-if (RESIDENT) {
+if (resident) {
   process.stdout.write('loading the resident system: llm + projector + reranker …\n');
   held.push(await createContext({ modelPath: resident.llm, nCtx: 8192, nSeqMax: 5, mmprojPath: resident.mmproj }));
 }
@@ -68,7 +85,7 @@ process.stdout.write(`baseline rss ${gb(baseline)}\n`);
 
 for (const m of MODELS) {
   const result = await run(function* () {
-    if (RESIDENT) yield* createReranker(resident.reranker, { nCtx: 16384 });
+    if (resident) yield* createReranker(resident.reranker, { nCtx: 16384 });
     const before = rss();
     const t0 = performance.now();
     const e = yield* createEmbedder(m.path, { nCtx: m.nCtx, pooling: m.pooling });
