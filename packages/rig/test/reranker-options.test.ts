@@ -161,7 +161,9 @@ describe('createReranker — ownership begins with the request', () => {
     expect(fakeCtx.dispose).toHaveBeenCalledTimes(1);
   });
 
-  it('teardown frees the composition, then the context — each owner frees what it requested', async () => {
+  it('teardown frees the composition, then the context — each owner frees what it requested, in reverse order', async () => {
+    // `Rerank.dispose` disposes the context it was created on (sdk `Rerank.ts`), so the second free is a
+    // no-op there; the fake counts both, and that order is the contract this row states.
     const order: string[] = [];
     rerankDispose.mockImplementation(() => { order.push('rerank'); });
     fakeCtx.dispose.mockImplementation(() => { order.push('ctx'); });
@@ -183,17 +185,44 @@ describe('createReranker — ownership begins with the request', () => {
     expect(rerankDispose).toHaveBeenCalledTimes(2);
   });
 
-  it('a halt while the context is still loading frees it when it arrives — the finding this row holds', async () => {
+  it('a halt while the boot canary runs waits for the canary, then frees the composition, then the context — the finding this row holds', async () => {
+    // Never `canary-start → context-free → canary-end`: the scope does not leave until the canary has
+    // settled, and its teardown runs in reverse order of acquisition.
+    const order: string[] = [];
+    let finishCanary!: () => void;
+    rerankCreate.mockImplementationOnce(async () => {
+      order.push('canary-start');
+      await new Promise<void>((r) => { finishCanary = r; });
+      order.push('canary-end');
+      return { score: () => ({}), scoreBatch: async () => [], tokenize: async () => [], dispose: rerankDispose };
+    });
+    rerankDispose.mockImplementation(() => { order.push('rerank-free'); });
+    fakeCtx.dispose.mockImplementation(() => { order.push('ctx-free'); });
+    await run(function* () {
+      const task = yield* spawn(function* () { yield* createReranker('/fake/reranker.gguf'); });
+      yield* sleep(0);
+      expect(order).toEqual(['canary-start']);
+      const halting = yield* spawn(function* () { yield* task.halt(); });
+      yield* sleep(0);
+      expect(order).toEqual(['canary-start']);   // the halt is waiting on the canary
+      finishCanary();
+      yield* halting;
+    });
+    expect(order).toEqual(['canary-start', 'canary-end', 'rerank-free', 'ctx-free']);
+  });
+
+  it('a halt while the context is still loading waits for it and frees it; the canary never starts — the finding this row holds', async () => {
     let resolveCtx!: (c: typeof fakeCtx) => void;
     createContext.mockImplementationOnce(() => new Promise<typeof fakeCtx>((r) => { resolveCtx = r; }));
     await run(function* () {
       const task = yield* spawn(function* () { yield* createReranker('/fake/reranker.gguf'); });
       yield* sleep(0);
-      yield* task.halt();
+      const halting = yield* spawn(function* () { yield* task.halt(); });
+      yield* sleep(0);
+      expect(fakeCtx.dispose).not.toHaveBeenCalled();
+      resolveCtx(fakeCtx);
+      yield* halting;
     });
-    expect(fakeCtx.dispose).not.toHaveBeenCalled();
-    resolveCtx(fakeCtx);
-    await new Promise((r) => setTimeout(r, 0));
     expect(fakeCtx.dispose).toHaveBeenCalledTimes(1);
     expect(rerankCreate).not.toHaveBeenCalled();
   });

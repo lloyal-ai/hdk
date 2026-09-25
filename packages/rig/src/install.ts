@@ -20,8 +20,8 @@
  *
  * @category Runtime
  */
-import { call, each, scoped, spawn } from 'effection';
-import type { Operation, Stream } from 'effection';
+import { call, scoped, spawn } from 'effection';
+import type { Operation, Stream, Subscription } from 'effection';
 import { modelSettings } from './config';
 import type { ModelFamily } from './config';
 import type { BaseHarnessConfig, ConfigPatch } from './runner';
@@ -136,6 +136,9 @@ export function* install(opts: InstallOpts): Operation<Installed> {
   let model = opts.model;
   const steps = planInstall(model);
   const say = opts.say ?? ((line: string): void => { process.stderr.write(`${line}\n`); });
+  // Subscribed once, before anything runs: a command a view sends between one attempt and the next is
+  // buffered here, where a fresh subscription per attempt would have missed it.
+  const controls: Subscription<InstallCommand, void> | undefined = opts.controls ? yield* opts.controls : undefined;
   // A view hears from the install once there is something it must act on or wait through: a step that
   // fetches, or a step that failed — whichever comes first. Silent otherwise, so a run that acquires nothing
   // and fails at nothing simply opens.
@@ -178,7 +181,7 @@ export function* install(opts: InstallOpts): Operation<Installed> {
       attempt = { error: new Error(step.refused) };
     } else {
       set(step, { status: 'running', got: undefined, total: undefined, note: undefined });
-      attempt = yield* attemptStep(step, opts, (got, total) => set(step, { got, total }));
+      attempt = yield* attemptStep(step, opts, controls, (got, total) => set(step, { got, total }));
     }
     if ('artifact' in attempt) {
       artifacts[step.id] = attempt.artifact;
@@ -190,8 +193,8 @@ export function* install(opts: InstallOpts): Operation<Installed> {
       command = attempt.command;
     } else {
       set(step, { status: 'failed', note: message(attempt.error) });
-      if (!opts.controls) throw attempt.error;
-      command = yield* nextCommand(opts.controls);
+      if (!controls) throw attempt.error;
+      command = yield* nextCommand(controls);
     }
     if (command.type === 'install:quit') throw new Error('the install was stopped');
     if (command.type === 'install:use_file') {
@@ -217,17 +220,15 @@ export function* install(opts: InstallOpts): Operation<Installed> {
 }
 
 /** Run one step under its controls: a command that arrives while it downloads stops the download and is the outcome. */
-function attemptStep(step: PlannedStep, opts: InstallOpts, onProgress: (got: number, total: number) => void): Operation<Attempt> {
+function attemptStep(step: PlannedStep, opts: InstallOpts, controls: Subscription<InstallCommand, void> | undefined, onProgress: (got: number, total: number) => void): Operation<Attempt> {
   return scoped(function* () {
     const controller = new AbortController();
     let command: InstallCommand | undefined;
-    if (opts.controls) {
-      const controls = opts.controls;
+    if (controls) {
       yield* spawn(function* () {
-        for (const c of yield* each(controls)) {
-          command = c;
+        for (let next = yield* controls.next(); !next.done; next = yield* controls.next()) {
+          command = next.value;
           controller.abort();
-          yield* each.next();
         }
       });
     }
@@ -250,9 +251,8 @@ function attemptStep(step: PlannedStep, opts: InstallOpts, onProgress: (got: num
 }
 
 /** Hold for the reader's next command. */
-function* nextCommand(controls: Stream<InstallCommand, void>): Operation<InstallCommand> {
-  const subscription = yield* controls;
-  const next = yield* subscription.next();
+function* nextCommand(controls: Subscription<InstallCommand, void>): Operation<InstallCommand> {
+  const next = yield* controls.next();
   if (next.done) throw new Error('the install was stopped');
   return next.value;
 }

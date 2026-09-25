@@ -95,6 +95,16 @@ describe('a block is present when a rung says so — its presence is the request
     expect(origin['model.reranker.path']).toBe('cli');
   });
 
+  it('a whitespace-only cli or env value is nothing: it neither makes the block nor sets the key — presence and acceptance read a value the same way', () => {
+    // `--reranker "  "` used to make `{ reranker: { context: 16384 } }`, a block that then refused provisioning
+    // for naming no model; the value that could not set the key must not request the block either.
+    expect(loadConfig(modelSettings, {}, { cli: { reranker: '   ' }, env: {}, cwd }).config.model.reranker).toBeUndefined();
+    const viaEnv = defineConfig({ 'model.llm.context': modelSettings['model.llm.context'], 'model.llm.id': modelSettings['model.llm.id'] });
+    expect(loadConfig(viaEnv, {}, { env: { LLAMA_CTX_SIZE: ' ' }, cwd }).config.model.llm).toBeUndefined();
+    // …and a padded value is the trimmed value, present.
+    expect(loadConfig(modelSettings, {}, { cli: { reranker: ' /r.gguf ' }, env: {}, cwd }).config.model.reranker).toEqual({ path: '/r.gguf', context: 16384 });
+  });
+
   it('a block a cli or env key made takes its defaults whatever the table declares first: presence is decided before any key is read', () => {
     // The default key BEFORE the key the cli supplies — the order that used to skip the default.
     const reversed = defineConfig({

@@ -278,14 +278,27 @@ export function useInstall(): readonly InstallerStep[] {
  * The install as the bridge tells it, from both sources, with one rule between them: the push wins. The
  * answer to `installNow` was true when it was asked; a frame is true now. So the answer stands only while no
  * frame has arrived, and a frame that arrives while the answer is in flight is never overwritten by it.
+ *
+ * The steps are the CURRENT engine's. A placement that replaces its engine announces the new one as a session
+ * that is `warming`, and that is where this starts over: the old steps cleared, the new engine asked what it
+ * holds, an answer from the old one never applied. A bridge with no session plane has one life, asked once.
  * Returns the unsubscribe.
  */
-export function subscribeInstall(bridge: Pick<Bridge<unknown, unknown, unknown>, 'onEvent' | 'installNow'>, set: (steps: readonly InstallerStep[]) => void): () => void {
+export function subscribeInstall(bridge: Pick<Bridge<unknown, unknown, unknown>, 'onEvent' | 'installNow' | 'onSession'>, set: (steps: readonly InstallerStep[]) => void): () => void {
   let live = true;
   let pushed = false;
+  let life = 0;
   const stepsOf = (ev: unknown): readonly InstallerStep[] | null => {
     const e = ev as { type?: unknown; steps?: readonly InstallerStep[] };
     return e && e.type === 'install:step' && Array.isArray(e.steps) ? e.steps : null;
+  };
+  const ask = (): void => {
+    const mine = ++life;
+    pushed = false;
+    void bridge.installNow?.().then((now) => {
+      const steps = stepsOf(now);
+      if (live && mine === life && !pushed && steps) set(steps);
+    }).catch(() => { /* a placement that cannot answer has nothing to report */ });
   };
   const off = bridge.onEvent((frame: Frame<unknown>) => {
     const steps = stepsOf(frame.ev);
@@ -293,12 +306,15 @@ export function subscribeInstall(bridge: Pick<Bridge<unknown, unknown, unknown>,
     pushed = true;
     set(steps);
   });
-  void bridge.installNow?.().then((now) => {
-    const steps = stepsOf(now);
-    if (live && !pushed && steps) set(steps);
-  }).catch(() => { /* a placement that cannot answer has nothing to report */ });
+  const offSession = bridge.onSession?.((state: SessionState) => {
+    if (!live || state.phase !== 'warming') return;
+    set([]);
+    ask();
+  });
+  ask();
   return () => {
     live = false;
+    offSession?.();
     off();
   };
 }

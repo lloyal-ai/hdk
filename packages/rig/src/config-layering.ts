@@ -86,6 +86,10 @@ function setPath(bag: Bag, dotted: string, value: unknown): void {
 /** Absent, null and the empty string are all "nothing here": a clear. */
 const present = (v: unknown): unknown => (v === undefined || v === null || v === '' ? undefined : v);
 
+/** A value as typed or set: text is trimmed first, so a whitespace-only value is nothing here too. The one
+ *  normalization, for deciding a block's presence and for accepting a key alike. */
+const given = (raw: unknown): unknown => present(typeof raw === 'string' ? raw.trim() : raw);
+
 /** Whether a present value is one the key takes. */
 function takes(key: ConfigKey, v: unknown): boolean {
   if (key.integer && !(Number.isInteger(v) && (v as number) >= 1)) return false;
@@ -108,7 +112,7 @@ function expectation(key: ConfigKey): string {
  *  relative path resolves against `base`: the project for a value from its files or its default, the process for one
  *  typed at the cli or set in the environment. */
 function accept(key: ConfigKey, raw: unknown, base: string, fromEnv = false): unknown {
-  let v = present(typeof raw === 'string' ? raw.trim() : raw);
+  let v = given(raw);
   if (v === undefined) return undefined;
   if (fromEnv && key.integer) v = typeof v === 'string' && /^\d+$/.test(v) ? parseInt(v, 10) : undefined;
   if (v === undefined || !takes(key, v)) return undefined;
@@ -190,8 +194,8 @@ export function loadConfig<T extends ConfigTable>(
       if (carriesBlock(committed)) blocks.add(block);
     }
     if (carriesBlock(getPath(local, block))) blocks.add(block);
-    if (key.cli && present(cli[key.cli]) !== undefined) blocks.add(block);
-    if (key.env && present(env[key.env]) !== undefined) blocks.add(block);
+    if (key.cli && given(cli[key.cli]) !== undefined) blocks.add(block);
+    if (key.env && given(env[key.env]) !== undefined) blocks.add(block);
   }
   for (const block of blocks) setPath(config, block, {});
 

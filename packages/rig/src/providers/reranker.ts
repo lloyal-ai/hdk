@@ -81,14 +81,15 @@ export function createReranker(
     const nSeqMax = opts?.nSeqMax ?? 10;
     const nCtx = opts?.nCtx ?? 4096;
     const nBatch = opts?.nBatch ?? Math.floor(nCtx / nSeqMax);
-    // Owned from the request, both of them: a halt while the weights load, or while the boot canary runs,
-    // still frees what arrives. The composition's dispose frees the context too; a second free is a no-op.
+    // Two acquisitions, owned from the request: the context, then the composition whose boot canary runs on
+    // it. The scope leaves only once each has settled, in reverse order — the canary finishes before the
+    // composition is freed, and the composition before the context. A rejected canary is a normal
+    // configuration outcome: the rejection is the caller's and the context's own teardown frees it. The
+    // composition's dispose frees the context too; the second free is a no-op.
     const ctx = yield* acquire(
       () => createContext({ modelPath, nCtx, nSeqMax, nBatch, typeK: opts?.typeK ?? 'q8_0', typeV: opts?.typeV ?? 'q8_0' }),
       (c) => c.dispose(),
     );
-    // A failing smoke test is a normal configuration outcome now that the instruction is a parameter: the
-    // rejection is thrown and the context's own teardown frees it.
     const rerank = yield* acquire(
       () => Rerank.create(ctx as unknown as SessionContext, { nSeqMax, nCtx, instruction: opts?.instruction }),
       (r) => r.dispose(),
