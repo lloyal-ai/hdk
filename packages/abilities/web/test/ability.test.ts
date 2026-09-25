@@ -73,6 +73,31 @@ describe('fetch_page selects by query on the reranker', () => {
     }
   });
 
+  it('the result is what admission selected and nothing beside it — no excerpt rides past the budget', async () => {
+    vi.stubGlobal('fetch', async () => new Response(page, { status: 200, headers: { 'content-type': 'text/html' } }));
+    try {
+      const ability = await run(function* () {
+        yield* AbilityConfigStoreCtx.set(createInMemoryConfigStore());
+        yield* Trace.set(new NullTraceWriter());
+        yield* Services.set({ reranker: stubReranker });
+        return yield* createWebAbility();
+      });
+      const fetchPage = ability.tools.find((t) => t.name === 'fetch_page')!;
+      const r = (await run(function* () {
+        yield* Trace.set(new NullTraceWriter());
+        return yield* fetchPage.execute({ url: 'https://example.com/pets', query: 'when do cats sleep' }, {} as ToolContext);
+      })) as Record<string, unknown>;
+      expect(Object.keys(r).sort()).toEqual(['chunks', 'content', 'title', 'url']);
+      // Every passage is a section of the page, whole, and there are exactly as many as `chunks` counts.
+      const passages = (r.content as string).split('\n\n---\n\n');
+      expect(passages.length).toBe(r.chunks);
+      for (const passage of passages) expect(page.replace(/\s+/g, ' ')).toContain(passage.replace(/\s+/g, ' ').slice(0, 80));
+      expect(fetchPage.description).not.toMatch(/excerpt/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('a call with no query has nothing to select by, and says so', async () => {
     const ability = await run(function* () {
       yield* AbilityConfigStoreCtx.set(createInMemoryConfigStore());

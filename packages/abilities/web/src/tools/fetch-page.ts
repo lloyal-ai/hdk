@@ -27,7 +27,7 @@ export class FetchPageTool extends Tool<{ url: string; query: string }> {
   /** This tool's gate: a URL already attended is not fetched again. Scope is the harness's. */
   readonly hooks: ToolLifecycleHooks = { beforeDispatch: [urlDedup] };
   readonly description =
-    "Fetch a web page and return the sections most relevant to a query, verbatim. Returns the title, an excerpt, and the selected sections.";
+    "Fetch a web page and return the sections most relevant to a query, verbatim. Returns the title and the selected sections.";
   readonly parameters: JsonSchema = {
     type: "object",
     properties: {
@@ -106,21 +106,17 @@ export class FetchPageTool extends Tool<{ url: string; query: string }> {
       const article = new Readability(document).parse();
       if (!article || !article.content) return { error: "No article body was extracted from this page", url } as const;
 
-      return {
-        url,
-        title: article.title ?? "",
-        articleHtml: article.content,
-        excerpt: article.excerpt ?? "",
-      } as const;
+      return { url, title: article.title ?? "", articleHtml: article.content } as const;
     });
     if ("error" in fetched) return fetched;
 
     // Step 2: chunk the article structurally, then hand the chunks to the platform's admission. `admitChunks`
     // owns scoring, explore/exploit dual scoring, the budgeted selection, and the trace events that make the
     // funnel observable — this tool owns only what is page-shaped: fetching, chunking, tokenizing fresh chunks,
-    // and rendering the result.
+    // and rendering the result. The result is what admission selected and nothing beside it: no extractor
+    // excerpt, which would ride past the budget.
     const chunks = yield* call(() => chunkHtml(fetched.articleHtml, url, fetched.title));
-    if (chunks.length === 0) return { url, title: fetched.title, excerpt: fetched.excerpt, content: "", chunks: 0 };
+    if (chunks.length === 0) return { url, title: fetched.title, content: "", chunks: 0 };
 
     yield* call(() => reranker.tokenizeChunks(chunks));
     const admitted = yield* admitChunks(reranker, chunks, query, context, {
@@ -134,7 +130,6 @@ export class FetchPageTool extends Tool<{ url: string; query: string }> {
     return {
       url,
       title: fetched.title,
-      excerpt: fetched.excerpt,
       content: passages.map((c) => c.text).join("\n\n---\n\n"),
       chunks: passages.length,
       ...(alsoOnPage.length > 0 ? { alsoOnPage } : {}),
