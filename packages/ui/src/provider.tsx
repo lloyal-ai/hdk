@@ -23,7 +23,7 @@ import { createContext, createElement, useContext, useEffect, useMemo, useState,
 import type { ReactElement, ReactNode } from 'react';
 import { Fragment } from 'react';
 import { connectProjection, availabilityOf } from '@lloyal-labs/binding';
-import type { Availability, Bridge, Projection, SessionState, WireStatus } from '@lloyal-labs/binding';
+import type { Availability, Bridge, Frame, Projection, SessionState, WireStatus } from '@lloyal-labs/binding';
 import { Installer } from './installer.js';
 import type { InstallerStep } from './installer.js';
 
@@ -64,12 +64,35 @@ export function HarnessProvider<E, C, S extends object>({ bridge, initialState, 
   return createElement(HarnessContext.Provider, { value: value as Harness<unknown, unknown, object> }, createElement(Acquiring, null, children));
 }
 
+/**
+ * What the provider shows in front of the harness's view: the installer only for an acquisition that can still
+ * be acted on. Steps with a live engine are the installer and its remedies. Steps with a FAILED row after the
+ * engine ended — a machine refusal exits the engine with its row published — are the same list, offered the
+ * app's own recovery (a new engine) and nothing that would be sent to a process that is gone. Steps with
+ * nothing failed after the engine ended, or no steps at all, are the app.
+ */
+export function installView(steps: readonly InstallerStep[], availability: Availability): 'app' | 'acquiring' | 'ended' {
+  if (steps.length === 0) return 'app';
+  if (availability === 'ended' || availability === 'lost') return steps.some((s) => s.status === 'failed') ? 'ended' : 'app';
+  return 'acquiring';
+}
+
 /** The installer while the run acquires; the harness's view once it is done — or at once, on a run that acquires nothing. */
 function Acquiring({ children }: { children: ReactNode }): ReactElement {
   const steps = useInstall();
+  const availability = useAvailability();
+  const recover = useRecover();
   const send = useSend<{ type: string; step?: string; path?: string }>();
   const chooseFile = useChooseFile();
-  if (steps.length === 0) return createElement(Fragment, null, children);
+  const view = installView(steps, availability);
+  if (view === 'app') return createElement(Fragment, null, children);
+  if (view === 'ended') {
+    return createElement(Installer, {
+      steps,
+      footnote: 'The engine ended',
+      ...(recover ? { onRetry: recover, retryLabel: 'Start a new engine' } : {}),
+    });
+  }
   return createElement(Installer, {
     steps,
     footnote: 'First run only',
@@ -176,7 +199,7 @@ function availabilityFor(bridge: Bridge<unknown, unknown, unknown>): Availabilit
     // itself knows no placements.
     let wire: WireStatus = 'connected';
     let session: SessionState | null = bridge.onSession ? null : { phase: 'live' };
-    let value = availabilityOf(session, wire);
+    let value: Availability;
     const listeners = new Set<() => void>();
     const settle = (): void => {
       const next = availabilityOf(session, wire);
@@ -184,7 +207,11 @@ function availabilityFor(bridge: Bridge<unknown, unknown, unknown>): Availabilit
       value = next;
       for (const notify of listeners) notify();
     };
-    bridge.onStatus?.((next) => { wire = next; settle(); });
+    // The wire through the one status store, so a bridge is asked once however many hooks read it.
+    const status = statusFor(bridge);
+    wire = status.getSnapshot();
+    value = availabilityOf(session, wire);
+    status.subscribe(() => { wire = status.getSnapshot(); settle(); });
     bridge.onSession?.((next) => { session = next; settle(); });
     store = {
       subscribe(notify) {
@@ -243,20 +270,37 @@ export function useRecover(): (() => void) | null {
 export function useInstall(): readonly InstallerStep[] {
   const { bridge } = useHarness();
   const [steps, setSteps] = useState<readonly InstallerStep[]>([]);
-  useEffect(() => {
-    let live = true;
-    const take = (ev: unknown): void => {
-      const e = ev as { type?: unknown; steps?: readonly InstallerStep[] };
-      if (live && e && e.type === 'install:step' && Array.isArray(e.steps)) setSteps(e.steps);
-    };
-    const off = bridge.onEvent((frame) => take(frame.ev));
-    void bridge.installNow?.().then(take).catch(() => { /* a placement that cannot answer has nothing to report */ });
-    return () => {
-      live = false;
-      off();
-    };
-  }, [bridge]);
+  useEffect(() => subscribeInstall(bridge, setSteps), [bridge]);
   return steps;
+}
+
+/**
+ * The install as the bridge tells it, from both sources, with one rule between them: the push wins. The
+ * answer to `installNow` was true when it was asked; a frame is true now. So the answer stands only while no
+ * frame has arrived, and a frame that arrives while the answer is in flight is never overwritten by it.
+ * Returns the unsubscribe.
+ */
+export function subscribeInstall(bridge: Pick<Bridge<unknown, unknown, unknown>, 'onEvent' | 'installNow'>, set: (steps: readonly InstallerStep[]) => void): () => void {
+  let live = true;
+  let pushed = false;
+  const stepsOf = (ev: unknown): readonly InstallerStep[] | null => {
+    const e = ev as { type?: unknown; steps?: readonly InstallerStep[] };
+    return e && e.type === 'install:step' && Array.isArray(e.steps) ? e.steps : null;
+  };
+  const off = bridge.onEvent((frame: Frame<unknown>) => {
+    const steps = stepsOf(frame.ev);
+    if (!live || !steps) return;
+    pushed = true;
+    set(steps);
+  });
+  void bridge.installNow?.().then((now) => {
+    const steps = stepsOf(now);
+    if (live && !pushed && steps) set(steps);
+  }).catch(() => { /* a placement that cannot answer has nothing to report */ });
+  return () => {
+    live = false;
+    off();
+  };
 }
 
 /** What a placement's file chooser takes, and answers. */

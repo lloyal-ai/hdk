@@ -115,3 +115,54 @@ describe('the state must be object-shaped', () => {
     expect(typeof stateMustBeObjectShaped).toBe('function');
   });
 });
+
+describe('the install in front of the view', () => {
+  const running = [{ id: 'llm', label: 'Getting the model', status: 'running' as const }];
+  const failed = [{ id: 'machine', label: 'This machine', status: 'failed' as const, note: '8 GB · 10 GB needed' }];
+
+  it('installView: no steps is the app; steps with a live engine are the installer; a failed list after the engine ended is handed to recovery; an ended engine with nothing failed is the app', async () => {
+    const { installView } = await import('../src/provider');
+    expect(installView([], 'ready')).toBe('app');
+    expect(installView(running, 'connecting')).toBe('acquiring');
+    expect(installView(running, 'ready')).toBe('acquiring');
+    expect(installView(failed, 'ended')).toBe('ended');
+    expect(installView(failed, 'lost')).toBe('ended');
+    expect(installView(running, 'ended')).toBe('app');
+    expect(installView([], 'ended')).toBe('app');
+  });
+
+  it('subscribeInstall: the push wins — an answer that arrives after a frame never overwrites it; an answer with no frame stands', async () => {
+    const { subscribeInstall } = await import('../src/provider');
+    let answer!: (v: unknown) => void;
+    const subs = new Set<(f: { epoch: number; seq: number; ev: unknown }) => void>();
+    const b = {
+      onEvent(cb: (f: { epoch: number; seq: number; ev: unknown }) => void) { subs.add(cb); return () => subs.delete(cb); },
+      installNow: () => new Promise<unknown>((r) => { answer = r; }),
+    };
+    const seen: unknown[] = [];
+    const off = subscribeInstall(b, (steps) => seen.push(steps));
+    for (const cb of subs) cb({ epoch: 1, seq: 1, ev: { type: 'install:step', steps: [] } });   // the final frame: over
+    answer({ type: 'install:step', steps: running });                                            // an older answer, late
+    await new Promise((r) => setTimeout(r, 0));
+    expect(seen).toEqual([[]]);
+    off();
+
+    const late: unknown[] = [];
+    const b2 = { onEvent() { return () => {}; }, installNow: () => Promise.resolve({ type: 'install:step', steps: running }) };
+    subscribeInstall(b2, (steps) => late.push(steps));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(late).toEqual([running]);
+  });
+
+  it('subscribeInstall: after unsubscribing, neither source is heard', async () => {
+    const { subscribeInstall } = await import('../src/provider');
+    let answer!: (v: unknown) => void;
+    const b = { onEvent() { return () => {}; }, installNow: () => new Promise<unknown>((r) => { answer = r; }) };
+    const seen: unknown[] = [];
+    const off = subscribeInstall(b, (steps) => seen.push(steps));
+    off();
+    answer({ type: 'install:step', steps: running });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(seen).toEqual([]);
+  });
+});

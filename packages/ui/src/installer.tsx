@@ -51,6 +51,8 @@ export interface InstallerProps {
   footnote?: string;
   /** Run the failed step again. Offered beside a failure. */
   onRetry?: () => void;
+  /** What the retry says — "Try again" unless the placement offers something else, such as a new engine. */
+  retryLabel?: string;
   /** Use a file already on this machine for the step whose id is given. Offered only where the placement can
    *  choose a file at all, and only on a step that takes one — while it downloads, or after it failed. */
   onUseFile?: (stepId: string) => void;
@@ -164,7 +166,7 @@ function Marker({ status }: { status: InstallerStep['status'] }): ReactElement {
   );
 }
 
-export function Installer({ steps, footnote, onRetry, onUseFile, onStop }: InstallerProps): ReactElement | null {
+export function Installer({ steps, footnote, onRetry, retryLabel = 'Try again', onUseFile, onStop }: InstallerProps): ReactElement | null {
   const active = steps.find((x) => x.status === 'running');
   const failed = steps.find((x) => x.status === 'failed');
   const head = failed ?? active;
@@ -216,7 +218,7 @@ export function Installer({ steps, footnote, onRetry, onUseFile, onStop }: Insta
         <div style={S.footer}>
           {onStop ? <button type="button" style={S.quiet} onClick={onStop}>Stop</button> : null}
           <span style={{ flexGrow: 1 }} />
-          {onRetry ? <button type="button" style={S.button} onClick={onRetry}>Try again</button> : null}
+          {onRetry ? <button type="button" style={S.button} onClick={onRetry}>{retryLabel}</button> : null}
         </div>
       ) : null}
       </div>
