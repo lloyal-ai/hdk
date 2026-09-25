@@ -315,22 +315,35 @@ export function useInstall(): readonly InstallerStep[] | null {
  */
 export function subscribeInstall(bridge: Pick<Bridge<unknown, unknown, unknown>, 'onEvent' | 'installNow' | 'onSession'>, set: (steps: readonly InstallerStep[] | null) => void): () => void {
   let live = true;
-  let pushed = false;
   let life = 0;
+  // Per life: a frame has been taken (an answer never overrides it); the engine answered that it holds no frame;
+  // and whether this life is still acquiring — a null answer while `warming` is an engine that has not said
+  // yet, and one past it is an engine that had nothing to say.
+  let pushed = false;
+  let answeredNothing = false;
+  let warming = false;
   const stepsOf = (ev: unknown): readonly InstallerStep[] | null => {
     const e = ev as { type?: unknown; steps?: readonly InstallerStep[] };
     return e && e.type === 'install:step' && Array.isArray(e.steps) ? e.steps : null;
   };
+  const settle = (): void => {
+    if (!pushed && answeredNothing && !warming) { pushed = true; set([]); }
+  };
   const ask = (): void => {
     const mine = ++life;
     pushed = false;
+    answeredNothing = false;
     // A placement with no `installNow` has nothing to report; one that HAS it and fails to answer is a broken
     // wiring, shown as a failed step rather than as a run that acquires nothing.
     void bridge.installNow?.().then((now) => {
-      // An answer with no frame in it is an engine that retained none: this run acquires nothing.
-      if (live && mine === life && !pushed) set(stepsOf(now) ?? []);
+      if (!live || mine !== life || pushed) return;
+      const steps = stepsOf(now);
+      if (steps) { pushed = true; set(steps); return; }
+      answeredNothing = true;
+      settle();
     }, (err: unknown) => {
       if (live && mine === life && !pushed) {
+        pushed = true;
         set([{ id: 'install', label: 'Asking what this run needs', status: 'failed', note: err instanceof Error ? err.message : String(err) }]);
       }
     });
@@ -342,7 +355,9 @@ export function subscribeInstall(bridge: Pick<Bridge<unknown, unknown, unknown>,
     set(steps);
   });
   const offSession = bridge.onSession?.((state: SessionState) => {
-    if (!live || state.phase !== 'warming') return;
+    if (!live) return;
+    warming = state.phase === 'warming';
+    if (!warming) return settle();
     // A new life: what it holds is unknown until it answers — and known to be nothing where nothing can be asked.
     set(bridge.installNow ? null : []);
     ask();

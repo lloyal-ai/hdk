@@ -229,7 +229,10 @@ describe('the install in front of the view', () => {
     answers[0]({ type: 'install:step', steps: failed });   // the old engine's answer, late
     answers[1](null);
     await new Promise((r) => setTimeout(r, 0));
-    // Unknown at the new life, then nothing — the late answer from the old engine never lands between.
+    // Unknown at the new life — the late answer from the old engine never lands — and still unknown on the
+    // replacement's null: it is warming, and may publish a step yet. Nothing, once it is live having said none.
+    expect(seen).toEqual([null]);
+    for (const cb of sessions) cb({ phase: 'live' });
     expect(seen).toEqual([null, []]);
   });
 

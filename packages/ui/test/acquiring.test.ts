@@ -129,6 +129,30 @@ describe('the install view when the engine ends', () => {
     act(() => root.unmount());
   });
 
+  it('an engine that has retained nothing yet is still unknown: nothing mounts until it goes live having said nothing, or a frame arrives', async () => {
+    const bridge = desktopBridge(running);
+    bridge.installNow = () => Promise.resolve(null as unknown as { type: string; steps: readonly InstallerStep[] });
+    mount(bridge);
+    await flush();
+    act(() => bridge.session({ phase: 'warming' }));
+    await flush();
+    expect(container.textContent).toBe('');   // the child has not said what it acquires; a download may be a moment away
+    act(() => bridge.push(running));
+    expect(container.textContent).toContain('STEP 2 OF 3');
+    act(() => root.unmount());
+
+    const quiet = desktopBridge(running);
+    quiet.installNow = () => Promise.resolve(null as unknown as { type: string; steps: readonly InstallerStep[] });
+    mount(quiet);
+    await flush();
+    act(() => quiet.session({ phase: 'warming' }));
+    await flush();
+    expect(container.textContent).toBe('');
+    act(() => quiet.session({ phase: 'live' }));   // live, having said nothing: this run acquired nothing
+    expect(container.textContent).toBe('the app');
+    act(() => root.unmount());
+  });
+
   it('a new engine that acquires nothing: the steps clear at warming and the app is shown', async () => {
     const bridge = desktopBridge(running);
     mount(bridge);
