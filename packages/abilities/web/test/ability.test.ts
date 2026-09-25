@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { run } from 'effection';
+import { run, spawn, until } from 'effection';
 import { Trace, NullTraceWriter } from '@lloyal-labs/lloyal-agents';
 import { AbilityConfigStoreCtx } from '@lloyal-labs/rig';
 import { Services } from '@lloyal-labs/rig';
@@ -51,6 +51,41 @@ describe('web_search reads its key at the call', () => {
       await run(function* () { yield* search.execute({ query: 'second' }, {} as ToolContext); });
       expect(seen).toEqual(['Bearer k1', 'Bearer k2']);
     } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a key removed between two searches puts the second through the keyless provider this build owns — the tool an agent holds always has somewhere to fall back to', async () => {
+    const seen: { url: string; auth: string | undefined }[] = [];
+    vi.stubGlobal('fetch', async (url: string, init?: { headers?: Record<string, string> }) => {
+      seen.push({ url: String(url), auth: init?.headers?.Authorization });
+      return new Response(url.toString().includes('tavily') ? JSON.stringify({ results: [] }) : '<html></html>', { status: 200 });
+    });
+    vi.useFakeTimers();
+    try {
+      // One scope throughout: the keyless provider's pacer lives in the ability's scope, as it does under a registry.
+      await run(function* () {
+        const store = createInMemoryConfigStore();
+        yield* store.set('web', { tavilyKey: 'k1' });
+        yield* AbilityConfigStoreCtx.set(store);
+        yield* Services.set({ reranker: stubReranker });
+        const ability = yield* createWebAbility();
+        const search = ability.tools.find((t) => t.name === 'web_search')!;
+        yield* search.execute({ query: 'first' }, {} as ToolContext);
+        yield* store.set('web', {});   // the key removed; the entry untouched
+        // The keyless provider paces its egress: the clock is driven past its first slot while the search waits.
+        const second = yield* spawn(() => search.execute({ query: 'second' }, {} as ToolContext));
+        yield* until(vi.advanceTimersByTimeAsync(10_000));
+        yield* second;
+      });
+      // The first search went through Tavily; everything after it is the keyless provider's own egress (its
+      // primary source, then its fallback on an empty page) — never Tavily, never a refusal.
+      expect(seen[0].auth).toBe('Bearer k1');
+      expect(seen.length).toBeGreaterThan(1);
+      expect(seen.slice(1).every((s) => s.auth === undefined && !s.url.includes('tavily'))).toBe(true);
+      expect(seen[1].url).toMatch(/duckduckgo/);
+    } finally {
+      vi.useRealTimers();
       vi.unstubAllGlobals();
     }
   });

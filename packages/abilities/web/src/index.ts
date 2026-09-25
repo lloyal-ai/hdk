@@ -37,24 +37,23 @@ const tavilyKeyOf = (cfg: Record<string, unknown>): string | undefined =>
 /**
  * Construct the web research ability. Provider selection: a `tavilyKey` in the
  * ability's stored config (or `TAVILY_API_KEY`) → Tavily; otherwise a keyless
- * DuckDuckGo provider. The key is read AT EACH SEARCH, so a key saved while a run
- * is live reaches the next search of every agent already holding the tool; the
- * keyless provider owns a pacer and is built once here, only when no key is
- * stored at enable. `services: ['reranker']` is the requirement: a harness whose
- * `model.reranker` block is absent does not enable this ability, so the reranker
- * below is always present.
+ * DuckDuckGo provider. The key is read AT EACH SEARCH, so a key saved — or
+ * removed — while a run is live reaches the next search of every agent already
+ * holding the tool. The keyless provider owns a pacer, so it is built once here,
+ * for the ability's life, whatever the key says at enable: a tool this build
+ * handed out always has somewhere to fall back to. `services: ['reranker']` is
+ * the requirement: a harness whose `model.reranker` block is absent does not
+ * enable this ability, so the reranker below is always present.
  */
 export const createWebAbility = defineAbility(manifest, function* () {
   const cfgStore = yield* AbilityConfigStoreCtx.expect();
   const cfg = (yield* cfgStore.get(manifest.name)) ?? {};
   const reranker = yield* service('reranker');
 
-  const keyless: SearchProvider | undefined = tavilyKeyOf(cfg) ? undefined : yield* createKeylessSearchProvider();
+  const keyless: SearchProvider = yield* createKeylessSearchProvider();
   const provider = function* (): Operation<SearchProvider> {
     const key = tavilyKeyOf((yield* cfgStore.get(manifest.name)) ?? {});
-    if (key) return new TavilyProvider(key);
-    if (keyless) return keyless;
-    throw new Error("web search: the Tavily key was removed, and this build started without keyless search — save the web settings again");
+    return key ? new TavilyProvider(key) : keyless;
   };
 
   // The source's knobs, when the stored config carries them; the source's defaults otherwise.
