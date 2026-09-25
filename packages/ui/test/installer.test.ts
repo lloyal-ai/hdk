@@ -65,6 +65,19 @@ describe('Installer', () => {
     expect(rateOf(moving, 9000)).toBeNull();
   });
 
+  it('the platform\'s default greys read on the platform\'s default card — WCAG AA for small text, 4.5:1', () => {
+    const html = renderToString(createElement(Installer, { steps, onUseFile: () => {} }));
+    const fallback = (name: string): string => new RegExp(`var\\(--harness-${name}, (#[0-9A-Fa-f]{6})`).exec(html)![1];
+    const luminance = (hex: string): number => {
+      const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+      return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    };
+    const contrast = (a: string, b: string): number => { const [x, y] = [luminance(a), luminance(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+    const card = fallback('bg');
+    expect(contrast(fallback('muted'), card)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(fallback('faint'), card)).toBeGreaterThanOrEqual(4.5);
+  });
+
   it('takes the harness theme from custom properties, with the platform values as defaults', () => {
     const html = renderToString(createElement(Installer, { steps }));
     expect(html).toContain('var(--harness-accent, #3A56D4)');
