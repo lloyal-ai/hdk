@@ -157,7 +157,7 @@ export function renderAgentPreamble(
     ...given,
   };
   const marker = BOUNDARY_MARKER(ability.manifest.protocol.name);
-  const body = renderSkillBody(ability.skill, params);
+  const body = renderSkillBody(ability.skill, params, `${ability.manifest.name} skill`);
 
   if (!ability.examples) {
     return marker + body;
@@ -168,24 +168,28 @@ export function renderAgentPreamble(
     name: ability.manifest.protocol.name,
     tools: ability.manifest.protocol.tools,
   };
-  const examples = renderExamples(ability.examples, examplesParams);
+  const examples = renderExamples(ability.examples, examplesParams, `${ability.manifest.name} examples`);
   return marker + body + '\n\n' + examples;
 }
 
 function renderSkillBody(
   skill: string | SkillTemplateFn,
   params: AgentRenderCtx,
+  name: string,
 ): string {
+  // A template of the ability's own reads a guarded input: a key it reads that the frame does not give is
+  // reported under the ability's name and rendered empty, never the word "undefined" on the spine.
   return typeof skill === 'function'
     ? skill(params)
-    : renderTemplate(skill, params as unknown as Record<string, unknown>);
+    : renderTemplate(skill, params as unknown as Record<string, unknown>, { name });
 }
 
 function renderExamples(
   examples: string | ExamplesTemplateFn,
   params: ExamplesRenderCtx,
+  name: string,
 ): string {
   return typeof examples === 'function'
     ? examples(params)
-    : renderTemplate(examples, params as unknown as Record<string, unknown>);
+    : renderTemplate(examples, params as unknown as Record<string, unknown>, { name });
 }

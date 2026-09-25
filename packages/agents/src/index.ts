@@ -44,7 +44,8 @@ export { prepareBatch } from './prepare-content';
 // internal rather than growing the surface to describe a convention.
 export { TOOL_ATTACHMENTS_KEY } from './Tool';
 export { useTraceScope } from './trace-scope';
-export { renderTemplate } from './prompt';
+export { renderTemplate, guardedInput } from './prompt';
+export type { MissingInput } from './prompt';
 export { stripDanglingToolCall } from './capture';
 export { reduce, waitUntilSettled } from './combinators';
 export { parallel, chain, fanout, dag } from './orchestrators';
