@@ -3,16 +3,18 @@
  *
  * INSTALL IS NOT BOOT. Install acquires bytes a machine does not have yet, so it happens on a
  * first run and then never again; boot loads bytes already on disk, and happens every start.
- * A run that acquires nothing reports nothing and simply opens.
+ * A run that acquires nothing, and fails at nothing, reports nothing and simply opens.
  *
- * The steps are DERIVED: the machine, the reasoning model, the vision projector when its block
- * is present, then every service the configuration names — each one a provider,
- * never a list a view or a boot maintains. A step is satisfied by a spec (the block's `path`,
- * else its `id`, else the row's derivation), and acquiring it is `resolveModel`'s walk. So the
- * two remedies are one mechanism: retry re-resolves the step, and a file the reader already has
- * adds a spec and re-resolves it — remembered for the next launch through the runner's own
- * persistence. A step failing holds the run where a view can offer those remedies, and ends it
- * where none can.
+ * The steps are DERIVED: the machine, the reasoning model, then every service the configuration
+ * names — each one a provider, never a list a view or a boot maintains. `planInstall` is the ONE
+ * derivation, and the walk never edits a step by hand: when a file the reader already has changes
+ * the configuration, the steps are derived again from what was persisted and reconciled against
+ * what was already done, so the artifacts a run ends with can never disagree with its manifest.
+ * A step is satisfied by a spec (the block's `path`, else its `id`, else the provider's
+ * derivation), and acquiring it is `resolveModel`'s walk. Retry re-resolves the step; a file adds
+ * a spec and re-derives. A step failing holds the run where a view can offer those remedies, and
+ * ends it where none can — and either way its row is published, whether or not any download was
+ * ever expected.
  *
  * Node-only. Import from `@lloyal-labs/rig/node`.
  *
@@ -20,8 +22,6 @@
  */
 import { call, each, scoped, spawn } from 'effection';
 import type { Operation, Stream } from 'effection';
-import { SERVICES } from './services';
-import type { Service } from './services';
 import { modelSettings } from './config';
 import type { ModelFamily } from './config';
 import type { BaseHarnessConfig, ConfigPatch } from './runner';
@@ -30,31 +30,48 @@ import { carryOverVisionSlot, catalogEntry, isModelPresent, resolveModel } from 
 import type { ModelCatalogEntry, ModelRole, ModelSpec } from './models';
 import { configuredServices, specOf } from './provision';
 import type { ServiceArtifacts } from './provision';
+import { SERVICES } from './services';
+import type { Service } from './services';
 import type { InstallCommand, InstallStep, InstallStepEvent } from './install-protocol';
 
-/** A step with what acquires it: the slot it fills and the spec that satisfies it. The machine step has neither. */
+/** A step with what acquires it: the slot it fills and the spec that satisfies it. The machine step has neither.
+ *  `refused` is a step whose block selects nothing it can — carried as the step's failure until a file gives it
+ *  a spec, and never resolved, because a slot may still hold what an earlier configuration put there. */
 export interface PlannedStep extends InstallStep {
   role?: ModelRole;
   spec?: ModelSpec;
+  refused?: string;
 }
 
 /** Whether a step's block takes a `path` — the one condition under which a file the reader already has can stand in. */
 const takesFile = (id: string): boolean => `model.${id}.path` in modelSettings;
 
+const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
 /**
  * The steps this run performs, in order, from the model family alone: the machine, the reasoning model, then
  * every service whose block is present, each with its spec. A block that selects nothing it can — a
- * `reranker: {}`, a vision block under a `path:` llm — is refused here, before anything runs. A step's label
- * is framework words: the model, and each service's model by the service's name.
+ * `reranker: {}`, a vision block under a `path:` llm — is refused before anything runs; mid-walk, where a
+ * persisted change re-derives the steps, `lenient` returns that step as failed with the refusal as its note
+ * instead. A step's label is framework words: the model, and each service's model by the service's name.
  */
-export function planInstall(model: ModelFamily): PlannedStep[] {
+export function planInstall(model: ModelFamily, opts: { lenient?: boolean } = {}): PlannedStep[] {
   const llm = model.llm ?? {};
   const steps: PlannedStep[] = [
     { id: 'machine', label: 'This machine', status: 'pending' },
     { id: 'llm', label: 'Getting the model', status: 'pending', role: 'llm', file: takesFile('llm'), ...(llm.path || llm.id ? { spec: llm.path ? { path: llm.path } : { id: llm.id } } : {}) },
   ];
   for (const name of configuredServices(model)) {
-    steps.push({ id: name, label: `Getting the ${name} model`, status: 'pending', role: name, file: takesFile(name), spec: specOf(name, model) });
+    const step: PlannedStep = { id: name, label: `Getting the ${name} model`, status: 'pending', role: name, file: takesFile(name) };
+    try {
+      step.spec = specOf(name, model);
+    } catch (err) {
+      if (!opts.lenient) throw err;
+      step.status = 'failed';
+      step.refused = message(err);
+      step.note = step.refused;
+    }
+    steps.push(step);
   }
   return steps;
 }
@@ -62,6 +79,26 @@ export function planInstall(model: ModelFamily): PlannedStep[] {
 /** Whether a step moves bytes: a catalog id not yet in its slot. A `path`, or a slot to adopt from, is already here. */
 const fetches = (projectRoot: string, step: PlannedStep): boolean =>
   step.role !== undefined && step.spec?.id !== undefined && !isModelPresent(projectRoot, step.role, step.spec.id);
+
+const sameSpec = (a: ModelSpec | undefined, b: ModelSpec | undefined): boolean => a?.id === b?.id && a?.path === b?.path;
+
+/**
+ * The steps as the fresh derivation has them, with what the walk already did carried over wherever the
+ * derivation agrees: a step whose spec is unchanged keeps its status and its artifact; one whose spec changed,
+ * or that the fresh derivation refuses, starts again with its artifact dropped. The machine step is never
+ * re-derived. Mutates `steps` in place so the reported list stays the one list.
+ */
+function reconcile(steps: PlannedStep[], fresh: PlannedStep[], artifacts: Record<string, string>): void {
+  const before = new Map(steps.map((s) => [s.id, s]));
+  steps.length = 0;
+  for (const next of fresh) {
+    const prev = before.get(next.id);
+    if (next.id === 'machine' && prev) { steps.push(prev); continue; }
+    if (prev && !next.refused && !prev.refused && sameSpec(prev.spec, next.spec)) { steps.push(prev); continue; }
+    delete artifacts[next.id];
+    steps.push(next);
+  }
+}
 
 export interface InstallOpts {
   projectRoot: string;
@@ -99,11 +136,16 @@ export function* install(opts: InstallOpts): Operation<Installed> {
   let model = opts.model;
   const steps = planInstall(model);
   const say = opts.say ?? ((line: string): void => { process.stderr.write(`${line}\n`); });
+  // A view hears from the install once there is something it must act on or wait through: a step that
+  // fetches, or a step that failed — whichever comes first. Silent otherwise, so a run that acquires nothing
+  // and fails at nothing simply opens.
   let announced = false;
-  const send = (): void => opts.report({ type: 'install:step', steps: steps.map(({ role: _r, spec: _s, ...step }) => ({ ...step })) });
+  const send = (): void => opts.report({ type: 'install:step', steps: steps.map(({ role: _r, spec: _s, refused: _f, ...step }) => ({ ...step })) });
+  const publish = (): void => { announced = true; send(); };
   const set = (step: PlannedStep, patch: Partial<InstallStep>): void => {
     Object.assign(step, patch);
-    if (announced) send();
+    if (patch.status === 'failed' && !announced) publish();
+    else if (announced) send();
   };
 
   // The machine, before a byte is fetched — and on every start, since weights carried onto a box too small for
@@ -113,48 +155,56 @@ export function* install(opts: InstallOpts): Operation<Installed> {
   const verdict = entry ? checkMachine(entry, opts.totalBytes) : null;
   if (verdict) machine.note = `${gb(verdict.totalBytes)} · ${gb(verdict.neededBytes)} needed`;
   if (verdict && !verdict.ok) {
-    machine.status = 'failed';
-    announced = true;
-    send();
+    set(machine, { status: 'failed' });
     throw new Error(refusalMessage(verdict, entry!.label));
   }
   machine.status = 'done';
-  if (steps.some((step) => fetches(opts.projectRoot, step))) {
-    announced = true;
-    send();
-  }
+  if (steps.some((step) => fetches(opts.projectRoot, step))) publish();
 
   // A slot from before the role was named for its service is carried over once, before the walk — a migration
   // with a sunset: every project scaffolded since cut 10 has the new slot, so this goes with the cut after next.
   carryOverVisionSlot(opts.projectRoot, say);
 
   const artifacts: Record<string, string> = {};
-  for (const step of steps.slice(1)) {
-    for (;;) {
+  // The walk resumes from the earliest step not yet done, so a step a persisted change sent back to pending —
+  // a model replaced by a file, the projector that derived from it — is run again in its place.
+  const next = (): number => steps.findIndex((s) => s.id !== 'machine' && s.status !== 'done');
+  for (let i = next(); i !== -1; i = next()) {
+    const step = steps[i];
+    let attempt: Attempt;
+    if (step.refused) {
+      // Nothing to resolve: a slot may still hold what an earlier configuration put there, and adopting it
+      // would be exactly the wrong model. The refusal stands until a file gives the step a spec.
+      attempt = { error: new Error(step.refused) };
+    } else {
       set(step, { status: 'running', got: undefined, total: undefined, note: undefined });
-      const attempt = yield* attemptStep(step, opts, (got, total) => set(step, { got, total }));
-      if ('artifact' in attempt) {
-        artifacts[step.id] = attempt.artifact;
-        set(step, { status: 'done', got: undefined, total: undefined, ...(step.spec?.id ? { note: catalogEntry(step.role!, step.spec.id)?.label ?? step.spec.id } : {}) });
-        break;
-      }
-      let command: InstallCommand;
-      if ('command' in attempt) {
-        command = attempt.command;
-      } else {
-        set(step, { status: 'failed', note: attempt.error instanceof Error ? attempt.error.message : String(attempt.error) });
-        if (!opts.controls) throw attempt.error;
-        command = yield* nextCommand(opts.controls);
-      }
-      if (command.type === 'install:quit') throw new Error('the install was stopped');
-      if (command.type === 'install:use_file') {
-        if (!opts.persist) throw new Error('install: a file was chosen, but nothing here can remember it — `persist` is required beside `controls`');
-        model = opts.persist({ model: { [command.step]: { path: command.path } } });
-        const target = steps.find((s) => s.id === command.step);
-        if (target) target.spec = { path: command.path };
-      }
-      // A retry, or a file for this or another step: this step runs again from its spec as it now stands.
+      attempt = yield* attemptStep(step, opts, (got, total) => set(step, { got, total }));
     }
+    if ('artifact' in attempt) {
+      artifacts[step.id] = attempt.artifact;
+      set(step, { status: 'done', got: undefined, total: undefined, ...(step.spec?.id ? { note: catalogEntry(step.role!, step.spec.id)?.label ?? step.spec.id } : {}) });
+      continue;
+    }
+    let command: InstallCommand;
+    if ('command' in attempt) {
+      command = attempt.command;
+    } else {
+      set(step, { status: 'failed', note: message(attempt.error) });
+      if (!opts.controls) throw attempt.error;
+      command = yield* nextCommand(opts.controls);
+    }
+    if (command.type === 'install:quit') throw new Error('the install was stopped');
+    if (command.type === 'install:use_file') {
+      if (!opts.persist) throw new Error('install: a file was chosen, but nothing here can remember it — `persist` is required beside `controls`');
+      // Remembered first, then the steps derived again from what was remembered: the file's own step, and
+      // every step whose selection followed from the one that changed.
+      model = opts.persist({ model: { [command.step]: { path: command.path } } });
+      reconcile(steps, planInstall(model, { lenient: true }), artifacts);
+      if (steps.some((s) => s.status === 'failed')) publish();
+      else if (announced) send();
+    }
+    // A retry runs this step again from its spec as it now stands; a file runs the walk again from the earliest
+    // step it touched.
   }
 
   if (announced) {
