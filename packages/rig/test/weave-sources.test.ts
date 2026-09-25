@@ -53,6 +53,13 @@ describe('weaveOrdinalCitations', () => {
     expect(out).toContain('Read `items[1]` then [1](https://one.io/a).');
     expect(out).toContain('const x = list[2];');
     expect(out).toContain('Also [2](https://two.io/b).');
+    // Every CommonMark spelling of code: a double-backtick span, a longer fence, a tilde fence.
+    const more = 'A ``pair[1]`` then [1].\n\n````\nfour[2]\n````\n\n~~~py\ntilde[1]\n~~~\n\nAlso [2].' + list;
+    const woven = weaveOrdinalCitations(more);
+    expect(woven).toContain('A ``pair[1]`` then [1](https://one.io/a).');
+    expect(woven).toContain('four[2]\n');
+    expect(woven).toContain('tilde[1]\n');
+    expect(woven).toContain('Also [2](https://two.io/b).');
   });
 
   it('a body with no trailing list, or no bare number, is returned unchanged', () => {

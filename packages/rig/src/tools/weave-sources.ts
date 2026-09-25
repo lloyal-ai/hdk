@@ -115,14 +115,23 @@ export function weaveOrdinalCitations(result: string): string {
   if (urls.length === 0 || i < 1 || !LIST_HEAD.test(lines[i - 1])) return unanchored;
   // Only the prose above the heading is woven; a `[n]` is bare when nothing links or defines it — not a
   // markdown link's text (`[n](`), not a definition (`[n]:`), not an HTML anchor's text (`>[n]</a>`), which a
-  // model that weaves its own links writes as readily as markdown — and never inside code, a span or a fence,
-  // where `list[2]` is an index.
+  // model that weaves its own links writes as readily as markdown — and never inside code, where `list[2]`
+  // is an index. Code is every CommonMark spelling: a backtick or tilde fence, a span of any backtick run.
   const head = lines.slice(0, i - 1).join('\n');
   const tail = lines.slice(i - 1).join('\n');
-  const woven = head.replace(/(```[\s\S]*?```|`[^`\n]*`)|(^|[^\]\\>[])\[(\d+)\](?![(:])/g, (m, code: string | undefined, before: string, n: string) => {
-    if (code !== undefined) return code;
+  const weave = (prose: string): string => prose.replace(/(^|[^\]\\>[])\[(\d+)\](?![(:])/g, (m, before: string, n: string) => {
     const url = urls[Number(n) - 1];
     return url ? `${before}[${n}](${url})` : m;
   });
+  let woven = '';
+  let at = 0;
+  for (const code of head.matchAll(CODE)) {
+    woven += weave(head.slice(at, code.index)) + code[0];
+    at = code.index + code[0].length;
+  }
+  woven += weave(head.slice(at));
   return woven === head ? unanchored : `${woven}\n${tail}`;
 }
+
+/** Code as CommonMark spells it: a fence of three or more backticks or tildes closed by its own run, or a span closed by its own run. */
+const CODE = /(`{3,})[\s\S]*?\1|(~{3,})[\s\S]*?\2|(`+)[\s\S]*?\3/g;
