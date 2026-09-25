@@ -117,12 +117,17 @@ function duration(seconds: number): string {
 /** One reading of a step's position, and when it was taken. */
 export interface Sample { at: number; got: number }
 
-/** The rate ONE step's samples imply: bytes per second across the window, once a second has passed and bytes
- *  have moved; null before that, and null for a step that has not moved. */
+/** How long a sample counts for. A window with nothing newer than this is a stall, and a stall has no rate. */
+const WINDOW_MS = 6000;
+
+/** The rate ONE step's samples imply, read against the clock: bytes per second across the window, once a
+ *  second has passed and bytes have moved; null before that, null for a step that has not moved, and null
+ *  once nothing has arrived for the whole window — a stalled transfer shows no speed rather than its last. */
 export function rateOf(samples: readonly Sample[], now: number): number | null {
   if (samples.length === 0) return null;
   const first = samples[0];
   const last = samples[samples.length - 1];
+  if (now - last.at > WINDOW_MS) return null;
   const seconds = (now - first.at) / 1000;
   return seconds >= 1 && last.got > first.got ? (last.got - first.got) / seconds : null;
 }
@@ -131,7 +136,9 @@ export function rateOf(samples: readonly Sample[], now: number): number | null {
  * Bytes per second, from what actually arrived. The engine reports position, never speed: rate is
  * wall-clock, and the clock that matters is the one in front of the reader. Averaged over a short window
  * so the figure is readable rather than twitching every tick. Measured PER STEP: the window empties when the
- * active step changes, and a step with no position — finished, failed, not yet begun — has no rate.
+ * active step changes, and a step with no position — finished, failed, not yet begun — has no rate. Read
+ * once a second while a step has a position, not only when a byte arrives, so a transfer that stalls is seen
+ * to stall: its figure falls, then goes.
  */
 function useRate(step: string | undefined, got: number | undefined): number | null {
   const window = useRef<{ step: string | undefined; samples: Sample[] }>({ step: undefined, samples: [] });
@@ -142,9 +149,14 @@ function useRate(step: string | undefined, got: number | undefined): number | nu
     if (got === undefined) { setRate(null); return; }
     const now = Date.now();
     w.samples.push({ at: now, got });
-    while (w.samples.length > 2 && now - w.samples[0].at > 6000) w.samples.shift();
+    while (w.samples.length > 2 && now - w.samples[0].at > WINDOW_MS) w.samples.shift();
     setRate(rateOf(w.samples, now));
   }, [step, got]);
+  useEffect(() => {
+    if (got === undefined) return;
+    const tick = setInterval(() => setRate(rateOf(window.current.samples, Date.now())), 1000);
+    return () => clearInterval(tick);
+  }, [step, got === undefined]);
   return rate;
 }
 

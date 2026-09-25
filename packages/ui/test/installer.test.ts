@@ -11,16 +11,19 @@ import type { InstallerStep } from '../src/installer';
 
 const steps: InstallerStep[] = [
   { id: 'machine', label: 'This machine', status: 'done', note: '16 GB · 10 GB needed' },
-  { id: 'llm', label: 'Getting the model', status: 'running', got: 1024 ** 3, total: 2 * 1024 ** 3, file: true },
-  { id: 'reranker', label: 'Getting the reranker', status: 'pending', file: true },
+  { id: 'llm', label: 'Downloading the reasoning model', model: 'Qwen3.5 4B · Q4_K_M', slot: 'models/llm/qwen3.5-4b.gguf', status: 'running', got: 1024 ** 3, total: 2 * 1024 ** 3, file: true },
+  { id: 'reranker', label: 'Downloading the reranker', status: 'pending', file: true },
 ];
 
 describe('Installer', () => {
   it('draws every step, names the active one, and measures its bytes on the bar', () => {
     const html = renderToString(createElement(Installer, { steps, footnote: 'First run only' }));
     expect(html).toContain('STEP 2 OF 3');
-    expect(html).toContain('Getting the model');
-    expect(html).toContain('Getting the reranker');
+    expect(html).toContain('Downloading the reasoning model');
+    // Under the heading: the model's name and the slot it fills.
+    expect(html).toContain('Qwen3.5 4B · Q4_K_M');
+    expect(html).toContain('models/llm/qwen3.5-4b.gguf');
+    expect(html).toContain('Downloading the reranker');
     expect(html).toContain('1.00 GB');
     expect(html).toContain('2.00 GB');
     expect(html).toContain('width:50%');
@@ -55,6 +58,11 @@ describe('Installer', () => {
     // A new step's first sample is a fresh window — what `useRate` empties on a step change — so a step that
     // finished at 2 GB never lends its speed to the one that just began at 0.
     expect(rateOf([{ at: 5000, got: 0 }], 5000)).toBeNull();
+    // A stall: the window is read against the clock, not the last byte. The figure falls as the seconds pass
+    // with nothing new, and once nothing has arrived for the whole window there is no rate to show.
+    const moving = [{ at: 0, got: 0 }, { at: 2000, got: 4096 }];
+    expect(rateOf(moving, 4000)).toBe(1024);
+    expect(rateOf(moving, 9000)).toBeNull();
   });
 
   it('takes the harness theme from custom properties, with the platform values as defaults', () => {
