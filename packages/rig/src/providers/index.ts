@@ -62,10 +62,13 @@ export const providers: { [K in Service]: ProviderRow<K> } = {
   },
   embedding: {
     name: 'embedding model',
-    refuse: (block) => (embeddingPooling(block) ? undefined : UNKNOWN_POOLING),
+    refuse: (block) => {
+      const pooling = embeddingPooling(block);
+      return typeof pooling === 'string' ? undefined : pooling?.refused ?? UNKNOWN_POOLING;
+    },
     bind: (artifact, block) => {
       const pooling = embeddingPooling(block);
-      if (!pooling) throw new Error(UNKNOWN_POOLING);
+      if (typeof pooling !== 'string') throw new Error(pooling?.refused ?? UNKNOWN_POOLING);
       return createEmbedder(artifact, { nCtx: block.context, pooling });
     },
   },
@@ -73,9 +76,16 @@ export const providers: { [K in Service]: ProviderRow<K> } = {
 
 const UNKNOWN_POOLING = '`model.embedding` names a model whose pooling the catalog does not know — set `model.embedding.pooling` (mean, cls or last) in harness.yml';
 
-/** How the embedding model pools: the block's own word, else the catalog's for its id. A `path:` model the
- *  catalog knows nothing about must say, because a wrong pooling answers vectors that are merely wrong. */
-function embeddingPooling(block: ModelBlock<'embedding'>): EmbeddingPooling | undefined {
-  if (block.pooling) return block.pooling;
-  return block.path || !block.id ? undefined : catalogEntry('embedding', block.id)?.pooling;
+/**
+ * How the embedding model pools, or why the block cannot say. A catalog id pools the way the catalog says:
+ * a block that says otherwise is refused naming both, since a wrong pooling answers vectors that are merely
+ * wrong and neither word may silently win. A `path:` model, or an id the catalog lacks, must say for itself.
+ * A string is the pooling; a refusal is `{ refused }`; `undefined` is a block with nothing to say.
+ */
+function embeddingPooling(block: ModelBlock<'embedding'>): EmbeddingPooling | { refused: string } | undefined {
+  const known = block.path || !block.id ? undefined : catalogEntry('embedding', block.id)?.pooling;
+  if (known && block.pooling && block.pooling !== known) {
+    return { refused: `\`model.embedding.pooling\` says ${block.pooling}, but the catalog pools ${block.id} by ${known} — remove the key, or use a \`path\` for a model that pools differently` };
+  }
+  return known ?? block.pooling;
 }

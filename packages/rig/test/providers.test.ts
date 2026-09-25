@@ -37,6 +37,11 @@ describe('the provider table', () => {
     expect(row.refuse({ path: '/e.gguf', context: 2048 })).toMatch(/`model\.embedding\.pooling`/);
     expect(row.refuse({ id: 'not-in-the-catalog', context: 2048 })).toMatch(/`model\.embedding\.pooling`/);
     expect(row.refuse({ path: '/e.gguf', pooling: 'last' })).toBeUndefined();
+    // A catalog id's pooling is the catalog's: a block that says otherwise is refused naming both — a wrong pooling
+    // answers vectors that are merely wrong, so neither word silently wins. Saying the same is fine.
+    expect(row.refuse({ id: 'nomic-embed-text-v1.5-q4', pooling: 'last' })).toMatch(/`model\.embedding\.pooling` says last, but the catalog pools nomic-embed-text-v1\.5-q4 by mean/);
+    expect(row.refuse({ id: 'nomic-embed-text-v1.5-q4', pooling: 'mean' })).toBeUndefined();
+    expect(() => row.bind('/e.gguf', { id: 'nomic-embed-text-v1.5-q4', pooling: 'last', context: 2048 })).toThrow(/the catalog pools/);
     expect(row.refuse({ id: 'nomic-embed-text-v1.5-q4' })).toBeUndefined();
     // The binding itself is mocked in embedder.test.ts; here the last-line refusal, for a block handed to bind directly.
     expect(() => row.bind('/e.gguf', { path: '/e.gguf', context: 2048 })).toThrow(/`model\.embedding\.pooling`/);
