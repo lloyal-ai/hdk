@@ -119,6 +119,35 @@ describe('install: a run that acquires', () => {
     expect(sent.at(-1)!.steps[1]).toMatchObject({ status: 'failed', note: 'Failed to fetch Qwen3.5 4B from any source' });
   });
 
+  it('a block that selects nothing is a published failed row before a byte is fetched: with no view the run ends on it; with a view it holds, and a file resolves it', async () => {
+    // No view: the row reaches the channel, then the run ends with the refusal — the desktop's engine dies with the row on the wire.
+    const sent: InstallStepEvent[] = [];
+    await expect(run(() => install({ projectRoot: '/proj', model: { llm: { id: 'qwen3.5-4b' }, reranker: { context: 16384 } }, totalBytes: 16 * GB, report: (ev) => sent.push(ev) })))
+      .rejects.toThrow(/`model\.reranker` names no model/);
+    expect(ids(sent.at(-1)!)).toBe('machine:done llm:pending reranker:failed');
+    expect(sent.at(-1)!.steps[2].note).toMatch(/`model\.reranker` names no model/);
+    expect(resolveModel).not.toHaveBeenCalled();
+
+    // A view: the refused step holds FIRST — nothing downloads under a configuration that cannot complete — and a file for it lets the walk run.
+    const held: InstallStepEvent[] = [];
+    const controls = createSignal<InstallCommand, void>();
+    let model: Record<string, unknown> = { llm: { id: 'qwen3.5-4b' }, reranker: { context: 16384 } };
+    const acquired = await run(function* () {
+      const task = yield* spawn(() => install({
+        projectRoot: '/proj', model: model as never, totalBytes: 16 * GB, report: (ev) => held.push(ev), controls,
+        persist: (patch) => { model = { ...model, reranker: { ...(model.reranker as object), ...(patch.model as { reranker: object }).reranker } }; return model as never; },
+      }));
+      yield* sleep(10);
+      expect(ids(held.at(-1)!)).toBe('machine:done llm:pending reranker:failed');
+      expect(resolveModel).not.toHaveBeenCalled();
+      controls.send({ type: 'install:use_file', step: 'reranker', path: '/weights/reranker.gguf' });
+      return yield* task;
+    });
+    expect(asked.map((a) => `${a.role}:${a.spec?.id ?? a.spec?.path}`)).toEqual(['llm:qwen3.5-4b', 'reranker:/weights/reranker.gguf']);
+    expect(acquired.services.reranker).toBe('/proj/models/reranker//weights/reranker.gguf.gguf');
+    expect(held.at(-1)!.steps).toEqual([]);
+  });
+
   it('with a view, a failed step holds: retry resolves it again; quit ends the run', async () => {
     resolveModel.mockRejectedValueOnce(new Error('offline'));
     const sent: InstallStepEvent[] = [];
@@ -212,11 +241,12 @@ describe('install: a run that acquires', () => {
       yield* sleep(10);
       controls.send({ type: 'install:use_file', step: 'llm', path: '/weights/mine.gguf' });
       yield* sleep(10);
-      // The llm resolved from the file; the vision step, derived from an llm the catalog no longer knows, is refused by name — and holds.
+      // The vision step, derived from an llm the catalog no longer knows, is refused by name — and holds FIRST: the
+      // llm is not resolved from the file under a configuration that cannot complete.
       const rows = sent.at(-1)!.steps;
-      expect(rows.find((r) => r.id === 'llm')).toMatchObject({ status: 'done' });
+      expect(rows.find((r) => r.id === 'llm')).toMatchObject({ status: 'pending' });
       expect(rows.find((r) => r.id === 'vision')).toMatchObject({ status: 'failed', note: expect.stringMatching(/none follows from the llm/) });
-      expect(asked.map((a) => a.role)).toEqual(['llm', 'llm']);   // vision was never resolved: a stale slot must not be adopted
+      expect(asked.map((a) => a.role)).toEqual(['llm']);   // the stopped download only; vision was never resolved: a stale slot must not be adopted
       controls.send({ type: 'install:quit' });
       yield* task.halt();
     });

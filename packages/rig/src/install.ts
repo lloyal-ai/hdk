@@ -126,13 +126,18 @@ export interface Installed {
 type Attempt = { artifact: string } | { command: InstallCommand } | { error: unknown };
 
 /**
- * Acquire everything the model family names. Nothing is fetched before the machine is checked; nothing is
- * loaded here at all. Throws when the run cannot proceed — the machine refused, a step failed with no view
- * to hold for, the reader stopped it — with the message the boot ends on.
+ * Acquire everything the model family names. Nothing is fetched before the machine is checked, nor under a
+ * block that selects nothing — that step's refusal is a published failed row, held first where a view can
+ * give it a file; nothing is loaded here at all. Throws when the run cannot proceed — the machine refused, a
+ * step failed with no view to hold for, the reader stopped it — with the message the boot ends on, after its
+ * row is on the wire.
  */
 export function* install(opts: InstallOpts): Operation<Installed> {
   let model = opts.model;
-  const steps = planInstall(model);
+  // Planned leniently: a block that selects nothing is a step that FAILS — published, before a byte is fetched,
+  // and held where a view can act, since a file may satisfy it — rather than a throw before anything is on
+  // the wire, which a desktop's view would read as a run that acquires nothing.
+  const steps = planInstall(model, { lenient: true });
   // Subscribed once, before anything runs: a command a view sends between one attempt and the next is
   // buffered here, where a fresh subscription per attempt would have missed it.
   const controls: Subscription<InstallCommand, void> | undefined = opts.controls ? yield* opts.controls : undefined;
@@ -166,8 +171,12 @@ export function* install(opts: InstallOpts): Operation<Installed> {
 
   const artifacts: Record<string, string> = {};
   // The walk resumes from the earliest step not yet done, so a step a persisted change sent back to pending —
-  // a model replaced by a file, the projector that derived from it — is run again in its place.
-  const next = (): number => steps.findIndex((s) => s.id !== 'machine' && s.status !== 'done');
+  // a model replaced by a file, the projector that derived from it — is run again in its place. A refused step
+  // comes before any of them: nothing downloads under a configuration that cannot complete.
+  const next = (): number => {
+    const refused = steps.findIndex((s) => s.refused && s.status !== 'done');
+    return refused !== -1 ? refused : steps.findIndex((s) => s.id !== 'machine' && s.status !== 'done');
+  };
   for (let i = next(); i !== -1; i = next()) {
     const step = steps[i];
     let attempt: Attempt;
