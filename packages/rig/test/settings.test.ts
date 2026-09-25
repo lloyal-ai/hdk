@@ -32,7 +32,6 @@ const identity = { 'sources.outputDir': 'sources.outputDir' as const };
 function* world(opts: {
   abilities: ReturnType<typeof fakeAbility>[];
   config?: Config;
-  busy?: boolean;
   persist?: (patch: ConfigPatch<Config>) => SaveResult & { config: Config; origin: typeof origin };
   enable?: string[];
 }) {
@@ -46,7 +45,7 @@ function* world(opts: {
   const registry = yield* createAbilityRegistry({ configStore: store });
   for (const name of opts.enable ?? []) yield* registry.enable(opts.abilities.find((a) => a.manifest!.name === name)!);
   const wire = { *send(e: SettingsEvent): Operation<void> { sent.push(e); } };
-  const group = settings({ runner, registry, store, wire, run: { busy: opts.busy ?? false }, abilities: opts.abilities, config: table });
+  const group = settings({ runner, registry, store, wire, abilities: opts.abilities, config: table });
   return { sent, runner, store, registry, handlers: group.handlers };
 }
 const dispatch = (w: { handlers: ReturnType<typeof settings>['handlers'] }, c: SettingsCommand) =>
@@ -72,14 +71,18 @@ describe('set_config', () => {
 describe('set_ability_config', () => {
   const REQUIRED: JsonSchema = { type: 'object', required: ['corpusPath'], properties: { corpusPath: { type: 'string' } } };
 
-  it('is refused with a toast while a run is live; nothing changes', async () => {
+  it('a save supersedes an enabled ability through its one handle, and never asks whether a run is live', async () => {
+    // The run's side — what a run holds keeps working until the run ends — is the rig invariants' (R1–R5).
     await run(function* () {
-      const web = fakeAbility({ name: 'web' });
-      const w = yield* world({ abilities: [web], busy: true });
+      const seen: unknown[] = [];
+      const web = fakeAbility({ name: 'web', saw: (c) => seen.push(c) });
+      const w = yield* world({ abilities: [web], enable: ['web'] });
+      const before = w.registry.byName('web');
       yield* dispatch(w, { type: 'set_ability_config', name: 'web', values: { tavilyKey: 'k' } });
-      expect(w.sent).toEqual([{ type: 'ui:error', message: expect.stringMatching(/run|brief|settle/i) }]);
-      expect(yield* w.store.get('web')).toBeUndefined();
-      expect(w.runner.config().abilities).toEqual({});
+      expect(w.sent.map((e) => e.type)).toEqual(['config:updated', 'abilities:state']);
+      expect(seen).toEqual([undefined, { tavilyKey: 'k' }]);
+      expect(w.registry.byName('web')).toBe(before);
+      expect(w.registry.enabled()).toHaveLength(1);
     });
   });
 

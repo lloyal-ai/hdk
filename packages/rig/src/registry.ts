@@ -15,12 +15,15 @@
  *   throwing teardown is logged but never strands a sibling, and never
  *   crashes the harness. The harness does **not** call a per-ability register
  *   verb at boot; it just calls `enable` for each boot ability.
- * - `registry.disable(name)` handles mid-session removal. `enable` →
- *   `'enabled'`, `disable` → `'disabled'` (matching {@link AbilityState}).
- *   `disable` swallows + logs a throwing teardown, so a mid-session
- *   uninstall can't crash the session — possible only because each ability
- *   owns a detached scope whose teardown errors don't propagate to a
- *   parent.
+ * - A name resolves to ONE handle for the registry's life; every enable of that name registers a new
+ *   GENERATION and points the handle at it. Enabling a name already enabled supersedes it: the new
+ *   entry is registered first, then the name resolves to it, and the one it replaces leaves the roster
+ *   without ending while a run holds it — a run that captured the handle at frame time spreads the new tools
+ *   at its next spawn, and an agent that spread the old ones keeps them. `registry.disable(name)` retires the
+ *   same way.
+ * - A run holds what `participating()` handed it, for its own scope's life; a retired entry ends the
+ *   moment nothing holds it — at retirement, or at the last run's release — best-effort: a throwing teardown
+ *   is logged, never strands a sibling, never crashes the session. Nobody is asked whether a run is live.
  *
  * There are no install/uninstall/enable/disable hooks on the Ability. A
  * factory that throws (or whose manifest fails validation) tears down its
@@ -78,10 +81,53 @@ export interface CreateAbilityRegistryOpts {
   grantStore?: GrantStore;
 }
 
+/** One enable of an ability: the instance, the end of its detached scope, and who still holds it. */
 interface RegistryEntry {
+  name: string;
   ability: Ability;
   /** Halts the ability's detached scope, firing its factory `ensure`s. */
   destroy: () => Promise<void>;
+  /** Runs that took this entry through `participating()` and have not ended. */
+  holds: number;
+  /** Left the roster — superseded or disabled. Ends when `holds` reaches zero. */
+  retired: boolean;
+}
+
+/** What `participating()` reaches, beside the public registry: the hold a run takes on the entries it was handed. */
+const internals = new WeakMap<AbilityRegistry, { hold(): Operation<void> }>();
+
+/**
+ * Hold every entry currently enabled for the calling scope: none of them ends before that scope does,
+ * however many saves supersede them meanwhile. Registered as an `ensure` in the caller — a run's own
+ * operation — so a Stop, a replacement or a return releases it. A registry this module did not create holds
+ * nothing.
+ */
+export function* holdEnabled(registry: AbilityRegistry): Operation<void> {
+  const own = internals.get(registry);
+  if (own) yield* own.hold();
+}
+
+/**
+ * The one object a name resolves to for the registry's life — what a run captures at frame time — forwarding
+ * to the entry the last enable registered. A holder that dereferenced it (an agent that spread its `tools`
+ * at spawn) keeps what it took; the next dereference sees the current entry.
+ */
+class Handle implements Ability {
+  private target: Ability;
+  constructor(readonly name: string, target: Ability) {
+    this.target = target;
+  }
+  rebind(target: Ability): void {
+    this.target = target;
+  }
+  get manifest(): Ability['manifest'] { return this.target.manifest; }
+  get source(): Ability['source'] { return this.target.source; }
+  get tools(): Ability['tools'] { return this.target.tools; }
+  get skill(): Ability['skill'] { return this.target.skill; }
+  get examples(): Ability['examples'] { return this.target.examples; }
+  get configSchema(): Ability['configSchema'] { return this.target.configSchema; }
+  get hints(): Ability['hints'] { return this.target.hints; }
+  get configFlow(): Ability['configFlow'] { return this.target.configFlow; }
 }
 
 /**
@@ -110,18 +156,39 @@ export function* createAbilityRegistry(
   opts: CreateAbilityRegistryOpts,
 ): Operation<AbilityRegistry> {
   const { configStore, grantStore } = opts;
-  const entries = new Map<string, RegistryEntry>();
+  /** The entry serving each enabled name — the roster. */
+  const current = new Map<string, RegistryEntry>();
+  /** One handle per name for the registry's life, whether or not the name is enabled right now. */
+  const handles = new Map<string, Handle>();
+  /** Entries that left the roster while a run still held them: they end at the run's release, or at
+   *  the registry's exit, whichever comes first. */
+  const lingering = new Set<RegistryEntry>();
   const order: string[] = [];
+
+  const end = function* (entry: RegistryEntry, when: string): Operation<void> {
+    lingering.delete(entry);
+    try {
+      yield* call(() => entry.destroy());
+    } catch (err) {
+      console.error(`[lloyal-rig] teardown for ability "${entry.name}" threw ${when} — continuing:`, err);
+    }
+  };
+  /** An entry leaves the roster: it ends now if nothing holds it, else when its last holder releases. */
+  const retire = function* (entry: RegistryEntry): Operation<void> {
+    entry.retired = true;
+    if (entry.holds === 0) yield* end(entry, 'on retirement');
+    else lingering.add(entry);
+  };
 
   const registry: AbilityRegistry = {
     byName(name: string): Ability | undefined {
-      return entries.get(name)?.ability;
+      return current.has(name) ? handles.get(name) : undefined;
     },
     enabled(): readonly Ability[] {
-      return order.map((n) => entries.get(n)!.ability).filter(Boolean);
+      return order.map((n) => handles.get(n)!);
     },
     stateOf(name: string): 'enabled' | 'disabled' {
-      return entries.has(name) ? 'enabled' : 'disabled';
+      return current.has(name) ? 'enabled' : 'disabled';
     },
     *enable(factory: AbilityFactory): Operation<Ability> {
       // The content store the harness installed (the null store when none was):
@@ -207,26 +274,20 @@ export function* createAbilityRegistry(
           }
         }
 
-        if (entries.has(ability.manifest.name)) {
-          throw new Error(
-            `Ability "${ability.manifest.name}" is already enabled. ` +
-              `Call registry.disable("${ability.manifest.name}") first to replace it.`,
-          );
-        }
-
         // Namespace-collision guard. The catalog scopes abilities by handle
         // (`acme/web` vs `lloyal/web`), but the runtime/model surface is
         // UNSCOPED — `manifest.name` keys this registry, and `protocol.name` +
         // each tool name address the ability in the shared spine the model reads.
         // Two same-short-named abilities from different publishers therefore collide
-        // here. The `manifest.name` check above catches one face; this catches
-        // the model-facing faces (otherwise spine-render emits two CATALOG_ENTRY
+        // here, on the model-facing faces (otherwise spine-render emits two CATALOG_ENTRY
         // blocks with the same protocol/tool names — silent routing ambiguity +
         // a collided BOUNDARY_MARKER). Fail loud, naming both abilities, so the
-        // integrator knows it's a cross-publisher clash — not their bug.
+        // integrator knows it's a cross-publisher clash — not their bug. The name's
+        // own current entry is not a clash: enabling it again SUPERSEDES it.
         const incomingProtocol = ability.manifest.protocol.name;
         const incomingTools = ability.manifest.protocol.tools;
-        for (const { ability: existing } of entries.values()) {
+        for (const [name, { ability: existing }] of current) {
+          if (name === ability.manifest.name) continue;
           if (existing.manifest.protocol.name === incomingProtocol) {
             throw new Error(
               `Cannot enable "${ability.manifest.name}": its protocol "${incomingProtocol}" ` +
@@ -247,28 +308,46 @@ export function* createAbilityRegistry(
           }
         }
 
-        entries.set(ability.manifest.name, { ability, destroy });
-        order.push(ability.manifest.name);
+        // Enable first, then the name resolves to it: a name already enabled is SUPERSEDED — its entry
+        // leaves the roster and keeps serving whoever holds it until they release it. The handle is the same
+        // object either way, so what a run captured now answers the new entry's tools.
+        const name = ability.manifest.name;
+        const prior = current.get(name);
+        if (!prior) order.push(name);
+        current.set(name, { name, ability, destroy, holds: 0, retired: false });
+        let handle = handles.get(name);
+        if (handle) handle.rebind(ability);
+        else {
+          handle = new Handle(name, ability);
+          handles.set(name, handle);
+        }
         added = true;
-        return ability;
+        if (prior) yield* retire(prior);
+        return handle;
       });
     },
     *disable(name: string): Operation<void> {
-      const entry = entries.get(name);
+      const entry = current.get(name);
       if (!entry) return;
-      entries.delete(name);
+      current.delete(name);
       const idx = order.indexOf(name);
       if (idx >= 0) order.splice(idx, 1);
-      try {
-        yield* call(() => entry.destroy());
-      } catch (err) {
-        console.error(
-          `[lloyal-rig] teardown for ability "${name}" threw during disable — ability removed regardless:`,
-          err,
-        );
-      }
+      yield* retire(entry);
     },
   };
+
+  internals.set(registry, {
+    *hold() {
+      const held = [...current.values()];
+      for (const entry of held) entry.holds += 1;
+      yield* ensure(function* () {
+        for (const entry of held) {
+          entry.holds -= 1;
+          if (entry.retired && entry.holds === 0) yield* end(entry, 'at its last holder\'s release');
+        }
+      });
+    },
+  });
 
   yield* AbilityRegistryCtx.set(registry);
   yield* AbilityConfigStoreCtx.set(configStore);
@@ -283,19 +362,13 @@ export function* createAbilityRegistry(
   yield* ensure(function* () {
     for (let i = order.length - 1; i >= 0; i--) {
       const name = order[i];
-      const entry = entries.get(name);
-      if (!entry) continue;
-      try {
-        yield* call(() => entry.destroy());
-      } catch (err) {
-        console.error(
-          `[lloyal-rig] teardown for ability "${name}" threw — continuing teardown:`,
-          err,
-        );
-      }
+      const entry = current.get(name);
+      if (entry) yield* end(entry, 'at the registry\'s exit');
     }
-    entries.clear();
+    current.clear();
     order.length = 0;
+    for (const entry of [...lingering]) yield* end(entry, 'at the registry\'s exit');
+    handles.clear();
   });
 
   return registry;

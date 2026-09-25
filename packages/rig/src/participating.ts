@@ -17,6 +17,7 @@
 import type { Operation } from 'effection';
 import { AbilityRegistryCtx } from './ability-types';
 import type { Ability } from './ability-types';
+import { holdEnabled } from './registry';
 import type { Attachment } from '@lloyal-labs/media';
 
 /** An ability's `toc` prompt datum for this run's assets, or `null` when it advertises none. */
@@ -25,9 +26,15 @@ export function abilityToc(ability: Ability, attachments: readonly Attachment[] 
   return typeof toc === 'string' ? toc : null;
 }
 
-/** The enabled abilities that can take part in a run: not switched off (`excluded`, by manifest name), with something to read for this run. */
+/**
+ * The enabled abilities that can take part in a run: not switched off (`excluded`, by manifest name), with
+ * something to read for this run. The run HOLDS what it took: the entries behind these handles live
+ * until the calling scope ends — however many saves supersede them meanwhile — so an agent that spread their
+ * tools at spawn keeps working tools. Call it inside the run's own operation, where a Stop reaches.
+ */
 export function* participating(excluded: readonly string[] = [], attachments: readonly Attachment[] = []): Operation<Ability[]> {
   const registry = yield* AbilityRegistryCtx.expect();
+  yield* holdEnabled(registry);
   const off = new Set(excluded);
   return registry.enabled().filter((a) => !off.has(a.manifest.name) && abilityToc(a, attachments) !== '');
 }

@@ -377,25 +377,23 @@ describe('createAbilityRegistry', () => {
     ).rejects.toThrow('declares "number"');
   });
 
-  it('throws on duplicate ability name; the first enable survives', async () => {
+  it('enabling a name already enabled supersedes it: one handle, one roster entry, the new entry behind it; unheld, the old one ends at once', async () => {
+    const torn: string[] = [];
     const result = await run(function* () {
       const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
-      yield* registry.enable(plainFactory({ name: 'dup' }));
-      const first = registry.byName('dup');
-      try {
-        yield* registry.enable(plainFactory({ name: 'dup' }));
-      } catch (err) {
-        return {
-          message: (err as Error).message,
-          stillThere: registry.byName('dup') === first,
-          count: registry.enabled().filter((a) => a.manifest.name === 'dup').length,
-        };
-      }
-      return { message: undefined, stillThere: false, count: -1 };
+      yield* registry.enable(resourceFactory({ name: 'dup' }, { onTeardown: () => torn.push('first') }));
+      const first = registry.byName('dup')!;
+      yield* registry.enable(resourceFactory({ name: 'dup' }, { onTeardown: () => torn.push('second') }));
+      return {
+        sameHandle: registry.byName('dup') === first,
+        count: registry.enabled().filter((a) => a.manifest.name === 'dup').length,
+        afterSecondEnable: [...torn],
+      };
     });
-    expect(result.message).toContain('already enabled');
-    expect(result.stillThere).toBe(true);
+    expect(result.sameHandle).toBe(true);
     expect(result.count).toBe(1);
+    expect(result.afterSecondEnable).toEqual(['first']);
+    expect(torn).toEqual(['first', 'second']);   // the registry's own exit ends the entry still serving
   });
 
   it('throws on a colliding protocol name across two differently-named abilities (cross-publisher clash)', async () => {

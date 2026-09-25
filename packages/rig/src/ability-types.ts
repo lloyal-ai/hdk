@@ -340,18 +340,20 @@ export interface AbilityRegistry {
    */
   stateOf(name: string): AbilityState;
   /**
-   * Enable an ability dynamically (the mid-session enable path). Runs
-   * the factory in a fresh per-ability detached scope (seeded with `Ability*Ctx`),
-   * validates the manifest, and adds it. Returns the constructed Ability.
-   * Throws — and tears down the partial scope — if the factory
-   * throws, validation fails, or the name is already enabled. The boot
-   * set is enabled the same way — a `registry.enable(factory)` call per ability.
+   * Enable an ability (the one enable path, at boot and mid-session). Runs the factory in a fresh
+   * per-ability detached scope (seeded with `Ability*Ctx`), validates the manifest, and adds it. Returns the
+   * name's HANDLE — one object per name for the registry's life, forwarding to the entry this call
+   * built. A name already enabled is superseded: the new entry is registered first, then the name resolves
+   * to it, and the one it replaces leaves the roster — ending at once if no run holds it, else when the
+   * last run that took it through `participating()` ends.
+   * Throws — and tears down the partial scope, leaving the current entry in place — if the factory
+   * throws or validation fails.
    */
   enable(factory: AbilityFactory): Operation<Ability>;
   /**
-   * Disable an ability dynamically: remove it and tear down its detached
-   * scope, firing the factory's `ensure(...)` teardown. A throwing
-   * teardown is logged but the ability is removed regardless. No-op for an
+   * Disable an ability: it leaves the roster and its entry ends the same way a superseded one does —
+   * at once if nothing holds it, else at its last holder's release — firing the factory's `ensure(...)`
+   * teardown, best-effort (a throwing teardown is logged, the ability is gone regardless). No-op for an
    * unknown name.
    */
   disable(name: string): Operation<void>;

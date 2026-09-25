@@ -7,10 +7,12 @@
  *
  * An ability's configuration persists FIRST, then enables: a save the disk
  * refuses leaves the live session untouched, and an enable that fails restores
- * every surface the command touched — the store, the live instance that was
- * disabled to make room, the saved config — and says why. Nothing about an
- * ability changes while a run is live: the run holds the abilities' tools and
- * their reranker.
+ * every surface the command touched — the store, the saved config — and says
+ * why. A save applies whether or not a run is live, and this group never asks:
+ * enabling a name already enabled SUPERSEDES it in the registry, and the
+ * entry it replaces ends when nothing holds it — a run holds what it took
+ * for its own scope's life. So the next agent spawned reads the new settings,
+ * and an agent already running keeps working tools.
  *
  * @category Rig
  */
@@ -25,17 +27,16 @@ import type { Bag } from './config-paths';
 import { buildAbilityDescriptors } from './ability-descriptors';
 import { abilityRequiresConfig } from './registry';
 import type { BaseHarnessConfig, ConfigOriginValue, ConfigPatch, Runner } from './runner';
-import type { Handlers } from './serve-commands';
+import type { CommandGroup } from './serve-commands';
 import { configUpdated } from './settings-protocol';
 import type { SettingsCommand, SettingsEvent } from './settings-protocol';
 
-/** What the group is handed: what `initializeHarness` returned, the owner, and the app's declarations. */
+/** What the group is handed: what `initializeHarness` returned, and the app's declarations. */
 export interface SettingsDeps<C extends BaseHarnessConfig, O extends Record<string, ConfigOriginValue>> {
   runner: Runner<C, O>;
   registry: AbilityRegistry;
   store: AbilityConfigStore;
   wire: { send(event: SettingsEvent<C, O>): Operation<void> };
-  run: { readonly busy: boolean };
   /** The installed factories, so a reconfigured ability can be re-enabled by name. */
   abilities: readonly AbilityFactory[];
   /** The app's `defineConfig` table: which keys of a patch are paths. */
@@ -58,8 +59,8 @@ function resolvePatchPaths<C>(table: ConfigTable, patch: ConfigPatch<C>): Config
 
 export function settings<C extends BaseHarnessConfig, O extends Record<string, ConfigOriginValue>>(
   deps: SettingsDeps<C, O>,
-): { handlers: Handlers<SettingsCommand<C>> } {
-  const { runner, registry, store, wire, run, abilities, config } = deps;
+): CommandGroup<SettingsCommand<C>> {
+  const { runner, registry, store, wire, abilities, config } = deps;
   const toast = (text: string): Operation<void> => wire.send({ type: 'ui:error', message: text });
   const announce = function* (): Operation<void> {
     yield* wire.send({ type: 'abilities:state', abilities: yield* buildAbilityDescriptors(registry, store, abilities) });
@@ -74,7 +75,6 @@ export function settings<C extends BaseHarnessConfig, O extends Record<string, C
       },
 
       *set_ability_config({ name, values }) {
-        if (run.busy) return yield* toast("Wait for the run to finish before changing an ability's settings.");
         const patch = resolveAppConfigPaths(values);
         // A path must exist before anything persists or enables: a factory handed a
         // bad path can take the process down, and a persisted one would do so at every boot.
@@ -94,25 +94,20 @@ export function settings<C extends BaseHarnessConfig, O extends Record<string, C
 
         const factory = abilities.find((f) => f.manifest?.name === name);
         if (factory) {
-          // Whether it was running is a fact of its own, read before the disable: an
-          // ability enabled on its defaults has no stored config to infer it from.
-          const wasEnabled = registry.stateOf(name) === 'enabled';
-          if (wasEnabled) yield* registry.disable(name);
           if (clear && abilityRequiresConfig(factory)) {
+            yield* registry.disable(name);   // nothing, when it was not enabled
             yield* store.clear(name);
           } else {
             try {
+              // Enabled already, this SUPERSEDES: the new entry is registered first and the name resolves
+              // to it; the one it replaces keeps serving whoever holds it until it is released.
               yield* registry.enable(factory);
             } catch (err) {
-              // The new config failed to enable: restore every surface this command
-              // touched — the stored config, the live instance, the saved config —
-              // and announce the restored state, or the interface keeps the roster
-              // it was last told.
+              // The new config failed to enable: the entry that was serving still is. Restore the
+              // stored and the saved config — the surfaces this command touched — announce the restored
+              // state, or the interface keeps the roster it was last told, and say why.
               if (prior && Object.keys(prior).length > 0) yield* store.set(name, prior);
               else yield* store.clear(name);
-              // The prior config enabled before, so this is expected to hold; if it
-              // cannot, the stored config is what fails and must not outlive the run.
-              if (wasEnabled) { try { yield* registry.enable(factory); } catch { yield* store.clear(name); } }
               try { runner.saveConfig(abilityPatch(name, prior ?? {})); } catch { /* the toast reports the enable error */ }
               yield* announce();
               return yield* toast(`Cannot configure ${name}: ${message(err)}`);
