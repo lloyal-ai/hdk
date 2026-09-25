@@ -1,8 +1,8 @@
 /**
- * One construction of the resident context for every boot: the manifest's
- * numbers when it has them, one default when it does not, the projector only
- * when resolved, and the backend steered through the environment for the
- * reranker's sake.
+ * One construction of the resident context for every boot: the llm block's
+ * numbers when it has them, one default when it does not, what the trunk rows
+ * contribute (the projector and its budgets) laid over them, and the backend
+ * steered through the environment for the reranker's sake.
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -17,16 +17,17 @@ afterEach(() => {
 });
 
 describe('residentContextOptions', () => {
-  it('maps the model block onto the native options, defaulting what the manifest left out', () => {
+  it('maps the llm block onto the native options, defaulting what the manifest left out', () => {
     const { options, load } = residentContextOptions({ path: '/m.gguf' });
     expect(options).toEqual({ modelPath: '/m.gguf', nCtx: DEFAULT_N_CTX, nSeqMax: DEFAULT_N_SEQ_MAX, typeK: 'q4_0', typeV: 'q4_0' });
     expect(load).toBeUndefined();
   });
 
-  it('carries the manifest\'s branches, context, cache type, image budgets, the projector and the backend', () => {
+  it("carries the llm block's branches, context, cache type and backend, and what the trunk rows contribute — an unset contribution left out", () => {
     const { options, load } = residentContextOptions(
-      { path: '/m.gguf', nCtx: 8192, branches: 5, kvCache: 'q8_0', gpu: 'cuda', imageMinTokens: 256, imageMaxTokens: 1024 }, '/mm.gguf');
-    expect(options).toEqual({ modelPath: '/m.gguf', nCtx: 8192, nSeqMax: 5, typeK: 'q8_0', typeV: 'q8_0', mmprojPath: '/mm.gguf', imageMinTokens: 256, imageMaxTokens: 1024 });
+      { path: '/m.gguf', context: 8192, branches: 5, kvCache: 'q8_0', gpu: 'cuda' },
+      { mmprojPath: '/mm.gguf', imageMinTokens: 256, imageMaxTokens: undefined });
+    expect(options).toEqual({ modelPath: '/m.gguf', nCtx: 8192, nSeqMax: 5, typeK: 'q8_0', typeV: 'q8_0', mmprojPath: '/mm.gguf', imageMinTokens: 256 });
     expect(load).toEqual({ gpuVariant: 'cuda' });
   });
 
@@ -115,4 +116,3 @@ describe('prepareBackend — the one step both boots take before the context', (
     expect(process.env.LLOYAL_GPU).toBe('cuda');
   });
 });
-

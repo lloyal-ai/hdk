@@ -19,6 +19,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { CONFIG_VERSION } from './config';
 
 /**
  * Resolve a user-typed path to an absolute path: `~`/`~/x` expand against the
@@ -58,26 +59,58 @@ export function resolveAppConfigPaths(
   return out;
 }
 
-/** Read a version-1 JSON overlay for the LOADER: absent, unreadable, or
+type Bag = Record<string, unknown>;
+
+/** Where version 1 wrote each model key, flat under `model`, and the block it lives in now. Exported so a mirror
+ *  of it elsewhere (the CLI reads `harness.json` without depending on rig) can be held to it. */
+export const V1_MODEL_KEYS: Record<string, [block: string, key: string]> = {
+  id: ['llm', 'id'], path: ['llm', 'path'], nCtx: ['llm', 'context'], gpu: ['llm', 'gpu'], branches: ['llm', 'branches'], kvCache: ['llm', 'kvCache'],
+  reranker: ['reranker', 'path'], rerankerId: ['reranker', 'id'],
+  mmproj: ['vision', 'id'], imageMinTokens: ['vision', 'minTokens'], imageMaxTokens: ['vision', 'maxTokens'],
+};
+
+/** A version-1 file at the current version: its flat model keys moved into their blocks, every other key kept.
+ *  Pure — the loader reads the result, the writer merges over it, and the next save writes it. */
+function migrateV1<T>(parsed: Partial<T> & { version?: number }): Partial<T> & { version?: number } {
+  const model = (parsed as Bag).model;
+  if (model === null || typeof model !== 'object') return { ...parsed, version: CONFIG_VERSION };
+  const next: Bag = {};
+  for (const [key, value] of Object.entries(model as Bag)) {
+    const moved = V1_MODEL_KEYS[key];
+    if (!moved) { next[key] = value; continue; }
+    const [block, at] = moved;
+    next[block] = { ...((next[block] as Bag | undefined) ?? {}), [at]: value };
+  }
+  return { ...parsed, version: CONFIG_VERSION, model: next } as Partial<T> & { version?: number };
+}
+
+/** A parsed file at the current version, or null when this runtime does not write the version it carries. */
+function atCurrentVersion<T>(parsed: unknown): (Partial<T> & { version?: number }) | null {
+  if (parsed === null || typeof parsed !== 'object') return null;
+  const file = parsed as Partial<T> & { version?: number };
+  if (file.version === CONFIG_VERSION) return file;
+  if (file.version === 1) return migrateV1(file);
+  return null;
+}
+
+/** Read the JSON overlay for the LOADER: absent, unreadable, or
  *  future-versioned ⇒ null — the overlay is ignorable; the layers beneath it
- *  still describe a runnable harness. */
+ *  still describe a runnable harness. A version-1 file is read migrated. */
 export function readJsonOverlay<T>(p: string): (Partial<T> & { version?: number }) | null {
   try {
-    const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as Partial<T> & {
-      version?: number;
-    };
-    if (parsed === null || typeof parsed !== 'object' || parsed.version !== 1) return null;
-    return parsed;
+    return atCurrentVersion<T>(JSON.parse(fs.readFileSync(p, 'utf8')));
   } catch {
     return null;
   }
 }
 
-/** Read a version-1 JSON file for the WRITER. Unlike the loader, a save must
+/** Read the JSON file for the WRITER. Unlike the loader, a save must
  *  never rebuild over content it cannot understand — that would destroy a
  *  newer runtime's (or another user's) settings. ONLY a missing file is a
- *  fresh config; not-JSON, version ≠ 1, or any other read failure (EACCES,
- *  EIO) throws with a precise message, leaving the file untouched. */
+ *  fresh config; not-JSON, a version this runtime does not write, or any other
+ *  read failure (EACCES, EIO) throws with a precise message, leaving the file
+ *  untouched. A version-1 file is handed over migrated, so the save writes it
+ *  at the current version. */
 export function readJsonForWrite<T>(
   p: string,
   displayName: string = path.basename(p),
@@ -91,19 +124,20 @@ export function readJsonForWrite<T>(
       `${displayName} exists but cannot be read (${(err as NodeJS.ErrnoException).code ?? 'unknown'}) — nothing was saved.`,
     );
   }
-  let parsed: Partial<T> & { version?: number };
+  let parsed: unknown;
   try {
-    parsed = JSON.parse(raw) as Partial<T> & { version?: number };
+    parsed = JSON.parse(raw);
   } catch {
     throw new Error(`${displayName} is not valid JSON — fix or delete it; nothing was saved.`);
   }
-  const version = parsed === null || typeof parsed !== 'object' ? undefined : parsed.version;
-  if (version !== 1) {
+  const current = atCurrentVersion<T>(parsed);
+  if (!current) {
+    const version = parsed === null || typeof parsed !== 'object' ? undefined : (parsed as { version?: number }).version;
     throw new Error(
-      `${displayName} is version ${String(version)}; this harness writes version 1 — not overwriting a newer runtime's settings.`,
+      `${displayName} is version ${String(version)}; this harness writes version ${CONFIG_VERSION} — not overwriting a newer runtime's settings.`,
     );
   }
-  return parsed;
+  return current;
 }
 
 /** Write JSON atomically (tmp + rename) with mode 0600: config can carry

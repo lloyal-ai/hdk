@@ -20,6 +20,10 @@ import { createHash } from 'node:crypto';
 import {
   resolveModel,
   fetchVerified,
+  modelSlot,
+  isModelPresent,
+  MODEL_CATALOG,
+  DownloadStopped,
   type ModelCatalogEntry,
   type ModelRole,
 } from '../src/models';
@@ -124,6 +128,26 @@ describe('resolveModel — filesystem walk', () => {
   });
 });
 
+describe('the slot: one derivation of where a catalog id lives', () => {
+  it('names the file the resolver would fetch into, and says whether it is already there', () => {
+    expect(modelSlot(root, 'reranker', 'r1')).toBe(path.join(root, 'models/reranker/r1.gguf'));
+    expect(isModelPresent(root, 'reranker', 'r1')).toBe(false);
+    put('models/reranker/r1.gguf');
+    expect(isModelPresent(root, 'reranker', 'r1')).toBe(true);
+    expect(() => modelSlot(root, 'llm', '../x')).toThrow(/Invalid model id/);
+  });
+});
+
+describe('the catalog names its projectors by the service they back', () => {
+  it('every projector has the `vision` role, and every llm that pairs one names a vision entry', () => {
+    const roles = new Set(MODEL_CATALOG.map((e) => e.role));
+    expect(roles.has('mmproj' as ModelRole)).toBe(false);
+    for (const llm of MODEL_CATALOG.filter((e) => e.role === 'llm' && e.vision)) {
+      expect(MODEL_CATALOG.find((e) => e.role === 'vision' && e.id === llm.vision), llm.id).toBeDefined();
+    }
+  });
+});
+
 describe('fetchVerified — streaming digest verification', () => {
   const bytes = new TextEncoder().encode('GGUF-TEST-BYTES');
   const entry = (sha: string, urls: string[]): ModelCatalogEntry => ({
@@ -174,6 +198,30 @@ describe('fetchVerified — streaming digest verification', () => {
     });
     expect(out).toBe(dest);
     expect(fs.readFileSync(dest)).toEqual(Buffer.from(bytes));
+  });
+
+  it('a stop ends the walk: the fetch sees the signal, the partial goes, and no other mirror is tried', async () => {
+    const dest = path.join(root, 'models/llm/t.gguf');
+    const controller = new AbortController();
+    const tried: string[] = [];
+    const fetchImpl = (async (input: unknown, init?: { signal?: AbortSignal }) => {
+      tried.push(String(input));
+      // A body that never ends until the signal says so — a download in flight.
+      const body = new ReadableStream<Uint8Array>({
+        start(ctrl) {
+          ctrl.enqueue(bytes.slice(0, 4));
+          init?.signal?.addEventListener('abort', () => ctrl.error(new DOMException('aborted', 'AbortError')));
+        },
+      });
+      return new Response(body);
+    }) as unknown as typeof fetch;
+    const walk = fetchVerified(entry(sha256(bytes), ['mock://slow', 'mock://next']), dest, { fetchImpl, signal: controller.signal });
+    await new Promise((r) => setTimeout(r, 20));
+    controller.abort();
+    await expect(walk).rejects.toBeInstanceOf(DownloadStopped);
+    expect(tried).toEqual(['mock://slow']);
+    expect(fs.existsSync(dest)).toBe(false);
+    expect(fs.readdirSync(path.dirname(dest)).filter((f) => f.includes('.partial'))).toHaveLength(0);
   });
 
   it('all URLs fail → aggregated error naming each source', async () => {

@@ -213,13 +213,14 @@ The honest comparison is full stack against full stack. Each row of the right co
 import {
   initAgents, useAgent, agent, agentPool, useAgentPool,
   parallel, chain, fanout, dag, reduce, withSpine,
-  Tool, Source, DefaultAgentPolicy,
-  Ctx, Store, Events, AbilityRegistryCtx, AbilityConfigStoreCtx, GrantStoreCtx, RerankerCtx,
+  Tool, DefaultAgentPolicy,
+  Ctx, Store, Events, GrantStoreCtx,
 } from "@lloyal-labs/lloyal-agents";
 
-// Ability protocol + framework tools
+// Ability protocol, retrieval, services + framework tools
 import {
   defineAbility, createAbilityRegistry, createInMemoryConfigStore, createGrantStore,
+  Source, admitChunks, AbilityRegistryCtx, AbilityConfigStoreCtx, Services, service,
   renderSpine, renderAgentPreamble,
   reportTool, PlanTool, DelegateTool, TavilyProvider, createKeylessSearchProvider,
 } from "@lloyal-labs/rig";

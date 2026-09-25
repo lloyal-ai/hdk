@@ -20,12 +20,13 @@ import * as path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import type { Service } from './services';
+import type { EmbeddingPooling } from './retrieval';
+import type { MachineClass } from './machine';
 
-/** The model roles a harness provisions. `llm` always; `reranker` when an ability
- *  requires it; `mmproj` rides its llm entry (vision — resolved in the boot
- *  beside the llm, never a Service); `embedding` reserved for the first
- *  consumer. */
-export type ModelRole = 'llm' | 'reranker' | 'embedding' | 'mmproj';
+/** The model roles a harness provisions — the slot `models/<role>/` each is kept in: the reasoning model, and
+ *  every service by its name. */
+export type ModelRole = 'llm' | Service;
 
 /**
  * A curated default model. `sha256` is the platform trust root — every catalog
@@ -46,12 +47,15 @@ export interface ModelCatalogEntry {
   sizeBytes: number;
   /** Suggested `context` (nCtx) when the harness doesn't set one. */
   recommendedContext?: number;
-  /** LLM entries only: the id of this model's multimodal projector (role
-   *  `mmproj`). One vision tower serves every quant of the same model. The
-   *  boot resolves the llm, then its linked mmproj, and passes `mmprojPath`
-   *  into `createContext` — vision rides the llm choice, never a separate
-   *  pick. */
-  mmproj?: string;
+  /** LLM entries only: the id of this model's vision projector (role `vision`). One vision tower serves every
+   *  quant of the same model, so a `model.vision` block that names no id takes this one. */
+  vision?: string;
+  /** LLM entries only: the smallest machine this model runs on. The boot refuses a box under that class's
+   *  floor BEFORE fetching anything. A projector and a reranker ride their llm's choice, so neither declares one. */
+  machineClass?: MachineClass;
+  /** Embedding entries only: how this model pools its token states — the model's own property, so the
+   *  provider never has to guess and a `path:` model has to say. */
+  pooling?: EmbeddingPooling;
 }
 
 const USER_AGENT = '@lloyal-labs/rig model-fetch';
@@ -71,6 +75,20 @@ function assertSafeSegment(kind: 'role' | 'id', value: string): void {
   }
 }
 
+/** Where a catalog id lives once fetched — ONE derivation of the slot, so a caller asking "is this here?"
+ *  and the resolver deciding "must I fetch this?" can never disagree. */
+export function modelSlot(projectRoot: string, role: ModelRole, id: string): string {
+  assertSafeSegment('role', role);
+  assertSafeSegment('id', id);
+  return path.join(projectRoot, 'models', role, `${id}.gguf`);
+}
+
+/** Whether a catalog id is already on disk — what a boot asks before deciding whether there is anything to
+ *  acquire at all. */
+export function isModelPresent(projectRoot: string, role: ModelRole, id: string): boolean {
+  return fs.existsSync(modelSlot(projectRoot, role, id));
+}
+
 /**
  * The platform's default catalog. Extend by adding an entry — no plumbing
  * change. `id`s name the model (`qwen3.5-4b`), matching the on-disk slot
@@ -88,7 +106,8 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     sha256: '00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4',
     sizeBytes: 2_600_000_000,
     recommendedContext: 32768,
-    mmproj: 'qwen3.5-4b-mmproj',
+    vision: 'qwen3.5-4b-mmproj',
+    machineClass: 'edge',
   },
   {
     id: 'qwen3.8-27b-q4',
@@ -103,7 +122,8 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     sha256: '322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482',
     sizeBytes: 16_464_440_224,
     recommendedContext: 32768,
-    mmproj: 'qwen3.8-27b-mmproj',
+    vision: 'qwen3.8-27b-mmproj',
+    machineClass: 'appliance',
   },
   {
     id: 'qwen3.8-27b-iq1',
@@ -115,11 +135,14 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     sha256: '3895b6eaa91e705c06ad1938d16c22e86f073c6a67df86260a1da79be3d1f887',
     sizeBytes: 6_192_222_208,
     recommendedContext: 32768,
-    mmproj: 'qwen3.8-27b-mmproj',
+    vision: 'qwen3.8-27b-mmproj',
+    // Appliance until measured: a 27B at IQ1_S is 6.2 GB of weights, and what it needs beyond them on a
+    // laptop has not been observed — the conservative floor never offers it to a box that cannot hold it.
+    machineClass: 'appliance',
   },
   {
     id: 'qwen3.5-4b-mmproj',
-    role: 'mmproj',
+    role: 'vision',
     label: 'Qwen3.5 4B vision projector · F16',
     // Upstream only: models.lloyal.ai does not carry the mmprojs yet — add
     // the mirror URL when seeded, never a fallback that cannot serve.
@@ -131,7 +154,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
   },
   {
     id: 'qwen3.8-27b-mmproj',
-    role: 'mmproj',
+    role: 'vision',
     label: 'Qwen3.8 27B vision projector · F16',
     urls: [
       'https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.gguf',
@@ -149,6 +172,29 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     ],
     sha256: '22c9979ce4fbcdc5acdc310c6641c32797eff1aa980b8f7a2db8a8ea23429a48',
     sizeBytes: 630_000_000,
+  },
+  {
+    id: 'nomic-embed-text-v1.5-q4',
+    role: 'embedding',
+    label: 'nomic-embed-text v1.5 · Q4_K_M',
+    // The edge default: a tenth of the memory and a quarter of the latency of the 0.6B Qwen encoder, and it
+    // orders the long tail more like the reranker (eval/embedding/README.md). Qwen recalls more of the judge's
+    // top five and is offered for an appliance-class box.
+    urls: ['https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf'],
+    sha256: 'd4e388894e09cf3816e8b0896d81d265b55e7a9fff9ab03fe8bf4ef5e11295ac',
+    sizeBytes: 84_106_624,
+    pooling: 'mean',
+  },
+  {
+    id: 'qwen3-embedding-0.6b-q8',
+    role: 'embedding',
+    label: 'Qwen3 Embedding 0.6B · Q8_0',
+    // Upstream only: models.lloyal.ai does not carry the embedding models yet — add the mirror URL when
+    // seeded, never a fallback that cannot serve.
+    urls: ['https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf'],
+    sha256: '06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439',
+    sizeBytes: 639_150_592,
+    pooling: 'last',
   },
 ];
 
@@ -174,6 +220,9 @@ export interface ResolveModelOpts {
   onProgress?: ModelProgress;
   /** Inject a non-default `fetch` (proxied network, or tests). Defaults to global `fetch`. */
   fetchImpl?: typeof fetch;
+  /** Stops a download in flight: the fetch and the stream end, the partial is removed, and no
+   *  other mirror is tried. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -186,7 +235,7 @@ export interface ResolveModelOpts {
  *   no id                             → exactly one `.gguf` in the role dir → adopt; >1 → fail clearly
  */
 export async function resolveModel(opts: ResolveModelOpts): Promise<string> {
-  const { projectRoot, role, spec, onProgress, fetchImpl } = opts;
+  const { projectRoot, role, spec, onProgress, fetchImpl, signal } = opts;
   assertSafeSegment('role', role);
   const roleDir = path.join(projectRoot, 'models', role);
 
@@ -207,8 +256,7 @@ export async function resolveModel(opts: ResolveModelOpts): Promise<string> {
 
   // 2/3. configured id → slot; fetch + verify if absent
   if (spec?.id) {
-    assertSafeSegment('id', spec.id);
-    const slot = path.join(roleDir, `${spec.id}.gguf`);
+    const slot = modelSlot(projectRoot, role, spec.id);
     if (fs.existsSync(slot)) return slot;
     const entry = catalogEntry(role, spec.id);
     if (!entry) {
@@ -217,7 +265,7 @@ export async function resolveModel(opts: ResolveModelOpts): Promise<string> {
           `Drop the .gguf there, or set a known catalog id.`,
       );
     }
-    return fetchVerified(entry, slot, { onProgress, fetchImpl });
+    return fetchVerified(entry, slot, { onProgress, fetchImpl, signal });
   }
 
   // 4. no id / no path → adopt the sole .gguf in the role dir, or fail clearly.
@@ -252,6 +300,16 @@ export interface FetchVerifiedOpts {
   onProgress?: ModelProgress;
   /** Inject a non-default `fetch`. Defaults to global `fetch`. */
   fetchImpl?: typeof fetch;
+  /** Stops the download: see {@link ResolveModelOpts.signal}. */
+  signal?: AbortSignal;
+}
+
+/** What a stopped download throws — its own name, so a caller tells a cancel from a dead mirror. */
+export class DownloadStopped extends Error {
+  constructor() {
+    super('the download was stopped');
+    this.name = 'DownloadStopped';
+  }
 }
 
 /**
@@ -271,11 +329,14 @@ export async function fetchVerified(
 
   const errors: string[] = [];
   for (const url of entry.urls) {
+    // A stop is not a dead mirror: it ends the walk, never advances it.
+    if (opts.signal?.aborted) throw new DownloadStopped();
     try {
       return await streamOne(entry, url, tmp, dest, opts);
     } catch (err) {
-      errors.push(`  ${url}: ${err instanceof Error ? err.message : String(err)}`);
       try { fs.unlinkSync(tmp); } catch { /* best effort */ }
+      if (opts.signal?.aborted) throw new DownloadStopped();
+      errors.push(`  ${url}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
   throw new Error(`Failed to fetch ${entry.label} from any source:\n${errors.join('\n')}`);
@@ -289,7 +350,7 @@ async function streamOne(
   opts: FetchVerifiedOpts,
 ): Promise<string> {
   const doFetch = opts.fetchImpl ?? fetch;
-  const res = await doFetch(url, { redirect: 'follow', headers: { 'User-Agent': USER_AGENT } });
+  const res = await doFetch(url, { redirect: 'follow', headers: { 'User-Agent': USER_AGENT }, ...(opts.signal ? { signal: opts.signal } : {}) });
   if (!res.ok || !res.body) throw new Error(`HTTP ${res.status} ${res.statusText}`);
 
   // Content-Length is progress-display only; fall back to the catalog size
@@ -318,6 +379,7 @@ async function streamOne(
     Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]),
     meter,
     fs.createWriteStream(tmp),
+    ...(opts.signal ? [{ signal: opts.signal }] : []),
   );
 
   const digest = hash.digest('hex');
@@ -344,75 +406,15 @@ async function streamOne(
 }
 
 
-/**
- * What a runtime boot needs on disk before it can create a context.
- *
- * @category Models
- */
-export interface RuntimeModels {
-  /** The reasoning model — verified, local, ready for `createContext`. */
-  modelPath: string;
-  /** The vision projector, when this llm has one. Absent ⇒ a text-only
-   *  runtime, which is a normal outcome and never an error. */
-  mmprojPath?: string;
-}
+/** The slot projectors were kept in before the role was named for its service. */
+const LEGACY_VISION_ROLE = 'mmproj';
 
-/**
- * Resolve the models a runtime boots with — the reasoning model and, when the
- * catalog pairs one with it, its vision projector.
- *
- * Every target that boots a runtime needs both, resolved the same way, which
- * is why this is not each target's job: the CLI boot and the served host had
- * independent copies of the pairing logic, and only one of them was ever
- * updated when vision landed — so the served host ran text-only however
- * capable its model was.
- *
- * **Vision is implicit by design.** The catalog pairs a projector with each
- * vision-capable llm, so choosing a model chooses vision with it;
- * `config.mmproj` only overrides that pairing. A text-only model has no
- * pairing, `mmprojPath` comes back undefined, and `createContext` then reports
- * `supportsVision() === false` rather than failing.
- *
- * Not the reranker: every boot reaches it through the abilities that declare
- * it (`resolveAbilityModels`), so no boot decides on its own that a harness
- * needs one.
- *
- * @param opts.config - The layered config's model block. A saved `path`
- *                      outranks the manifest's catalog id, matching how the
- *                      config layering resolves every other field.
- * @param opts.llmId - The manifest's `model.llm.id` — what selects the pairing.
- *
- * @category Models
- */
-export async function resolveRuntimeModels(opts: {
-  projectRoot: string;
-  config: { path?: string | undefined; mmproj?: string | undefined };
-  llmId: string | undefined;
-  onProgress?: (role: ModelRole, got: number, total: number) => void;
-}): Promise<RuntimeModels> {
-  const { projectRoot, config, llmId, onProgress } = opts;
-
-  const modelPath = await resolveModel({
-    projectRoot,
-    role: 'llm',
-    spec: config.path ? { path: config.path } : { id: llmId },
-    ...(onProgress ? { onProgress: (g: number, t: number) => onProgress('llm', g, t) } : {}),
-  });
-
-  // A path override points the runtime at bytes the catalog knows nothing
-  // about, so the catalog's projector pairing does not apply: inferring one
-  // from the id would load a projector for a model that is not running —
-  // wrong dimensions at best, a failed context at worst. Vision with a
-  // custom path takes an explicit `config.mmproj`.
-  const mmprojId = config.mmproj ??
-    (config.path ? undefined : llmId ? catalogEntry('llm', llmId)?.mmproj : undefined);
-  if (!mmprojId) return { modelPath };
-
-  const mmprojPath = await resolveModel({
-    projectRoot,
-    role: 'mmproj',
-    spec: { id: mmprojId },
-    ...(onProgress ? { onProgress: (g: number, t: number) => onProgress('mmproj', g, t) } : {}),
-  });
-  return { modelPath, mmprojPath };
+/** Carry a `models/mmproj/` slot over to `models/vision/`, once: the directory is renamed when no vision slot
+ *  exists yet, and left where it is otherwise — a slot already named for its service is never overwritten. */
+export function carryOverVisionSlot(projectRoot: string, say: (line: string) => void): void {
+  const legacy = path.join(projectRoot, 'models', LEGACY_VISION_ROLE);
+  const current = path.join(projectRoot, 'models', 'vision');
+  if (!fs.existsSync(legacy) || fs.existsSync(current)) return;
+  fs.renameSync(legacy, current);
+  say(`[rig] models/${LEGACY_VISION_ROLE}/ is now models/vision/ — the slot is named for the service it backs; moved once.`);
 }

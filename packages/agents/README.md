@@ -65,20 +65,20 @@ import {
   useAgentPool,      // the underlying Effection resource
   parallel, chain, fanout, dag, reduce,  // orchestrators / combinators
   withSpine,         // scoped spine branch with guaranteed teardown
-  Tool, Source,
+  Tool,
   DefaultAgentPolicy,
   Ctx, Store, Events,
-  // Ability protocol primitives — contexts the registry and the pool pick up.
-  // Construction lives in `@lloyal-labs/rig` (`defineAbility`, `createAbilityRegistry`).
-  AbilityRegistryCtx, AbilityConfigStoreCtx, GrantStoreCtx, RerankerCtx,
+  // The session's consent store — the one ability-side context the pool itself reads, at dispatch.
+  GrantStoreCtx,
 } from "@lloyal-labs/lloyal-agents";
 
-import type {
-  Ability, AbilityManifest, AbilityProtocol, AbilityFactory, AbilityState,
-  AgentRenderCtx, SkillTemplateFn,
-  AbilityConfigStore, GrantStore,
-} from "@lloyal-labs/lloyal-agents";
+import type { GrantStore, EntailmentScorer } from "@lloyal-labs/lloyal-agents";
 ```
+
+What an ability declares and constructs (`AbilityManifest`, `defineAbility`, `Source`), what it retrieves
+with (`Chunk`, `Reranker`, `admitChunks`) and the services a harness composes (`service('reranker')`) are
+`@lloyal-labs/rig`'s: this package is what an agent is and does, and it reads retrieval through one
+`EntailmentScorer` on the tool context.
 
 Full reference at [hdk.lloyal.ai/reference](https://hdk.lloyal.ai/reference); positioning, guides and mechanics at [docs.lloyal.ai](https://docs.lloyal.ai).
 

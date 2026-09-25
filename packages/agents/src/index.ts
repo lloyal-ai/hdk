@@ -4,9 +4,6 @@ export {
   Events,
   Trace,
   TraceParent,
-  RerankerCtx,
-  AbilityRegistryCtx,
-  AbilityConfigStoreCtx,
   GrantStoreCtx,
   WindDown,
   CancelAgent, Pause,
@@ -22,8 +19,8 @@ export { DefaultAgentPolicy, isGuardOverrides, policyFromBudget, budgetPolicyOpt
 export type { AgentPolicy, ProduceAction, RecoveryAction, IdleReason, PolicyConfig, DefaultAgentPolicyOpts, GuardScope, GuardOverrides, Budget, PromptText, PromptOf, NudgeInput } from './AgentPolicy';
 export { defaultAfterExecute, defaultBeforeAdmit, defaultAfterAdmit, retryUpTo } from './hooks';
 export { CallingAgent } from './context';
-export { Source, NULL_SCORER } from './source';
-export type { EntailmentScorer, ScorerReranker } from './source';
+export { NULL_SCORER } from './scorer';
+export type { EntailmentScorer } from './scorer';
 export { buildUserDelta, buildToolResultDelta } from '@lloyal-labs/sdk';
 export { useAgent, agent } from './use-agent';
 export type { UseAgentOpts } from './use-agent';
@@ -47,8 +44,6 @@ export { prepareBatch } from './prepare-content';
 // internal rather than growing the surface to describe a convention.
 export { TOOL_ATTACHMENTS_KEY } from './Tool';
 export { useTraceScope } from './trace-scope';
-export { admitChunks } from './admission';
-export type { AdmitOpts, AdmitResult, AdmitSelect, AdmittedPassage } from './admission';
 export { renderTemplate } from './prompt';
 export { stripDanglingToolCall } from './capture';
 export { reduce, waitUntilSettled } from './combinators';
@@ -79,23 +74,4 @@ export type {
   AgentTraceEvent,
 } from './types';
 
-export type {
-  Ability,
-  AbilityManifest,
-  AbilityProtocol,
-  AbilityHints,
-  Service,
-  AbilityRegistry,
-  AbilityFactory,
-  AbilityState,
-  AgentRenderCtx,
-  ExamplesRenderCtx,
-  SkillTemplateFn,
-  ExamplesTemplateFn,
-  ConfigFlow,
-} from './ability-types';
-export { SERVICES } from './ability-types';
-
-export type { AbilityConfigStore } from './ability-config';
 export type { GrantStore } from './grant-store';
-export type { Resource, Chunk, ScoredChunk, ScoredResult, Reranker } from './chunk';

@@ -81,6 +81,34 @@ describe('createServedHostDriver', () => {
     });
   });
 
+  it('one session failing to bind is its own death: the other stays live and the host keeps serving', async () => {
+    const log: string[] = [];
+    let admitted = 0;
+    await run(function* () {
+      const driver = yield* createServedHostDriver<{ type: string }, { type: string }>({
+        maxNativeSessions: 2,
+        buildContext: async () => fakeContext(),
+        *run(): Operation<void> {
+          // The first session's service refuses to bind; the second's binds and runs on.
+          if (admitted++ === 0) throw new Error('reranker: the model file is not a GGUF');
+          yield* suspend();
+        },
+        log: (l) => log.push(l),
+      });
+      const a = fakeSocket();
+      driver.serveConnection(a as never);
+      yield* sleep(30);
+      const b = fakeSocket();
+      driver.serveConnection(b as never);
+      yield* sleep(30);
+      expect(a.phases().at(-1)).toBe('died');
+      expect(b.phases().at(-1)).toBe('live');
+      expect(driver.occupancy).toBe(1);
+      expect(log).toHaveLength(1);
+      expect(log[0]).toMatch(/died: Error: reranker/);
+    });
+  });
+
   it('a harness that throws dies alone, and the host\'s log says why', async () => {
     const log: string[] = [];
     await run(function* () {

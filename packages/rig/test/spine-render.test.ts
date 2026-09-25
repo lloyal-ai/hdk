@@ -27,7 +27,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
-import type { Ability, AbilityManifest } from '@lloyal-labs/lloyal-agents';
+import type { Ability, AbilityManifest } from '../src/ability-types';
 import {
   renderSpine,
   renderAgentPreamble,

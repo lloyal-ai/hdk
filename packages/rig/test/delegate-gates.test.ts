@@ -22,21 +22,24 @@ vi.mock('@lloyal-labs/lloyal-agents', async (importOriginal) => {
   };
 });
 
-import { Trace, NullTraceWriter, CallingAgent, Source } from '@lloyal-labs/lloyal-agents';
-import type { Agent, ToolContext, ScorerReranker } from '@lloyal-labs/lloyal-agents';
+import { Trace, NullTraceWriter, CallingAgent } from '@lloyal-labs/lloyal-agents';
+import { Source } from '../src/source';
+import type { Agent, ToolContext } from '@lloyal-labs/lloyal-agents';
+import type { Reranker } from '../src/retrieval';
 import { DelegateTool } from '../src/tools/delegate';
 
 const ORIGINAL = 'How does speculative decoding perform on Apple Silicon?';
 const TASK = 'speculative decoding on Apple Silicon';
 
-/** A reranker that speaks logits: a table of (query → text → score), −9 elsewhere. */
-function logitReranker(table: Record<string, Record<string, number>>): ScorerReranker {
-  return { scoreBatch: async (query: string, texts: string[]) => texts.map((t) => table[query]?.[t] ?? -9) };
+/** A reranker that speaks logits: a table of (query → text → score), −9 elsewhere. Only `scoreBatch` is
+ *  reached here — the scorer a Source makes calls nothing else. */
+function logitReranker(table: Record<string, Record<string, number>>): Reranker {
+  return { scoreBatch: async (query: string, texts: string[]) => texts.map((t) => table[query]?.[t] ?? -9) } as Reranker;
 }
 class TestSource extends Source {
   readonly name = 'test';
   get tools() { return []; }
-  constructor(reranker: ScorerReranker) { super(); this._reranker = reranker; }
+  constructor(reranker: Reranker) { super(); this._reranker = reranker; }
 }
 // The echo guard runs only at depth 2+ (the caller has a parent): sub-questions
 // of a harness-spawned agent are expected to resemble its task.
@@ -47,7 +50,7 @@ const callingAgent = {
 } as unknown as Agent;
 
 type Out = { results?: unknown[]; filtered?: { task: string; score: number }[]; echoRejected?: boolean; error?: string };
-function delegate(reranker: ScorerReranker, tasks: string[]): Promise<Out> {
+function delegate(reranker: Reranker, tasks: string[]): Promise<Out> {
   const tool = new DelegateTool({ poolOpts: {}, systemPrompt: 'sys', extractTasks: (a) => a.tasks as string[] });
   const scorer = new TestSource(reranker).createScorer(ORIGINAL);
   return run(function* () {

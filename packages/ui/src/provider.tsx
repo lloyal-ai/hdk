@@ -19,10 +19,13 @@
  *
  * @category UI
  */
-import { createContext, createElement, useContext, useMemo, useSyncExternalStore } from 'react';
+import { createContext, createElement, useContext, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import type { ReactElement, ReactNode } from 'react';
+import { Fragment } from 'react';
 import { connectProjection, availabilityOf } from '@lloyal-labs/binding';
 import type { Availability, Bridge, Projection, SessionState, WireStatus } from '@lloyal-labs/binding';
+import { Installer } from './installer.js';
+import type { InstallerStep } from './installer.js';
 
 export interface Harness<E, C, S extends object> {
   bridge: Bridge<E, C, S>;
@@ -46,6 +49,11 @@ export function projectionFor<E, C, S extends object>(bridge: Bridge<E, C, S>, i
   return projection;
 }
 
+/**
+ * The provider connects the bridge once and mounts the harness's view — behind the installer, for as long as
+ * the run is acquiring what it needs. A harness writes nothing for that: acquiring weights is the platform's
+ * business, and the screen for it is the platform's too.
+ */
 export function HarnessProvider<E, C, S extends object>({ bridge, initialState, reduce, children }: {
   bridge: Bridge<E, C, S>;
   initialState: S;
@@ -53,7 +61,28 @@ export function HarnessProvider<E, C, S extends object>({ bridge, initialState, 
   children: ReactNode;
 }): ReactElement {
   const value = useMemo<Harness<E, C, S>>(() => ({ bridge, projection: projectionFor(bridge, initialState, reduce) }), [bridge]);
-  return createElement(HarnessContext.Provider, { value: value as Harness<unknown, unknown, object> }, children);
+  return createElement(HarnessContext.Provider, { value: value as Harness<unknown, unknown, object> }, createElement(Acquiring, null, children));
+}
+
+/** The installer while the run acquires; the harness's view once it is done — or at once, on a run that acquires nothing. */
+function Acquiring({ children }: { children: ReactNode }): ReactElement {
+  const steps = useInstall();
+  const send = useSend<{ type: string; step?: string; path?: string }>();
+  const chooseFile = useChooseFile();
+  if (steps.length === 0) return createElement(Fragment, null, children);
+  return createElement(Installer, {
+    steps,
+    footnote: 'First run only',
+    onRetry: () => send({ type: 'install:retry' }),
+    onStop: () => send({ type: 'install:quit' }),
+    ...(chooseFile ? {
+      onUseFile: (step: string) => {
+        void chooseFile({ extensions: ['gguf'], title: 'Choose a model file' }).then((path) => {
+          if (path) send({ type: 'install:use_file', step, path });
+        });
+      },
+    } : {}),
+  });
 }
 
 /** The provider's bridge and projection, for a consumer outside the hooks (a history adapter). */
@@ -197,6 +226,50 @@ export function useAvailability(): Availability {
 export function useRecover(): (() => void) | null {
   const { bridge } = useHarness();
   return useMemo(() => (bridge.recover ? (): void => bridge.recover!() : null), [bridge]);
+}
+
+/**
+ * What this run is acquiring before it can work — the install, read off the platform's own stream.
+ *
+ * Deliberately NOT folded into a harness's state. Acquiring weights is the platform's business, like the
+ * wire's status and the session's phase: a harness that had to declare the event in its union and fold it in
+ * its reducer could miswire or delete either, and the experience would differ per harness for no reason.
+ *
+ * Two sources, because one is not enough. The push is an ordinary frame, so a running install self-heals:
+ * every change carries the whole list, and the next tick catches a late subscriber up. A REFUSAL does not —
+ * the gate reports once and the run ends — so the placement is also asked what it is holding, exactly as
+ * `onSession` is paired with a "now" channel. Empty on every run that acquires nothing.
+ */
+export function useInstall(): readonly InstallerStep[] {
+  const { bridge } = useHarness();
+  const [steps, setSteps] = useState<readonly InstallerStep[]>([]);
+  useEffect(() => {
+    let live = true;
+    const take = (ev: unknown): void => {
+      const e = ev as { type?: unknown; steps?: readonly InstallerStep[] };
+      if (live && e && e.type === 'install:step' && Array.isArray(e.steps)) setSteps(e.steps);
+    };
+    const off = bridge.onEvent((frame) => take(frame.ev));
+    void bridge.installNow?.().then(take).catch(() => { /* a placement that cannot answer has nothing to report */ });
+    return () => {
+      live = false;
+      off();
+    };
+  }, [bridge]);
+  return steps;
+}
+
+/** What a placement's file chooser takes, and answers. */
+export type ChooseFileOpts = { extensions?: readonly string[]; title?: string };
+export type ChooseFile = (opts?: ChooseFileOpts) => Promise<string | null>;
+
+/**
+ * Choose a local file, or null on a bridge that cannot — which a browser cannot, since a page is handed bytes
+ * and never a path. A view offers the affordance only when this is non-null.
+ */
+export function useChooseFile(): ChooseFile | null {
+  const { bridge } = useHarness();
+  return useMemo(() => (bridge.chooseFile ? (opts?: ChooseFileOpts) => bridge.chooseFile!(opts) : null), [bridge]);
 }
 
 /** The content plane's origin, or null on a bridge without one. */

@@ -4,17 +4,17 @@
  * content, not a fact. Three questions, in order: is it even the kind of thing
  * that can be a root (`asAttachment`); is the content really in the store
  * (`materialize`, the check no client can answer for itself); and, when any of
- * it is pixels, can this model see (`supportsVision`). A refusal moves nothing.
+ * it is pixels, is the `vision` service configured — the one refusal every
+ * unconfigured service gives. A refusal moves nothing.
  */
 import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { run } from 'effection';
-import { Attachments, Ctx } from '@lloyal-labs/lloyal-agents';
+import { Attachments } from '@lloyal-labs/lloyal-agents';
+import { Services } from '../src/services';
 import { FileAttachmentStore } from '@lloyal-labs/media/node';
-import { MockSessionContext } from '@lloyal-labs/sdk/dist/testing.js';
-import type { SessionContext } from '@lloyal-labs/sdk';
 import { admitted } from '../src/admitted';
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
@@ -29,10 +29,8 @@ function plant() {
 }
 
 function* withContexts(store: FileAttachmentStore, vision: boolean) {
-  const mock = new MockSessionContext();
-  mock.mockSupportsVision = vision;
   yield* Attachments.set(store);
-  yield* Ctx.set(mock as unknown as SessionContext);
+  yield* Services.set(vision ? { vision: { artifact: '/models/vision/projector.gguf' } } : {});
 }
 
 describe('admitted', () => {
@@ -78,7 +76,7 @@ describe('admitted', () => {
     expect(out.projected.map((r) => r.digest)).toEqual([image.digest]);
   });
 
-  it('pixels need sight: an image is refused on a model with no projector, a document is not', async () => {
+  it('pixels need sight: an image is refused where vision is not configured, naming the block; a document is not', async () => {
     const { store, image, document } = plant();
     const [seen, blind] = await run(function* () {
       yield* withContexts(store, false);
@@ -87,6 +85,6 @@ describe('admitted', () => {
     if ('refused' in seen) throw new Error(seen.refused);
     expect(seen.roots).toHaveLength(1);
     expect(seen.bitmaps).toEqual([]);
-    expect((blind as { refused: string }).refused).toMatch(/see images|vision/);
+    expect((blind as { refused: string }).refused).toBe('`vision` is not configured — add `model.vision` to harness.yml');
   });
 });

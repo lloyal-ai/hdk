@@ -10,7 +10,7 @@
  */
 import { representationsOf, asDocumentMeta, DOCUMENT_CONFIG_TYPE } from '@lloyal-labs/media';
 import type { Attachment, AttachmentManifest, AttachmentStore, DocumentMeta } from '@lloyal-labs/media';
-import type { Resource, Chunk } from '@lloyal-labs/lloyal-agents';
+import type { Resource, Chunk } from '../retrieval';
 
 /**
  * A document as retrieval sees it: the root it came from, the sidecar, and

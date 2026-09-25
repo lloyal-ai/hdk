@@ -1,6 +1,7 @@
 import { call } from "effection";
 import type { Operation } from "effection";
-import { Tool, admitChunks } from "@lloyal-labs/lloyal-agents";
+import { Tool } from "@lloyal-labs/lloyal-agents";
+import { admitChunks } from "@lloyal-labs/rig";
 import type { JsonSchema, ToolContext, ToolLifecycleHooks } from "@lloyal-labs/lloyal-agents";
 import { chunkHtml } from "@lloyal-labs/rig";
 import type { Reranker } from "@lloyal-labs/rig";

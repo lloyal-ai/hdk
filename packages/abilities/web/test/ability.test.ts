@@ -1,9 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { run } from 'effection';
-import { AbilityConfigStoreCtx, Trace, NullTraceWriter } from '@lloyal-labs/lloyal-agents';
+import { Trace, NullTraceWriter } from '@lloyal-labs/lloyal-agents';
+import { AbilityConfigStoreCtx } from '@lloyal-labs/rig';
+import { Services } from '@lloyal-labs/rig';
 import type { ToolContext } from '@lloyal-labs/lloyal-agents';
+import type { Reranker } from '@lloyal-labs/rig';
 import { createInMemoryConfigStore } from '@lloyal-labs/rig';
 import { createWebAbility } from '../src/index';
+
+/** The harness binds a reranker before this ability enables (its manifest requires one); words stand in for scores. */
+const reranker = { scoreBatch: async (_q: string, texts: string[]) => texts.map(() => 0), tokenize: async () => [] } as unknown as Reranker;
 
 describe('createWebAbility', () => {
   it('builds the web_research ability with full tool-map coverage', async () => {
@@ -11,6 +17,7 @@ describe('createWebAbility', () => {
       const store = createInMemoryConfigStore();
       yield* store.set('web', { tavilyKey: 'test-key' }); // Tavily path — no background pacer
       yield* AbilityConfigStoreCtx.set(store);
+      yield* Services.set({ reranker });
       return yield* createWebAbility();
     });
 
@@ -31,6 +38,7 @@ describe('fetch_page on a PDF', () => {
     const ability = await run(function* () {
       yield* AbilityConfigStoreCtx.set(createInMemoryConfigStore());
       yield* Trace.set(new NullTraceWriter());
+      yield* Services.set({ reranker });
       return yield* createWebAbility();
     });
     const fetchPage = ability.tools.find((t) => t.name === 'fetch_page')!;

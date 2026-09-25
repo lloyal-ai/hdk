@@ -44,14 +44,16 @@ import { MockSessionContext } from '@lloyal-labs/sdk/dist/testing.js';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import { createBus } from '@lloyal-labs/binding';
 import type { EventBus } from '@lloyal-labs/binding';
-import { RerankerCtx } from '@lloyal-labs/lloyal-agents';
-import type { Reranker, TraceWriter, TraceEvent } from '@lloyal-labs/lloyal-agents';
+import { Services } from './services';
+import type { TraceWriter, TraceEvent } from '@lloyal-labs/lloyal-agents';
+import type { Reranker } from './retrieval';
 import type { AttachmentStore } from '@lloyal-labs/media';
 import { bufferedCommandSignal } from './buffered-command-signal';
 import { makeServedRunner, RunnerCtx } from './runner';
 import { runnerConfig } from './config-layering';
+import { mergeConfig } from './config';
 import type { ConfigTable, ConfigOf, OriginOf, YmlOf } from './config';
-import type { BaseHarnessConfig } from './runner';
+import type { BaseHarnessConfig, ConfigPatch } from './runner';
 import type { Reports } from './tools/report';
 import { RIG_REPORT } from './tools';
 
@@ -102,8 +104,8 @@ export interface HarnessUnderTest<T extends ConfigTable, C extends { type: strin
 
 export interface HarnessSpec<T extends ConfigTable, C extends { type: string }, E extends { type: string }>
   extends HarnessUnderTest<T, C, E> {
-  /** Merged over the loaded config, one level deep (an object key merges, anything else replaces). */
-  override?: { [K in keyof ConfigOf<T>]?: ConfigOf<T>[K] extends object ? Partial<ConfigOf<T>[K]> : ConfigOf<T>[K] };
+  /** Merged over the loaded config by the table, as a save is (`mergeConfig`). */
+  override?: ConfigPatch<ConfigOf<T>>;
   utterances?: Utterance[];
   script?: Step<C, E>[];
   /** Runs after the temp library dir exists, before the harness boots —
@@ -294,15 +296,12 @@ export async function runHarness<T extends ConfigTable, C extends { type: string
   const trace = new CapturingTrace();
   // The app's own table, layered over its yml for this run, with the rig's temp dir as the cwd.
   const loaded = runnerConfig(spec.config.table, spec.config.yml(outputDir), { env: {}, cwd: outputDir });
-  const cfg = { ...loaded.config } as Record<string, unknown>;
-  for (const [key, value] of Object.entries(spec.override ?? {})) {
-    const standing = cfg[key];
-    cfg[key] = isPlainObject(standing) && isPlainObject(value) ? { ...standing, ...value } : value;
-  }
   type Cfg = ConfigOf<T> & BaseHarnessConfig;
-  const served = makeServedRunner<Cfg, OriginOf<T>>(cfg as Cfg, {
+  const cfg = mergeConfig(spec.config.table, loaded.config as Cfg, (spec.override ?? {}) as ConfigPatch<Cfg>);
+  const served = makeServedRunner<Cfg, OriginOf<T>>(cfg, {
     traceWriter: trace,
     dev: false,
+    table: loaded.table,
     origin: loaded.origin,
     sessionOriginMap: loaded.sessionOriginMap,
     frozen: loaded.frozen,
@@ -393,7 +392,13 @@ export async function runHarness<T extends ConfigTable, C extends { type: string
   let failure: unknown;
   const task = run(function* () {
     yield* RunnerCtx.set(runner);
-    yield* RerankerCtx.set(stubReranker);
+    // What the configuration names is what is in reach, as a boot provisions it: a `model.reranker` block puts
+    // the stub there; no block, and an ability that needs one finds nothing — under the rig as in the run.
+    const family = cfg.model as { reranker?: unknown; vision?: unknown };
+    yield* Services.set({
+      ...(family.reranker !== undefined ? { reranker: stubReranker } : {}),
+      ...(family.vision !== undefined ? { vision: { artifact: 'the stub projector' } } : {}),
+    });
     yield* spec.harness(ctx as unknown as SessionContext, bus, rawCommands);
   });
   spec.controls?.({
@@ -442,9 +447,6 @@ export async function runHarness<T extends ConfigTable, C extends { type: string
 
   return { events, trace: trace.events, outputDir, shutdownTraceIndex, halted, traceAt, ...(failure !== undefined ? { failure } : {}) };
 }
-
-const isPlainObject = (v: unknown): v is Record<string, unknown> =>
-  typeof v === 'object' && v !== null && !Array.isArray(v);
 
 // ── Assertion helpers — the vocabulary scenarios speak ──
 

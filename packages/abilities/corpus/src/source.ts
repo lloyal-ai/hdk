@@ -1,4 +1,4 @@
-import { Source } from "@lloyal-labs/lloyal-agents";
+import { Source } from "@lloyal-labs/rig";
 import type { Tool } from "@lloyal-labs/lloyal-agents";
 import type { Resource, Chunk, Reranker } from "@lloyal-labs/rig";
 import { SearchTool } from "./tools/search";

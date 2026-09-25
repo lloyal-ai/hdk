@@ -9,17 +9,15 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createContext as createNativeContext, resolveBackendPackDirSync } from '@lloyal-labs/lloyal.node';
-import type { SessionContext } from '@lloyal-labs/sdk';
+import type { ContextOptions, SessionContext } from '@lloyal-labs/sdk';
 
-/** The model block a boot resolved: the config's model keys with `path` concrete. */
+/** The llm block a boot resolved: the config's `model.llm` keys with `path` concrete. */
 export interface ResidentModel {
   path?: string;
-  nCtx?: number;
+  context?: number;
   branches?: number;
   kvCache?: string;
   gpu?: string;
-  imageMinTokens?: number;
-  imageMaxTokens?: number;
 }
 
 /** How many branches a context seats when the manifest does not say. */
@@ -91,31 +89,30 @@ function nvidiaGpuPresent(): boolean {
   return r.status === 0 && (r.stdout ?? '').trim() !== '';
 }
 
-/** The options one resident context is built from — pure, so a law can read them without a model. */
-export function residentContextOptions(model: ResidentModel, mmprojPath?: string): {
+/** The options one resident context is built from — the llm block, and what the trunk rows contribute (the
+ *  projector and its image budgets). Pure, so a law can read them without a model. */
+export function residentContextOptions(model: ResidentModel, trunk: Partial<ContextOptions> = {}): {
   options: Record<string, unknown> & { modelPath: string; nCtx: number; nSeqMax: number };
   load?: { gpuVariant: string };
 } {
   if (!model.path) throw new Error('the resident model has no path — resolve the models before building a context');
+  const contributed = Object.fromEntries(Object.entries(trunk).filter(([, v]) => v !== undefined));
   return {
     options: {
       modelPath: model.path,
-      nCtx: model.nCtx ?? DEFAULT_N_CTX,
+      nCtx: model.context ?? DEFAULT_N_CTX,
       nSeqMax: model.branches ?? DEFAULT_N_SEQ_MAX,
       typeK: model.kvCache ?? 'q4_0',
       typeV: model.kvCache ?? 'q4_0',
-      // Vision, when the boot resolved a projector: `mmprojPath` is a concrete file.
-      ...(mmprojPath ? { mmprojPath } : {}),
-      ...(model.imageMinTokens ? { imageMinTokens: model.imageMinTokens } : {}),
-      ...(model.imageMaxTokens ? { imageMaxTokens: model.imageMaxTokens } : {}),
+      ...contributed,
     },
     ...(model.gpu ? { load: { gpuVariant: model.gpu } } : {}),
   };
 }
 
 /** Build one resident context. */
-export function createResidentContext(model: ResidentModel, mmprojPath?: string): Promise<SessionContext> {
+export function createResidentContext(model: ResidentModel, trunk: Partial<ContextOptions> = {}): Promise<SessionContext> {
   applyGpuEnv(model);
-  const { options, load } = residentContextOptions(model, mmprojPath);
+  const { options, load } = residentContextOptions(model, trunk);
   return createNativeContext(options as Parameters<typeof createNativeContext>[0], load as Parameters<typeof createNativeContext>[1]);
 }

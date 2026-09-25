@@ -1,19 +1,13 @@
 /**
- * Chunk / Reranker abstraction types.
- *
- * These interfaces live in `@lloyal-labs/lloyal-agents` (not rig) so that
- * agent-pool code, ability factories, and harness contexts can refer to a
- * common Reranker shape without depending on rig's concrete chunking
- * implementation. Concrete chunking utilities (`chunkResources`,
- * `chunkHtml`, `chunkFetchedPages`) and the cross-encoder-backed
- * `createReranker(...)` factory live in `@lloyal-labs/rig`.
- *
- * The pattern mirrors `Source` and `Tool`: abstract type in agents,
- * concrete subclasses/factories in rig.
+ * The retrieval contract: what is retrieved — a {@link Resource} and the {@link Chunk}s it is cut into — what
+ * judges it, the {@link Reranker}, and what indexes it ahead of the question, the {@link Embedder}. Node-free,
+ * so an ability and a harness read the same shapes from the root barrel; the bindings that make either from a
+ * model file are the providers in `@lloyal-labs/rig/node`.
  *
  * @packageDocumentation
- * @category Contract
+ * @category Rig
  */
+import type { Operation } from 'effection';
 
 /**
  * A loaded document available for search, read, and grep operations.
@@ -90,7 +84,7 @@ export interface ScoredResult {
 /**
  * Cross-encoder reranker for scoring corpus chunks against a query.
  *
- * Abilities obtain the harness-wide reranker via `RerankerCtx.expect()` at
+ * Abilities obtain the harness-wide reranker via `service('reranker')` at
  * factory time and hand it to their sources and tools at construction.
  * Implementations tokenize chunks up front via {@link tokenizeChunks},
  * then stream progressive results from {@link score}.
@@ -118,5 +112,30 @@ export interface Reranker {
    */
   tokenize(text: string): Promise<number[]>;
   /** Release reranker resources. */
+  dispose(): void;
+}
+
+/** How an embedding model folds its token states into one vector — the model's own property, never a choice:
+ *  Qwen3-Embedding reads its last token, nomic-embed averages. The catalog carries it per entry. */
+export type EmbeddingPooling = 'mean' | 'cls' | 'last';
+
+/**
+ * The encoder a harness indexes with: one vector per text, in input order, L2-normalized so cosine similarity
+ * is a dot product.
+ *
+ * `embed` consumes PREPARED text — a model's task prefix (`search_query: ` for nomic, an instruction line for
+ * Qwen) is the caller's to add, because the encoder cannot know whether a text is a query or a document.
+ * Every call is serialized on the one context behind it, across callers, so concurrent calls answer the same
+ * vectors they would in sequence. A text longer than the context is refused before anything runs, and the
+ * next call is unaffected. An Operation, like everything a harness composes: leaving the scope abandons the
+ * wait, and the encoder's own teardown still lets the native work already submitted settle.
+ */
+export interface Embedder {
+  /** The length of every vector this encoder answers. */
+  readonly dimension: number;
+  embed(texts: readonly string[]): Operation<Float32Array[]>;
+  /** Tokenize through the encoder's own vocabulary — what fits is measured in these. */
+  tokenize(text: string): Operation<number[]>;
+  /** Release the encoder. Idempotent; the owning scope calls it. */
   dispose(): void;
 }

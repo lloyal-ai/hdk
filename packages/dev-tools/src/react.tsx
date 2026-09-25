@@ -2328,7 +2328,7 @@ function HarnessSettings({ m, rows, tiered, send, selKey, onSelect }: {
         ) : (
           <span style={{ fontFamily: mono, fontSize: 11, color: C.dim, maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {value === undefined || value === '' ? '—' : value}
-            {key === 'model.branches' && <span style={{ color: C.faint }}> → nSeqMax</span>}
+            {key === 'model.llm.branches' && <span style={{ color: C.faint }}> → nSeqMax</span>}
           </span>
         )}
       </div>

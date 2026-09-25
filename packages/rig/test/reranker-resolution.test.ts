@@ -13,7 +13,7 @@
 import { describe, it, expect } from 'vitest';
 import { run, call } from 'effection';
 import * as path from 'node:path';
-import { createReranker } from '../src/reranker';
+import { createReranker } from '../src/providers/reranker';
 import { RERANK_MODEL_PATH } from './helpers/rerank-model';
 
 const describeWithModel = RERANK_MODEL_PATH ? describe : describe.skip;

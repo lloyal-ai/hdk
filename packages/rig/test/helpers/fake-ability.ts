@@ -1,8 +1,8 @@
 /** A fake ability factory: a manifest, a config schema if asked, and a body that
  *  reads its stored config and refuses when told to — enough to drive the
  *  registry, the descriptors and the settings group without a real ability. */
-import { AbilityConfigStoreCtx } from '@lloyal-labs/lloyal-agents';
-import type { Ability, AbilityFactory, AbilityManifest } from '@lloyal-labs/lloyal-agents';
+import { AbilityConfigStoreCtx } from '../../src/ability-config';
+import type { Ability, AbilityFactory, AbilityManifest } from '../../src/ability-types';
 
 export function fakeAbility(opts: {
   name: string;

@@ -15,8 +15,8 @@
  * @category Rig
  */
 import type { Operation } from 'effection';
-import { AbilityRegistryCtx } from '@lloyal-labs/lloyal-agents';
-import type { Ability } from '@lloyal-labs/lloyal-agents';
+import { AbilityRegistryCtx } from './ability-types';
+import type { Ability } from './ability-types';
 import type { Attachment } from '@lloyal-labs/media';
 
 /** An ability's `toc` prompt datum for this run's assets, or `null` when it advertises none. */

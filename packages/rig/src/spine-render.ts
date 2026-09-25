@@ -40,13 +40,7 @@
  */
 
 import { renderTemplate } from '@lloyal-labs/lloyal-agents';
-import type {
-  Ability,
-  AgentRenderCtx,
-  SkillTemplateFn,
-  ExamplesRenderCtx,
-  ExamplesTemplateFn,
-} from '@lloyal-labs/lloyal-agents';
+import type { Ability, AgentRenderCtx, SkillTemplateFn, ExamplesRenderCtx, ExamplesTemplateFn } from './ability-types';
 import type { Attachment } from '@lloyal-labs/media';
 import { abilityToc } from './participating';
 import {

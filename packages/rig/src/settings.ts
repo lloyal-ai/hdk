@@ -16,7 +16,8 @@
  */
 import * as fs from 'node:fs';
 import type { Operation } from 'effection';
-import type { AbilityConfigStore, AbilityFactory, AbilityRegistry } from '@lloyal-labs/lloyal-agents';
+import type { AbilityConfigStore } from './ability-config';
+import type { AbilityFactory, AbilityRegistry } from './ability-types';
 import type { ConfigTable } from './config';
 import { isPathShaped, resolveAppConfigPaths, resolvePath } from './config-node';
 import { buildAbilityDescriptors } from './ability-descriptors';
@@ -41,17 +42,26 @@ export interface SettingsDeps<C extends BaseHarnessConfig, O extends Record<stri
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
-/** A patch with its declared path keys resolved (`~` expanded, made absolute); `""` stays a clear. */
+type Bag = Record<string, unknown>;
+const isBag = (v: unknown): v is Bag => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+/** The bag with the value at `segs` replaced, every level along the way copied; the bag itself when the path is not there. */
+function withPath(bag: Bag, segs: readonly string[], value: unknown): Bag {
+  const [head, ...rest] = segs;
+  if (rest.length === 0) return { ...bag, [head]: value };
+  const inner = bag[head];
+  return isBag(inner) ? { ...bag, [head]: withPath(inner, rest, value) } : bag;
+}
+
+/** A patch with its declared path keys resolved (`~` expanded, made absolute), at whatever depth the table
+ *  declares them; `""` stays a clear. */
 function resolvePatchPaths<C>(table: ConfigTable, patch: ConfigPatch<C>): ConfigPatch<C> {
-  const out = { ...(patch as Record<string, Record<string, unknown> | unknown>) } as Record<string, unknown>;
+  let out = patch as Bag;
   for (const [key, decl] of Object.entries(table)) {
     if (!decl.path) continue;
-    const [family, leaf, ...rest] = key.split('.');
-    if (rest.length > 0 || !leaf) continue;
-    const fam = out[family];
-    if (fam === null || typeof fam !== 'object') continue;
-    const v = (fam as Record<string, unknown>)[leaf];
-    if (typeof v === 'string' && v !== '') out[family] = { ...(fam as Record<string, unknown>), [leaf]: resolvePath(v) };
+    const segs = key.split('.');
+    const v = segs.reduce<unknown>((node, seg) => (isBag(node) ? node[seg] : undefined), out);
+    if (typeof v === 'string' && v !== '') out = withPath(out, segs, resolvePath(v));
   }
   return out as ConfigPatch<C>;
 }

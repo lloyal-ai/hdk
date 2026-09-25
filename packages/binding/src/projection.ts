@@ -94,6 +94,20 @@ export interface Bridge<E, C, S> {
    *  browser opens a new connection, a desktop shell starts a new engine — so a
    *  view asks and never decides. Absent where the bridge cannot provide one. */
   recover?(): void;
+  /** What this run is acquiring, as last reported, or null when it acquires
+   *  nothing. Asked once on mount: the push arrives as an ordinary frame, but a
+   *  renderer that loaded after the install began — or after a refusal ended the
+   *  engine — would otherwise be left guessing. The same pairing as
+   *  {@link Bridge.onSession} and its "now" channel. Absent where the placement
+   *  retains nothing to answer with. */
+  installNow?(): Promise<unknown>;
+  /** Ask the reader to choose a local file, answering the path they picked or
+   *  null if they cancelled. What choosing means belongs to the placement — a
+   *  desktop shell opens the system dialog. Absent in a browser, and not from
+   *  neglect: a page is handed file BYTES and never a path, so there is nothing
+   *  it could answer with. A view offers the affordance only where the bridge
+   *  has one. */
+  chooseFile?(opts?: { extensions?: readonly string[]; title?: string }): Promise<string | null>;
   /** The origin of the content plane — where bytes live — or absent when the
    *  bridge has no plane. */
   contentOrigin?(): string;

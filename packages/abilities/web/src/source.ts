@@ -1,5 +1,5 @@
 import type { Operation } from "effection";
-import { Source } from "@lloyal-labs/lloyal-agents";
+import { Source } from "@lloyal-labs/rig";
 import type { Tool, ToolContext } from "@lloyal-labs/lloyal-agents";
 import type { Chunk, Reranker, SearchProvider } from "@lloyal-labs/rig";
 import { chunkFetchedPages } from "@lloyal-labs/rig";
@@ -64,7 +64,7 @@ export interface WebSourceOpts {
     tokenBudget?: number;
   };
   /**
-   * Reranker for fetch_page chunk scoring. Read from `RerankerCtx` in the
+   * Reranker for fetch_page chunk scoring. Read with `service('reranker')` in the
    * ability factory and injected here at construction (the source is born
    * bound — there is no separate `source.bind({reranker})` step).
    * Omitted → fetch_page falls back to a maxChars truncation.

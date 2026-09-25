@@ -15,7 +15,7 @@ import { MockSessionContext } from '../../sdk/src/testing.js';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import { WindDown, CancelAgent, Pause, PoolDefaults, NSeqMax } from '@lloyal-labs/lloyal-agents';
 import { makeServedRunner, RunnerCtx } from '../src/runner';
-import { defineConfig, modelSettings } from '../src/config';
+import { defineConfig, modelSettings, CONFIG_VERSION } from '../src/config';
 import { initializeHarness } from '../src/initialize-harness';
 import { useWire } from '../src/wire';
 import type { SettingsEvent } from '../src/settings-protocol';
@@ -23,14 +23,14 @@ import type { JsonSchema } from '@lloyal-labs/lloyal-agents';
 import { fakeAbility } from './helpers/fake-ability';
 
 const table = defineConfig({ ...modelSettings, 'sources.outputDir': { yml: 'sources.outputDir', path: true, default: 'reports' } });
-type Config = { version: 1; sources: { outputDir?: string }; abilities: Record<string, Record<string, unknown>>; model: Record<string, unknown> };
+type Config = { version: typeof CONFIG_VERSION; sources: { outputDir?: string }; abilities: Record<string, Record<string, unknown>>; model: Record<string, unknown> };
 type Event = SettingsEvent | { type: 'hello' };
 const REQUIRED: JsonSchema = { type: 'object', required: ['corpusPath'], properties: { corpusPath: { type: 'string' } } };
 
 function boot(abilities: Record<string, Record<string, unknown>> = {}, dev = false) {
   const ctx = new MockSessionContext({ nCtx: 8192 });
-  const cfg: Config = { version: 1, sources: { outputDir: '/out' }, abilities, model: {} };
-  const runner = makeServedRunner<Config, { 'sources.outputDir': 'yml' }>(cfg, { origin: { 'sources.outputDir': 'yml' }, sessionOriginMap: { 'sources.outputDir': 'sources.outputDir' }, dev });
+  const cfg: Config = { version: CONFIG_VERSION, sources: { outputDir: '/out' }, abilities, model: {} };
+  const runner = makeServedRunner<Config, { 'sources.outputDir': 'yml' }>(cfg, { table, origin: { 'sources.outputDir': 'yml' }, sessionOriginMap: { 'sources.outputDir': 'sources.outputDir' }, dev });
   const events: Event[] = [];
   const bus = { send: (e: Event) => { events.push(e); } };
   return { ctx, runner, events, bus };

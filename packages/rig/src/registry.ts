@@ -8,8 +8,8 @@
  *
  * - `registry.enable(factory)` runs the factory in its own **detached**
  *   Effection scope, seeded with the ability-facing framework contexts
- *   (`AbilityConfigStoreCtx`, `RerankerCtx`) so the factory reads config +
- *   reranker. The factory body is setup; a `resource()` factory's
+ *   (`AbilityConfigStoreCtx`, the bound services) so the factory reads config +
+ *   the services it declared. The factory body is setup; a `resource()` factory's
  *   `ensure(...)` is teardown. Every enabled ability's scope is torn down on the
  *   registry's own scope exit, reverse enable-order, **best-effort** — a
  *   throwing teardown is logged but never strands a sibling, and never
@@ -33,20 +33,13 @@
 
 import { call, createScope, ensure, scoped, suspend } from 'effection';
 import type { Operation } from 'effection';
-import {
-  AbilityRegistryCtx,
-  AbilityConfigStoreCtx,
-  GrantStoreCtx,
-  RerankerCtx, Attachments,
-} from '@lloyal-labs/lloyal-agents';
-import type {
-  Ability,
-  AbilityFactory,
-  AbilityRegistry,
-  AbilityConfigStore,
-  GrantStore,
-  Reranker,
-} from '@lloyal-labs/lloyal-agents';
+import { GrantStoreCtx, Attachments } from '@lloyal-labs/lloyal-agents';
+import { AbilityRegistryCtx } from './ability-types';
+import { AbilityConfigStoreCtx } from './ability-config';
+import { Services } from './services';
+import type { GrantStore } from '@lloyal-labs/lloyal-agents';
+import type { Ability, AbilityFactory, AbilityRegistry } from './ability-types';
+import type { AbilityConfigStore } from './ability-config';
 import { SUPPORTED_ABILITY_PROTOCOL_VERSIONS } from './protocol';
 
 /**
@@ -90,7 +83,7 @@ interface RegistryEntry {
  * import { createWebAbility } from '@lloyal-labs/web-ability';
  * import { createCorpusAbility } from '@lloyal-labs/corpus-ability';
  *
- * yield* RerankerCtx.set(reranker);          // before, if factories read it
+ * yield* bindServices(artifacts, model);     // before, if factories read a service
  * const registry = yield* createAbilityRegistry({ configStore });
  * yield* registry.enable(createWebAbility);
  * yield* registry.enable(createCorpusAbility);
@@ -116,18 +109,18 @@ export function* createAbilityRegistry(
       return entries.has(name) ? 'enabled' : 'disabled';
     },
     *enable(factory: AbilityFactory): Operation<Ability> {
-      // Read the ability-facing framework contexts to seed into the ability's
-      // detached scope (factories read config + reranker).
-      let reranker: Reranker | undefined;
-      try {
-        reranker = yield* RerankerCtx.expect();
-      } catch {
-        reranker = undefined;
-      }
-
       // The content store the harness installed (the null store when none was):
       // an ability that reads documents resolves them through it.
       const attachments = yield* Attachments.expect();
+      // Every service the harness bound, so `service(name)` answers inside the factory — and what the
+      // manifest requires must be among them, or the factory does not run: the refusal names the block
+      // whose presence would bind it, before an unset context can be the thing that reports it.
+      const bound = yield* Services.get();
+      for (const name of factory.manifest?.services ?? []) {
+        if (!bound?.[name as keyof typeof bound]) {
+          throw new Error(`${factory.manifest!.name} requires \`${name}\`, which is not configured — add \`model.${name}\` to harness.yml`);
+        }
+      }
 
       // The stored config is checked against the manifest BEFORE the factory
       // runs: a factory handed a malformed config must not be the thing that
@@ -167,7 +160,7 @@ export function* createAbilityRegistry(
                   try {
                     yield* AbilityConfigStoreCtx.set(configStore);
                     yield* AbilityRegistryCtx.set(registry);
-                    if (reranker !== undefined) yield* RerankerCtx.set(reranker);
+                    if (bound !== undefined) yield* Services.set(bound);
                     yield* Attachments.set(attachments);
                     const constructed = yield* factory();
                     resolve(constructed);

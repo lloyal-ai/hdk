@@ -2,17 +2,17 @@
  * The two boots — what a generated target entry is one call to.
  *
  * `bootEdge` runs the app in this process over one resident context: the
- * layered config, the models resolved (fetched on first run), the context,
- * the abilities' services, the trace writer, the content store and ingress,
- * the edge Runner, the binding the environment picks — the `ipc` bridge when a
- * desktop shell forked this process, the app's terminal view on a TTY, JSON
- * lines on a pipe — and the app's `harness`. A one-shot run's `HarnessExit` is
- * its message on stderr and its code.
+ * binding the environment picks — the `ipc` bridge when a desktop shell forked
+ * this process, the app's terminal view on a TTY, JSON lines on a pipe — the
+ * layered config, the install (what the model family names, acquired on first
+ * run), the context, the services, the trace writer, the content store and
+ * ingress, the edge Runner, and the app's `harness`. A one-shot run's
+ * `HarnessExit` is its message on stderr and its code.
  *
  * `bootServed` serves N browser sessions over one resident model: one
  * `http.Server` carrying the content plane's bytes and a `WebSocketServer`
  * carrying references and state; each connection is a Session the host
- * admits, with its own context, reranker, trace and Runner, running the same
+ * admits, with its own context, services, trace and Runner, running the same
  * `harness`. A session that dies says why on the host's log.
  *
  * Both own the context they make: `initializeHarness` owns the session and
@@ -20,29 +20,32 @@
  *
  * @category Runtime
  */
-import { main, call, ensure, exit, suspend } from 'effection';
+import { main, call, createSignal, ensure, exit, suspend } from 'effection';
 import type { Operation, Signal } from 'effection';
 import { createServer } from 'node:http';
+import * as os from 'node:os';
 import { parseArgs } from 'node:util';
 import { WebSocketServer } from 'ws';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import { Ingress, NSeqMax } from '@lloyal-labs/lloyal-agents';
-import type { AbilityFactory } from '@lloyal-labs/lloyal-agents';
+import type { AbilityFactory } from './ability-types';
 import { createBus } from '@lloyal-labs/binding';
 import type { EventBus } from '@lloyal-labs/binding';
 import { ipc, ndjson } from '@lloyal-labs/binding/node';
 import type { Binding } from '@lloyal-labs/binding/node';
 import { createContentIngress, MAX_DOCUMENT_BYTES, DOCUMENT_UPLOAD_TIMEOUT_MS } from '@lloyal-labs/media/node';
-import type { ConfigTable, ConfigOf, OriginOf } from './config';
+import type { ConfigTable, ConfigOf, ModelFamily, OriginOf } from './config';
 import { loadYml, runnerConfig } from './config-layering';
-import { resolveRuntimeModels } from './models';
-import type { ModelRole, ModelSpec, RuntimeModels } from './models';
-import { provisionAbilityModels, resolveAbilityModels } from './provision';
-import type { AbilityModels } from './provision';
+import { bindServices, trunkOptions } from './provision';
+import { install } from './install';
+import type { Installed } from './install';
+import { isInstallCommand } from './install-protocol';
+import type { InstallCommand, InstallStepEvent } from './install-protocol';
 import { useTraceWriter } from './trace-sink';
 import { createProjectMediaStore } from './media-store';
 import { createContentRoutes } from './content-routes';
 import { makeEdgeRunner, makeServedRunner, RunnerCtx } from './runner';
+import type { ConfigPatch } from './runner';
 import { startHostResources } from './host-resources';
 import { serveIngest } from './ingest-responder';
 import { bufferedCommandSignal } from './buffered-command-signal';
@@ -70,19 +73,20 @@ function loadOrExit<T extends ConfigTable>(table: T, projectRoot: string, env: N
   }
 }
 
-const progress = (label: string) => (got: number, total: number): void => {
-  process.stderr.write(`\rfetching ${label} — ${total > 0 ? Math.round((100 * got) / total) : 0}%   `);
-};
-
-type ModelBlock = ConfigOf<ConfigTable>['model'] & {
-  path?: string; nCtx?: number; branches?: number; kvCache?: string; gpu?: string;
-  imageMinTokens?: number; imageMaxTokens?: number; reranker?: string; rerankerId?: string; id?: string; mmproj?: string;
-};
-
-/** The model an operator named for an auxiliary service — which model, never whether:
- *  what a service is needed for is the abilities' to declare, in both boots. */
-const rerankerSpec = (m: ModelBlock): ModelSpec | undefined =>
-  m.reranker ? { path: m.reranker } : m.rerankerId ? { id: m.rerankerId } : undefined;
+/** The install's progress on stderr — one line, rewritten in place while a step downloads, ended when it is over. */
+function progressOnStderr(): (ev: InstallStepEvent) => void {
+  let writing = false;
+  return (ev) => {
+    const running = ev.steps.find((step) => step.status === 'running' && step.total);
+    if (running) {
+      writing = true;
+      process.stderr.write(`\rfetching ${running.id} — ${Math.round((100 * (running.got ?? 0)) / running.total!)}%   `);
+    } else if (writing) {
+      writing = false;
+      process.stderr.write('\n');
+    }
+  };
+}
 
 export interface BootEdgeOpts<E, C> {
   /** Where `harness.yml` is — the project. Default: the process's cwd. */
@@ -107,67 +111,22 @@ export function bootEdge<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>, 
   const bridged = !!process.env.RR_BRIDGE;
   const oneShot = !bridged && !process.stdout.isTTY;
   const loaded = loadOrExit(app.config, projectRoot, bootEnv);
-  const model = loaded.config.model as ModelBlock;
+  let model = loaded.config.model as ModelFamily;
 
   main(function* () {
-    let modelPath: string;
-    let mmprojPath: string | undefined;
-    let fetching = false;
-    try {
-      const models = yield* call(() =>
-        resolveRuntimeModels({
-          projectRoot, config: model, llmId: model.id,
-          onProgress: (role: ModelRole, got, total) => { fetching = true; progress(role)(got, total); },
-        }),
-      );
-      modelPath = models.modelPath;
-      mmprojPath = models.mmprojPath;
-    } catch (err) {
-      process.stderr.write(`\n${message(err)}\n`);
-      process.exit(1);
-    }
-    if (fetching) process.stderr.write('\n');
-
-    const nCtx = model.nCtx ?? DEFAULT_N_CTX;
-    const cfg = { ...loaded.config, model: { ...model, path: modelPath, nCtx } } as ConfigOf<T>;
-    prepareBackend(model);
-    const ctx = yield* call(() => createResidentContext({ ...model, path: modelPath, nCtx }, mmprojPath));
-    yield* ensure(() => { try { ctx.dispose?.(); } catch { /* the context is gone either way */ } });
-    yield* NSeqMax.set(model.branches ?? DEFAULT_N_SEQ_MAX);
-
-    let fetchingReranker = false;
-    try {
-      yield* provisionAbilityModels({
-        abilities: app.abilities, projectRoot,
-        reranker: rerankerSpec(model),
-        rerankerLoad: { nSeqMax: 10, nCtx: 16384 },
-        onProgress: (got, total) => { fetchingReranker = true; progress('reranker')(got, total); },
-      });
-    } catch (err) {
-      process.stderr.write(`\n${message(err)}\n`);
-      process.exit(1);
-    }
-    if (fetchingReranker) process.stderr.write('\n');
-
+    // The binding mounts FIRST — before the machine check, the fetch and the load. Nothing in a binding
+    // touches the context, and mounting it last is what left a first run with no transport at all for the
+    // minutes it spent downloading. The command loop still arms later; `bufferedCommandSignal` holds that gap.
+    // The install's own commands are routed at this boundary, never by subscribing — a subscriber would
+    // drain the harness's backlog.
     const dev = process.env.LLOYAL_DEV === '1';
     const events = createBus<E>();
-    const traceWriter = yield* useTraceWriter((cfg as { sources: { outputDir: string } }).sources.outputDir, dev, (ev) => events.send(ev as unknown as E));
+    const commands = bufferedCommandSignal<C>();
+    const installCommands = createSignal<InstallCommand, void>();
+    const dispatch = (c: C): void => { if (isInstallCommand(c)) installCommands.send(c); else commands.send(c); };
+    const bootstrap: E[] = [];
     const media = createProjectMediaStore(projectRoot);
     const ingress = createContentIngress(media);
-    yield* RunnerCtx.set({
-      ...makeEdgeRunner<ConfigOf<T>, OriginOf<T>>(cfg, {
-        traceWriter, attachmentStore: media, dev,
-        origin: loaded.origin, persist: loaded.persist, sessionOriginMap: loaded.sessionOriginMap, frozen: loaded.frozen,
-      }),
-      mode: oneShot ? 'oneshot' : 'interactive',
-      initialQuery,
-    });
-    yield* Ingress.set(ingress);
-
-    // Buffered: the binding dispatches from the moment it mounts; the command loop arms after boot.
-    const commands = bufferedCommandSignal<C>();
-    const dispatch = (c: C): void => { commands.send(c); };
-    const bootstrap: E[] = [];
     let dispose: () => void;
     if (bridged) {
       dispose = ipc<E, C>()(events, dispatch, bootstrap);
@@ -178,6 +137,45 @@ export function bootEdge<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>, 
       dispose = ndjson<E, C>()(events, dispatch, bootstrap);
     }
     yield* ensure(() => dispose());
+
+    // A desktop shell has a view that can hold on a failed step and offer a remedy; a terminal or a pipe has
+    // none, and a failure there ends the run with its reason.
+    const progress = progressOnStderr();
+    let acquired: Installed;
+    try {
+      acquired = yield* install({
+        projectRoot, model, totalBytes: os.totalmem(),
+        report: (ev) => { events.send(ev as unknown as E); progress(ev); },
+        ...(bridged ? {
+          controls: installCommands,
+          persist: (patch) => loaded.persist!(patch as ConfigPatch<ConfigOf<T>>).config.model as ModelFamily,
+        } : {}),
+      });
+    } catch (err) {
+      process.stderr.write(`\n${message(err)}\n`);
+      return yield* exit(1, message(err));
+    }
+    model = acquired.model;
+    const llm = model.llm ?? {};
+
+    const resident = { ...llm, path: acquired.llm, context: llm.context ?? DEFAULT_N_CTX };
+    const cfg = { ...loaded.config, model: { ...model, llm: resident } } as ConfigOf<T>;
+    prepareBackend(resident);
+    const ctx = yield* call(() => createResidentContext(resident, trunkOptions(acquired.services, model)));
+    yield* ensure(() => { try { ctx.dispose?.(); } catch { /* the context is gone either way */ } });
+    yield* NSeqMax.set(resident.branches ?? DEFAULT_N_SEQ_MAX);
+    yield* bindServices(acquired.services, model);
+
+    const traceWriter = yield* useTraceWriter((cfg as { sources: { outputDir: string } }).sources.outputDir, dev, (ev) => events.send(ev as unknown as E));
+    yield* RunnerCtx.set({
+      ...makeEdgeRunner<ConfigOf<T>, OriginOf<T>>(cfg, {
+        traceWriter, attachmentStore: media, dev,
+        table: loaded.table, origin: loaded.origin, persist: loaded.persist, sessionOriginMap: loaded.sessionOriginMap, frozen: loaded.frozen,
+      }),
+      mode: oneShot ? 'oneshot' : 'interactive',
+      initialQuery,
+    });
+    yield* Ingress.set(ingress);
     if (dev) yield* ensure(startHostResources((ev) => events.send(ev as unknown as E)));
 
     try {
@@ -232,38 +230,26 @@ export function bootServed<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>
   const projectRoot = opts.projectRoot ?? process.cwd();
   const bootEnv = { ...process.env };
   const loaded = loadOrExit(app.config, projectRoot, bootEnv);
-  const model = loaded.config.model as ModelBlock;
+  let model = loaded.config.model as ModelFamily;
 
   main(function* () {
-    let models: RuntimeModels;
-    let aux: AbilityModels;
-    let fetching = false;
+    // Acquired once, before the host listens: there is no browser yet to hold for, so a failed step ends the
+    // boot with its reason rather than at the port.
+    let acquired: Installed;
     try {
-      models = yield* call(() =>
-        resolveRuntimeModels({
-          projectRoot, config: model, llmId: model.id,
-          onProgress: (role: ModelRole, g, t) => { fetching = true; progress(role)(g, t); },
-        }),
-      );
-      // The auxiliary services are the installed abilities' to declare — the same
-      // question the edge boot asks. A host whose abilities need no reranker fetches
-      // none; one that does fails HERE, with its reason, rather than at the port.
-      aux = yield* resolveAbilityModels({
-        abilities: app.abilities, projectRoot,
-        reranker: rerankerSpec(model),
-        onProgress: (g, t) => { fetching = true; progress('reranker')(g, t); },
-      });
+      acquired = yield* install({ projectRoot, model, totalBytes: os.totalmem(), report: progressOnStderr() });
     } catch (err) {
       process.stderr.write(`\n${message(err)}\n`);
-      process.exit(1);
+      return yield* exit(1, message(err));
     }
-    if (fetching) process.stderr.write('\n');
+    model = acquired.model;
+    const llm = model.llm ?? {};
 
-    const resident = {
-      ...model, path: models.modelPath, nCtx: model.nCtx ?? DEFAULT_N_CTX,
-      ...(aux.reranker ? { reranker: aux.reranker } : {}),
-    };
-    const cfg = { ...loaded.config, model: resident } as ConfigOf<T>;
+    const resident = { ...llm, path: acquired.llm, context: llm.context ?? DEFAULT_N_CTX };
+    const cfg = {
+      ...loaded.config,
+      model: { ...model, llm: resident, ...(acquired.services.reranker ? { reranker: { ...model.reranker, path: acquired.services.reranker } } : {}) },
+    } as ConfigOf<T>;
     const port = envInt('PORT', DEFAULT_PORT);
     const maxNativeSessions = envInt('MAX_SESSIONS', DEFAULT_MAX_SESSIONS);
     const bindHost = process.env.HOST ?? DEFAULT_HOST;
@@ -275,22 +261,18 @@ export function bootServed<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>
 
     const driver = yield* createServedHostDriver<E, C>({
       maxNativeSessions,
-      buildContext: () => createResidentContext(resident, models.mmprojPath),
+      buildContext: () => createResidentContext(resident, trunkOptions(acquired.services, model)),
       *run(m) {
         prepareBackend(resident);
         yield* NSeqMax.set(resident.branches ?? DEFAULT_N_SEQ_MAX);
-        // Per session, off the paths the boot already fetched: the requirement is
-        // read again from the same abilities, so nothing loads that nothing asked for.
-        yield* provisionAbilityModels({
-          abilities: app.abilities, projectRoot,
-          reranker: aux.reranker ? { path: aux.reranker } : undefined,
-          rerankerLoad: { nSeqMax: 10, nCtx: 16384 },
-        });
+        // Per session, off the artifacts the boot already acquired: each session binds its own instances,
+        // they live as long as it does, and one session's failure to bind is its own death, not the host's.
+        yield* bindServices(acquired.services, model);
         if (dev) yield* ensure(startHostResources((ev) => m.uiChannel.send(ev as unknown as E)));
         const traceWriter = yield* useTraceWriter((cfg as { sources: { outputDir: string } }).sources.outputDir, dev, (ev) => m.uiChannel.send(ev as unknown as E));
         yield* RunnerCtx.set(makeServedRunner<ConfigOf<T>, OriginOf<T>>(cfg, {
           traceWriter, attachmentStore: media, dev,
-          origin: loaded.origin, sessionOriginMap: loaded.sessionOriginMap, frozen: loaded.frozen,
+          table: loaded.table, origin: loaded.origin, sessionOriginMap: loaded.sessionOriginMap, frozen: loaded.frozen,
         }));
         yield* Ingress.set(ingress);
         yield* app.harness(m.context, m.uiChannel, m.commands);

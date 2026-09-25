@@ -3,13 +3,13 @@ import { Rerank } from "@lloyal-labs/sdk";
 import type { SessionContext, KvCacheType, RerankInstruction } from "@lloyal-labs/sdk";
 import { resource, call } from "effection";
 import type { Operation } from "effection";
-import type { Chunk, Reranker, ScoredResult } from "@lloyal-labs/lloyal-agents";
+import type { Chunk, Reranker, ScoredResult } from "../retrieval";
 
 /**
  * Context-sizing overrides for {@link createReranker}. All optional; each
  * defaults inside `createReranker` (nSeqMax 10 · nCtx 4096 · nBatch derived).
- * Threaded through `provisionAbilityModels` (its `rerankerLoad`) so a harness can
- * tune the shared reranker without hand-loading it.
+ * The reranker provider passes the `model.reranker` block's tuning through
+ * here, so a harness tunes the shared reranker in `harness.yml`.
  */
 export interface RerankerLoadOpts {
   /** Max parallel scoring sequences (default 10). */
@@ -49,9 +49,8 @@ export interface RerankerLoadOpts {
  *
  * **Lifecycle.** The reranker owns its underlying `SessionContext` + `Rerank`
  * and disposes them transitively when the yielding scope exits (success,
- * error, or halt). The harness yields it once per process lifecycle and
- * publishes it on `RerankerCtx` so Ability factories can read it via
- * `RerankerCtx.expect()`. `dispose()` remains on the interface
+ * error, or halt). The provider binds it once per owning scope and
+ * `service('reranker')` answers it. `dispose()` remains on the interface
  * for callers that manage teardown explicitly; it is idempotent so the
  * resource finally and an explicit call don't double-free.
  *
@@ -64,7 +63,6 @@ export interface RerankerLoadOpts {
  * @example
  * ```ts
  * const reranker = yield* createReranker(rerankerPath, { nSeqMax: 10, nCtx: 4096 });
- * yield* RerankerCtx.set(reranker);
  * // ... pool work ...
  * // reranker disposes automatically on scope exit
  * ```

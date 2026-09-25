@@ -8,7 +8,7 @@
  * @category Testing
  */
 import { describe, it, expect } from 'vitest';
-import type { Chunk } from '@lloyal-labs/lloyal-agents';
+import type { Chunk } from '../src/retrieval';
 import { fitChunks, splitParagraphs, DEFAULT_CHUNK_TOKENS } from '../src/resources/fit';
 
 const words = async (text: string): Promise<number[]> =>

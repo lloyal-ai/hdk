@@ -1,8 +1,8 @@
 /** `ability(name)` — the registry accessor: the enabled ability, or a refusal that names it. */
 import { describe, it, expect } from 'vitest';
 import { run } from 'effection';
-import { AbilityRegistryCtx } from '@lloyal-labs/lloyal-agents';
-import type { Ability, AbilityRegistry } from '@lloyal-labs/lloyal-agents';
+import { AbilityRegistryCtx } from '../src/ability-types';
+import type { Ability, AbilityRegistry } from '../src/ability-types';
 import { ability } from '../src/registry';
 
 const web = { manifest: { name: 'web' } } as unknown as Ability;

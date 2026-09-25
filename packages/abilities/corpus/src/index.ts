@@ -11,10 +11,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { call } from "effection";
-import { AbilityConfigStoreCtx, RerankerCtx } from "@lloyal-labs/lloyal-agents";
-import type { AbilityManifest, Tool } from "@lloyal-labs/lloyal-agents";
+import { AbilityConfigStoreCtx } from "@lloyal-labs/rig";
+import { service } from "@lloyal-labs/rig";
+import type { Tool } from "@lloyal-labs/lloyal-agents";
+import type { AbilityManifest } from "@lloyal-labs/rig";
 import { defineAbility, fitChunks, DEFAULT_CHUNK_TOKENS } from "@lloyal-labs/rig";
-import type { Reranker } from "@lloyal-labs/rig";
 import { loadResources, chunkResources } from "@lloyal-labs/rig/node";
 import { CorpusSource } from "./source";
 
@@ -30,25 +31,14 @@ const skill = readFileSync(join(dir, "skill.eta"), "utf8");
 
 /**
  * Construct the corpus research ability. Reads `corpusPath` from the ability's stored
- * config, loads + chunks the corpus, tokenizes the chunks through the shared
- * reranker (from `RerankerCtx`), and wires the three corpus tools.
+ * config, loads + chunks the corpus, tokenizes the chunks through the harness's reranker,
+ * and wires the three corpus tools.
  *
- * `services: ['reranker']` (from `ability.json`) rides the factory's manifest, so
- * the harness provisions + sets `RerankerCtx` before this runs — the
- * `RerankerCtx.expect()` below is a guaranteed read, not a gamble.
+ * `services: ['reranker']` (from `ability.json`) is the requirement: a harness whose
+ * `model.reranker` block is absent does not enable this ability, so the read below answers.
  */
 export const createCorpusAbility = defineAbility(manifest, function* () {
-  let reranker: Reranker;
-  try {
-    reranker = yield* RerankerCtx.expect();
-  } catch {
-    throw new Error(
-      "createCorpusAbility: the corpus ability requires a reranker (its `search` tool scores " +
-        "chunks), but RerankerCtx is unset. The harness boot normally provisions it from " +
-        "the ability's `services: ['reranker']` — call provisionAbilityModels({ abilities, projectRoot }) " +
-        "(or otherwise set RerankerCtx) before enabling this ability.",
-    );
-  }
+  const reranker = yield* service('reranker');
 
   const cfgStore = yield* AbilityConfigStoreCtx.expect();
   const cfg = (yield* cfgStore.get("corpus")) ?? {};

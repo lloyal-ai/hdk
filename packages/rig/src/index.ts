@@ -28,12 +28,26 @@ export type {
   ReportToolOpts, Reports,
   PlanResult, PlanIntent, ResearchTask,
   SearchProvider, SearchResult,
-  Reranker, ScoredChunk, ScoredResult,
   Output, OutputOptions, WeaveSource,
 } from './tools';
 
-// Cross-ability Source type re-export (platform-agnostic)
-export type { SourceContext } from './sources/types';
+// The retrieval contract, the source every ability subclasses, and the admission every search tool runs.
+export type { Resource, Chunk, ScoredChunk, ScoredResult, Reranker, Embedder, EmbeddingPooling } from './retrieval';
+export { Source } from './source';
+export { admitChunks } from './admission';
+export type { AdmitOpts, AdmitResult, AdmitSelect, AdmittedPassage } from './admission';
+// The service contract, consumer side: the closed set, the bound bag, the one accessor. Node-free; the
+// providers that fulfil it are `@lloyal-labs/rig/node`'s.
+export { SERVICES, Services, service } from './services';
+export type { ServiceMap, Service, Trunk } from './services';
+// The ability contract: what a signed package declares and constructs, and the contexts its factory reads.
+export { AbilityRegistryCtx } from './ability-types';
+export type {
+  Ability, AbilityManifest, AbilityProtocol, AbilityHints, AbilityRegistry, AbilityFactory, AbilityState,
+  AgentRenderCtx, ExamplesRenderCtx, SkillTemplateFn, ExamplesTemplateFn, ConfigFlow,
+} from './ability-types';
+export { AbilityConfigStoreCtx } from './ability-config';
+export type { AbilityConfigStore } from './ability-config';
 
 // Chunking helpers (platform-agnostic — linkedom is pure JS).
 // Shared by the web ability's source and the rig-resident fetch_page tool.
@@ -48,9 +62,6 @@ export type { FitOpts } from './resources/fit';
 export { mergeRanges, subtractRanges } from './ranges';
 export { loadDocuments } from './resources/documents';
 export type { Document } from './resources/documents';
-
-// Resource types (pure TS — RN-safe)
-export type { Resource, Chunk } from './resources/types';
 
 // HDK 3.0 Ability Protocol surfaces
 export {
@@ -69,9 +80,15 @@ export { defineAbility } from './define-ability';
 export type { AbilitySetup } from './define-ability';
 export { cancellableFetch, FetchTimeoutError } from './cancellable-fetch';
 export { createInMemoryConfigStore } from './config-store';
+// The install on the wire: the steps a view draws, the commands a reader sends. Node-free.
+export { isInstallCommand } from './install-protocol';
+export type { InstallStep, InstallStepEvent, InstallCommand } from './install-protocol';
+// The machine gate: can this box hold this model? Node-free — the box's memory is passed in.
+export { checkMachine, refusalMessage, gb, MACHINE_CLASS_FLOOR_BYTES } from './machine';
+export type { MachineClass, MachineVerdict } from './machine';
 // A harness's configuration as data: one declaration per key, the model block shipped.
-export { defineConfig, modelSettings } from './config';
-export type { ConfigKey, ConfigTable, ConfigTier, ConfigOf, OriginOf, CliOf, YmlOf } from './config';
+export { defineConfig, modelSettings, mergeConfig, CONFIG_VERSION } from './config';
+export type { ConfigKey, ConfigTable, ConfigTier, ConfigOf, OriginOf, CliOf, YmlOf, ModelFamily } from './config';
 export { createGrantStore } from './grant-store';
 export { createAbilityRegistry, ability, abilityRequiresConfig } from './registry';
 export type { CreateAbilityRegistryOpts } from './registry';
@@ -95,7 +112,6 @@ export {
   RunnerCtx,
   makeEdgeRunner,
   makeServedRunner,
-  mergeConfig,
   markSession,
   rung,
 } from './runner';

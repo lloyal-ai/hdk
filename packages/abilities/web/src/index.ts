@@ -1,19 +1,21 @@
 /**
  * `@lloyal-labs/web-ability` — HDK reference ability: web research.
  *
- * Reads config from `AbilityConfigStoreCtx` and the shared reranker from
- * `RerankerCtx`, constructs the {@link WebSource} already-bound (no
- * `source.bind`), and returns a validated {@link Ability}.
+ * Reads config from `AbilityConfigStoreCtx` and the harness's reranker,
+ * constructs the {@link WebSource} already-bound (no `source.bind`), and
+ * returns a validated {@link Ability}.
  *
  * @packageDocumentation
  */
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { AbilityConfigStoreCtx, RerankerCtx } from "@lloyal-labs/lloyal-agents";
-import type { AbilityManifest, Tool } from "@lloyal-labs/lloyal-agents";
+import { AbilityConfigStoreCtx } from "@lloyal-labs/rig";
+import { service } from "@lloyal-labs/rig";
+import type { Tool } from "@lloyal-labs/lloyal-agents";
+import type { AbilityManifest } from "@lloyal-labs/rig";
 import { defineAbility, TavilyProvider, createKeylessSearchProvider } from "@lloyal-labs/rig";
-import type { Reranker, SearchProvider } from "@lloyal-labs/rig";
+import type { SearchProvider } from "@lloyal-labs/rig";
 import { WebSource } from "./source";
 import type { WebSourceOpts } from "./source";
 
@@ -30,22 +32,16 @@ const skill = readFileSync(join(dir, "skill.eta"), "utf8");
 /**
  * Construct the web research ability. Provider selection: a `tavilyKey` in the
  * ability's stored config (or `TAVILY_API_KEY`) → Tavily; otherwise a keyless
- * DuckDuckGo provider. `services: ['reranker']` makes the harness provision +
- * set `RerankerCtx` before this runs, so the reranker is always present — the
- * `catch` below stays only as a defensive guard.
+ * DuckDuckGo provider. `services: ['reranker']` is the requirement: a harness
+ * whose `model.reranker` block is absent does not enable this ability, so the
+ * reranker below is always present.
  */
 export const createWebAbility = defineAbility(manifest, function* () {
   const cfgStore = yield* AbilityConfigStoreCtx.expect();
   const cfg = (yield* cfgStore.get(manifest.name)) ?? {};
   const tavilyKey =
     typeof cfg.tavilyKey === "string" ? cfg.tavilyKey : process.env.TAVILY_API_KEY;
-
-  let reranker: Reranker | undefined;
-  try {
-    reranker = yield* RerankerCtx.expect();
-  } catch {
-    reranker = undefined;
-  }
+  const reranker = yield* service('reranker');
 
   const provider: SearchProvider = tavilyKey
     ? new TavilyProvider(tavilyKey)

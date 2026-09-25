@@ -52,7 +52,7 @@ vi.mock('@lloyal-labs/sdk', async (importOriginal) => {
   return { ...actual, Rerank: { create: rerankCreate } };
 });
 
-const { createReranker } = await import('../src/reranker');
+const { createReranker } = await import('../src/providers/reranker');
 
 describe('createReranker — KV precision', () => {
   beforeEach(() => {

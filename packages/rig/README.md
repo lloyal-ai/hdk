@@ -83,11 +83,12 @@ import {
   createAppRegistry,
   createInMemoryConfigStore,
 } from "@lloyal-labs/rig";
-import { RerankerCtx } from "@lloyal-labs/lloyal-agents";
+import { bindServices } from "@lloyal-labs/rig/node";
 import { createWebApp } from "@lloyal-labs/web-ability";
 import { createCorpusApp } from "@lloyal-labs/corpus-ability";
 
-yield* RerankerCtx.set(reranker);
+// The services the manifest names, bound into reach — an ability reads one with `service('reranker')`.
+yield* bindServices(artifacts, model);
 const configStore = createInMemoryConfigStore();
 if (tavilyKey) yield* configStore.set("web", { tavilyKey });
 if (corpusDir) yield* configStore.set("corpus", { corpusPath: corpusDir });

@@ -1,20 +1,16 @@
 /**
- * Tests for {@link provisionAbilityModels} — the boot helper that reads the
- * aggregate service requirements (`manifest.services`, carried on each
- * `AbilityFactory`) of an ability set and provisions the auxiliary models (today: the
- * shared reranker, published on `RerankerCtx`).
- *
- * `resolveModel` (verified native fetch) and `createReranker` (loads a model
- * context) are mocked — the unit under test is the aggregation + wiring, not
- * the fetch or the native runtime.
+ * The framework's side of the service contract: the services a configuration names are the ones
+ * provisioned, each one's artifact is resolved into its slot, its row binds it, and the bound
+ * instance is what `service(name)` answers. `resolveModel` (verified native fetch) and
+ * `createReranker` (loads a model context) are mocked — the unit under test is the walk over
+ * the rows, not the fetch or the native runtime.
  *
  * @category Testing
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { run } from 'effection';
-import { RerankerCtx } from '@lloyal-labs/lloyal-agents';
-import type { AbilityFactory, Ability, AbilityManifest, Reranker } from '@lloyal-labs/lloyal-agents';
-import type { ModelSpec } from '../src/models';
+import { service } from '../src/services';
+import type { Reranker } from '../src/retrieval';
 
 const RERANKER_PATH = '/fake/models/reranker/qwen3-reranker-0.6b-q8.gguf';
 
@@ -35,180 +31,99 @@ vi.mock('../src/models', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/models')>();
   return { ...actual, resolveModel };
 });
-vi.mock('../src/reranker', () => ({ createReranker }));
+vi.mock('../src/providers/reranker', () => ({ createReranker }));
 
 // Import under test AFTER the mocks are registered.
-const { provisionAbilityModels, resolveAbilityModels } = await import('../src/provision');
-
-/** A factory that carries its manifest statically and throws if actually run. */
-function factory(services?: readonly ('reranker' | 'embedding')[]): AbilityFactory {
-  const f = function* (): Generator<never, Ability, unknown> {
-    throw new Error('provisionAbilityModels must NOT run the factory');
-  };
-  const manifest = {
-    name: 'test',
-    protocol: { name: 'test_research', useWhen: 'testing', tools: ['test_tool'] },
-    ...(services ? { services } : {}),
-  } as AbilityManifest;
-  return Object.assign(f as unknown as AbilityFactory, { manifest });
-}
+const { configuredServices, resolveServices, bindServices, trunkOptions } = await import('../src/provision');
 
 beforeEach(() => {
   resolveModel.mockClear();
   createReranker.mockClear();
 });
 
-describe('provisionAbilityModels', () => {
-  it('a reranker requirement → resolves, creates, and sets RerankerCtx', async () => {
-    const bound = await run(function* () {
-      yield* provisionAbilityModels({
-        abilities: [factory(['reranker']), factory()],
-        projectRoot: '/proj',
-      });
-      return yield* RerankerCtx.expect();
-    });
-    expect(resolveModel).toHaveBeenCalledOnce();
-    expect(resolveModel.mock.calls[0][0]).toMatchObject({ role: 'reranker', projectRoot: '/proj' });
-    expect(createReranker).toHaveBeenCalledWith(RERANKER_PATH, undefined);
-    expect(bound).toBe(fakeReranker);
-  });
-
-  it('no requirements → no-op (nothing resolved, RerankerCtx never set)', async () => {
-    const unset = await run(function* () {
-      yield* provisionAbilityModels({ abilities: [factory(), factory()], projectRoot: '/proj' });
-      try {
-        yield* RerankerCtx.expect();
-        return false; // set — unexpected
-      } catch {
-        return true; // unset — expected
-      }
-    });
-    expect(unset).toBe(true);
-    expect(resolveModel).not.toHaveBeenCalled();
-    expect(createReranker).not.toHaveBeenCalled();
-  });
-
-  it('an empty ability set → no-op', async () => {
-    await run(function* () {
-      yield* provisionAbilityModels({ abilities: [], projectRoot: '/proj' });
-    });
-    expect(resolveModel).not.toHaveBeenCalled();
-  });
-
-  it('an embedding requirement → throws (reserved, not yet implemented)', async () => {
-    await expect(
-      run(function* () {
-        yield* provisionAbilityModels({ abilities: [factory(['embedding'])], projectRoot: '/proj' });
-      }),
-    ).rejects.toThrow(/embedding/);
-  });
-
-  it('a reranker + reserved embedding requirement fails fast — no reranker is loaded', async () => {
-    await expect(
-      run(function* () {
-        yield* provisionAbilityModels({
-          abilities: [factory(['reranker']), factory(['embedding'])],
-          projectRoot: '/proj',
-        });
-      }),
-    ).rejects.toThrow(/embedding/);
-    expect(createReranker).not.toHaveBeenCalled();
-  });
-
-  it('a harness.yml reranker spec is passed through to resolveModel', async () => {
-    await run(function* () {
-      yield* provisionAbilityModels({
-        abilities: [factory(['reranker'])],
-        projectRoot: '/proj',
-        reranker: { id: 'custom-reranker' },
-      });
-    });
-    expect(resolveModel.mock.calls[0][0]).toMatchObject({ spec: { id: 'custom-reranker' } });
-  });
-
-  it('an id-less reranker spec (only tuning, e.g. context) falls back to the catalog default', async () => {
-    await run(function* () {
-      yield* provisionAbilityModels({
-        abilities: [factory(['reranker'])],
-        projectRoot: '/proj',
-        // A `reranker:` block that tunes but names no model — must NOT block the fallback.
-        reranker: { context: 4096 } as unknown as ModelSpec,
-      });
-    });
-    expect(resolveModel.mock.calls[0][0]).toMatchObject({ spec: { id: 'qwen3-reranker-0.6b-q8' } });
-  });
-
-  it('duplicate reranker requirements load the shared reranker once', async () => {
-    await run(function* () {
-      yield* provisionAbilityModels({
-        abilities: [factory(['reranker']), factory(['reranker']), factory(['reranker'])],
-        projectRoot: '/proj',
-      });
-    });
-    expect(createReranker).toHaveBeenCalledOnce();
-  });
-
-  it('rerankerLoad is threaded into createReranker (tuning the shared reranker)', async () => {
-    await run(function* () {
-      yield* provisionAbilityModels({
-        abilities: [factory(['reranker'])],
-        projectRoot: '/proj',
-        rerankerLoad: { nCtx: 16384 },
-      });
-    });
-    expect(createReranker).toHaveBeenCalledWith(RERANKER_PATH, { nCtx: 16384 });
+describe('configuredServices: naming a block is the request', () => {
+  it('every service whose block is present, in the table\'s order; an empty block counts; an absent one does not', () => {
+    expect(configuredServices({ reranker: { context: 16384 } })).toEqual(['reranker']);
+    expect(configuredServices({ reranker: { id: 'r', context: 16384 }, llm: { id: 'q' } })).toEqual(['reranker']);
+    expect(configuredServices({ llm: { id: 'q' } })).toEqual([]);
+    expect(configuredServices({})).toEqual([]);
   });
 });
 
-/**
- * The same requirement, asked before anything is loaded: what a boot must have on
- * disk before it can serve. A served host needs this separately from the load,
- * because its fetch happens once at boot while the load happens per session — but
- * it is the SAME requirement, read off the abilities, never assumed.
- */
-describe('resolveAbilityModels: what a boot must have on disk', () => {
-  it('an ability set that declares no service needs nothing — a boot without a reranker never reaches for one', async () => {
-    const models = await run(function* () {
-      return yield* resolveAbilityModels({ abilities: [factory(), factory()], projectRoot: '/proj' });
-    });
-    expect(models).toEqual({});
+describe('resolveServices: what a boot must have on disk, before anything loads', () => {
+  it('nothing required → nothing resolved', async () => {
+    const artifacts = await run(function* () { return yield* resolveServices([], { projectRoot: '/proj', model: {} }); });
+    expect(artifacts).toEqual({});
     expect(resolveModel).not.toHaveBeenCalled();
   });
 
-  it('an empty ability set with no reranker configured needs nothing', async () => {
-    const models = await run(function* () {
-      return yield* resolveAbilityModels({ abilities: [], projectRoot: '/proj' });
+  it('a required reranker resolves into its slot from the block\'s selection: path over id', async () => {
+    await run(function* () {
+      yield* resolveServices(['reranker'], { projectRoot: '/proj', model: { reranker: { id: 'custom', path: '/weights/my.gguf', context: 16384 } } });
     });
-    expect(models).toEqual({});
-    expect(resolveModel).not.toHaveBeenCalled();
+    expect(resolveModel.mock.calls[0][0]).toMatchObject({ role: 'reranker', projectRoot: '/proj', spec: { path: '/weights/my.gguf' } });
+    await run(function* () {
+      yield* resolveServices(['reranker'], { projectRoot: '/proj', model: { reranker: { id: 'custom', context: 16384 } } });
+    });
+    expect(resolveModel.mock.calls[1][0]).toMatchObject({ spec: { id: 'custom' } });
   });
 
-  it('a declared reranker requirement resolves the catalog default — and loads nothing yet', async () => {
-    const models = await run(function* () {
-      return yield* resolveAbilityModels({ abilities: [factory(['reranker'])], projectRoot: '/proj' });
-    });
-    expect(models).toEqual({ reranker: RERANKER_PATH });
-    expect(resolveModel.mock.calls[0][0]).toMatchObject({ role: 'reranker', spec: { id: 'qwen3-reranker-0.6b-q8' } });
+  it('a block that names no model is a request nothing can satisfy: refused, naming the keys that would', async () => {
+    await expect(run(function* () {
+      return yield* resolveServices(['reranker'], { projectRoot: '/proj', model: { reranker: { context: 4096 } } });
+    })).rejects.toThrow('`model.reranker` names no model — set `model.reranker.id` (a catalog id) or `model.reranker.path` in harness.yml');
+    expect(resolveModel).not.toHaveBeenCalled();
     expect(createReranker).not.toHaveBeenCalled();
   });
 
-  it('an explicit spec names the model the requirement resolves to', async () => {
-    await run(function* () {
-      return yield* resolveAbilityModels({
-        abilities: [factory(['reranker'])],
-        projectRoot: '/proj',
-        reranker: { path: '/weights/my-reranker.gguf' },
-      });
+  it('resolves what it is asked for and nothing else — and never loads', async () => {
+    const artifacts = await run(function* () {
+      return yield* resolveServices(['reranker'], { projectRoot: '/proj', model: { reranker: { id: 'qwen3-reranker-0.6b-q8', context: 16384 } } });
     });
-    expect(resolveModel.mock.calls[0][0]).toMatchObject({ spec: { path: '/weights/my-reranker.gguf' } });
+    expect(artifacts).toEqual({ reranker: RERANKER_PATH });
+    expect(createReranker).not.toHaveBeenCalled();
+  });
+});
+
+describe('bindServices: each artifact through its row, into reach', () => {
+  it('the reranker row binds with the block\'s tuning, and service(\'reranker\') answers the bound instance', async () => {
+    const seen = await run(function* () {
+      yield* bindServices({ reranker: RERANKER_PATH }, { reranker: { context: 8192 } });
+      return yield* service('reranker');
+    });
+    expect(createReranker).toHaveBeenCalledWith(RERANKER_PATH, { nCtx: 8192, instruction: undefined });
+    expect(seen).toBe(fakeReranker);
   });
 
-  it('a reserved embedding requirement fails fast, before anything is resolved', async () => {
-    await expect(
-      run(function* () {
-        return yield* resolveAbilityModels({ abilities: [factory(['embedding'])], projectRoot: '/proj' });
-      }),
-    ).rejects.toThrow(/embedding/);
-    expect(resolveModel).not.toHaveBeenCalled();
+  it('the block reaches the row as the layering resolved it — its default context, its instruction', async () => {
+    const instruction = { text: 'Is this passage relevant?', smokeTest: 'none' as const };
+    await run(function* () {
+      yield* bindServices({ reranker: RERANKER_PATH }, { reranker: { context: 16384, instruction } });
+    });
+    expect(createReranker).toHaveBeenCalledWith(RERANKER_PATH, { nCtx: 16384, instruction });
+  });
+
+  it('a trunk row: its artifact is on the resident context, and service(name) answers that it is there', async () => {
+    const seen = await run(function* () {
+      yield* bindServices({ vision: '/proj/models/vision/p.gguf' }, { vision: { minTokens: 64 } });
+      return yield* service('vision');
+    });
+    expect(seen).toEqual({ artifact: '/proj/models/vision/p.gguf' });
+    expect(createReranker).not.toHaveBeenCalled();
+    expect(trunkOptions({ vision: '/proj/models/vision/p.gguf' }, { vision: { minTokens: 64 } })).toEqual({ mmprojPath: '/proj/models/vision/p.gguf', imageMinTokens: 64, imageMaxTokens: undefined });
+    expect(trunkOptions({ reranker: '/r.gguf' }, { reranker: { context: 16384 } })).toEqual({});
+  });
+
+  it('a service with a derivation resolves what the row derives when its block selects nothing', async () => {
+    await run(function* () { yield* resolveServices(['vision'], { projectRoot: '/proj', model: { llm: { id: 'qwen3.5-4b' }, vision: {} } }); });
+    expect(resolveModel.mock.calls[0][0]).toMatchObject({ role: 'vision', spec: { id: 'qwen3.5-4b-mmproj' } });
+  });
+
+  it('nothing to bind → nothing in reach, and the accessor refuses by name', async () => {
+    await expect(run(function* () {
+      yield* bindServices({}, {});
+      return yield* service('reranker');
+    })).rejects.toThrow(/`reranker` is not configured/);
+    expect(createReranker).not.toHaveBeenCalled();
   });
 });

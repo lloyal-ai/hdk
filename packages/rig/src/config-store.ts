@@ -13,7 +13,7 @@
  */
 
 import type { Operation } from 'effection';
-import type { AbilityConfigStore } from '@lloyal-labs/lloyal-agents';
+import type { AbilityConfigStore } from './ability-config';
 
 /**
  * Create an in-memory `AbilityConfigStore` backed by a `Map`.

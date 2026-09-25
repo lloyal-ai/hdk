@@ -9,7 +9,7 @@
  */
 import { BM25Index, fitChunks, DEFAULT_CHUNK_TOKENS, loadDocuments } from '@lloyal-labs/rig';
 import type { Document } from '@lloyal-labs/rig';
-import type { Chunk } from '@lloyal-labs/lloyal-agents';
+import type { Chunk } from '@lloyal-labs/rig';
 import type { Attachment, AttachmentStore } from '@lloyal-labs/media';
 
 /** How many hex digits of the root digest make a document's handle. */

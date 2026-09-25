@@ -1,4 +1,4 @@
-import { Source } from "@lloyal-labs/lloyal-agents";
+import { Source } from "@lloyal-labs/rig";
 import type { Tool } from "@lloyal-labs/lloyal-agents";
 import { WikipediaSearchTool } from "./tools/search";
 import { WikipediaFetchTool } from "./tools/fetch";

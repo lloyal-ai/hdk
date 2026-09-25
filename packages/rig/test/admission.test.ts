@@ -6,9 +6,9 @@
  */
 import { describe, it, expect } from 'vitest';
 import { run } from 'effection';
-import { Trace } from '../src/context';
+import { Trace } from '@lloyal-labs/lloyal-agents';
 import { admitChunks } from '../src/admission';
-import type { Chunk, Reranker } from '../src/chunk';
+import type { Chunk, Reranker } from '../src/retrieval';
 import { CapturingTraceWriter } from './helpers/capturing-trace';
 
 function mkChunks(n: number, tokensEach = 100): Chunk[] {

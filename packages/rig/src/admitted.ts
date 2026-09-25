@@ -9,15 +9,17 @@
  * hoping it gets expanded as one. `materialize` asks the store whether the
  * content is really there, which is the question no client can answer for
  * itself and the one a forged descriptor fails. Sight is asked for only by what
- * materializes to pixels: a document is text the run retrieves from, and needs
- * no projector.
+ * materializes to pixels — of the `vision` service, so the refusal is the one
+ * every unconfigured service gives: a document is text the run retrieves from,
+ * and needs no projector.
  *
  * A refusal moves nothing; the caller says it and returns.
  *
  * @category Rig
  */
 import type { Operation } from 'effection';
-import { Attachments, Ctx } from '@lloyal-labs/lloyal-agents';
+import { Attachments } from '@lloyal-labs/lloyal-agents';
+import { service } from './services';
 import { asAttachment, materialize } from '@lloyal-labs/media';
 import type { Attachment, Descriptor } from '@lloyal-labs/media';
 
@@ -54,11 +56,10 @@ export function* admitted(descriptors: readonly Descriptor[] = []): Operation<Ad
   }
 
   if (bitmaps.length > 0) {
-    const ctx = yield* Ctx.expect();
-    if (!ctx.supportsVision()) {
-      return {
-        refused: "This model can't see images — it has no vision projector. Pick a vision-capable model, or ask without the image.",
-      };
+    try {
+      yield* service('vision');
+    } catch (err) {
+      return { refused: message(err) };
     }
   }
   return { roots, bitmaps, projected };

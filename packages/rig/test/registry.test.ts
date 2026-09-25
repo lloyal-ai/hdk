@@ -6,7 +6,7 @@
  * `registry.enable(factory)` calls (creation is not enablement — there is one
  * enable path, so the two can't collide); each factory runs in its own
  * *detached* Effection scope (`createScope()` — does NOT inherit context, so the
- * registry seeds `AbilityConfigStoreCtx` / `AbilityRegistryCtx` / `RerankerCtx`
+ * registry seeds `AbilityConfigStoreCtx` / `AbilityRegistryCtx` / the bound `Services`
  * into it explicitly; the detachment is what isolates teardown errors so
  * `disable` can swallow them). `disable` / registry scope-exit tear that
  * scope down, firing the factory's `ensure(...)`. `enable` is the dynamic
@@ -32,10 +32,12 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { run, ensure } from 'effection';
-import { AbilityConfigStoreCtx } from '@lloyal-labs/lloyal-agents';
+import { AbilityConfigStoreCtx } from '../src/ability-config';
 import { Attachments } from '@lloyal-labs/lloyal-agents';
+import { Services, service } from '../src/services';
 import type { AttachmentStore } from '@lloyal-labs/media';
-import type { Ability, AbilityManifest, AbilityFactory } from '@lloyal-labs/lloyal-agents';
+import type { Ability, AbilityManifest, AbilityFactory } from '../src/ability-types';
+import type { Reranker } from '../src/retrieval';
 import { createAbilityRegistry } from '../src/registry';
 import { createInMemoryConfigStore } from '../src/config-store';
 
@@ -153,6 +155,43 @@ describe('createAbilityRegistry', () => {
       return inFactory === store;
     });
     expect(seen).toBe(true);
+  });
+
+  it('seeds every bound service into the factory scope: what the harness bound is what the ability reaches', async () => {
+    const seen = await run(function* () {
+      const reranker = { marker: 'the bound reranker' } as unknown as Reranker;
+      yield* Services.set({ reranker });
+      let inFactory: unknown;
+      const factory: AbilityFactory = function* () {
+        inFactory = yield* service('reranker');
+        return fakeApp({ name: 'scorer' });
+      };
+      const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
+      yield* registry.enable(factory);
+      return inFactory === reranker;
+    });
+    expect(seen).toBe(true);
+  });
+
+  it('an ability that requires a service nothing bound does not enable: refused before its factory runs, naming the block', async () => {
+    let ran = false;
+    const factory: AbilityFactory = Object.assign(function* () { ran = true; return fakeApp({ name: 'scorer' }); }, {
+      manifest: { name: 'scorer', protocol: { name: 'scorer_p', useWhen: 'scoring', tools: ['t'] }, services: ['reranker'] } as AbilityManifest,
+    });
+    await expect(run(function* () {
+      const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
+      yield* registry.enable(factory);
+    })).rejects.toThrow('scorer requires `reranker`, which is not configured — add `model.reranker` to harness.yml');
+    expect(ran).toBe(false);
+    // Bound, the same factory enables.
+    const enabled = await run(function* () {
+      yield* Services.set({ reranker: { marker: 'bound' } as unknown as Reranker });
+      const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
+      yield* registry.enable(factory);
+      return registry.stateOf('scorer');
+    });
+    expect(enabled).toBe('enabled');
+    expect(ran).toBe(true);
   });
 
   it('runs the factory body (setup) when enabled', async () => {

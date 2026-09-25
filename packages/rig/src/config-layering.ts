@@ -13,6 +13,11 @@
  * `abilities` family layers for every app: committed entries, then the local
  * overlay whole-replacing a named ability, path-shaped values resolved.
  *
+ * A block — the family a three-level key lives in, `model.vision` — is carried
+ * by its presence: `vision: {}` in either file requests the service and says
+ * nothing about its keys, and a default inside a block stands only once the
+ * block does. Every top-level family the table declares is present.
+ *
  * Node-only: import from `@lloyal-labs/rig/node`.
  *
  * @category Rig
@@ -20,8 +25,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parse } from 'yaml';
+import { CONFIG_VERSION, mergeConfig } from './config';
 import type { ConfigKey, ConfigTable, ConfigOf, OriginOf, CliOf, YmlOf } from './config';
-import type { ConfigOriginValue, ConfigPatch, LoadedConfig, RunnerConfigOpts, SaveResult } from './runner';
+import type { BaseHarnessConfig, ConfigOriginValue, ConfigPatch, LoadedConfig, RunnerConfigOpts, SaveResult } from './runner';
 import { rung } from './runner';
 import {
   resolvePath,
@@ -39,6 +45,16 @@ type Bag = Record<string, unknown>;
 
 /** A family holds keys; a scalar — or an array — is one value, however deep the table goes. */
 const isFamily = (v: unknown): v is Bag => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+/** Whether a rung carries a block: a mapping, or a bare key with nothing under it. */
+const carriesBlock = (v: unknown): boolean => v === null || isFamily(v);
+
+/** The block a key lives in — the family a three-level key sits under, `model.vision` — or nothing for a
+ *  shallower key. As the key names it, or as the yml does. */
+const blockOf = (dotted: string): string | undefined => {
+  const segs = dotted.split('.');
+  return segs.length >= 3 ? segs.slice(0, -1).join('.') : undefined;
+};
 
 /** Where the rungs are read from. */
 export interface ConfigSource<T extends ConfigTable> {
@@ -155,15 +171,28 @@ export function loadConfig<T extends ConfigTable>(
   const resolvedPath = path.resolve(cwd, JSON_NAME);
   const local = readJsonOverlay<Bag>(resolvedPath);
 
-  const config: Bag = { version: 1, sources: {}, abilities: {}, model: {} };
+  const config: Bag = { version: CONFIG_VERSION, sources: {}, abilities: {}, model: {} };
+  for (const name of Object.keys(table)) if (name.includes('.')) config[name.split('.')[0]] ??= {};
+
+  // A block is requested by either file naming it, before any key of it is read: a key a rung supplies makes
+  // its block too, while a default alone never does.
+  for (const [name, key] of Object.entries(table)) {
+    const block = blockOf(name);
+    const ymlBlock = key.yml && blockOf(key.yml);
+    if (block && (carriesBlock(getPath(local, block)) || (ymlBlock && carriesBlock(getPath(yml, ymlBlock))))) setPath(config, block, {});
+  }
+
   const origin: Record<string, ConfigOriginValue> = {};
   for (const [name, key] of Object.entries(table)) {
     const c = key.cli ? accept(key, cli[key.cli], process.cwd()) : undefined;
     const e = key.env ? accept(key, env[key.env], process.cwd(), true) : undefined;
     const l = accept(key, getPath(local, name), cwd);
     const y = key.yml ? accept(key, getPath(yml, key.yml), cwd) : undefined;
-    const chosen = c ?? e ?? l ?? y ?? key.default;
+    const supplied = c ?? e ?? l ?? y;
     origin[name] = rung(c, e, l, y);
+    const block = blockOf(name);
+    const inAbsentBlock = block !== undefined && getPath(config, block) === undefined;
+    const chosen = supplied ?? (inAbsentBlock ? undefined : key.default);
     if (chosen !== undefined) {
       setPath(config, name, key.path && typeof chosen === 'string' ? resolvePath(chosen, cwd) : chosen);
     }
@@ -182,41 +211,18 @@ export function loadConfig<T extends ConfigTable>(
 }
 
 /**
- * Write a patch into `harness.json`, atomically, 0600. Each family the patch
- * touches is merged one level deep over the file's; a top-level key that is a
- * value rather than a family is replaced whole; a key set to `""` is cleared;
- * a named ability is whole-replaced and the others kept. A file the writer
+ * Write a patch into `harness.json`, atomically, 0600. The patch merges over
+ * the file by the table (`mergeConfig`): into each family it names, however
+ * deep, and replacing anything else whole; a key set to `""` is cleared; a
+ * named ability is whole-replaced and the others kept. A file the writer
  * cannot understand is never rebuilt over (`readJsonForWrite`).
  *
  * @category Rig
  */
-export function saveLocalConfig<C>(patch: ConfigPatch<C>, cwd: string = process.cwd()): SaveResult {
+export function saveLocalConfig<C>(table: ConfigTable, patch: ConfigPatch<C>, cwd: string = process.cwd()): SaveResult {
   const resolvedPath = path.resolve(cwd, JSON_NAME);
-  const current = (readJsonForWrite<Bag>(resolvedPath, JSON_NAME) ?? {}) as Bag;
-  const next: Bag = { version: 1, sources: {}, abilities: {} };
-  const families = new Set([...Object.keys(current), ...Object.keys(patch as Bag)]);
-  families.delete('version');
-  for (const family of families) {
-    const before = current[family];
-    const change = (patch as Bag)[family];
-    if (family === 'abilities') {
-      const merged: Bag = { ...(isFamily(before) ? before : {}) };
-      for (const [name, cfg] of Object.entries((change ?? {}) as Bag)) merged[name] = { ...(cfg as Bag) };
-      next.abilities = merged;
-      continue;
-    }
-    // A top-level key may be a family of keys or a value of its own. Only a family
-    // merges; a leaf REPLACES what is there, because spreading a scalar yields `{}`.
-    const top = change !== undefined ? change : before;
-    if (!isFamily(top)) {
-      if (top !== undefined && top !== '') next[family] = top;
-      continue;
-    }
-    const merged: Bag = { ...(isFamily(before) ? before : {}), ...(isFamily(change) ? change : {}) };
-    for (const [k, v] of Object.entries(merged)) if (v === '') delete merged[k];
-    next[family] = merged;
-  }
-  writeJsonAtomic(resolvedPath, next);
+  const current = { sources: {}, abilities: {}, ...(readJsonForWrite<Bag>(resolvedPath, JSON_NAME) ?? {}) } as BaseHarnessConfig;
+  writeJsonAtomic(resolvedPath, mergeConfig(table, current, patch as ConfigPatch<BaseHarnessConfig>));
   return { path: resolvedPath, gitignored: maybeAppendGitignore(resolvedPath), skipped: [] };
 }
 
@@ -238,8 +244,9 @@ export function runnerConfig<T extends ConfigTable>(
   const keys = Object.keys(table);
   return {
     ...loaded,
+    table,
     persist: (patch) => {
-      const saved = saveLocalConfig(patch, source.cwd);
+      const saved = saveLocalConfig(table, patch, source.cwd);
       const relayered = loadConfig(table, yml, source);
       return { ...saved, config: relayered.config, origin: relayered.origin };
     },

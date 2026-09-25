@@ -8,7 +8,8 @@
  * @category Desktop
  */
 export { createEngine } from './engine';
-export type { Engine, EngineProcess, CreateEngineOpts } from './engine';
+export type { Engine, EngineProcess, CreateEngineOpts, InstallFrame } from './engine';
+export { serveEngine } from './serve-engine';
 export { registerContentScheme, serveContentScheme, CONTENT_ORIGIN } from './content';
 export { readBounded, TooLarge, TooSlow } from './read-bounded';
 export { createWindow } from './window';
