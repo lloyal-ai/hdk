@@ -92,12 +92,13 @@ const HTML_ANCHOR = /<a\s+[^>]*?href=(["'])([^"']+)\1[^>]*>([\s\S]*?)<\/a>/gi;
  */
 export function weaveOrdinalCitations(result: string): string {
   // An anchor whose text is itself a bracketed number, `<a href>[2]</a>`, sheds the brackets: `[2](url)`, the
-  // weave's own bare-citation form, not a link whose text is "[2]".
-  const unanchored = result.replace(HTML_ANCHOR, (_m, _q, url: string, text: string) => {
+  // weave's own bare-citation form, not a link whose text is "[2]". Never inside code, where an anchor is a
+  // literal example.
+  const unanchored = outsideCode(result, (prose) => prose.replace(HTML_ANCHOR, (_m, _q, url: string, text: string) => {
     const t = text.trim();
     const bare = /^\[(\d+)\]$/.exec(t);
     return `[${bare ? bare[1] : t}](${url})`;
-  });
+  }));
   const lines = unanchored.split('\n');
   let end = lines.length;
   while (end > 0 && lines[end - 1].trim() === '') end--;
@@ -119,19 +120,23 @@ export function weaveOrdinalCitations(result: string): string {
   // is an index. Code is every CommonMark spelling: a backtick or tilde fence, a span of any backtick run.
   const head = lines.slice(0, i - 1).join('\n');
   const tail = lines.slice(i - 1).join('\n');
-  const weave = (prose: string): string => prose.replace(/(^|[^\]\\>[])\[(\d+)\](?![(:])/g, (m, before: string, n: string) => {
+  const woven = outsideCode(head, (prose) => prose.replace(/(^|[^\]\\>[])\[(\d+)\](?![(:])/g, (m, before: string, n: string) => {
     const url = urls[Number(n) - 1];
     return url ? `${before}[${n}](${url})` : m;
-  });
-  let woven = '';
-  let at = 0;
-  for (const code of head.matchAll(CODE)) {
-    woven += weave(head.slice(at, code.index)) + code[0];
-    at = code.index + code[0].length;
-  }
-  woven += weave(head.slice(at));
+  }));
   return woven === head ? unanchored : `${woven}\n${tail}`;
 }
 
 /** Code as CommonMark spells it: a fence of three or more backticks or tildes closed by its own run, or a span closed by its own run. */
 const CODE = /(`{3,})[\s\S]*?\1|(~{3,})[\s\S]*?\2|(`+)[\s\S]*?\3/g;
+
+/** `text` with `rewrite` applied to every stretch of prose between its code, the code kept byte for byte. */
+function outsideCode(text: string, rewrite: (prose: string) => string): string {
+  let out = '';
+  let at = 0;
+  for (const code of text.matchAll(CODE)) {
+    out += rewrite(text.slice(at, code.index)) + code[0];
+    at = code.index + code[0].length;
+  }
+  return out + rewrite(text.slice(at));
+}

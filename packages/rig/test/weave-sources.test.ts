@@ -62,6 +62,14 @@ describe('weaveOrdinalCitations', () => {
     expect(woven).toContain('Also [2](https://two.io/b).');
   });
 
+  it('an HTML anchor inside code is a literal example, and stays byte for byte — a fenced html block, a span', () => {
+    const body = 'Write `<a href="https://x.io">[1]</a>` or:\n\n```html\n<a href="https://y.io">the page</a> [2]\n```\n\nThen see [1].' + list;
+    const out = weaveOrdinalCitations(body);
+    expect(out).toContain('Write `<a href="https://x.io">[1]</a>` or:');
+    expect(out).toContain('```html\n<a href="https://y.io">the page</a> [2]\n```');
+    expect(out).toContain('Then see [1](https://one.io/a).');
+  });
+
   it('a body with no trailing list, or no bare number, is returned unchanged', () => {
     expect(weaveOrdinalCitations('Nothing to do [1].')).toBe('Nothing to do [1].');
     expect(weaveOrdinalCitations(`No numbers here.${list}`)).toBe(`No numbers here.${list}`);
