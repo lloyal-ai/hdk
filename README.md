@@ -249,7 +249,7 @@ packages/
 
 ## Requirements
 
-- **Node 24+**
+- **Node 24+** — 24.15 or newer to run this repository's own test suite
 - **A GGUF model file on disk** — any model the native backend supports (the scaffold fetches one, digest-verified, on first run)
 - macOS / Linux / Windows on x64 or arm64. CPU works; CUDA / Metal / Vulkan supported via prebuilt native binaries.
 - **Native backend:** [llama.cpp](https://github.com/ggml-org/llama.cpp) today, via `@lloyal-labs/lloyal.node`. The SDK and harness contracts sit above the engine — intelligence is written against the runtime, not the backend.
