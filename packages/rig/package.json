@@ -57,7 +57,12 @@
     "effection": "^4.1.0",
     "ignore": "^7.0.5",
     "linkedom": "^0.18.12",
+    "mdast-util-to-string": "^4.0.0",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
+    "remark-parse": "^11.0.0",
     "semver": "^7.8.1",
+    "unified": "^11.0.5",
     "ws": "^8.18.0",
     "yaml": "^2.9.0",
     "zod": "^4.6.5"
@@ -71,6 +76,7 @@
     "LICENSE-FAQ.md"
   ],
   "devDependencies": {
+    "@types/mdast": "^4.0.4",
     "@types/ws": "^8.18.1"
   }
 }

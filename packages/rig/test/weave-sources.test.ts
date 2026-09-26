@@ -77,6 +77,16 @@ describe('weaveOrdinalCitations', () => {
     expect(out).toContain('[1]: https://original.io');
   });
 
+  it('a link\'s own text, indented code and math are not prose — a bracketed number there is left as written', () => {
+    const body = 'See [Table [1]](https://original.io) and [1].\n\n    list[1] = 3;\n\nWhere $x[1]$ holds, and\n\n$$\ny[2] = 0\n$$\n\nthen [2].' + list;
+    const out = weaveOrdinalCitations(body);
+    expect(out).toContain('See [Table [1]](https://original.io) and [1](https://one.io/a).');
+    expect(out).toContain('    list[1] = 3;');
+    expect(out).toContain('Where $x[1]$ holds');
+    expect(out).toContain('$$\ny[2] = 0\n$$');
+    expect(out).toContain('then [2](https://two.io/b).');
+  });
+
   it('a body with no trailing list, or no bare number, is returned unchanged', () => {
     expect(weaveOrdinalCitations('Nothing to do [1].')).toBe('Nothing to do [1].');
     expect(weaveOrdinalCitations(`No numbers here.${list}`)).toBe(`No numbers here.${list}`);

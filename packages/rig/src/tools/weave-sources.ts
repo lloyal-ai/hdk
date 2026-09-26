@@ -15,6 +15,13 @@
  * @category Rig
  */
 
+import { unified } from 'unified';
+import remarkParse from 'remark-parse';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import { toString } from 'mdast-util-to-string';
+import type { Root, Nodes, Parent, RootContent } from 'mdast';
+
 /** A structured source as the `report` output emits it. */
 export interface WeaveSource {
   title: string;
@@ -66,80 +73,117 @@ export function weaveSourcesIntoResult(result: unknown, sources: unknown): unkno
   return out;
 }
 
-/**
- * A list line: an optional bullet or number, then a markdown link — what a model writes under "Sources". The url
- * is read to the link's closing paren, not the first one: a Wikipedia title carries its own, `…/Alien_(film)`.
- */
-const LIST_LINK = /^\s*(?:[-*]|\d+[.)])?\s*\[[^\]]*\]\(((?:[^()\s]|\([^()\s]*\))+)\)\s*$/;
-/**
- * The heading that names the list: "Sources", "References", plain, bold or a markdown heading (bold inside it too),
- * with or without a colon — on either side of the closing emphasis.
- */
-const LIST_HEAD = /^\s*(?:#{1,4}\s+)?(?:\*\*)?(?:sources|references)\s*:?\s*(?:\*\*)?\s*:?\s*$/i;
+/** The heading that names the list, as its text reads: "Sources", "References", with or without a colon. */
+const LIST_HEAD = /^(?:sources|references)\s*:?$/i;
 
 /** An HTML anchor as a model writes one: the href in either quote, any other attributes, the text inside. */
 const HTML_ANCHOR = /<a\s+[^>]*?href=(["'])([^"']+)\1[^>]*>([\s\S]*?)<\/a>/gi;
+/** An anchor's opening tag alone, and its closing tag alone — how inline HTML reaches the tree, the text between as its own node. */
+const ANCHOR_OPEN = /^<a\s+[^>]*?href=(["'])([^"']+)\1[^>]*>$/i;
+const ANCHOR_CLOSE = /^<\/a>$/i;
+
+/** The grammar the renderer draws: the one the weave reads, so what it edits is what a reader sees as prose. */
+const markdown = unified().use(remarkParse).use(remarkGfm).use(remarkMath);
+
+/** A rewrite of one span of the source, by offset. */
+interface Edit { start: number; end: number; text: string }
+
+/** What is never prose: a link's own text, a reference, code, math, HTML. A text node under any of these is left as written. */
+const NOT_PROSE = new Set(['link', 'linkReference', 'definition', 'inlineCode', 'code', 'math', 'inlineMath', 'html', 'image', 'imageReference']);
+
+const isParent = (n: Nodes): n is Nodes & Parent => 'children' in n;
+const startOf = (n: Nodes): number => n.position!.start.offset!;
+const endOf = (n: Nodes): number => n.position!.end.offset!;
 
 /**
  * The other half of the weave, for prose that cites its own way: a settled answer whose claims say `[2]`
  * with the links only in a trailing "Sources" list, or whose links are HTML anchors. An anchor becomes the
- * markdown link it means, since the renderer draws markdown links and nothing else. Then each bare `[n]` —
- * not already a link's text, not a reference definition — becomes `[n](url)`, the url being the nth entry of
- * that list in the order the model wrote it, so the reader meets a link at the claim, as the weave gives a
- * report. The list stays; a body with neither is returned unchanged. Pure.
+ * markdown link it means, since the renderer draws markdown links and nothing else. Then each bare `[n]` in
+ * PROSE — text the parser reads as text: not a link's own text, not a reference the body defines, not code,
+ * not math — becomes `[n](url)`, the url being the nth entry of that list in the order the model wrote it, so
+ * the reader meets a link at the claim, as the weave gives a report. The list stays; everything the weave does
+ * not touch is byte for byte what the model wrote. Pure.
  *
  * @category Rig
  */
 export function weaveOrdinalCitations(result: string): string {
+  const tree = markdown.parse(result) as Root;
+  const edits: Edit[] = [];
+
+  // Anchors first, wherever HTML reaches the tree: a node holding whole anchors (a paragraph that is HTML) is
+  // rewritten within; an opening tag closed by a later sibling takes the span between them, the text as it is.
   // An anchor whose text is itself a bracketed number, `<a href>[2]</a>`, sheds the brackets: `[2](url)`, the
-  // weave's own bare-citation form, not a link whose text is "[2]". Never inside code, where an anchor is a
-  // literal example.
-  const unanchored = outsideCode(result, (prose) => prose.replace(HTML_ANCHOR, (_m, _q, url: string, text: string) => {
+  // weave's own bare-citation form, not a link whose text is "[2]".
+  const link = (url: string, text: string): string => {
     const t = text.trim();
     const bare = /^\[(\d+)\]$/.exec(t);
     return `[${bare ? bare[1] : t}](${url})`;
-  }));
-  const lines = unanchored.split('\n');
-  let end = lines.length;
-  while (end > 0 && lines[end - 1].trim() === '') end--;
-  // Read the list from the bottom: link lines, blank lines between them, then the heading that names it.
+  };
+  const walk = (node: Nodes, parents: Nodes[]): void => {
+    if (!isParent(node)) return;
+    const kids = node.children as RootContent[];
+    for (let i = 0; i < kids.length; i++) {
+      const kid = kids[i];
+      if (kid.type === 'html') {
+        const open = ANCHOR_OPEN.exec(kid.value);
+        if (open) {
+          const j = kids.findIndex((k, at) => at > i && k.type === 'html' && ANCHOR_CLOSE.test(k.value));
+          if (j !== -1) {
+            edits.push({ start: startOf(kid), end: endOf(kids[j]), text: link(open[2], result.slice(endOf(kid), startOf(kids[j]))) });
+            i = j;
+            continue;
+          }
+        }
+        const within = kid.value.replace(HTML_ANCHOR, (_m, _q, url: string, text: string) => link(url, text));
+        if (within !== kid.value) edits.push({ start: startOf(kid), end: endOf(kid), text: within });
+        continue;
+      }
+      walk(kid, [...parents, node]);
+    }
+  };
+  walk(tree, []);
+
+  // The trailing list: the last thing the model wrote is a list whose every item is one link, and the thing
+  // before it names it. Only the prose above that name is woven.
+  const top = tree.children;
+  const list = top.at(-1);
+  const name = top.at(-2);
   const urls: string[] = [];
-  let i = end;
-  while (i > 0) {
-    const line = lines[i - 1];
-    const m = LIST_LINK.exec(line);
-    if (m) { urls.unshift(m[1]); i--; continue; }
-    if (line.trim() === '' && urls.length > 0) { i--; continue; }
-    break;
+  if (list?.type === 'list' && name && (name.type === 'heading' || name.type === 'paragraph') && LIST_HEAD.test(toString(name).trim())) {
+    for (const item of list.children) {
+      const para = item.children.length === 1 && item.children[0].type === 'paragraph' ? item.children[0] : undefined;
+      const links = para?.children.filter((c) => !(c.type === 'text' && c.value.trim() === '')) ?? [];
+      const only = links.length === 1 && links[0].type === 'link' ? links[0] : undefined;
+      if (!only) { urls.length = 0; break; }
+      urls.push(only.url);
+    }
   }
-  while (i > 0 && lines[i - 1].trim() === '') i--;
-  if (urls.length === 0 || i < 1 || !LIST_HEAD.test(lines[i - 1])) return unanchored;
-  // Only the prose above the heading is woven; a `[n]` is bare when nothing links or defines it — not a
-  // markdown link's text (`[n](`), not a definition (`[n]:`) nor any use of a number the body defines (a
-  // reference link already, with its own url), not an HTML anchor's text (`>[n]</a>`), which a model that
-  // weaves its own links writes as readily as markdown — and never inside code, where `list[2]` is an index.
-  // Code is every CommonMark spelling: a backtick or tilde fence, a span of any backtick run.
-  const head = lines.slice(0, i - 1).join('\n');
-  const tail = lines.slice(i - 1).join('\n');
-  const defined = new Set<string>();
-  outsideCode(unanchored, (prose) => { for (const d of prose.matchAll(/^\s*\[(\d+)\]:/gm)) defined.add(d[1]); return prose; });
-  const woven = outsideCode(head, (prose) => prose.replace(/(^|[^\]\\>[])\[(\d+)\](?![(:])/g, (m, before: string, n: string) => {
-    const url = defined.has(n) ? undefined : urls[Number(n) - 1];
-    return url ? `${before}[${n}](${url})` : m;
-  }));
-  return woven === head ? unanchored : `${woven}\n${tail}`;
-}
-
-/** Code as CommonMark spells it: a fence of three or more backticks or tildes closed by its own run, or a span closed by its own run. */
-const CODE = /(`{3,})[\s\S]*?\1|(~{3,})[\s\S]*?\2|(`+)[\s\S]*?\3/g;
-
-/** `text` with `rewrite` applied to every stretch of prose between its code, the code kept byte for byte. */
-function outsideCode(text: string, rewrite: (prose: string) => string): string {
-  let out = '';
-  let at = 0;
-  for (const code of text.matchAll(CODE)) {
-    out += rewrite(text.slice(at, code.index)) + code[0];
-    at = code.index + code[0].length;
+  if (urls.length > 0) {
+    const above = startOf(name!);
+    // A number the body defines is a reference link already, with its own url.
+    const defined = new Set<string>();
+    const consumed = edits.map((e) => [e.start, e.end] as const);
+    const inAnchor = (at: number): boolean => consumed.some(([s, e]) => at >= s && at < e);
+    const prose = (node: Nodes, parents: Nodes[]): void => {
+      if (isParent(node)) { for (const kid of node.children) prose(kid, [...parents, node]); return; }
+      if (node.type !== 'text' || parents.some((p) => NOT_PROSE.has(p.type))) return;
+      const at = startOf(node);
+      if (at >= above || inAnchor(at)) return;
+      const woven = node.value.replace(/(^|[^\]\\>[])\[(\d+)\](?![(:])/g, (m, before: string, n: string) => {
+        const url = defined.has(n) ? undefined : urls[Number(n) - 1];
+        return url ? `${before}[${n}](${url})` : m;
+      });
+      if (woven !== node.value) edits.push({ start: at, end: endOf(node), text: woven });
+    };
+    // Definitions anywhere in the body count, so they are read before any text is woven.
+    const collect = (node: Nodes): void => { if (node.type === 'definition' && /^\d+$/.test(node.identifier)) defined.add(node.identifier); if (isParent(node)) node.children.forEach(collect); };
+    collect(tree);
+    prose(tree, []);
   }
-  return out + rewrite(text.slice(at));
+
+  if (edits.length === 0) return result;
+  edits.sort((a, b) => b.start - a.start);
+  let out = result;
+  for (const e of edits) out = out.slice(0, e.start) + e.text + out.slice(e.end);
+  return out;
 }
