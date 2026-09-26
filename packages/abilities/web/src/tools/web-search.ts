@@ -1,8 +1,9 @@
 import { call } from "effection";
 import type { Operation } from "effection";
 import { Tool, ToolRetryError, Trace } from "@lloyal-labs/lloyal-agents";
-import type { JsonSchema, ToolContext } from "@lloyal-labs/lloyal-agents";
+import type { JsonSchema, ToolContext, ToolLifecycleHooks } from "@lloyal-labs/lloyal-agents";
 import type { SearchProvider, SearchResult } from "@lloyal-labs/rig";
+import { queryDedup, trimmed } from "./guards";
 
 export type { SearchProvider, SearchResult };
 
@@ -57,11 +58,11 @@ export class TavilyProvider implements SearchProvider {
 // ── WebSearchTool ───────────────────────────────────────
 
 /**
- * Web search tool backed by a pluggable {@link SearchProvider}.
- *
- * Delegates to the provider's `search` method and returns an array
- * of {@link SearchResult} objects. Use alongside {@link FetchPageTool}
- * to let agents read full page content from promising results.
+ * Web search tool backed by a pluggable {@link SearchProvider}, chosen AT THE CALL: `provider` is the
+ * operation that says which provider stands right now — read from the ability's stored config, so a key
+ * saved under a run reaches the next search of every agent already holding this tool. Delegates to the
+ * provider's `search` and returns an array of {@link SearchResult} objects. Use alongside
+ * {@link FetchPageTool} to let agents read full page content from promising results.
  *
  * @category Rig
  */
@@ -71,6 +72,8 @@ export class WebSearchTool extends Tool<{ query: string }> {
   // Network-only (Tavily HTTP) — issues no op on the main llama_context, so it
   // runs off the loop fiber under concurrent dispatch. See Tool.fanout.
   readonly fanout = true;
+  /** This tool's gate: a query already attended is not searched again. Scope is the harness's. */
+  readonly hooks: ToolLifecycleHooks = { beforeDispatch: [queryDedup] };
   readonly description =
     "Search the web. Returns results with titles, snippets, and URLs.";
   readonly parameters: JsonSchema = {
@@ -79,32 +82,20 @@ export class WebSearchTool extends Tool<{ query: string }> {
     required: ["query"],
   };
 
-  private _provider: SearchProvider;
+  private _provider: () => Operation<SearchProvider>;
   private _topN: number;
 
-  constructor(provider: SearchProvider, topN = 8) {
+  constructor(provider: () => Operation<SearchProvider>, topN = 8) {
     super();
     this._provider = provider;
     this._topN = topN;
   }
 
   *execute(args: { query: string }, context?: ToolContext): Operation<unknown> {
-    const query = args.query?.trim();
+    const query = trimmed(args.query);
     if (!query) return { error: "query must not be empty" };
 
-    // Cross-agent dedup: another worker in this pool already issued this query
-    const queryLower = query.toLowerCase();
-    if (context?.peerHistory?.some(h => {
-      if (h.name !== 'web_search') return false;
-      try {
-        const prev = (JSON.parse(h.args) as { query?: string }).query?.toLowerCase();
-        return prev === queryLower;
-      } catch { return false; }
-    })) {
-      return { error: 'Resource unavailable. Try a different query.' };
-    }
-
-    const provider = this._provider;
+    const provider = yield* this._provider();
     const topN = this._topN;
 
     let results: SearchResult[];

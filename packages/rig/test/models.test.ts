@@ -17,9 +17,15 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import {
   resolveModel,
   fetchVerified,
+  sweepAbandonedPartials,
+  modelSlot,
+  isModelPresent,
+  MODEL_CATALOG,
+  DownloadStopped,
   type ModelCatalogEntry,
   type ModelRole,
 } from '../src/models';
@@ -32,6 +38,8 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+/** What every GGUF file opens with. */
+const GGUF = 'GGUF\u0003\u0000\u0000\u0000';
 function put(rel: string, content = 'x'): string {
   const p = path.join(root, rel);
   fs.mkdirSync(path.dirname(p), { recursive: true });
@@ -48,13 +56,13 @@ function mockFetch(map: Record<string, Uint8Array | Error>): typeof fetch {
     const v = map[url];
     if (v instanceof Error) throw v;
     if (v === undefined) throw new Error(`no mock for ${url}`);
-    return new Response(v);
+    return new Response(v as unknown as BodyInit);
   }) as unknown as typeof fetch;
 }
 
 describe('resolveModel — filesystem walk', () => {
   it('explicit path: resolves absolute, no copy', async () => {
-    put('weights/my.gguf');
+    put('weights/my.gguf', GGUF);
     const out = await resolveModel({ projectRoot: root, role: 'llm', spec: { path: 'weights/my.gguf' } });
     expect(out).toBe(path.join(root, 'weights/my.gguf'));
   });
@@ -63,6 +71,15 @@ describe('resolveModel — filesystem walk', () => {
     await expect(
       resolveModel({ projectRoot: root, role: 'llm', spec: { path: 'nope.gguf' } }),
     ).rejects.toThrow(/not found/);
+  });
+
+  it('explicit path: a file that is not a GGUF model is refused by name — the one thing a reader can be told before the load fails', async () => {
+    put('weights/notes.txt', 'these are not weights');
+    await expect(
+      resolveModel({ projectRoot: root, role: 'llm', spec: { path: 'weights/notes.txt' } }),
+    ).rejects.toThrow(/is not a GGUF model file/);
+    put('weights/real.gguf', GGUF);
+    expect(await resolveModel({ projectRoot: root, role: 'llm', spec: { path: 'weights/real.gguf' } })).toBe(path.join(root, 'weights/real.gguf'));
   });
 
   it('explicit path: pointing at a directory → rejected (must be a file)', async () => {
@@ -124,6 +141,70 @@ describe('resolveModel — filesystem walk', () => {
   });
 });
 
+describe('the slot: one derivation of where a catalog id lives', () => {
+  it('names the file the resolver would fetch into, and says whether it is already there', () => {
+    expect(modelSlot(root, 'reranker', 'r1')).toBe(path.join(root, 'models/reranker/r1.gguf'));
+    expect(isModelPresent(root, 'reranker', 'r1')).toBe(false);
+    put('models/reranker/r1.gguf');
+    expect(isModelPresent(root, 'reranker', 'r1')).toBe(true);
+    expect(() => modelSlot(root, 'llm', '../x')).toThrow(/Invalid model id/);
+  });
+});
+
+describe('the catalog names its projectors by the service they back', () => {
+  it('every projector has the `vision` role, and every llm that pairs one names a vision entry', () => {
+    const roles = new Set(MODEL_CATALOG.map((e) => e.role));
+    expect(roles.has('mmproj' as ModelRole)).toBe(false);
+    for (const llm of MODEL_CATALOG.filter((e) => e.role === 'llm' && e.vision)) {
+      expect(MODEL_CATALOG.find((e) => e.role === 'vision' && e.id === llm.vision), llm.id).toBeDefined();
+    }
+  });
+});
+
+describe('the partials nobody owns', () => {
+  const bytes = new TextEncoder().encode('GGUF-TEST-BYTES');
+  const entry: ModelCatalogEntry = { id: 't', role: 'llm', label: 'Test Model', urls: ['mock://ok'], sha256: sha256(bytes), sizeBytes: bytes.length };
+  /** A pid that is certainly not alive: the one a process that has already exited had. */
+  const deadPid = (): number => {
+    const { pid } = spawnSync('true');
+    if (typeof pid !== 'number') throw new Error('no pid');
+    return pid;
+  };
+
+  it('a partial whose process is gone is removed before the fetch into that slot; one whose process is alive, and a file of another shape, are left alone', async () => {
+    const dest = path.join(root, 'models/llm/t.gguf');
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    const abandoned = `${dest}.${deadPid()}.deadbeef.partial`;
+    const inFlight = `${dest}.${process.pid}.cafef00d.partial`;
+    const other = path.join(path.dirname(dest), 'other.gguf.1.abcd.partial');
+    for (const f of [abandoned, inFlight, other]) fs.writeFileSync(f, 'x'.repeat(16));
+    expect(sweepAbandonedPartials(dest)).toEqual([path.basename(abandoned)]);
+    expect(fs.existsSync(abandoned)).toBe(false);
+    expect(fs.existsSync(inFlight)).toBe(true);
+    expect(fs.existsSync(other)).toBe(true);
+    // The fetch itself sweeps: a second abandoned partial planted before it is gone once the slot is written.
+    const again = `${dest}.${deadPid()}.00000001.partial`;
+    fs.writeFileSync(again, 'y');
+    await fetchVerified(entry, dest, { fetchImpl: mockFetch({ 'mock://ok': bytes }) });
+    expect(fs.existsSync(again)).toBe(false);
+    expect(fs.existsSync(inFlight)).toBe(true);
+    expect(fs.readFileSync(dest)).toEqual(Buffer.from(bytes));
+  });
+
+  it('a slot already full is swept too, on the resolve that adopts it — a partial left by a killed download does not outlive the download that later completed', async () => {
+    const dest = put('models/llm/qwen3.5-4b.gguf');
+    const abandoned = `${dest}.${deadPid()}.0badf00d.partial`;
+    fs.writeFileSync(abandoned, 'z');
+    const out = await resolveModel({ projectRoot: root, role: 'llm', spec: { id: 'qwen3.5-4b' } });
+    expect(out).toBe(dest);
+    expect(fs.existsSync(abandoned)).toBe(false);
+  });
+
+  it('a slot directory that does not exist yet sweeps nothing and throws nothing', () => {
+    expect(sweepAbandonedPartials(path.join(root, 'models/nowhere/t.gguf'))).toEqual([]);
+  });
+});
+
 describe('fetchVerified — streaming digest verification', () => {
   const bytes = new TextEncoder().encode('GGUF-TEST-BYTES');
   const entry = (sha: string, urls: string[]): ModelCatalogEntry => ({
@@ -174,6 +255,30 @@ describe('fetchVerified — streaming digest verification', () => {
     });
     expect(out).toBe(dest);
     expect(fs.readFileSync(dest)).toEqual(Buffer.from(bytes));
+  });
+
+  it('a stop ends the walk: the fetch sees the signal, the partial goes, and no other mirror is tried', async () => {
+    const dest = path.join(root, 'models/llm/t.gguf');
+    const controller = new AbortController();
+    const tried: string[] = [];
+    const fetchImpl = (async (input: unknown, init?: { signal?: AbortSignal }) => {
+      tried.push(String(input));
+      // A body that never ends until the signal says so — a download in flight.
+      const body = new ReadableStream<Uint8Array>({
+        start(ctrl) {
+          ctrl.enqueue(bytes.slice(0, 4));
+          init?.signal?.addEventListener('abort', () => ctrl.error(new DOMException('aborted', 'AbortError')));
+        },
+      });
+      return new Response(body);
+    }) as unknown as typeof fetch;
+    const walk = fetchVerified(entry(sha256(bytes), ['mock://slow', 'mock://next']), dest, { fetchImpl, signal: controller.signal });
+    await new Promise((r) => setTimeout(r, 20));
+    controller.abort();
+    await expect(walk).rejects.toBeInstanceOf(DownloadStopped);
+    expect(tried).toEqual(['mock://slow']);
+    expect(fs.existsSync(dest)).toBe(false);
+    expect(fs.readdirSync(path.dirname(dest)).filter((f) => f.includes('.partial'))).toHaveLength(0);
   });
 
   it('all URLs fail → aggregated error naming each source', async () => {

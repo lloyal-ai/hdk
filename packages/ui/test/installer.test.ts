@@ -1,0 +1,87 @@
+/**
+ * The installer: drawn from the whole step list, the active step's bytes on the bar, a file offered only
+ * where a placement can choose one and the step takes one, the failure's remedies in the footer, and the
+ * harness's theme read from custom properties with the platform's values as defaults.
+ */
+import { describe, it, expect } from 'vitest';
+import { createElement } from 'react';
+import { renderToString } from 'react-dom/server';
+import { Installer, rateOf } from '../src/installer';
+import type { InstallerStep } from '../src/installer';
+
+const steps: InstallerStep[] = [
+  { id: 'machine', label: 'This machine', status: 'done', note: '16 GB · 10 GB needed' },
+  { id: 'llm', label: 'Downloading the reasoning model', model: 'Qwen3.5 4B · Q4_K_M', slot: 'models/llm/qwen3.5-4b.gguf', status: 'running', got: 1024 ** 3, total: 2 * 1024 ** 3, file: true },
+  { id: 'reranker', label: 'Downloading the reranker', status: 'pending', file: true },
+];
+
+describe('Installer', () => {
+  it('draws every step, names the active one, and measures its bytes on the bar', () => {
+    const html = renderToString(createElement(Installer, { steps, footnote: 'First run only' }));
+    expect(html).toContain('STEP 2 OF 3');
+    expect(html).toContain('Downloading the reasoning model');
+    // Under the heading: the model's name and the slot it fills.
+    expect(html).toContain('Qwen3.5 4B · Q4_K_M');
+    expect(html).toContain('models/llm/qwen3.5-4b.gguf');
+    expect(html).toContain('Downloading the reranker');
+    expect(html).toContain('1.00 GB');
+    expect(html).toContain('2.00 GB');
+    expect(html).toContain('width:50%');
+    expect(html).toContain('First run only');
+    expect(html).toContain('16 GB · 10 GB needed');
+  });
+
+  it('offers a file only for the step that takes one and is running or failed, and only where one can be chosen', () => {
+    const without = renderToString(createElement(Installer, { steps }));
+    expect(without).not.toContain('Use a file I already have');
+    const withChooser = renderToString(createElement(Installer, { steps, onUseFile: () => {} }));
+    expect(withChooser.match(/Use a file I already have/g)).toHaveLength(1);
+    const noFile = steps.map((s) => ({ ...s, file: false }));
+    expect(renderToString(createElement(Installer, { steps: noFile, onUseFile: () => {} }))).not.toContain('Use a file I already have');
+  });
+
+  it('a failure shows its reason and the remedies; nothing is drawn for an empty list', () => {
+    const failed = [steps[0], { ...steps[1], status: 'failed' as const, got: undefined, total: undefined, note: 'Failed to fetch from any source' }, steps[2]];
+    const html = renderToString(createElement(Installer, { steps: failed, onRetry: () => {}, onStop: () => {} }));
+    expect(html).toContain('STOPPED AT STEP 2');
+    expect(html).toContain('Failed to fetch from any source');
+    expect(html).toContain('Try again');
+    expect(html).toContain('>Stop<');
+    expect(renderToString(createElement(Installer, { steps: [] }))).toBe('');
+  });
+
+  it('the rate is measured from one step\'s samples: none before a second has passed, none for a step whose bytes have not moved, and a fresh window says nothing', () => {
+    expect(rateOf([], 1000)).toBeNull();
+    expect(rateOf([{ at: 0, got: 0 }], 500)).toBeNull();                                  // under a second
+    expect(rateOf([{ at: 0, got: 100 }, { at: 1000, got: 100 }], 1000)).toBeNull();      // nothing moved
+    expect(rateOf([{ at: 0, got: 0 }, { at: 2000, got: 4096 }], 2000)).toBe(2048);
+    // A new step's first sample is a fresh window — what `useRate` empties on a step change — so a step that
+    // finished at 2 GB never lends its speed to the one that just began at 0.
+    expect(rateOf([{ at: 5000, got: 0 }], 5000)).toBeNull();
+    // A stall: the window is read against the clock, not the last byte. The figure falls as the seconds pass
+    // with nothing new, and once nothing has arrived for the whole window there is no rate to show.
+    const moving = [{ at: 0, got: 0 }, { at: 2000, got: 4096 }];
+    expect(rateOf(moving, 4000)).toBe(1024);
+    expect(rateOf(moving, 9000)).toBeNull();
+  });
+
+  it('the platform\'s default greys read on the platform\'s default card — WCAG AA for small text, 4.5:1', () => {
+    const html = renderToString(createElement(Installer, { steps, onUseFile: () => {} }));
+    const fallback = (name: string): string => new RegExp(`var\\(--harness-${name}, (#[0-9A-Fa-f]{6})`).exec(html)![1];
+    const luminance = (hex: string): number => {
+      const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+      return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    };
+    const contrast = (a: string, b: string): number => { const [x, y] = [luminance(a), luminance(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+    const card = fallback('bg');
+    expect(contrast(fallback('muted'), card)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(fallback('faint'), card)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('takes the harness theme from custom properties, with the platform values as defaults', () => {
+    const html = renderToString(createElement(Installer, { steps }));
+    expect(html).toContain('var(--harness-accent, #3A56D4)');
+    expect(html).toContain('var(--harness-bg, #FFFFFF)');
+    expect(html).toContain('var(--harness-font, system-ui, sans-serif)');
+  });
+});

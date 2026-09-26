@@ -27,7 +27,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
-import type { Ability, AbilityManifest } from '@lloyal-labs/lloyal-agents';
+import type { Ability, AbilityManifest } from '../src/ability-types';
 import {
   renderSpine,
   renderAgentPreamble,
@@ -71,7 +71,6 @@ function makeAbility(opts: {
   const protocolName = opts.protocolName ?? `${opts.name}_research`;
   const manifest: AbilityManifest = {
     name: opts.name,
-    version: '1.0.0',
     abilityProtocolVersion: '3.0',
     protocol: {
       name: protocolName,
@@ -81,7 +80,6 @@ function makeAbility(opts: {
   };
   return {
     name: opts.name,
-    version: '1.0.0',
     manifest,
     source: { name: opts.name } as Ability['source'],
     tools: [],

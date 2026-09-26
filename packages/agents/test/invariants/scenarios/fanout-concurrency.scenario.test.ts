@@ -42,7 +42,7 @@ const policy: AgentPolicy = {
     parsed.toolCalls.length > 0
       ? { type: 'tool_call', tc: parsed.toolCalls[0] }
       : { type: 'idle', reason: 'free_text_stop' },
-  onSettleReject: () => ({ type: 'nudge', message: 'Report now (within 50 words).' }),
+  hooks: [{ beforeAdmit: () => ({ type: 'nudge', message: 'Report now (within 50 words).' }) }],
   shouldExit: () => false,
   onRecovery: () => ({ type: 'skip' }),
 };

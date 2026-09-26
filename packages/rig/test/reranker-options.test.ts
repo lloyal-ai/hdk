@@ -14,7 +14,7 @@
  * @category Testing
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { run } from 'effection';
+import { run, sleep, spawn } from 'effection';
 
 const { createContext, fakeCtx } = vi.hoisted(() => {
   const fakeCtx = {
@@ -22,7 +22,14 @@ const { createContext, fakeCtx } = vi.hoisted(() => {
     tokenize: async () => [1],
     dispose: vi.fn(),
   };
-  return { fakeCtx, createContext: vi.fn(async () => fakeCtx) };
+  // Declare the parameter: `vi.fn(async () => …)` types `mock.calls` as an
+  // EMPTY tuple, so `calls[0][0]` is a type error and every read needs a cast
+  // through `undefined`. Naming the argument is what makes the assertions below
+  // check a real shape instead of an `unknown`.
+  return {
+    fakeCtx,
+    createContext: vi.fn(async (_opts: Record<string, unknown>) => fakeCtx),
+  };
 });
 
 // The native binding and Rerank's boot gates both need a real model; neither is
@@ -45,7 +52,7 @@ vi.mock('@lloyal-labs/sdk', async (importOriginal) => {
   return { ...actual, Rerank: { create: rerankCreate } };
 });
 
-const { createReranker } = await import('../src/reranker');
+const { createReranker } = await import('../src/providers/reranker');
 
 describe('createReranker — KV precision', () => {
   beforeEach(() => {
@@ -60,24 +67,24 @@ describe('createReranker — KV precision', () => {
       yield* createReranker('/fake/reranker.gguf', opts);
     });
 
-  it('requests q4_0 for both KV types when the caller specifies neither', async () => {
+  it('requests q8_0 for both KV types when the caller specifies neither — the resolution the verdicts need', async () => {
     await load();
     expect(createContext).toHaveBeenCalledTimes(1);
-    const args = createContext.mock.calls[0][0] as Record<string, unknown>;
-    expect(args.typeK).toBe('q4_0');
-    expect(args.typeV).toBe('q4_0');
+    const args = createContext.mock.calls[0][0];
+    expect(args.typeK).toBe('q8_0');
+    expect(args.typeV).toBe('q8_0');
   });
 
   it('requests the caller\'s KV types when given', async () => {
     await load({ typeK: 'f16', typeV: 'f16' });
-    const args = createContext.mock.calls[0][0] as Record<string, unknown>;
+    const args = createContext.mock.calls[0][0];
     expect(args.typeK).toBe('f16');
     expect(args.typeV).toBe('f16');
   });
 
   it('still honours the sizing options', async () => {
     await load({ nSeqMax: 6, nCtx: 2048 });
-    const args = createContext.mock.calls[0][0] as Record<string, unknown>;
+    const args = createContext.mock.calls[0][0];
     expect(args.nSeqMax).toBe(6);
     expect(args.nCtx).toBe(2048);
     // nBatch derives from the two above when not given.
@@ -127,38 +134,7 @@ describe('createReranker — option forwarding', () => {
   });
 });
 
-describe('createReranker — failed boot disposes the context', () => {
-  beforeEach(() => {
-    createContext.mockClear();
-    rerankCreate.mockClear();
-    fakeCtx.dispose.mockClear();
-  });
-
-  it('disposes exactly once when Rerank.create rejects', async () => {
-    // A failing smoke test is now a normal configuration outcome, and the
-    // throw escapes before `provide`, so the resource's own try/finally never
-    // runs. Without the explicit dispose the caller's context leaks on every
-    // rejected boot.
-    rerankCreate.mockRejectedValueOnce(new Error('smoke test failed'));
-    await expect(
-      run(function* () {
-        yield* createReranker('/fake/reranker.gguf');
-      }),
-    ).rejects.toThrow('smoke test failed');
-    expect(fakeCtx.dispose).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not dispose on a successful boot', async () => {
-    // Guards the other direction: a dispose in the success path would hand
-    // back a reranker whose context is already gone.
-    await run(function* () {
-      yield* createReranker('/fake/reranker.gguf');
-    });
-    expect(fakeCtx.dispose).not.toHaveBeenCalled();
-  });
-});
-
-describe('createReranker — successful lifecycle', () => {
+describe('createReranker — ownership begins with the request', () => {
   beforeEach(() => {
     createContext.mockClear();
     rerankCreate.mockClear();
@@ -166,22 +142,88 @@ describe('createReranker — successful lifecycle', () => {
     fakeCtx.dispose.mockClear();
   });
 
-  it('teardown delegates disposal to Rerank, which owns the context', async () => {
-    // rig must NOT dispose ctx itself on the success path: Rerank.dispose()
-    // already does, and a second call would double-dispose.
+  it('a rejected boot canary frees the context exactly once, and the rejection is the caller\'s', async () => {
+    rerankCreate.mockRejectedValueOnce(new Error('smoke test failed'));
+    await expect(
+      run(function* () {
+        yield* createReranker('/fake/reranker.gguf');
+      }),
+    ).rejects.toThrow('smoke test failed');
+    expect(fakeCtx.dispose).toHaveBeenCalledTimes(1);
+    expect(rerankDispose).not.toHaveBeenCalled();
+  });
+
+  it('on a successful boot the context lives for the scope: not freed inside it, freed once when it ends', async () => {
+    await run(function* () {
+      yield* createReranker('/fake/reranker.gguf');
+      expect(fakeCtx.dispose).not.toHaveBeenCalled();
+    });
+    expect(fakeCtx.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('teardown frees the composition, then the context — each owner frees what it requested, in reverse order', async () => {
+    // `Rerank.dispose` disposes the context it was created on (sdk `Rerank.ts`), so the second free is a
+    // no-op there; the fake counts both, and that order is the contract this row states.
+    const order: string[] = [];
+    rerankDispose.mockImplementation(() => { order.push('rerank'); });
+    fakeCtx.dispose.mockImplementation(() => { order.push('ctx'); });
     await run(function* () {
       yield* createReranker('/fake/reranker.gguf');
     });
-    expect(rerankDispose).toHaveBeenCalledTimes(1);
-    expect(fakeCtx.dispose).not.toHaveBeenCalled();
+    expect(order).toEqual(['rerank', 'ctx']);
   });
 
-  it('explicit dispose followed by teardown delegates only once', async () => {
+  it('an explicit dispose is idempotent on the interface; the owner still frees on exit, which the real composition ignores', async () => {
+    // `Rerank.dispose` guards on its own `_disposed`, so the owner's free after an explicit dispose is a no-op
+    // there; the fake counts both calls, and that count is the contract this row states.
     await run(function* () {
       const r = yield* createReranker('/fake/reranker.gguf');
       r.dispose();
+      r.dispose();
       expect(rerankDispose).toHaveBeenCalledTimes(1);
     });
-    expect(rerankDispose).toHaveBeenCalledTimes(1);
+    expect(rerankDispose).toHaveBeenCalledTimes(2);
+  });
+
+  it('a halt while the boot canary runs waits for the canary, then frees the composition, then the context — the finding this row holds', async () => {
+    // Never `canary-start → context-free → canary-end`: the scope does not leave until the canary has
+    // settled, and its teardown runs in reverse order of acquisition.
+    const order: string[] = [];
+    let finishCanary!: () => void;
+    rerankCreate.mockImplementationOnce(async () => {
+      order.push('canary-start');
+      await new Promise<void>((r) => { finishCanary = r; });
+      order.push('canary-end');
+      return { score: () => ({}), scoreBatch: async () => [], tokenize: async () => [], dispose: rerankDispose };
+    });
+    rerankDispose.mockImplementation(() => { order.push('rerank-free'); });
+    fakeCtx.dispose.mockImplementation(() => { order.push('ctx-free'); });
+    await run(function* () {
+      const task = yield* spawn(function* () { yield* createReranker('/fake/reranker.gguf'); });
+      yield* sleep(0);
+      expect(order).toEqual(['canary-start']);
+      const halting = yield* spawn(function* () { yield* task.halt(); });
+      yield* sleep(0);
+      expect(order).toEqual(['canary-start']);   // the halt is waiting on the canary
+      finishCanary();
+      yield* halting;
+    });
+    expect(order).toEqual(['canary-start', 'canary-end', 'rerank-free', 'ctx-free']);
+  });
+
+  it('a halt while the context is still loading waits for it and frees it; the canary never starts — the finding this row holds', async () => {
+    let resolveCtx!: (c: typeof fakeCtx) => void;
+    createContext.mockImplementationOnce(() => new Promise<typeof fakeCtx>((r) => { resolveCtx = r; }));
+    await run(function* () {
+      const task = yield* spawn(function* () { yield* createReranker('/fake/reranker.gguf'); });
+      yield* sleep(0);
+      const halting = yield* spawn(function* () { yield* task.halt(); });
+      yield* sleep(0);
+      expect(fakeCtx.dispose).not.toHaveBeenCalled();
+      resolveCtx(fakeCtx);
+      yield* halting;
+    });
+    expect(fakeCtx.dispose).toHaveBeenCalledTimes(1);
+    expect(rerankCreate).not.toHaveBeenCalled();
   });
 });

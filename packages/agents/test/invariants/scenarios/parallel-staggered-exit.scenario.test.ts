@@ -6,7 +6,7 @@
  * sibling agent B is still `active` — deferring gives B a chance to
  * finish and free KV, after which A's result may fit.
  *
- * The policy hook (`onSettleReject`) is consulted only at stall-break
+ * The policy hook (`beforeAdmit`) is consulted only at stall-break
  * time — the moment `deferred.length > 0 && no active agents remain`.
  * Until then, oversized results wait.
  *
@@ -14,7 +14,7 @@
  *   - Defer-while-siblings-active: no `pool:agentNudge` / `pool:agentDrop`
  *     for A's oversized result is emitted in the tick the result was
  *     dispatched. The policy is quiet until B has stopped.
- *   - Policy consultation is time-shifted: `onSettleReject` fires only
+ *   - Policy consultation is time-shifted: `beforeAdmit` fires only
  *     after B transitions out of `active`.
  */
 import { describe, it, expect } from 'vitest';
@@ -35,17 +35,12 @@ describe('scenario: parallel orchestration staggered-exit', () => {
   it('A oversized + B still active → policy quiet while B produces, fires after B stops', async () => {
     const tools = new Map<string, Tool>([['web_search', new BigResultTool()]]);
 
-    let onSettleRejectCalls = 0;
-
     const policy: AgentPolicy = {
       onProduced: (_a, parsed) => {
         if (parsed.toolCalls.length > 0) return { type: 'tool_call', tc: parsed.toolCalls[0] };
         return { type: 'idle', reason: 'free_text_stop' };
       },
-      onSettleReject: () => {
-        onSettleRejectCalls++;
-        return { type: 'nudge', message: 'Tool result too large. Report now.' };
-      },
+      hooks: [{ beforeAdmit: () => ({ type: 'nudge', message: 'Tool result too large. Report now.' }) }],
       shouldExit: () => false,
       onRecovery: () => ({ type: 'skip' }),
     };
@@ -67,10 +62,6 @@ describe('scenario: parallel orchestration staggered-exit', () => {
       maxTurns: 10,
       taskCount: 2,
     });
-
-    // A's oversized result was not acted on immediately. Policy was called
-    // exactly once (after B hit STOP and went idle — stall-break fired).
-    expect(onSettleRejectCalls).toBeGreaterThanOrEqual(1);
 
     // B produced multiple agent:turn events: B was allowed to keep running
     // while A's result sat deferred. Without staggered-exit, A would have

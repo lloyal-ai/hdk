@@ -1,6 +1,9 @@
 {
   "name": "@lloyal-labs/rig",
-  "version": "5.5.0",
+  "version": "5.6.0-alpha.11",
+  "engines": {
+    "node": ">=24"
+  },
   "description": "Retrieval-Interleaved Generation for lloyal-agents",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -12,6 +15,10 @@
     "./node": {
       "types": "./dist/node.d.ts",
       "default": "./dist/node.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
     }
   },
   "publishConfig": {
@@ -40,21 +47,30 @@
     "build": "tsc -b"
   },
   "dependencies": {
+    "@lloyal-labs/binding": "0.2.0-alpha.11",
     "@lloyal-labs/channel-verify": "^0.3.1",
-    "@lloyal-labs/lloyal-agents": "^5.0.0",
-    "@lloyal-labs/sdk": "^3.1.0",
+    "@lloyal-labs/host": "0.2.0-alpha.11",
+    "@lloyal-labs/lloyal-agents": "6.0.0-alpha.11",
+    "@lloyal-labs/media": "0.2.0-alpha.11",
+    "@lloyal-labs/sdk": "4.0.0-alpha.11",
     "@mozilla/readability": "^0.6.0",
-    "effection": "^4.0.2",
+    "effection": "^4.1.0",
     "ignore": "^7.0.5",
     "linkedom": "^0.18.12",
-    "semver": "^7.8.1"
+    "semver": "^7.8.1",
+    "ws": "^8.18.0",
+    "yaml": "^2.9.0",
+    "zod": "^4.6.5"
   },
   "peerDependencies": {
-    "@lloyal-labs/lloyal.node": "^3.1.1"
+    "@lloyal-labs/lloyal.node": "3.2.0-alpha.10"
   },
   "files": [
     "dist/",
     "LICENSE",
     "LICENSE-FAQ.md"
-  ]
+  ],
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
+  }
 }

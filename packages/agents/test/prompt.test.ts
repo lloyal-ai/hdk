@@ -1,93 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { composePrompt, renderPrompt, renderTemplate } from '../src/prompt';
-import type { PromptState, PromptStep } from '../src/prompt';
-import { MockTool } from './helpers/mock-tool';
-
-describe('composePrompt', () => {
-  const base: PromptState = {
-    clauses: ['You are a helper.'],
-    sections: [{ heading: 'Notes', content: 'note 1' }],
-    tools: [],
-  };
-
-  it('returns base unchanged with empty steps', () => {
-    const result = composePrompt(base, []);
-    expect(result).toEqual(base);
-  });
-
-  it('applies steps that add clauses', () => {
-    const step: PromptStep = (s) => ({
-      ...s,
-      clauses: [...s.clauses, 'Be concise.'],
-    });
-    const result = composePrompt(base, [step]);
-    expect(result.clauses).toEqual(['You are a helper.', 'Be concise.']);
-  });
-
-  it('applies conditional steps (no-op when condition false)', () => {
-    const hasConflicts = false;
-    const step: PromptStep = (s) => hasConflicts
-      ? { ...s, clauses: [...s.clauses, 'Resolve conflicts.'] }
-      : s;
-    const result = composePrompt(base, [step]);
-    expect(result.clauses).toEqual(['You are a helper.']);
-  });
-
-  it('composes multiple steps left-to-right', () => {
-    const steps: PromptStep[] = [
-      (s) => ({ ...s, clauses: [...s.clauses, 'step 1'] }),
-      (s) => ({ ...s, clauses: [...s.clauses, 'step 2'] }),
-      (s) => ({ ...s, sections: [...s.sections, { heading: 'Extra', content: 'data' }] }),
-    ];
-    const result = composePrompt(base, steps);
-    expect(result.clauses).toEqual(['You are a helper.', 'step 1', 'step 2']);
-    expect(result.sections).toHaveLength(2);
-  });
-
-  it('accumulates tools across steps', () => {
-    const tool = new MockTool('search');
-    const step: PromptStep = (s) => ({ ...s, tools: [...s.tools, tool] });
-    const result = composePrompt(base, [step]);
-    expect(result.tools).toHaveLength(1);
-    expect(result.tools[0].name).toBe('search');
-  });
-});
-
-describe('renderPrompt', () => {
-  it('joins clauses with double newline', () => {
-    const state: PromptState = {
-      clauses: ['Line 1', 'Line 2'],
-      sections: [],
-      tools: [],
-    };
-    const { system } = renderPrompt(state, 'Query?');
-    expect(system).toBe('Line 1\n\nLine 2');
-  });
-
-  it('renders sections as heading + content', () => {
-    const state: PromptState = {
-      clauses: ['sys'],
-      sections: [{ heading: 'Notes', content: 'my notes' }],
-      tools: [],
-    };
-    const { content } = renderPrompt(state, 'Query?');
-    expect(content).toContain('Notes:\n\nmy notes');
-    expect(content).toContain('Query?');
-  });
-
-  it('separates sections with ---', () => {
-    const state: PromptState = {
-      clauses: ['sys'],
-      sections: [
-        { heading: 'A', content: 'a' },
-        { heading: 'B', content: 'b' },
-      ],
-      tools: [],
-    };
-    const { content } = renderPrompt(state, 'Q');
-    expect(content).toContain('---');
-  });
-});
+import { renderTemplate, guardedInput } from '../src/prompt';
+import type { MissingInput } from '../src/prompt';
 
 describe('renderTemplate', () => {
   it('interpolates variables', () => {
@@ -112,5 +25,37 @@ describe('renderTemplate', () => {
   it('does not auto-escape HTML', () => {
     const result = renderTemplate('<%= it.html %>', { html: '<b>bold</b>' });
     expect(result).toBe('<b>bold</b>');
+  });
+
+  it('a key the template reads and the data does not name is reported and rendered empty — never the word "undefined"', () => {
+    const misses: MissingInput[] = [];
+    const out = renderTemplate('Hello <%= it.name %>, <%= it.nmae %>.', { name: 'W' }, { name: 'greeting', onMissing: (m) => misses.push(m) });
+    expect(out).toBe('Hello W, .');
+    expect(misses).toEqual([{ prompt: 'greeting', key: 'nmae' }]);
+  });
+
+  it('a key given as undefined is given; a symbol read is not a key; and a strict watcher makes the miss a throw', () => {
+    const misses: MissingInput[] = [];
+    expect(renderTemplate('<% if (it.maybe) { %>yes<% } %>no', { maybe: undefined }, { onMissing: (m) => misses.push(m) })).toBe('no');
+    expect(misses).toEqual([]);
+    expect(() => renderTemplate('<%= it.x %>', {}, { name: 't', onMissing: ({ prompt, key }) => { throw new Error(`${prompt}: "${key}" not given`); } })).toThrow('t: "x" not given');
+  });
+});
+
+describe('guardedInput', () => {
+  it('what the input has is its OWN keys — a template that reads `it.toString` or `it.constructor` reads nothing it was given', () => {
+    const misses: MissingInput[] = [];
+    const out = renderTemplate('<%= it.toString %>|<%= it.constructor %>|<%= it.hasOwnProperty %>', { name: 'W' }, { name: 't', onMissing: (m) => misses.push(m) });
+    expect(out).toBe('||');
+    expect(misses.map((m) => m.key)).toEqual(['toString', 'constructor', 'hasOwnProperty']);
+  });
+
+  it('reads what was given, reports what was not, and answers a spread with the keys it has', () => {
+    const misses: MissingInput[] = [];
+    const g = guardedInput('p', { a: 1 }, (m) => misses.push(m));
+    expect(g.a).toBe(1);
+    expect(g.b).toBe('');
+    expect({ ...g }).toEqual({ a: 1 });
+    expect(misses).toEqual([{ prompt: 'p', key: 'b' }]);
   });
 });

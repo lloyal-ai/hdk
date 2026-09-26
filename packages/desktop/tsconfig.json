@@ -1,0 +1,34 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
+    "baseUrl": ".",
+    "paths": {
+      "@lloyal-labs/rig/node": [
+        "../rig/dist/node.d.ts"
+      ],
+      "@lloyal-labs/media/node": [
+        "../media/dist/node.d.ts"
+      ]
+    }
+  },
+  "include": [
+    "src/**/*.ts"
+  ],
+  "references": [
+    {
+      "path": "../binding"
+    },
+    {
+      "path": "../media"
+    },
+    {
+      "path": "../rig"
+    }
+  ]
+}

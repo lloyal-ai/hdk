@@ -1,7 +1,9 @@
 import type { Operation } from "effection";
 import { call } from "effection";
-import { Tool } from "@lloyal-labs/lloyal-agents";
-import type { JsonSchema } from "@lloyal-labs/lloyal-agents";
+import { Tool, ToolRetryError } from "@lloyal-labs/lloyal-agents";
+import type { JsonSchema, ToolLifecycleHooks } from "@lloyal-labs/lloyal-agents";
+import { queryDedup, trimmed } from "./guards";
+import { transient } from "./http";
 
 /**
  * Wikipedia opensearch — given a query, returns up to N article titles +
@@ -15,6 +17,11 @@ import type { JsonSchema } from "@lloyal-labs/lloyal-agents";
 export class WikipediaSearchTool extends Tool<{ query: string; limit?: number }> {
   readonly name = "wikipedia_search";
   readonly protected = false;
+  // Network-only (MediaWiki HTTP) — issues no op on the main llama_context, so
+  // it runs off the loop fiber under concurrent dispatch. See Tool.fanout.
+  readonly fanout = true;
+  /** This tool's gate: a query already attended is not searched again. Scope is the harness's. */
+  readonly hooks: ToolLifecycleHooks = { beforeDispatch: [queryDedup] };
   readonly description =
     "Search Wikipedia for articles matching a query. Returns up to 10 article titles with one-line descriptions and URLs. Use this to discover candidate articles before fetching their summaries.";
   readonly parameters: JsonSchema = {
@@ -43,7 +50,7 @@ export class WikipediaSearchTool extends Tool<{ query: string; limit?: number }>
   }
 
   *execute(args: { query: string; limit?: number }): Operation<unknown> {
-    const query = args.query?.trim();
+    const query = trimmed(args.query);
     if (!query) return { error: "query must not be empty" };
 
     const limit = Math.min(Math.max(args.limit ?? 10, 1), 20);
@@ -60,12 +67,16 @@ export class WikipediaSearchTool extends Tool<{ query: string; limit?: number }>
         const res = await fetch(url.toString(), {
           headers: { "User-Agent": this._userAgent, Accept: "application/json" },
         });
+        const weather = transient(res);
+        if (weather) throw weather;
         if (!res.ok) {
           throw new Error(`Wikipedia API HTTP ${res.status} ${res.statusText}`);
         }
         return res.json();
       });
     } catch (err) {
+      // Rate limiting is the pool's to wait out, not the model's to read.
+      if (err instanceof ToolRetryError) throw err;
       return {
         error: `wikipedia_search failed: ${err instanceof Error ? err.message : String(err)}`,
       };

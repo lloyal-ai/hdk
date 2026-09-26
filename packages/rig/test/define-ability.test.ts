@@ -18,8 +18,8 @@ import { describe, it, expect } from 'vitest';
 import { run } from 'effection';
 import type { Operation } from 'effection';
 import { Tool } from '@lloyal-labs/lloyal-agents';
-import { Source } from '@lloyal-labs/lloyal-agents';
-import type { Ability } from '@lloyal-labs/lloyal-agents';
+import { Source } from '../src/source';
+import type { Ability } from '../src/ability-types';
 import { defineAbility } from '../src/define-ability';
 import type { AbilitySetup } from '../src/define-ability';
 import type { AbilityManifest } from '../src/ability-types';
@@ -42,7 +42,7 @@ class FakeTool extends Tool<Record<string, unknown>> {
   }
 }
 
-class FakeSource extends Source<unknown, unknown> {
+class FakeSource extends Source {
   readonly name = 'fake';
   readonly tools = [];
   *bind(_ctx: unknown): Operation<void> {}

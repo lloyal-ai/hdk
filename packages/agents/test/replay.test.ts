@@ -15,7 +15,7 @@
 import { describe, it, expect } from 'vitest';
 import { run, scoped, createChannel } from 'effection';
 import type { Channel } from 'effection';
-import { MockSessionContext } from '../../sdk/test/MockSessionContext';
+import { MockSessionContext } from '../../sdk/src/testing.js';
 import { BranchStore } from '../../sdk/src/BranchStore';
 import {
   extractSpineSeed,

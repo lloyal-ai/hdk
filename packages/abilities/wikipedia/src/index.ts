@@ -10,7 +10,8 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { AbilityManifest, Tool } from "@lloyal-labs/lloyal-agents";
+import type { Tool } from "@lloyal-labs/lloyal-agents";
+import type { AbilityManifest } from "@lloyal-labs/rig";
 import { defineAbility } from "@lloyal-labs/rig";
 import { WikipediaSource } from "./source";
 

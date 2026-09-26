@@ -5,9 +5,9 @@
  * review-hardened into (lloyal-ai#14, eight rounds): atomic 0600 writes that
  * tighten a loose file, a version guard that refuses to rebuild over content
  * it cannot understand, ENOENT-only "fresh", `git check-ignore` as the
- * gitignore authority, and boundary path resolution. The per-template
- * LAYERING (which yml keys exist, the rung chain, validation) stays in the
- * scaffold — that part genuinely is the developer's.
+ * gitignore authority, and boundary path resolution. The LAYERING (which
+ * keys exist, the rung chain, validation) is `config-layering`, run from the
+ * table an app declares with `defineConfig`.
  *
  * Node-only (`node:fs`/`node:path`/`node:os`/`node:child_process`) — import
  * from `@lloyal-labs/rig/node`.
@@ -19,6 +19,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { CONFIG_VERSION } from './config';
 
 /**
  * Resolve a user-typed path to an absolute path: `~`/`~/x` expand against the
@@ -26,7 +27,7 @@ import * as path from 'node:path';
  * input returns ''. Idempotent. Apply at the boundary between user input and
  * persisted/live state; persisted form is always absolute.
  */
-export function resolvePath(input: string): string {
+export function resolvePath(input: string, base: string = process.cwd()): string {
   if (!input) return '';
   const expanded =
     input === '~'
@@ -34,50 +35,64 @@ export function resolvePath(input: string): string {
       : input.startsWith('~/')
         ? path.join(os.homedir(), input.slice(2))
         : input;
-  return path.resolve(expanded);
+  return path.resolve(base, expanded);
 }
 
-/** Resolve path-shaped string values in one ability's config object, with no
- *  per-ability name knowledge: a value is a path when its property name ends
- *  in "Path" (case-insensitive) or the string starts with `~`, `/`, or `.`. */
+/** The ONE definition of "this ability config value is a path", with no
+ *  per-ability name knowledge: the property name ends in "Path"
+ *  (case-insensitive) or the string starts with `~`, `/`, or `.`. The resolver
+ *  resolves by it and the settings group checks existence by it, so the two
+ *  cannot drift. */
+export function isPathShaped(key: string, value: unknown): value is string {
+  return typeof value === 'string' && value !== '' && (/path$/i.test(key) || /^[~/.]/.test(value));
+}
+
+/** Resolve path-shaped string values in one ability's config object, by {@link isPathShaped}, against `base`. */
 export function resolveAppConfigPaths(
   cfg: Record<string, unknown>,
+  base: string = process.cwd(),
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(cfg)) {
-    if (
-      typeof value === 'string' &&
-      value !== '' &&
-      (/path$/i.test(key) || /^[~/.]/.test(value))
-    ) {
-      out[key] = resolvePath(value);
-    } else {
-      out[key] = value;
-    }
+    out[key] = isPathShaped(key, value) ? resolvePath(value, base) : value;
   }
   return out;
 }
 
-/** Read a version-1 JSON overlay for the LOADER: absent, unreadable, or
+/** A file written before alpha.10 — version 1, the model keys flat under `model`. Nothing from before the
+ *  alpha is carried forward, so it is refused by name with the fix, never read at a shape it does not have. */
+const beforeTheAlpha = (displayName: string): Error =>
+  new Error(`${displayName} is version 1, written before alpha.10 — delete it and relaunch.`);
+
+/** A parsed file at the current version; null when this runtime does not write the version it carries;
+ *  version 1 refused. */
+function atCurrentVersion<T>(parsed: unknown, displayName: string): (Partial<T> & { version?: number }) | null {
+  if (parsed === null || typeof parsed !== 'object') return null;
+  const file = parsed as Partial<T> & { version?: number };
+  if (file.version === CONFIG_VERSION) return file;
+  if (file.version === 1) throw beforeTheAlpha(displayName);
+  return null;
+}
+
+/** Read the JSON overlay for the LOADER: absent, unreadable, or
  *  future-versioned ⇒ null — the overlay is ignorable; the layers beneath it
- *  still describe a runnable harness. */
+ *  still describe a runnable harness. A version-1 file is refused, loud. */
 export function readJsonOverlay<T>(p: string): (Partial<T> & { version?: number }) | null {
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as Partial<T> & {
-      version?: number;
-    };
-    if (parsed === null || typeof parsed !== 'object' || parsed.version !== 1) return null;
-    return parsed;
+    parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
   } catch {
     return null;
   }
+  return atCurrentVersion<T>(parsed, path.basename(p));
 }
 
-/** Read a version-1 JSON file for the WRITER. Unlike the loader, a save must
+/** Read the JSON file for the WRITER. Unlike the loader, a save must
  *  never rebuild over content it cannot understand — that would destroy a
  *  newer runtime's (or another user's) settings. ONLY a missing file is a
- *  fresh config; not-JSON, version ≠ 1, or any other read failure (EACCES,
- *  EIO) throws with a precise message, leaving the file untouched. */
+ *  fresh config; not-JSON, a version this runtime does not write, or any other
+ *  read failure (EACCES, EIO) throws with a precise message, leaving the file
+ *  untouched. A version-1 file is refused by name. */
 export function readJsonForWrite<T>(
   p: string,
   displayName: string = path.basename(p),
@@ -91,19 +106,20 @@ export function readJsonForWrite<T>(
       `${displayName} exists but cannot be read (${(err as NodeJS.ErrnoException).code ?? 'unknown'}) — nothing was saved.`,
     );
   }
-  let parsed: Partial<T> & { version?: number };
+  let parsed: unknown;
   try {
-    parsed = JSON.parse(raw) as Partial<T> & { version?: number };
+    parsed = JSON.parse(raw);
   } catch {
     throw new Error(`${displayName} is not valid JSON — fix or delete it; nothing was saved.`);
   }
-  const version = parsed === null || typeof parsed !== 'object' ? undefined : parsed.version;
-  if (version !== 1) {
+  const current = atCurrentVersion<T>(parsed, displayName);
+  if (!current) {
+    const version = parsed === null || typeof parsed !== 'object' ? undefined : (parsed as { version?: number }).version;
     throw new Error(
-      `${displayName} is version ${String(version)}; this harness writes version 1 — not overwriting a newer runtime's settings.`,
+      `${displayName} is version ${String(version)}; this harness writes version ${CONFIG_VERSION} — not overwriting a newer runtime's settings.`,
     );
   }
-  return parsed;
+  return current;
 }
 
 /** Write JSON atomically (tmp + rename) with mode 0600: config can carry

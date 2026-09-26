@@ -23,7 +23,11 @@
 import { createContext, createSignal } from 'effection';
 import type { Signal } from 'effection';
 import { NullTraceWriter } from '@lloyal-labs/lloyal-agents';
+import { NullAttachmentStore } from '@lloyal-labs/media';
 import type { TraceWriter, BranchCheckpoint } from '@lloyal-labs/lloyal-agents';
+import type { AttachmentStore } from '@lloyal-labs/media';
+import { CONFIG_VERSION, mergeConfig } from './config';
+import type { ConfigTable } from './config';
 
 /** One config rung, per field: which layer of
  *  `cli > env > harness.json > harness.yml > default` supplied the value.
@@ -35,17 +39,20 @@ export type ConfigOriginValue = 'cli' | 'env' | 'file' | 'yml' | 'session' | 'de
  *  `Config` extends this with its own fields (`defaults`, `surface`, a typed
  *  `model`, …) — the machinery never reads inside them. */
 export interface BaseHarnessConfig {
-  version: 1;
+  version: typeof CONFIG_VERSION;
   sources: { outputDir?: string };
   abilities: Record<string, Record<string, unknown>>;
   model: object;
 }
 
-/** A config write: one-level-deep partial — a save carries only the keys it
+/** A config write: a partial at every depth — a save carries only the keys it
  *  changes, so a local overlay never pins untouched values over the layers
- *  beneath it. */
+ *  beneath it. How deep a patch merges is the table's to say (`mergeConfig`);
+ *  `""` clears a key at any depth, a whole block included (`model.vision: ""`
+ *  withdraws THIS rung's request for vision; a block the committed file names
+ *  stays requested, since presence is any rung's). */
 export type ConfigPatch<C> = {
-  [K in keyof C]?: C[K] extends object ? Partial<C[K]> : C[K];
+  [K in keyof C]?: '' | (C[K] extends readonly unknown[] ? C[K] : NonNullable<C[K]> extends object ? ConfigPatch<NonNullable<C[K]>> : C[K]);
 };
 
 export interface SaveResult {
@@ -79,6 +86,18 @@ export interface RunnerDevOpts {
 }
 
 /**
+ * The project's content store, injected by the boot.
+ *
+ * Deliberately NOT in {@link RunnerDevOpts}: addressability is a replay
+ * requirement rather than telemetry, so unlike the trace sink this is never
+ * gated on `dev`. Filing it beside `dev?` was what made that easy to miss.
+ * Omitted ⇒ the Null store, which is inert for text and throws on media.
+ */
+export interface RunnerContentOpts {
+  attachmentStore?: AttachmentStore;
+}
+
+/**
  * Boot-owned config plumbing, injected like the dev sink. The boot that
  * layered the config passes the computed per-field `origin`, and — edge only —
  * a `persist` that writes the patch to disk and returns the re-layered result.
@@ -88,21 +107,27 @@ export interface RunnerConfigOpts<
   C extends BaseHarnessConfig,
   O extends Record<string, ConfigOriginValue>,
 > {
+  /** The table the config was layered from: what a patch merges by. */
+  table: ConfigTable;
   origin: O;
   persist?: (patch: ConfigPatch<C>) => SaveResult & { config: C; origin: O };
   /** Patch-path → origin key (e.g. `{ "model.gpu": "gpu" }`) — DATA, the one
    *  place a template's origin surface differs. Drives the `session` marks on
    *  in-memory patches. */
   sessionOriginMap: Record<string, keyof O & string>;
-  /** Boot-frozen on the edge reconcile: these keys describe the RUNNING
-   *  residency, which a save cannot change (that is `reloadRuntime` + a
-   *  relaunch). Defaults cover the shipped templates; keys absent from a
-   *  given shape are ignored. */
+  /** Boot-frozen on every save: these keys describe the RUNNING residency,
+   *  which a save cannot change (that is `reloadRuntime` + a relaunch).
+   *  Default: {@link FROZEN_FAMILIES} and every origin key under `model.`
+   *  ({@link frozenOriginOf}); keys absent from a given shape are ignored. */
   frozen?: { config?: readonly string[]; origin?: readonly string[] };
 }
 
-const DEFAULT_FROZEN_CONFIG: readonly string[] = ['model', 'surface'];
-const DEFAULT_FROZEN_ORIGIN: readonly string[] = ['modelPath', 'reranker', 'nCtx', 'gpu'];
+/** The families a boot freezes: the resident model, which a save cannot change. The ONE derivation —
+ *  `runnerConfig` and the runner's default read it here. */
+export const FROZEN_FAMILIES: readonly string[] = ['model'];
+/** The origin keys of the frozen families. */
+export const frozenOriginOf = (origin: Record<string, unknown>): readonly string[] =>
+  Object.keys(origin).filter((k) => FROZEN_FAMILIES.some((family) => k.startsWith(`${family}.`)));
 
 /** The runner ↔ harness contract. See the module docblock. */
 export interface Runner<
@@ -117,10 +142,18 @@ export interface Runner<
    *  patch also lands on disk and provenance re-layers — value and origin
    *  move together in both directions. */
   saveConfig(patch: ConfigPatch<C>): SaveResult & { config: C; origin: O };
-  /** Persist a model/reranker/gpu change. There is no in-process rebuild —
-   *  the harness returns after calling this and the process ends; the next
-   *  launch reads the file and applies it. In-memory (served) ⇒ no-op. */
-  reloadRuntime(patch: ConfigPatch<C>): void;
+  /**
+   * Persist a model/reranker/gpu change, and say whether one can be made here.
+   *
+   * There is no in-process rebuild: the harness returns after calling this and
+   * the process ends; the next launch reads the file and applies it. Returns
+   * the file the next launch will read it from — or **null where this placement
+   * cannot apply one**, which is a served host: it chose its model when it
+   * started and serves every session from that one residency, so nothing a
+   * session does reloads it. A caller that ends the session on a null has taken
+   * a working session away in exchange for no change at all.
+   */
+  reloadRuntime(patch: ConfigPatch<C>): string | null;
   /** Persistent graceful-wind-down signal. */
   windDown: Signal<void, void>;
   /** Persistent per-agent cancel signal. */
@@ -130,14 +163,15 @@ export interface Runner<
   pauseRun: Signal<boolean, void>;
   /** Observability sink threaded into `initAgents`. */
   traceWriter: TraceWriter;
+  /** Image sink threaded into `initAgents` alongside {@link traceWriter} —
+   *  what makes a media-bearing run replayable. */
+  attachmentStore: AttachmentStore;
   /** True when the boot mounted dev observability (trace sink + pool
    *  epistemics). Read this, never `process.env` — harness code stays
    *  portable across bindings. */
   dev: boolean;
   /** Replay-mode spine checkpoint; null normally + served. */
   replayCheckpoint: BranchCheckpoint | null;
-  /** A per-run findings cap (an edge flag); undefined = default. */
-  findingsMaxChars: number | undefined;
   /** 'oneshot' = non-TTY run-once; 'interactive' = the command loop. */
   mode: 'interactive' | 'oneshot';
   /** A query to auto-submit (interactive, first iteration) or run (oneshot). */
@@ -162,29 +196,6 @@ export function rung<T>(
   y: T | null | undefined,
 ): ConfigOriginValue {
   return c != null ? 'cli' : e != null ? 'env' : l != null ? 'file' : y != null ? 'yml' : 'default';
-}
-
-/** One-level-deep merge of a patch into a config: object-valued families
- *  shallow-merge (abilities per-name whole-replace, defaults per-key), scalars
- *  replace; `sources.outputDir === ""` clears the key. Never mutates `base`. */
-export function mergeConfig<C extends BaseHarnessConfig>(base: C, patch: ConfigPatch<C>): C {
-  const out: Record<string, unknown> = { ...(base as Record<string, unknown>) };
-  for (const [k, v] of Object.entries(patch as Record<string, unknown>)) {
-    const b = (base as Record<string, unknown>)[k];
-    if (
-      v !== null && typeof v === 'object' && !Array.isArray(v) &&
-      b !== null && typeof b === 'object' && !Array.isArray(b)
-    ) {
-      out[k] = { ...b, ...v };
-    } else {
-      out[k] = v;
-    }
-  }
-  out.version = 1;
-  const sources = { ...(out.sources as { outputDir?: string }) };
-  if (sources.outputDir === '') delete sources.outputDir;
-  out.sources = sources;
-  return out as C;
 }
 
 /** Mark every origin-tracked field a patch touches as `session` — the honest
@@ -226,57 +237,51 @@ function restoreFrozen(
 function makeRunner<
   C extends BaseHarnessConfig,
   O extends Record<string, ConfigOriginValue>,
->(cfg: C, opts: RunnerDevOpts & RunnerConfigOpts<C, O>, servedPath: null): Runner<C, O> {
+>(cfg: C, opts: RunnerDevOpts & RunnerContentOpts & RunnerConfigOpts<C, O>, servedPath: null): Runner<C, O> {
   let sessionConfig = structuredClone(cfg);
   let sessionOrigin = { ...opts.origin };
   const windDown = createSignal<void, void>();
   const cancelAgent = createSignal<{ agentId: number }, void>();
   const pauseRun = createSignal<boolean, void>();
-  const frozenConfig = opts.frozen?.config ?? DEFAULT_FROZEN_CONFIG;
-  const frozenOrigin = opts.frozen?.origin ?? DEFAULT_FROZEN_ORIGIN;
+  const frozenConfig = opts.frozen?.config ?? FROZEN_FAMILIES;
+  const frozenOrigin = opts.frozen?.origin ?? frozenOriginOf(opts.origin);
   void servedPath;
+  /** In-memory only (served, or an edge boot without persistence): touched fields read `session`; `path: null`
+   *  says nothing reached disk. */
+  const inMemory = (patch: ConfigPatch<C>): SaveResult & { config: C; origin: O } => ({
+    path: null, gitignored: false, skipped: [],
+    config: mergeConfig(opts.table, sessionConfig, patch),
+    origin: markSession(sessionOrigin, patch, opts.sessionOriginMap),
+  });
   return {
     config: () => sessionConfig,
     origin: () => sessionOrigin,
     saveConfig(patch) {
-      if (opts.persist) {
-        // Live-read fields reconcile from the re-layered files — value AND
-        // origin together, so clearing a key restores the rung beneath it and
-        // an env-outranked save shows the env value it actually runs with.
-        // The frozen set (the model block) stays BOOT-FROZEN: it describes
-        // the RUNNING residency, which a save cannot change.
-        const saved = opts.persist(patch);
-        const nextConfig = { ...saved.config } as Record<string, unknown>;
-        restoreFrozen(nextConfig, sessionConfig as Record<string, unknown>, frozenConfig);
-        const nextOrigin = { ...saved.origin } as Record<string, unknown>;
-        restoreFrozen(nextOrigin, sessionOrigin as Record<string, unknown>, frozenOrigin);
-        sessionConfig = nextConfig as C;
-        sessionOrigin = nextOrigin as O;
-        return { ...saved, config: sessionConfig, origin: sessionOrigin };
-      }
-      // In-memory only (served, or an edge boot without persistence): touched
-      // fields read `session`; `path: null` says nothing reached disk.
-      sessionConfig = mergeConfig(sessionConfig, patch);
-      sessionOrigin = markSession(sessionOrigin, patch, opts.sessionOriginMap);
-      return {
-        path: null,
-        gitignored: false,
-        skipped: [],
-        config: sessionConfig,
-        origin: sessionOrigin,
-      };
+      // With persistence, live-read fields reconcile from the re-layered files — value AND origin together, so
+      // clearing a key restores the rung beneath it and an env-outranked save shows the env value it actually
+      // runs with. On either path the frozen set (the model family) stays BOOT-FROZEN: it describes the RUNNING
+      // residency, which a save cannot change, so what a session reports is what it runs.
+      const saved = opts.persist ? opts.persist(patch) : inMemory(patch);
+      const nextConfig = { ...saved.config } as Record<string, unknown>;
+      restoreFrozen(nextConfig, sessionConfig as Record<string, unknown>, frozenConfig);
+      const nextOrigin = { ...saved.origin } as Record<string, unknown>;
+      restoreFrozen(nextOrigin, sessionOrigin as Record<string, unknown>, frozenOrigin);
+      sessionConfig = nextConfig as C;
+      sessionOrigin = nextOrigin as O;
+      return { ...saved, config: sessionConfig, origin: sessionOrigin };
     },
     reloadRuntime(patch) {
-      // Persist for the next launch; no in-process rebuild. No-op in-memory.
-      opts.persist?.(patch);
+      // Persist for the next launch; no in-process rebuild. With no `persist` this placement has
+      // no next launch of its own — the null is what tells the caller not to end the session.
+      return opts.persist?.(patch).path ?? null;
     },
     windDown,
     cancelAgent,
     pauseRun,
     traceWriter: opts.traceWriter ?? new NullTraceWriter(),
+    attachmentStore: opts.attachmentStore ?? new NullAttachmentStore(),
     dev: opts.dev ?? false,
     replayCheckpoint: null,
-    findingsMaxChars: undefined,
     mode: 'interactive',
     initialQuery: undefined,
     isFirstIteration: true,
@@ -291,11 +296,11 @@ function makeRunner<
 export function makeServedRunner<
   C extends BaseHarnessConfig,
   O extends Record<string, ConfigOriginValue>,
->(cfg: C, opts: RunnerDevOpts & RunnerConfigOpts<C, O>): Runner<C, O> {
+>(cfg: C, opts: RunnerDevOpts & RunnerContentOpts & RunnerConfigOpts<C, O>): Runner<C, O> {
   // Served never persists — drop an accidentally-passed persist so a driver
   // can share one opts object between placements without leaking writes.
   const { persist: _persist, ...rest } = opts;
-  return makeRunner(cfg, rest as RunnerDevOpts & RunnerConfigOpts<C, O>, null);
+  return makeRunner(cfg, rest as RunnerDevOpts & RunnerContentOpts & RunnerConfigOpts<C, O>, null);
 }
 
 /**
@@ -306,6 +311,6 @@ export function makeServedRunner<
 export function makeEdgeRunner<
   C extends BaseHarnessConfig,
   O extends Record<string, ConfigOriginValue>,
->(cfg: C, opts: RunnerDevOpts & RunnerConfigOpts<C, O>): Runner<C, O> {
+>(cfg: C, opts: RunnerDevOpts & RunnerContentOpts & RunnerConfigOpts<C, O>): Runner<C, O> {
   return makeRunner(cfg, opts, null);
 }

@@ -1,75 +1,28 @@
 import type { Operation } from 'effection';
-import { Tool } from '@lloyal-labs/lloyal-agents';
+import { Tool, CallingAgent } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema, ToolContext } from '@lloyal-labs/lloyal-agents';
 import type { Resource, Chunk } from '@lloyal-labs/rig';
+import { mergeRanges, subtractRanges } from '@lloyal-labs/rig';
 
-/**
- * Subtract previously-covered ranges from a target range
- *
- * Given a target half-open interval `[s, e)` and an array of
- * already-covered intervals, returns the sub-ranges of `[s, e)`
- * that have not yet been covered. Used by {@link ReadFileTool}
- * to avoid re-reading lines the agent has already seen.
- *
- * @param range - Target range `[start, end)` (0-indexed)
- * @param covered - Array of previously-covered `[start, end)` ranges
- * @returns Uncovered sub-ranges of the target
- *
- * @category Rig
- */
-export function subtractRanges(
-  [s, e]: [number, number],
-  covered: [number, number][],
-): [number, number][] {
-  let ranges: [number, number][] = [[s, e]];
-  for (const [cs, ce] of covered) {
-    ranges = ranges.flatMap(([a, b]): [number, number][] => {
-      if (ce <= a || cs >= b) return [[a, b]];
-      const result: [number, number][] = [];
-      if (a < cs) result.push([a, cs]);
-      if (ce < b) result.push([ce, b]);
-      return result;
-    });
-  }
-  return ranges;
-}
-
-/**
- * Merge overlapping or adjacent half-open ranges into a minimal set
- *
- * Sorts the input ranges by start position, then collapses any
- * overlapping or touching intervals. Used by {@link ReadFileTool}
- * to maintain a compact record of lines already read per agent.
- *
- * @param ranges - Array of `[start, end)` ranges to merge
- * @returns Merged non-overlapping ranges sorted by start
- *
- * @category Rig
- */
-export function mergeRanges(ranges: [number, number][]): [number, number][] {
-  if (ranges.length === 0) return [];
-  const sorted = [...ranges].sort((a, b) => a[0] - b[0]);
-  const merged: [number, number][] = [sorted[0]];
-  for (let i = 1; i < sorted.length; i++) {
-    const last = merged[merged.length - 1];
-    if (sorted[i][0] <= last[1]) {
-      last[1] = Math.max(last[1], sorted[i][1]);
-    } else {
-      merged.push(sorted[i]);
-    }
-  }
-  return merged;
+/** Which file a call names. One rule for the present call and every past one,
+ *  so "what did that read deliver" cannot drift from "what does this read ask
+ *  for". `path` is the alias models reach for when the schema says `filename`. */
+function nameOf(args: { filename?: unknown; path?: unknown }): string {
+  return (typeof args.filename === 'string' && args.filename)
+    || (typeof args.path === 'string' && args.path)
+    || '';
 }
 
 /**
  * Read content from corpus files by line range
  *
- * Tracks which lines each agent has already read and returns only
- * the unread portions, preventing redundant context inflation.
- * Line ranges typically come from {@link SearchTool} results.
+ * Returns only the lines the calling agent has not already RECEIVED, so a
+ * second read does not inflate context with what is already there. Line ranges
+ * typically come from {@link SearchTool} results.
  *
- * Uses {@link subtractRanges} and {@link mergeRanges} internally
- * to maintain per-agent read tracking keyed by `agentId:filename`.
+ * What counts as read is what the agent attends over — its own booked history
+ * and its callers' — never a map the tool keeps, which would record a read the
+ * pool went on to reject.
  *
  * @category Rig
  */
@@ -81,7 +34,6 @@ export class ReadFileTool extends Tool<{ filename: string; startLine?: number; e
 
   private _resources: Resource[];
   private _chunks: Chunk[];
-  private _readRanges = new Map<string, [number, number][]>();
   private _defaultMaxLines: number;
 
   constructor(resources: Resource[], opts?: { defaultMaxLines?: number; chunks?: Chunk[] }) {
@@ -108,25 +60,31 @@ export class ReadFileTool extends Tool<{ filename: string; startLine?: number; e
     args: { filename: string; startLine?: number; endLine?: number } & Record<string, unknown>,
     context?: ToolContext,
   ): Operation<unknown> {
-    const filename = args.filename || (args.path as string) || '';
+    const filename = nameOf(args);
     const file = this._resources.find(r => r.name === filename);
     if (!file) {
       return { error: `File not found: ${filename}. Available: ${this._resources.map(r => r.name).join(', ')}` };
     }
 
     const lines = file.content.split('\n');
-    const s = Math.max(0, (args.startLine ?? 1) - 1);
-    const e = Math.min(lines.length, args.endLine ?? Math.min(this._defaultMaxLines, lines.length));
+    const [s, e] = this._spanOf(args, lines.length);
 
-    const key = context ? `${context.agentId}:${filename}` : filename;
-    const prev = this._readRanges.get(key) ?? [];
+    // Every read of THIS file whose result this agent attends over, resolved
+    // by the same rule as the present call.
+    const agent = yield* CallingAgent.get();
+    const prev = agent
+      ? mergeRanges(
+          agent.attendedResults(this.name)
+            .filter((a) => nameOf(a) === filename)
+            .map((a) => this._spanOf(a, lines.length))
+            .filter(([a, b]) => b > a),
+        )
+      : [];
     const unread = subtractRanges([s, e], prev);
 
     if (unread.length === 0) {
       return { file: file.name, note: `Lines ${s + 1}-${e} already read` };
     }
-
-    this._readRanges.set(key, mergeRanges([...prev, [s, e]]));
 
     const content = unread
       .map(([a, b]) => lines.slice(a, b).join('\n'))
@@ -144,6 +102,18 @@ export class ReadFileTool extends Tool<{ filename: string; startLine?: number; e
     }
 
     return result;
+  }
+
+  /** The half-open line span a call names — `[s, e)`. The same rule serves the
+   *  present call and every past one, so a past read's delivered range cannot
+   *  drift from the range the present read asks for. */
+  private _spanOf(
+    args: { startLine?: unknown; endLine?: unknown },
+    lineCount: number,
+  ): [number, number] {
+    const s = Math.max(0, (typeof args.startLine === 'number' ? args.startLine : 1) - 1);
+    const e = Math.min(lineCount, typeof args.endLine === 'number' ? args.endLine : Math.min(this._defaultMaxLines, lineCount));
+    return [s, e];
   }
 
   /**

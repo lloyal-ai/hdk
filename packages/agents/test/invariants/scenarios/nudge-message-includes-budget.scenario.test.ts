@@ -1,7 +1,7 @@
 /**
  * Scenario: nudge messages carry the remaining budget as a word count.
  *
- * `DefaultAgentPolicy.onSettleReject` and `_handleOverBudget` convert
+ * `DefaultAgentPolicy` hands the app's `nudge` the word budget: its `beforeAdmit` entry and `_handleOverBudget` convert
  * `pressure.remaining - pressure.hardLimit` to a conservative word count
  * and interpolate it into their messages. Words (not tokens) because
  * tokenizers vary but words are universal.
@@ -17,6 +17,7 @@ import type { Operation } from 'effection';
 import type { JsonSchema } from '../../../src/types';
 import { DefaultAgentPolicy } from '../../../src/AgentPolicy';
 import { runPool, STOP } from '../harness';
+import { nudgeMessageContainsBudget, formatResult } from '../predicates';
 
 class BigResultTool extends Tool<{ query: string }> {
   readonly name = 'web_search';
@@ -32,6 +33,8 @@ describe('scenario: nudge message includes the remaining token budget', () => {
       terminalToolName: 'report',
       // hardLimit >= nBatch (512) required.
       budget: { context: { softLimit: 1024, hardLimit: 512 } },
+      // The app's words; the budget is the fact the framework hands it.
+      nudge: (f) => `Tool result too large for the remaining context. Call ${f.terminal} now within ${f.words} words.`,
     });
 
     const run = await runPool({
@@ -51,6 +54,7 @@ describe('scenario: nudge message includes the remaining token budget', () => {
       e => e.type === 'pool:agentNudge' && (e as any).reason === 'settle_reject',
     );
     expect(settleNudges.length).toBeGreaterThanOrEqual(1);
+    expect(formatResult('budget', nudgeMessageContainsBudget(run, 'settle_reject'))).toBe('budget: ok');
 
     // Message pattern: "Tool result too large … within N words."
     // Tokens-to-words: floor(tokens * 0.7 / 10) * 10. Words are used in

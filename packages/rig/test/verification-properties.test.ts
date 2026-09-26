@@ -29,7 +29,7 @@
 
 import { describe, it, expect } from 'vitest';
 import fc from 'fast-check';
-import type { Ability, AbilityManifest } from '@lloyal-labs/lloyal-agents';
+import type { Ability, AbilityManifest } from '../src/ability-types';
 import { renderSpine, renderAgentPreamble } from '../src/spine-render';
 import { BOUNDARY_MARKER } from '../src/protocol';
 
@@ -55,13 +55,11 @@ const appArb = fc.record({
 }).map(({ name, protocolName, useWhen, tools }): Ability => {
   const manifest: AbilityManifest = {
     name,
-    version: '1.0.0',
     abilityProtocolVersion: '3.0',
     protocol: { name: protocolName, useWhen, tools: [...new Set(tools)] },
   };
   return {
     name,
-    version: '1.0.0',
     manifest,
     source: { name } as Ability['source'],
     tools: [],

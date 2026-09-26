@@ -1,22 +1,10 @@
 /**
- * Rig-resident tool adapter types.
- *
- * The reranker abstraction (`Reranker`, `ScoredResult`, `ScoredChunk`)
- * moved to `@lloyal-labs/lloyal-agents` alongside `Chunk`
- * and `Resource` — abstract types live in agents, concrete factories
- * (`createReranker`) and chunking utilities (`chunkResources`,
- * `chunkHtml`, `chunkFetchedPages`) stay in rig. Re-exported here for
- * rig-internal callers; new code should import from
- * `@lloyal-labs/lloyal-agents`.
- *
- * `SearchProvider` + `SearchResult` are HTTP-adapter shapes used only
- * by rig's keyless / Tavily provider; they stay rig-resident.
+ * Rig-resident tool adapter types: `SearchProvider` + `SearchResult` are HTTP-adapter shapes used only
+ * by rig's keyless / Tavily provider.
  *
  * @packageDocumentation
  * @category Rig
  */
-
-export type { Reranker, ScoredChunk, ScoredResult } from '@lloyal-labs/lloyal-agents';
 
 // ── Web search adapter ──────────────────────────────────
 

@@ -33,18 +33,10 @@
  */
 
 import type { Operation } from 'effection';
-import type {
-  Tool,
-  Source,
-  Ability,
-  AbilityFactory,
-  AbilityManifest,
-  SkillTemplateFn,
-  ExamplesTemplateFn,
-  ConfigFlow,
-  AbilityHints,
-} from '@lloyal-labs/lloyal-agents';
-import { SERVICES } from '@lloyal-labs/lloyal-agents';
+import type { Tool } from '@lloyal-labs/lloyal-agents';
+import type { Source } from './source';
+import type { Ability, AbilityFactory, AbilityManifest, SkillTemplateFn, ExamplesTemplateFn, ConfigFlow, AbilityHints } from './ability-types';
+import { SERVICES } from './services';
 import { SUPPORTED_ABILITY_PROTOCOL_VERSIONS } from './protocol';
 
 /**

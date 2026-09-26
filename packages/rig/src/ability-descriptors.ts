@@ -11,11 +11,8 @@
  * missing field.
  */
 import type { Operation } from 'effection';
-import type {
-  AbilityRegistry,
-  AbilityConfigStore,
-  AbilityFactory,
-} from '@lloyal-labs/lloyal-agents';
+import type { AbilityRegistry, AbilityFactory, AbilityManifest } from './ability-types';
+import type { AbilityConfigStore } from './ability-config';
 
 export interface AbilityDescriptor {
   /** manifest.name (e.g. "web") — routing key + config-store key. */
@@ -24,7 +21,10 @@ export interface AbilityDescriptor {
   title: string;
   /** manifest.hints?.description ?? protocol.useWhen */
   description: string;
-  /** catalog metadata.iconUrl (apps.lloyal.ai asset) — else undefined → glyph. */
+  /** manifest.hints?.iconUrl — the mark the ability declares for itself. A
+   *  catalog entry carries its own, worker-resolved icon in its signed
+   *  metadata block; that join is not made here. Absent → the surface falls
+   *  back to a glyph. */
   iconUrl?: string;
   /** manifest.protocol.tools — the protocol's tool-name list. */
   tools: string[];
@@ -37,6 +37,25 @@ export interface AbilityDescriptor {
   config: Record<string, unknown>;
   /** Registry participation/enabled state. */
   enabled: boolean;
+}
+
+/** Stored ability config redacted to key presence — the one rule; values never leave this module. */
+function keyPresence(config: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.keys(config).map((k) => [k, true]));
+}
+
+/**
+ * A harness config with every ability's stored values redacted to key presence, for the
+ * wire: on a served placement the bus ends in every tenant's renderer, and ability config
+ * carries credentials. Everything but `abilities` passes through untouched.
+ *
+ * @category Rig
+ */
+export function redactAbilityConfig<C extends { abilities: Record<string, Record<string, unknown>> }>(config: C): C {
+  return {
+    ...config,
+    abilities: Object.fromEntries(Object.entries(config.abilities).map(([name, cfg]) => [name, keyPresence(cfg)])),
+  };
 }
 
 export function* buildAbilityDescriptors(
@@ -61,15 +80,8 @@ export function* buildAbilityDescriptors(
   return descriptors;
 }
 
-type ManifestLike = {
-  name: string;
-  hints?: { shortName?: string; description?: string };
-  protocol: { name: string; useWhen: string; tools: readonly string[] };
-  configSchema?: unknown;
-};
-
 function describe(
-  manifest: ManifestLike,
+  manifest: AbilityManifest,
   config: Record<string, unknown>,
   enabled: boolean,
 ): AbilityDescriptor {
@@ -77,12 +89,12 @@ function describe(
     name: manifest.name,
     title: manifest.hints?.shortName ?? manifest.protocol.name,
     description: manifest.hints?.description ?? manifest.protocol.useWhen,
-    iconUrl: undefined,
+    iconUrl: manifest.hints?.iconUrl,
     tools: [...manifest.protocol.tools],
     entitlements: [],
     configSchema: manifest.configSchema,
     // Key-presence only — the redaction is structural, not template discipline.
-    config: Object.fromEntries(Object.keys(config).map((k) => [k, true])),
+    config: keyPresence(config),
     enabled,
   };
 }

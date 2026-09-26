@@ -76,25 +76,26 @@ an ephemeral fork to attend over the fetched page and extract summary +
 links via grammar-constrained generation, then prunes the fork — zero net
 KV cost per extraction.
 
-Apps are composable through the registry:
+Abilities are composable through the registry:
 
 ```typescript
-import {
-  createAppRegistry,
-  createInMemoryConfigStore,
-} from "@lloyal-labs/rig";
-import { RerankerCtx } from "@lloyal-labs/lloyal-agents";
-import { createWebApp } from "@lloyal-labs/web-ability";
-import { createCorpusApp } from "@lloyal-labs/corpus-ability";
+import { createAbilityRegistry, createInMemoryConfigStore } from "@lloyal-labs/rig";
+import { install, bindServices } from "@lloyal-labs/rig/node";
+import { createWebAbility } from "@lloyal-labs/web-ability";
+import { createCorpusAbility } from "@lloyal-labs/corpus-ability";
 
-yield* RerankerCtx.set(reranker);
+// What `harness.yml` names is acquired into `models/`, then bound into reach —
+// an ability reads a service with `service('reranker')`.
+const installed = yield* install({ projectRoot, model, totalBytes: os.totalmem(), report: (ev) => channel.send(ev) });
+yield* bindServices(installed.services, installed.model);
+
 const configStore = createInMemoryConfigStore();
 if (tavilyKey) yield* configStore.set("web", { tavilyKey });
 if (corpusDir) yield* configStore.set("corpus", { corpusPath: corpusDir });
-const registry = yield* createAppRegistry({ configStore });
+const registry = yield* createAbilityRegistry({ configStore });
 
-if (corpusDir) yield* registry.enable(createCorpusApp);
-yield* registry.enable(createWebApp);  // keyless fallback if no tavilyKey
+if (corpusDir) yield* registry.enable(createCorpusAbility);
+yield* registry.enable(createWebAbility);  // keyless search when no tavilyKey is stored
 ```
 
 When multiple apps are enabled, their sources run sequentially — each gets
@@ -145,8 +146,6 @@ Agents that get cut by context pressure (their tool results exceeded KV headroom
 **Bridge.** Runs between sources when multiple sources are configured. A single agent with report-only tools structures discoveries from the completed source. The bridge output conditions the next source's sub-questions, directing investigation toward gaps rather than re-covering established ground.
 
 **Synthesize.** A synthesis agent integrates findings from all sources into a structured report with source attribution. Research notes provide analytical structure; reranked source passages provide ground truth for citation. The synthesizer cross-references both — using research notes to identify what matters, and source passages for evidence.
-
-**Eval.** Multi-branch semantic comparison via `diverge()`. Fork N branches from a shared frontier, generate independently with the same verify prompt, check convergence. Where branches agree, the model is confident. Where they diverge, the answer needs refinement.
 
 Full architectural walkthrough: [RIG Pipeline reference](https://docs.lloyal.ai/reference/rig/pipeline).
 

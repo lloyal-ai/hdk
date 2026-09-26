@@ -97,7 +97,7 @@ export function* harness(
       return pool.agents.flatMap((a) => (a.result ? [a.result] : []));  // findings leave as data
     });
 
-    const synth = yield* useAgent({ parent: session.trunk, task: renderSynthesis(notes) });
+    const synth = yield* useAgent({ parent: session.trunk, content: renderSynthesis(notes) });
     yield* call(() => session.commitTurn(command.query, synth.result));  // durable, deliberately
 
     yield* each.next();
@@ -136,7 +136,7 @@ main(function* () {
 
   const a = yield* useAgent({
     systemPrompt: "You are a research assistant.",
-    task: "Who founded the city of Brasília, and when?",
+    content: "Who founded the city of Brasília, and when?",
     tools: [...wikipedia.tools],
     terminal: reportTool,
   });
@@ -211,15 +211,16 @@ The honest comparison is full stack against full stack. Each row of the right co
 ```typescript
 // Agent runtime
 import {
-  initAgents, useAgent, agent, agentPool, useAgentPool, diverge,
+  initAgents, useAgent, agent, agentPool, useAgentPool,
   parallel, chain, fanout, dag, reduce, withSpine,
-  Tool, Source, DefaultAgentPolicy,
-  Ctx, Store, Events, AppRegistryCtx, AppConfigStoreCtx, GrantStoreCtx, RerankerCtx,
+  Tool, DefaultAgentPolicy,
+  Ctx, Store, Events, GrantStoreCtx,
 } from "@lloyal-labs/lloyal-agents";
 
-// Ability protocol + framework tools
+// Ability protocol, retrieval, services + framework tools
 import {
   defineAbility, createAbilityRegistry, createInMemoryConfigStore, createGrantStore,
+  Source, admitChunks, AbilityRegistryCtx, AbilityConfigStoreCtx, Services, service,
   renderSpine, renderAgentPreamble,
   reportTool, PlanTool, DelegateTool, TavilyProvider, createKeylessSearchProvider,
 } from "@lloyal-labs/rig";
@@ -242,18 +243,13 @@ packages/
     corpus/      @lloyal-labs/corpus-ability    — first-party local-corpus research Ability
     wikipedia/   @lloyal-labs/wikipedia-ability — first-party Wikipedia demo Ability
   channel-verify/ @lloyal-labs/channel-verify — canonical-JSON + Ed25519 channel verification (Apache 2.0, zero-dep)
-
-examples/
-  compare/       DAG primer (Ability-protocol-shaped): parallel research → compare → synthesize
-  react-agent/   Pre-Ability-protocol `useAgent` baseline (mechanism demo, not a 3.0 reference)
-  reflection/    Pre-Ability-protocol `diverge` primer (research → draft → critique → revise)
 ```
 
 `reasoning.run` is the production-grade reference harness — `npx reasoning.run` and read its source. The native binding [`@lloyal-labs/lloyal.node`](https://github.com/lloyal-ai/lloyal.node) lives in a separate repo and is pulled in as a dependency.
 
 ## Requirements
 
-- **Node 22+**
+- **Node 24+** — 24.15 or newer to run this repository's own test suite
 - **A GGUF model file on disk** — any model the native backend supports (the scaffold fetches one, digest-verified, on first run)
 - macOS / Linux / Windows on x64 or arm64. CPU works; CUDA / Metal / Vulkan supported via prebuilt native binaries.
 - **Native backend:** [llama.cpp](https://github.com/ggml-org/llama.cpp) today, via `@lloyal-labs/lloyal.node`. The SDK and harness contracts sit above the engine — intelligence is written against the runtime, not the backend.

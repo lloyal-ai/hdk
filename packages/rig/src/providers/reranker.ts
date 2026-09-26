@@ -1,0 +1,166 @@
+import { createContext } from "@lloyal-labs/lloyal.node";
+import { Rerank } from "@lloyal-labs/sdk";
+import type { SessionContext, KvCacheType, RerankInstruction } from "@lloyal-labs/sdk";
+import { resource } from "effection";
+import { acquire } from "../acquire";
+import type { Operation } from "effection";
+import type { Chunk, Reranker, ScoredResult } from "../retrieval";
+
+/**
+ * Context-sizing overrides for {@link createReranker}. All optional; each
+ * defaults inside `createReranker` (nSeqMax 10 · nCtx 4096 · nBatch derived).
+ * The reranker provider passes the `model.reranker` block's tuning through
+ * here, so a harness tunes the shared reranker in `harness.yml`.
+ */
+export interface RerankerLoadOpts {
+  /** Max parallel scoring sequences (default 10). */
+  nSeqMax?: number;
+  /** Reranker model context window (default 4096). */
+  nCtx?: number;
+  /** Decode batch size (default floor(nCtx / nSeqMax)). */
+  nBatch?: number;
+  /**
+   * KV cache types for the reranker context. Both default to `q8_0`.
+   *
+   * The score is a logit difference read back through these cells, so KV
+   * precision bounds the smallest score difference that is meaningful.
+   * Measured on real document windows (2026-09-07): at `q4_0` ten identical
+   * passages spread 4–6 logits across the leaves and the verdict changed
+   * sign; at `q8_0` they spread 0.05–0.12 at the same pass time.
+   * `test/reranker-resolution.test.ts` holds the default to that floor.
+   */
+  typeK?: KvCacheType;
+  typeV?: KvCacheType;
+  /**
+   * The scoring question. Defaults to retrieval relevance — the question every
+   * ability asks today. Changing it changes what "relevant" means for EVERY
+   * ability sharing this reranker, so it is a harness-level decision.
+   */
+  instruction?: RerankInstruction;
+}
+
+/**
+ * Create a {@link Reranker} backed by a dedicated reranking model context,
+ * as an Effection `resource()`.
+ *
+ * Loads a separate model (typically a cross-encoder) into its own KV cache
+ * and exposes `score`, `scoreBatch`, `tokenizeChunks`, and `dispose`. The
+ * returned `score` method yields {@link ScoredResult} batches as an async
+ * iterable, mapping raw indices back to the original {@link Chunk} metadata.
+ *
+ * **Lifecycle.** The reranker owns its underlying `SessionContext` + `Rerank`
+ * and disposes them transitively when the yielding scope exits (success,
+ * error, or halt) — owned from the moment they are requested, so a halt while
+ * the weights load still frees them. The provider binds it once per owning
+ * scope and `service('reranker')` answers it. `dispose()` remains on the
+ * interface for callers that manage teardown explicitly; it is idempotent.
+ *
+ * @param modelPath - Absolute path to the reranking model file (GGUF)
+ * @param opts - Optional context sizing overrides ({@link RerankerLoadOpts})
+ * @param opts.nSeqMax - Maximum parallel scoring sequences (default 10)
+ * @param opts.nCtx - Context window size for the reranker model (default 4096)
+ * @returns An Effection resource yielding a ready-to-use reranker
+ *
+ * @example
+ * ```ts
+ * const reranker = yield* createReranker(rerankerPath, { nSeqMax: 10, nCtx: 4096 });
+ * // ... pool work ...
+ * // reranker disposes automatically on scope exit
+ * ```
+ *
+ * @category Rig
+ */
+export function createReranker(
+  modelPath: string,
+  opts?: RerankerLoadOpts,
+): Operation<Reranker> {
+  return resource(function* (provide) {
+    // Default bumped 8→10: warm-trunk + per-query branch consume 2 leases in
+    // the R3 Rerank composition, so leaves get N-2 slots; 10 keeps the leaf
+    // budget at the prior default of 8.
+    const nSeqMax = opts?.nSeqMax ?? 10;
+    const nCtx = opts?.nCtx ?? 4096;
+    const nBatch = opts?.nBatch ?? Math.floor(nCtx / nSeqMax);
+    // Two acquisitions, owned from the request: the context, then the composition whose boot canary runs on
+    // it. The scope leaves only once each has settled, in reverse order — the canary finishes before the
+    // composition is freed, and the composition before the context. A rejected canary is a normal
+    // configuration outcome: the rejection is the caller's and the context's own teardown frees it. The
+    // composition's dispose frees the context too; the second free is a no-op.
+    const ctx = yield* acquire(
+      () => createContext({ modelPath, nCtx, nSeqMax, nBatch, typeK: opts?.typeK ?? 'q8_0', typeV: opts?.typeV ?? 'q8_0' }),
+      (c) => c.dispose(),
+    );
+    const rerank = yield* acquire(
+      () => Rerank.create(ctx as unknown as SessionContext, { nSeqMax, nCtx, instruction: opts?.instruction }),
+      (r) => r.dispose(),
+    );
+
+    let disposed = false;
+    const reranker: Reranker = {
+    score(query: string, chunks: Chunk[]): AsyncIterable<ScoredResult> {
+      const inner = rerank.score(
+        query,
+        chunks.map((c) => c.tokens),
+        10,
+      );
+      return {
+        [Symbol.asyncIterator](): AsyncIterator<ScoredResult> {
+          const it = inner[Symbol.asyncIterator]();
+          return {
+            async next(): Promise<IteratorResult<ScoredResult>> {
+              const { value, done } = await it.next();
+              if (done)
+                return {
+                  value: undefined as unknown as ScoredResult,
+                  done: true,
+                };
+              return {
+                value: {
+                  filled: value.filled,
+                  total: value.total,
+                  results: value.results.map((r) => ({
+                    file: chunks[r.index].resource,
+                    heading: chunks[r.index].heading,
+                    section: chunks[r.index].section,
+                    snippet: chunks[r.index].text.slice(0, 200),
+                    score: r.score,
+                    startLine: chunks[r.index].startLine,
+                    endLine: chunks[r.index].endLine,
+                  })),
+                },
+                done: false,
+              };
+            },
+          };
+        },
+      };
+    },
+
+    scoreBatch(query: string, texts: string[]): Promise<number[]> {
+      return rerank.scoreBatch(query, texts);
+    },
+
+    tokenize(text: string): Promise<number[]> {
+      return rerank.tokenize(text);
+    },
+
+    async tokenizeChunks(chunks: Chunk[]): Promise<void> {
+      // Tokenize in parallel — _tokenize is N-API AsyncWorker dispatch, so
+      // Promise.all overlaps work across threadpool slots. Serial for-await
+      // was a bottleneck on large corpora (1000+ chunks).
+      const toks = await Promise.all(chunks.map((c) => rerank.tokenize(c.text)));
+      for (let i = 0; i < chunks.length; i++) {
+        chunks[i].tokens = toks[i];
+      }
+    },
+
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      rerank.dispose();
+    },
+    };
+
+    yield* provide(reranker);
+  });
+}

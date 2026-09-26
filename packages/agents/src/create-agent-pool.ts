@@ -1,15 +1,18 @@
+import { call } from 'effection';
 import type { Operation } from 'effection';
+import type { ToolLifecycleHooks } from './Tool';
 import type { Branch } from '@lloyal-labs/sdk';
 import type { Session } from '@lloyal-labs/sdk';
 import { Tool } from './Tool';
-import type { AgentPoolResult } from './types';
-import type { AgentPolicy } from './AgentPolicy';
-import type { EntailmentScorer } from './source';
+import type { AgentPoolResult, JsonSchema } from './types';
+import type { AgentPolicy, Budget, GuardOverrides } from './AgentPolicy';
+import type { EntailmentScorer } from './scorer';
 import type { Orchestrator } from './orchestrators';
-import { Events } from './context';
+import { Ctx, Events, PoolDefaults } from './context';
 import { createToolkit } from './toolkit';
 import { withSpine } from './spine';
 import { useAgentPool } from './agent-pool';
+import type { Attachment } from '@lloyal-labs/media';
 
 // ── CreateAgentPool opts ────────────────────────────────────
 
@@ -26,7 +29,7 @@ export interface CreateAgentPoolOpts {
    */
   orchestrate: Orchestrator;
   /** Data access tools (array, createToolkit called internally). Optional — pool degenerates cleanly without tools. */
-  tools?: Tool[];
+  tools?: readonly Tool[];
   /**
    * The tool that ends an agent's turn — `report`, `email`, whatever the
    * harness designates. Passed by reference; the framework merges it into
@@ -35,13 +38,43 @@ export interface CreateAgentPoolOpts {
    * return value. Omit for pools that end on free-text/stop.
    */
   terminal?: Tool;
-  /** Max tool-use turns per agent before hard cut. @default 100 */
+  /**
+   * Every number an agent's turn obeys, as one row of the harness's table
+   * ({@link Budget}): the turn cap, the reserves, recovery, when retrieval
+   * tightens. The pool derives its policy from it. Give this or `policy`.
+   */
+  budget?: Budget;
+  /** The harness's overrides of the abilities' declared gates ({@link GuardOverrides}),
+   *  from its config, on the policy the budget derives. */
+  guards?: GuardOverrides;
+  /** Accept prose as an agent's result when it makes no tool call. On the policy the budget derives; not with `policy`. */
+  acceptFreeText?: boolean;
+  /**
+   * JSON Schema every agent's generation is constrained to — {@link UseAgentOpts.schema} for a pool. Compiled
+   * once to an eager grammar each agent decodes under in place of the tool-call grammar. It constrains what is
+   * generated and nothing more: whether an answer is kept is `acceptFreeText`'s or the policy's, and whether an
+   * agent reasons first is `enableThinking`'s. Set `enableThinking: false` when the answer is the value alone —
+   * the compiled grammar admits nothing before it.
+   */
+  schema?: JsonSchema;
+  /** The harness's part of the tool lifecycle, as data ({@link ToolLifecycleHooks}): walked after the
+   *  called tool's own hooks and before the framework's defaults — a floor on the return, a follow-up.
+   *  On the policy the budget derives; not with `policy`. */
+  hooks?: readonly ToolLifecycleHooks[];
+  /**
+   * How many agents the pool seats at once. Spawns beyond it wait in request
+   * order and are admitted as seats free, so any shape runs in waves under it.
+   * Unbounded by default: the pool seats what the context and its sequences hold.
+   */
+  capacity?: number;
+  /** Max tool-use turns per agent before hard cut. Wins over the row's. @default the row's, else 100 */
   maxTurns?: number;
-  /** Prune agent branches immediately when they voluntarily return, freeing KV mid-pool. */
+  /** Prune agent branches immediately when they voluntarily return, freeing KV mid-pool.
+   *  @default the {@link PoolDefaults} context's, else false */
   pruneOnReturn?: boolean;
-  /** Custom agent policy. @default DefaultAgentPolicy */
+  /** A policy of your own, in place of the one the budget derives. Never with `budget` or `guards`. */
   policy?: AgentPolicy;
-  /** Enable structured trace events. */
+  /** Per-token entropy/surprisal on `agent:produce`. @default the {@link PoolDefaults} context's, else false */
   trace?: boolean;
   /**
    * Explicit parent branch for warm path (Continuous Context).
@@ -56,14 +89,19 @@ export interface CreateAgentPoolOpts {
   session?: Session;
   /** Entailment scorer for semantic coherence across recursive depths. */
   scorer?: EntailmentScorer;
-  /** Echo detection threshold. @default 0.8 */
+  /** Assets available to the run — see {@link AgentPoolOptions.attachments}. */
+  attachments?: readonly Attachment[];
+  /** Echo detection threshold in LOGITS — the unit `scoreSimilarityBatch`
+   *  returns (a reranker log-odds difference, unbounded, centred on zero),
+   *  NOT a 0–1 similarity. Default applied by `DelegateTool`
+   *  (`DEFAULT_ECHO_THRESHOLD_LOGITS`), the one place that holds the number. */
   echoThreshold?: number;
   /** Check ancestor tasks for echo. @default false */
   checkAncestorEcho?: boolean;
   /**
    * Whether the chat template delimits `<think>` blocks for this pool's agents.
    * See {@link AgentPoolOptions.enableThinking}.
-   * @default true
+   * @default the {@link PoolDefaults} context's, else true
    */
   enableThinking?: boolean;
   /**
@@ -97,12 +135,13 @@ export interface CreateAgentPoolOpts {
  * events to the broadcast Channel. Returns `AgentPoolResult` with
  * branches pruned.
  *
- * @example Research harness
+ * @example Parallel agents over one spine, ending on a terminal tool, on one budget row
  * ```typescript
  * const pool = yield* agentPool({
  *   tools: [delegateTool, ...source.tools],
- *   orchestrate: parallel(questions.map(q => ({ content: q, systemPrompt: RESEARCH_PROMPT }))),
+ *   orchestrate: parallel(questions.map(q => ({ content: q, systemPrompt: WORKER }))),
  *   terminal: reportTool,
+ *   budget: BUDGETS.worker,
  * });
  * ```
  *
@@ -112,11 +151,18 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
   const broadcast = yield* Events.expect();
 
   const toolkit = createToolkit(opts.tools ?? [], opts.terminal);
+  // Compiled once here; the pool installs it on each agent's branch as the agent activates.
+  const ctx = yield* Ctx.expect();
+  const eagerGrammar = opts.schema
+    ? yield* call(() => ctx.jsonSchemaToGrammar(JSON.stringify(opts.schema)))
+    : undefined;
 
   // Warm path priority: explicit parent > session trunk > cold
   const warmParent = opts.parent ?? opts.session?.trunk ?? undefined;
 
   const sharedMode = opts.systemPrompt !== undefined;
+  // Resolved once, here, so the spine's header format and every agent's suffix agree.
+  const enableThinking = opts.enableThinking ?? (yield* PoolDefaults.expect()).enableThinking;
 
   return yield* withSpine(
     {
@@ -131,7 +177,7 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
       // SpineFmt FormatConfig (parser/grammar/triggers) match what the
       // per-agent suffixes get further down. Otherwise a caller passing
       // enableThinking:true gets divergent grammar between spine + suffix.
-      enableThinking: opts.enableThinking,
+      enableThinking,
     },
     function* (innerSpine) {
       // SHARED mode (systemPrompt set): the inner spine carries the
@@ -146,7 +192,7 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
       // that fork from the same parent. The inner spine is just a
       // separator-prefilled fork of parent — its extensions would be
       // discarded at pool close, breaking the multi-task spine pattern
-      // (research → synth over shared spine). On cold path, the inner
+      // (one pool's findings extending the spine a later pool forks from). On cold path, the inner
       // spine IS the persistent spine.
       const spine = sharedMode ? innerSpine : (warmParent ?? innerSpine);
       const sub = yield* useAgentPool({
@@ -157,10 +203,17 @@ export function* agentPool(opts: CreateAgentPoolOpts): Operation<AgentPoolResult
         terminalToolName: toolkit.terminalName,
         pruneOnReturn: opts.pruneOnReturn,
         maxTurns: opts.maxTurns,
+        capacity: opts.capacity,
         trace: opts.trace,
         policy: opts.policy,
+        budget: opts.budget,
+        guards: opts.guards,
+        acceptFreeText: opts.acceptFreeText,
+        hooks: opts.hooks,
+        eagerGrammar,
         scorer: opts.scorer,
-        enableThinking: opts.enableThinking,
+        attachments: opts.attachments,
+        enableThinking,
       });
 
       // Drain Subscription inside body — before withSpine's finally fires
