@@ -94,12 +94,14 @@ export interface Bridge<E, C, S> {
    *  browser opens a new connection, a desktop shell starts a new engine — so a
    *  view asks and never decides. Absent where the bridge cannot provide one. */
   recover?(): void;
-  /** What this run is acquiring, as last reported, or null when it acquires
-   *  nothing. Asked once on mount: the push arrives as an ordinary frame, but a
-   *  renderer that loaded after the install began — or after a refusal ended the
-   *  engine — would otherwise be left guessing. The same pairing as
-   *  {@link Bridge.onSession} and its "now" channel. Absent where the placement
-   *  retains nothing to answer with. */
+  /** What this run is acquiring, as last reported: the last `install:step` frame
+   *  — the empty list once the run has decided it acquires nothing (more) — or
+   *  null while the engine has not said yet. Null is undecided, never "nothing":
+   *  every install ends with a frame, and a view keeps waiting on null. Asked once
+   *  on mount: the push arrives as an ordinary frame, but a renderer that loaded
+   *  after the install began — or after a refusal ended the engine — would
+   *  otherwise be left guessing. The same pairing as {@link Bridge.onSession} and
+   *  its "now" channel. Absent where the placement retains nothing to answer with. */
   installNow?(): Promise<unknown>;
   /** Ask the reader to choose a local file, answering the path they picked or
    *  null if they cancelled. What choosing means belongs to the placement — a
