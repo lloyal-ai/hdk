@@ -11,8 +11,9 @@ export interface MissingInput {
 
 /**
  * A template's input, held to what it was given. A template declares its inputs in the one place that cannot
- * drift — the keys it reads — so a key it reads that the input did not name is a MISSING INPUT: reported to
- * `onMissing`, and read as the empty string, never as the word "undefined" in the text a model reads. What
+ * drift — the keys it reads — so a TOP-LEVEL key it reads that the input did not name is a MISSING INPUT:
+ * reported to `onMissing`, and read as the empty string rather than the word "undefined". (A key under a given
+ * object is that object's own affair — `it.a.b` with `a` given and `b` not is `undefined`, as in any JS.) What
  * `onMissing` does is the caller's: a test throws, so a typo in a template fails there; a run notes it and goes
  * on, so an edge the framework misfires never costs a reader the run. A key given as `undefined` is given.
  *
