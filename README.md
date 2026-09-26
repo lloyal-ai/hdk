@@ -7,11 +7,10 @@
 
 **A harness is a tree of owned lifetimes governing a tree of live inference state.**
 
-One model resident in the process. Agents forked from its context by a structured-concurrency runtime.
-Specialist models bound beside it as services. Media addressed by content. One binding carrying the program
-to every surface. This repository is the platform beneath [`lloyal-ai`](https://github.com/lloyal-ai/lloyal-ai),
-the CLI that scaffolds a harness; the harness is a TypeScript program you own, and everything here is what
-that program stands on.
+This is the platform beneath [`lloyal-ai`](https://github.com/lloyal-ai/lloyal-ai), the CLI that scaffolds a
+harness: a TypeScript program you own, with one model resident in its process, agents forked from that model's
+context by a structured-concurrency runtime, specialist models bound beside it as services, media addressed by
+content, and one binding carrying the program to every surface. Everything here is what that program stands on.
 
 ```sh
 npx lloyal-ai new my-app
@@ -42,88 +41,6 @@ harness              your application: the procedure, the product, the domain ru
 gives application work an ownership tree, the way liblloyal gives inference a tree of live states. The HDK
 aligns the two. Generators and `yield*` are the syntax of that lifetime model, not the architectural idea.
 [Thinking in lloyal](https://docs.lloyal.ai/thinking-in-lloyal) is the whole account.
-
-## The packages
-
-> "Simplicity is hard work. But, there's a huge payoff. The person who has a genuinely simpler system — a
-> system made out of genuinely simple parts — is going to be able to affect the greatest change with the least
-> work."
-> — Rich Hickey, *Simplicity Matters*, RailsConf 2012
-
-Fifteen packages. Each does one thing, and the harness composes them.
-
-| package | layer | what it is |
-|---|---|---|
-| `@lloyal-labs/sdk` | runtime | Backend-agnostic inference primitives over the native binding: `Branch`, `BranchStore`, `Session`, `Rerank`. The one layer that speaks to `lloyal.node`. |
-| `@lloyal-labs/lloyal-agents` | runtime | The agent runtime: an `Agent` is a branch with intent, history and a result; the pool advances every agent a tick at a time over one shared KV cache; `withSpine` borrows live attention and returns durable findings; `AgentPolicy` decides at explicit boundaries; `parallel` / `chain` / `dag` orchestrate; replay reconstructs a branch from its record. Knows no tool but Delegate. |
-| `@lloyal-labs/rig` | runtime | The app runtime, Retrieval-Interleaved Generation: abilities and their registry, the service contract, `Source` and admission through the reranker, the terminal tools (`citedReport`, `defineOutput`), configuration as data, the command loop, execution. Node-free at its root; `rig/node` holds the boots, models and slots, the config files, the media store and the served host; `rig/testing` runs a real harness over a scripted model with no weights. |
-| `@lloyal-labs/media` | content plane | **Content-addressed media ingress.** An image or a PDF enters once, is normalised under a bounded gate, and is written by digest into an OCI Image Layout that `oras` can push to any registry; from then on the run carries descriptors, never bytes, so a media-bearing run replays from the exact pixels the model saw. [Below.](#the-content-plane) |
-| `@lloyal-labs/binding` | surfaces | The harness's headless interface: an event bus down, commands up, and the projection a view folds over a bridge. Transports in `/node` (in-process, JSONL, the fork bridge) and `/web` (wss). Rack, for a program that runs rather than answers. |
-| `@lloyal-labs/host` | serving | One resident model, N native harness sessions, FIFO admission: density through sharing, because the weights load once. Puma. |
-| `@lloyal-labs/relay` | serving | The self-hostable relay: a headless harness served to remote frontends over wss, one process per connection. Unicorn. |
-| `@lloyal-labs/desktop` | surfaces | The Electron main-process pieces: the engine over the project's own cli, the window, the content scheme that serves the store to the renderer, the preload bridge. |
-| `@lloyal-labs/ui` | surfaces | The view side: `HarnessProvider` and its hooks over any bridge, the installer that shows a first run acquiring its models, the agent fold, prose and figure primitives that resolve a descriptor to what a reader sees. A view never holds truth and never calls the model. |
-| `@lloyal-labs/dev-tools` | surfaces | The developer's pane: the timeline of every agent's lane on the one context, the sources funnel, the settings with their provenance, over the same events, present only under `LLOYAL_DEV=1`. |
-| `@lloyal-labs/channel-verify` | channel | Canonical-JSON signing payloads and Ed25519 verification, zero dependencies, Apache 2.0: the public half of the channel, so anyone who wants to verify it may. |
-| `@lloyal-labs/web-ability` | ability | Web search and page reading: keyed through Tavily, keyless with a paced fallback, every page admitted through the reranker under a token budget. |
-| `@lloyal-labs/corpus-ability` | ability | A folder of markdown as a source: BM25 and the embedder find candidates, the reranker judges them, the index rebuilds under a live run when its path changes. |
-| `@lloyal-labs/documents-ability` | ability | The documents attached to a conversation: text pages searched and read, and a page rendered and projected into the model when an agent must look at it. Declares `vision`. |
-| `@lloyal-labs/wikipedia-ability` | ability | Search and fetch over Wikipedia's public REST, no key: the source the wiki template starts with. |
-
-### The content plane
-
-Attach an image or a PDF to a run and three things become true: the run **replays** from the exact bytes the
-model originally saw, those bytes stay **inspectable** for as long as the project exists, and the store holding
-them is a **valid OCI Image Layout** — `oras` pushes a run's media to any registry with none of this package's
-code in the path. The artifact infrastructure you already operate can host your model's inputs.
-
-```
-attach                 ingress                              store                          the model                    the answer
-image · PDF   ─▶  normalise, bounded:            ─▶  media/ — an OCI Image Layout   ─▶  a page is projected   ─▶  the same page comes back
-                  4 concurrent, 16 queued            oci-layout · index.json               into the trunk ONCE,       out as a figure: the report
-                  images to 4.2 MP                   blobs/sha256/<digest>                 through the vision          cites a descriptor, the view
-                  PDFs to 32 MB, 120 s,              a manifest per attachment,            service, and every          resolves it through the
-                  200 rendered · 400 text            a descriptor from then on             agent forked from it        content routes, the reader
-                  pages, 16 figures                                                        shares it                   opens the exact page
-```
-
-Content addressing happens at the point of admission. A trace records a reference for every image, never the
-pixels, so the store is part of the run's correctness, not an attachment feature. The layout is checked in CI
-by driving `oras` against a layout this code wrote, and this reader against a layout `oras` wrote
-(`npm run verify:oci`): the format claim holds independently of what the code believes about itself.
-
-### Models as services
-
-One contract for every model beside the trunk. A block under `model:` in `harness.yml` requests one; its
-contents select the weights; an absent block is a decision. The install derives its steps from the blocks,
-the machine gate refuses an undersized machine before a byte downloads, and harness or ability code reaches
-a bound service with one call, `yield* service('reranker')`. Three rows ship today, in `rig`:
-
-| service | what binds |
-|---|---|
-| `reranker` | A cross-encoder that scores what an agent fetched against the question it asked, relative within the query, so only the passages that answer it enter context. The [focal lens](https://docs.lloyal.ai/focal-lens). |
-| `vision` | The projector paired with the trunk model, so a page or an image is projected into the model's context the moment an agent must look at it. |
-| `embedding` | An embedder over its own context, serialized, with pooling declared per model: candidates found by distance for the reranker to judge. |
-
-The same contract extends to audio encoders, speech sanitizers and specialist decision models: a row in one
-table. [Services](https://docs.lloyal.ai/services) · [harness.yml](https://docs.lloyal.ai/harness-yml).
-
-### Surfaces and serving
-
-A harness runs as a terminal app, a desktop app or a served browser app off one program, because it exposes
-its work through one interface: events down, commands up. Everything above that interface is convention, and
-it is the shape Rails shipped in 2007: the binding is Rack, the host is Puma, the relay is Unicorn, the driver
-that wires a harness to a host without either knowing the other is `config.ru`, and abilities are the gems —
-ours arrive signed. [You already know this architecture.](https://lloyal.ai/blog/you-already-know-this-architecture/)
-
-### The signed channel
-
-Abilities never come from npm. `lloyal install` fetches the tarball from
-[apps.lloyal.ai](https://apps.lloyal.ai), verifies its signature against the trust root shipped with the
-framework, vendors the exact bytes into the project, and only then points `package.json` at them. Each ability
-is a `Source`, its tools, the instructions to use them, its configuration and the services it needs, validated
-by `defineAbility`; a saved setting applies to a running ability at its next take, under a live run, without a
-restart. [Abilities](https://docs.lloyal.ai/abilities).
 
 ## Why in-process is a different capability
 
@@ -158,6 +75,138 @@ that tree *inside your app*, pruned by your policy, not a cache. A cloud per-tok
 economics. [Continuous context](https://docs.lloyal.ai/continuous-context) ·
 [agent policy and context pressure](https://docs.lloyal.ai/agent-policy-and-context-pressure).
 
+## The packages
+
+> "Simplicity is hard work. But, there's a huge payoff. The person who has a genuinely simpler system — a
+> system made out of genuinely simple parts — is going to be able to affect the greatest change with the least
+> work."
+> — Rich Hickey, *Simplicity Matters*, RailsConf 2012
+
+Fifteen packages. Each does one thing, and the harness composes them.
+
+| package | layer | what it is |
+|---|---|---|
+| `@lloyal-labs/sdk` | runtime | Backend-agnostic inference primitives over the native binding: `Branch`, `BranchStore`, `Session`, `Rerank`. The one layer that speaks to `lloyal.node`. |
+| `@lloyal-labs/lloyal-agents` | runtime | The agent runtime, on [Effection](https://frontside.com/effection)'s structured concurrency. An `Agent` is a branch with intent, history and a result; the pool advances every agent a tick at a time over one shared KV cache; `withSpine` borrows live attention and returns durable findings; `AgentPolicy` decides at explicit boundaries; `parallel` / `chain` / `dag` orchestrate. An agent's lifetime is a scope: cancel it and everything inside, its slice of the model's memory included, is released by construction. Knows no tool but Delegate. |
+| `@lloyal-labs/rig` | runtime | The app runtime, Retrieval-Interleaved Generation: abilities and their registry, the service contract, `Source` and admission through the reranker, the terminal tools, configuration as data, the command loop. Its root is node-free; `rig/node` holds the boots, the models and slots, the config files, the media store and the served host; `rig/testing` runs a real harness over a scripted model with no weights. |
+| `@lloyal-labs/media` | content plane | **Duplex content addressing.** Whatever enters the model is addressed on the way in — a manifest per attachment, the exact bytes the projector encoded as a representation, the parameters that derived them recorded beside it — and cited by that same address on the way out, so an answer can point at what the model saw and a view can open it. The store is an OCI Image Layout that `oras` pushes to any registry. [Below.](#the-content-plane) |
+| `@lloyal-labs/binding` | surfaces | The harness's headless interface: an event bus down, commands up, and the projection a view folds over a bridge. Transports in `/node` (in-process, JSONL, the fork bridge) and `/web` (wss). Rack, for a program that runs rather than answers — [below](#surfaces-and-serving). |
+| `@lloyal-labs/host` | serving | One resident model, N native harness sessions, FIFO admission: density through sharing, because the weights load once. Rails' Puma. |
+| `@lloyal-labs/relay` | serving | The self-hostable relay: a headless harness served to remote frontends over wss, one process per connection. Rails' Unicorn. |
+| `@lloyal-labs/desktop` | surfaces | The Electron main-process pieces: the engine over the project's own cli, the window, the content scheme that serves the store to the renderer, the preload bridge. |
+| `@lloyal-labs/ui` | surfaces | The view side: `HarnessProvider` and its hooks over any bridge, the installer that shows a first run acquiring its models, the agent fold, prose and figure primitives that resolve a descriptor to what a reader sees. A view never holds truth and never calls the model. |
+| `@lloyal-labs/dev-tools` | surfaces | The developer's pane: the timeline of every agent's lane on the one context, the sources funnel, the settings with their provenance, over the same events, present only under `LLOYAL_DEV=1`. |
+| `@lloyal-labs/channel-verify` | channel | Canonical-JSON signing payloads and Ed25519 verification, zero dependencies, Apache 2.0: the public half of the channel, so anyone who wants to verify it may. |
+| `@lloyal-labs/web-ability` | ability | Web search and page reading: keyed through Tavily, keyless with a paced fallback, every page admitted through the reranker under a token budget. |
+| `@lloyal-labs/corpus-ability` | ability | A folder of markdown as a source: BM25 finds candidates, the reranker judges them, and the index is rebuilt while the old one still serves when its path changes under a live run. |
+| `@lloyal-labs/documents-ability` | ability | The documents attached to a conversation, through the content plane: a PDF is read into text pages that agents search and read, a page is rendered and projected into the model only when an agent must look at it, and the answer cites it as `attachment://<digest>/page/<n>`, which the view opens at that page. Declares `vision`. |
+| `@lloyal-labs/wikipedia-ability` | ability | Search and fetch over Wikipedia's public REST, no key: the source the wiki template starts with. |
+
+### The content plane
+
+Attach something to a run and three things become true: the run **replays** from the exact bytes the model
+originally saw, those bytes stay **inspectable** for as long as the project exists, and the store holding them
+is a **valid OCI Image Layout** — `oras` pushes a run's media to any registry with none of this package's code
+in the path. The artifact infrastructure you already operate can host your model's inputs.
+
+The plane is duplex: one address serves projection and citation.
+
+**In — projection.** Bytes arrive at the ingress, and the bytes pick the door. They are normalised under a
+bounded gate (four concurrent, sixteen queued, images to 4.2 megapixels) and written by digest into `media/`,
+an OCI Image Layout: `oci-layout`, `index.json`, `blobs/sha256/<digest>`. Each attachment is a manifest whose
+layers are tagged by role — the **representation** that entered the model's cache, the **source** the user
+supplied, retained or not — with the derivation parameters on every representation. From then on the run
+carries the descriptor and never the bytes: on the wire, in the state, in the replay record.
+
+**Out — citation.** The answer cites the address (`attachment://<digest>…`). The view resolves it through the
+manifest, so a reader opens the exact bytes the model saw, never the original in their place.
+
+Addressing the derived bytes and recording what derived them is a correctness requirement, not provenance:
+one source under two settings yields different pixels and therefore different KV, and a replay under changed
+configuration must not silently rebuild a different cache state. A trace records a reference for every image,
+never the pixels, so the store is part of the run's correctness. The manifest is the indirection that lets the
+plane grow without the layers above noticing — an image is one representation and maybe a source, a video is a
+source plus sampled frames, a live capture is frames with no source. Each ability brings its own door and its
+own citation grammar over this plane; the documents ability's PDF pages are one. The layout is checked in CI
+by driving `oras` against a layout this code wrote, and this reader against a layout `oras` wrote
+(`npm run verify:oci`), so the format claim holds independently of what the code believes about itself.
+
+### Models as services
+
+One contract for every model beside the trunk. A block under `model:` in `harness.yml` requests one; its
+contents select the weights; an absent block is a decision. The install derives its steps from the blocks,
+the machine gate refuses an undersized machine before a byte downloads, and harness or ability code reaches
+a bound service with one call, `yield* service('reranker')`. Three rows ship today, in `rig`:
+
+| service | what binds |
+|---|---|
+| `reranker` | A cross-encoder that scores what an agent fetched against the question it asked, relative within the query, so only the passages that answer it enter context. The [focal lens](https://docs.lloyal.ai/focal-lens). |
+| `vision` | The projector paired with the trunk model, so a page or an image is projected into the model's context the moment an agent must look at it. |
+| `embedding` | An embedder over its own context, serialised, with pooling declared per model: candidates found by distance for the reranker to judge. |
+
+The same contract extends to audio encoders, speech sanitizers and specialist decision models: a row in one
+table. [Services](https://docs.lloyal.ai/services) · [harness.yml](https://docs.lloyal.ai/harness-yml).
+
+### Surfaces and serving
+
+A harness reaches a terminal, a desktop app, a browser and a script, and it runs in-process, across a fork
+and across a network. Four surfaces by three topologies is every surface knowing every placement, unless
+there is a seam. There is one, and it is Rack's move replayed: N surfaces and M topologies become N + M
+adapters against one contract, `@lloyal-labs/binding`. Rack is a request cycle because a web app is silent
+until asked; a resident model runs, so the binding is a stream: events flow down continuously, commands
+interject upward, a bootstrap so a surface's first paint already reflects reality, a dispose because sockets
+die. The rest of the serving stack is the shape Rails settled into, and you already know it.
+
+| you knew it as | in lloyal it is | what it is |
+|---|---|---|
+| Rack — one tiny interface between every framework and every server | `@lloyal-labs/binding` | one tiny interface between every harness and every surface |
+| Puma — many requests multiplexed in one process | `@lloyal-labs/host` | many sessions multiplexed over one resident model |
+| Unicorn — process isolation, one request per worker | `@lloyal-labs/relay` | isolation by OS process, one harness per connection |
+| `config.ru` — five generated lines wiring app to server | the driver | a few generated lines wiring harness to host |
+| `rails new` → `rails server` | `lloyal-ai new` → your harness's own bin | scaffold the application, boot it in one command |
+| Basecamp — the application Rails was extracted from | reasoning.run | the working product that came first; the framework is its generalisation |
+| Gems | Abilities | installable capabilities — ours arrive signed |
+
+Puma and Unicorn coexisted because they answer different questions, and here the stakes of that fork invert.
+The shared resource is no longer a framework heap but the weights, hundreds of gigabytes for a frontier
+model, which fit a box exactly once. So the host loads the model once and runs N sessions as structured
+children over that single residency, each with its own context, KV state and agent population; the relay
+forks one harness process per connection with its own residency, for the deployment that wants the kernel
+as its boundary. Capacity is a hard integer because a session's KV cache reserves a physical slice of GPU
+memory, so the host runs a small FIFO with explicit admission — queued, warming, live — and the client can see
+which. The choice between the two is an operator's line in a config; the harness cannot tell which one it is
+living in.
+
+The driver is `config.ru`: the host imports no harness and no SDK, the harness imports no host, and
+the driver is the only file that knows both. Because the host only ever sees that small interface, the whole
+serving lifecycle — admission, queueing, teardown, failure containment — is tested against a fake harness with
+no model and no GPU in the loop. A harness author never imports the binding and never meets the host or the
+relay. Where the harness runs is a deployment decision, not an application decision.
+[You already know this architecture.](https://lloyal.ai/blog/you-already-know-this-architecture/)
+
+### Signed abilities are the plugins
+
+An ability is a plugin whose content reaches the model's attention: a `Source`, its tools, the instructions to
+use them, the configuration an operator may set and the services it requires, validated by `defineAbility`
+at import, before it can be enabled, let alone say anything to the model. Gems, with one difference that
+decides the whole design: OS sandboxing protects the machine and does nothing about what a plugin's content
+does to the model's reasoning, and a runtime on a user's machine has no kill switch. So safety is upstream and
+structural.
+
+```
+npx lloyal-ai ability:new acme/jira      # scaffold one: a Source, tools, a skill, a manifest, its tests
+npx lloyal-ai publish                    # through apps.lloyal.ai: reviewed, then Ed25519-signed
+npx lloyal-ai install acme/jira@^1.2.0   # verified before anything is written; vendored as exact bytes
+```
+
+- **The install verifies before it writes.** The signed catalogue is checked against trust roots compiled into the framework; the range resolves to a version the catalogue pins; the manifest is cross-checked; the tarball's signature is verified over its raw bytes and its integrity digest checked; only then is it vendored into the project and `package.json` pointed at those bytes. A failure at any step rolls back. The install command takes a name, never a URL, so the channel cannot fragment.
+- **What it may say is fixed before it runs.** Names, `useWhen` and the skill are grammar-constrained at definition time: no role markers, no code fences, no newlines, never the boundary marker. Every per-spawn message is prefixed with a marker naming the protocol in force, so text arriving through a fetched page reads as content inside a discipline, not as a new instruction frame. A protected tool needs the session's consent; the model can request and cannot authorise.
+- **Two gates, and no fallback.** Install asks whether every service the ability declares can be selected from the project's configuration and offers to write the missing block; enable refuses an ability whose service did not bind. An ability declares only what it cannot function without, and the harness never provisions a model because a plugin asked.
+- **Live under a run.** A setting saved while agents are working applies at the ability's next take; a resource it builds is rebuilt beside the one still serving and retired when nothing holds it. No restart, no run lost.
+- **The CLI shows the attention surface from the verified bytes** — protocol, tools, configuration, the skill's lines — before anything runs, so what you install is what was reviewed.
+
+Four abilities ship first-party and ride the same path as anyone's. [Abilities](https://docs.lloyal.ai/abilities).
+
 ## The programming model
 
 The application contract is deliberately small — a harness is a scope that stays alive for a Session:
@@ -172,13 +221,9 @@ export function* harness(
 }
 ```
 
-Three trees describe one run, and they don't have to line up: the **lifetime tree** (Effection — what ends
-together), the **inference-state tree** (`BranchStore` — what attention is inherited), and the
-**orchestration graph** (your code — what depends on what). When the Session is released, the harness scope
-ends and every child — pools, tool calls, temporary branches — unwinds with it. You never enumerate what to
-cancel; the ownership tree already knows.
-
-Four lines carry the model:
+When the Session is released, the harness scope ends and every child — pools, tool calls, temporary branches —
+unwinds with it. You never enumerate what to cancel; the ownership tree already knows. Four lines carry the
+model:
 
 ```typescript
 const value = yield* operation;                       // perform owned work here, under this owner
@@ -191,32 +236,6 @@ The scaffolded templates are the worked examples, each with its own README and r
 [deep-research](https://github.com/lloyal-ai/lloyal-ai/blob/main/templates/research/README.md) and
 [wiki](https://github.com/lloyal-ai/lloyal-ai/blob/main/templates/basic/README.md). Building without the
 scaffold is [build your first harness](https://docs.lloyal.ai/build-your-first-harness).
-
-## Repo layout
-
-```
-packages/
-  sdk/             @lloyal-labs/sdk
-  agents/          @lloyal-labs/lloyal-agents
-  rig/             @lloyal-labs/rig
-  media/           @lloyal-labs/media
-  binding/         @lloyal-labs/binding
-  host/            @lloyal-labs/host
-  relay/           @lloyal-labs/relay
-  desktop/         @lloyal-labs/desktop
-  ui/              @lloyal-labs/ui
-  dev-tools/       @lloyal-labs/dev-tools
-  channel-verify/  @lloyal-labs/channel-verify
-  abilities/
-    web/           @lloyal-labs/web-ability
-    corpus/        @lloyal-labs/corpus-ability
-    documents/     @lloyal-labs/documents-ability
-    wikipedia/     @lloyal-labs/wikipedia-ability
-```
-
-The native binding [`@lloyal-labs/lloyal.node`](https://github.com/lloyal-ai/lloyal.node) lives in its own
-repository and is pulled in as a dependency. The CLI and the templates live in
-[`lloyal-ai/lloyal-ai`](https://github.com/lloyal-ai/lloyal-ai).
 
 ## Requirements
 
@@ -257,7 +276,9 @@ npm run typecheck   # every package, and the root test config that covers the te
 npm test            # build, then the unit and invariant suites
 ```
 
-Every PR runs build, typecheck, and unit tests on CI, plus a cross-repo GPU integration job: HDK PRs trigger
+The native binding [`@lloyal-labs/lloyal.node`](https://github.com/lloyal-ai/lloyal.node) lives in its own
+repository and is pulled in as a dependency; the CLI and the templates live in
+[`lloyal-ai/lloyal-ai`](https://github.com/lloyal-ai/lloyal-ai). Every PR runs build, typecheck, and unit tests on CI, plus a cross-repo GPU integration job: HDK PRs trigger
 [`lloyal.node`](https://github.com/lloyal-ai/lloyal.node)'s GPU workflow, which builds the PR's packages
 against the native runtime on NVIDIA L4 hardware and runs the full agent integration suite before merge.
 
@@ -269,16 +290,12 @@ against the native runtime on NVIDIA L4 hardware and runs the full agent integra
 
 ## Why FSL instead of MIT?
 
-HDK apps are **capability-bearing** — arbitrary code (browser automation, file access, payment connectors)
-bundled with skill instructions, running in shared inference context. OS sandboxing protects the machine; it
-does nothing about what an app's content reaches the model's attention. Cloud agent platforms can yank
-misbehaving extensions with a kill switch; HDK runs on user machines and can't.
-
-Safety has to be **upstream and structural**: the canonical channel at [apps.lloyal.ai](https://apps.lloyal.ai)
-reviews and Ed25519-signs every Ability; the runtime verifies that signature against an embedded trust root at
-install. MIT doesn't preserve that — a fork could strip the trust root and ship to an unreviewed channel. FSL
-restricts one thing — that fork — to keep the trust root enforceable. It can't stop a determined bad actor; it
-keeps channel-switching from being the easy path.
+Because abilities reach the model's attention and a runtime on a user's machine has no kill switch, safety is
+the channel: [apps.lloyal.ai](https://apps.lloyal.ai) reviews and Ed25519-signs every ability, and the runtime
+verifies that signature against a trust root compiled in at install ([above](#signed-abilities-are-the-plugins)).
+MIT does not preserve that — a fork could strip the trust root and ship to an unreviewed channel. FSL restricts
+one thing, that fork, to keep the trust root enforceable. It cannot stop a determined bad actor; it keeps
+channel-switching from being the easy path.
 
 ## License
 
