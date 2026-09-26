@@ -19,7 +19,7 @@ export {
   TavilyProvider, createKeylessSearchProvider,
   DelegateTool,
   PlanTool, taskToContent, singleTaskPlan, taskKey, taskIndexOf,
-  defineOutput, citedReport, weaveSourcesIntoResult, weaveOrdinalCitations, RIG_REPORT,
+  defineOutput, citedReport, weaveSourcesIntoResult, RIG_REPORT,
 } from './tools';
 export type {
   DelegateToolOpts,

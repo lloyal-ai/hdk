@@ -30,7 +30,7 @@ export type { DelegateToolOpts } from './delegate';
 export { PlanTool, taskToContent, singleTaskPlan, taskKey, taskIndexOf } from './plan';
 export { defineOutput, citedReport } from './output';
 export type { Output, OutputOptions } from './output';
-export { weaveSourcesIntoResult, weaveOrdinalCitations } from './weave-sources';
+export { weaveSourcesIntoResult } from './weave-sources';
 export type { WeaveSource } from './weave-sources';
 export type { PlanResult, PlanIntent, PlanToolOpts, PlanPromptInput, ResearchTask } from './plan';
 
