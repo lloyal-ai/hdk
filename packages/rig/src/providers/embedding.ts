@@ -33,16 +33,20 @@ const POOLING: Record<EmbeddingPooling, PoolingType> = { mean: PoolingType.MEAN,
  * Create an {@link Embedder} backed by a dedicated embedding context, as an Effection `resource()`: it lives
  * as long as the scope that bound it, and the context is freed only once every encode already submitted to
  * the native runtime has settled — a cancelled wait on the JS side proves nothing about a worker mid-flight.
+ * A caller's `dispose()` is the same release, earlier: the scope's exit then finds nothing left to free.
  *
  * @category Rig
  */
 export function createEmbedder(modelPath: string, opts: EmbedderLoadOpts): Operation<Embedder> {
   return resource(function* (provide) {
     const nCtx = opts.nCtx ?? 2048;
-    // Owned from the request: a halt while the model loads still frees the context when it arrives.
+    // Owned from the request: a halt while the model loads still frees the context when it arrives. One free,
+    // whichever comes first — a caller's `dispose()` once the queue drains, or the scope's exit.
+    let freed = false;
+    const free = (c: SessionContext): void => { if (freed) return; freed = true; c.dispose(); };
     const ctx = yield* acquire(
       () => createContext({ modelPath, nCtx, nBatch: nCtx, nSeqMax: 1, embeddings: true, poolingType: POOLING[opts.pooling] }) as Promise<SessionContext>,
-      (c) => c.dispose(),
+      free,
     );
 
     // The one queue EVERY call joins — tokenize as much as embed, since both reach the native context — refused
@@ -73,9 +77,10 @@ export function createEmbedder(modelPath: string, opts: EmbedderLoadOpts): Opera
               throw new Error(`text ${i} is ${tokenized[i].length} tokens; \`model.embedding.context\` is ${nCtx} — shorten the text or raise the context`);
             }
           }
+          // Work once admitted runs whole: the free waits on this queue's tail, so a dispose mid-batch cannot
+          // pull the context from under it, and a caller is never answered half a batch.
           const out: Float32Array[] = [];
           for (const tokens of tokenized) {
-            if (disposed) throw new Error('the embedder is disposed');
             await ctx.kvCacheClear();
             await ctx.encode(tokens);
             out.push(new Float32Array(ctx.getEmbeddings(true)));
@@ -84,12 +89,19 @@ export function createEmbedder(modelPath: string, opts: EmbedderLoadOpts): Opera
         });
       }),
       dispose() {
+        if (disposed) return;
         disposed = true;
+        // The release its contract promises: no new work from here, and the context freed once the work in
+        // flight has settled — never under a native call. The tail is fixed now, since nothing joins the queue
+        // after this line.
+        const drained = settled;
+        void drained.then(() => free(ctx), () => free(ctx));
       },
     };
 
-    // Stop taking work at once and let the queue drain; registered after the acquisition, so it runs before the
-    // context is freed. `ensure` rather than `finally`: a `yield*` inside a finally loses a halt.
+    // The scope's exit does the same — stop taking work, let the queue drain — and frees what a caller has not
+    // already; registered after the acquisition, so it runs before the context is freed. `ensure` rather than
+    // `finally`: a `yield*` inside a finally loses a halt.
     yield* ensure(function* () {
       embedder.dispose();
       yield* until(settled);

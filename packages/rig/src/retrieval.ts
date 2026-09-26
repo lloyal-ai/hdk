@@ -136,6 +136,7 @@ export interface Embedder {
   embed(texts: readonly string[]): Operation<Float32Array[]>;
   /** Tokenize through the encoder's own vocabulary — what fits is measured in these. */
   tokenize(text: string): Operation<number[]>;
-  /** Release the encoder. Idempotent; the owning scope calls it. */
+  /** Release the encoder: no new work from here, and its context freed once the work in flight has settled.
+   *  Idempotent; the owning scope's exit does the same, so a consumer need never call it. */
   dispose(): void;
 }

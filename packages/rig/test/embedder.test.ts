@@ -126,6 +126,30 @@ describe('teardown', () => {
     expect(afterScope.indexOf('encode:1')).toBeLessThan(afterScope.indexOf('dispose'));
   });
 
+  it('dispose() IS the release: the context is freed once the encode in flight settles — before the scope ends — and the scope\'s exit frees nothing twice', async () => {
+    let release!: () => void;
+    gate.open = new Promise<void>((resolve) => { release = resolve; });
+    let beforeScopeEnd: string[] = [];
+    let afterScope: string[] = [];
+    const done = run(function* () {
+      yield* scoped(function* () {
+        const e = yield* createEmbedder('/e.gguf', { pooling: 'mean' });
+        yield* spawn(() => e.embed(['a']));   // parks on the gate inside encode
+        yield* sleep(0);
+        e.dispose();                          // a caller releasing it under work in flight
+        expect(log).not.toContain('dispose');  // not under the encode
+        release();
+        yield* call(() => new Promise((r) => setTimeout(r, 20)));
+        beforeScopeEnd = [...log];             // freed while the scope still lives
+      });
+      afterScope = [...log];
+    });
+    await done;
+    expect(beforeScopeEnd.at(-1)).toBe('dispose');
+    expect(beforeScopeEnd.indexOf('encode:1')).toBeLessThan(beforeScopeEnd.indexOf('dispose'));
+    expect(afterScope.filter((l) => l === 'dispose')).toHaveLength(1);
+  });
+
   it('after dispose, embed AND tokenize refuse rather than queueing onto a freed context', async () => {
     await run(function* () {
       const e = yield* createEmbedder('/e.gguf', { pooling: 'mean' });
