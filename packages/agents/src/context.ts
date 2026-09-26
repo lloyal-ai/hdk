@@ -8,9 +8,6 @@ import type { AttachmentStore, ContentIngress } from '@lloyal-labs/media';
 import { NullAttachmentStore, NoContentIngress } from '@lloyal-labs/media';
 import type { TraceId } from './trace-types';
 import type { Agent, FormatConfig } from './Agent';
-import type { Reranker } from './chunk';
-import type { AbilityRegistry } from './ability-types';
-import type { AbilityConfigStore } from './ability-config';
 import type { GrantStore } from './grant-store';
 
 /**
@@ -161,55 +158,9 @@ export const CallingAgent = createContext<Agent>('lloyal.callingAgent');
 export const SpineFmt = createContext<FormatConfig | null>('lloyal.spineFmt', null);
 
 /**
- * Effection context holding the harness-wide {@link Reranker}.
- *
- * Set by the harness once via `RerankerCtx.set(reranker)` after
- * `createReranker(...)`. Ability factories (`createWebAbility`, `createCorpusAbility`,
- * third-party abilities) read this via `yield* RerankerCtx.expect()` at
- * construction time and pass it to their `Source` / search tools.
- *
- * One reranker per harness is the invariant: chunks tokenized by one
- * reranker can't be re-scored by another without re-tokenization.
- *
- * @category Contract
- */
-export const RerankerCtx = createContext<Reranker>('lloyal.reranker');
-
-/**
- * Effection context holding the {@link AbilityRegistry}.
- *
- * Set by `createAbilityRegistry(...)` (lives in `@lloyal-labs/rig`). The spine
- * renderer reads it to compose the catalog in registration order. No gate
- * reads it: a spawn's `assignedAbility` is a non-enforcing label, and the one
- * dispatch-time precondition is authorization (`Tool.protected` and the
- * session's grants).
- *
- * @category Contract
- */
-export const AbilityRegistryCtx = createContext<AbilityRegistry>('lloyal.abilityRegistry');
-
-/**
- * Effection context holding the harness's {@link AbilityConfigStore}.
- *
- * Set by `createAbilityRegistry({ configStore })` from its `configStore`
- * option, and seeded into each ability's detached scope so factories can
- * read it. Ability factories read their own config via
- * `(yield* AbilityConfigStoreCtx.expect()).get(manifest.name)` at
- * construction time. The framework validates the stored config against
- * `ability.manifest.configSchema` when the ability is enabled.
- *
- * Whole-replace semantics on `set`; last-write-wins on concurrent
- * writes.
- *
- * @category Contract
- */
-export const AbilityConfigStoreCtx = createContext<AbilityConfigStore>('lloyal.abilityConfigStore');
-
-/**
  * Effection context holding the session's {@link GrantStore}.
  *
- * Seeded by `createAbilityRegistry({ grantStore })` (lives in `@lloyal-labs/rig`)
- * alongside {@link AbilityConfigStoreCtx}. The authGuard
+ * Seeded by `createAbilityRegistry({ grantStore })` (lives in `@lloyal-labs/rig`). The authGuard
  * reads it once per pool to resolve which `protected` tools the session is
  * authorized to call — `protected` tools without a grant reject at dispatch
  * time (`tool:authReject`). The store holds the consent decision; the

@@ -31,7 +31,9 @@ import { describe, it, expect } from 'vitest';
 import { defineAbility } from '../src/define-ability';
 import type { AbilitySetup } from '../src/define-ability';
 import { SUPPORTED_ABILITY_PROTOCOL_VERSIONS } from '../src/protocol';
-import type { AbilityManifest, Source, Tool } from '@lloyal-labs/lloyal-agents';
+import type { Tool } from '@lloyal-labs/lloyal-agents';
+import type { AbilityManifest } from '../src/ability-types';
+import type { Source } from '../src/source';
 
 const baseManifest: AbilityManifest = {
   name: 'gate',

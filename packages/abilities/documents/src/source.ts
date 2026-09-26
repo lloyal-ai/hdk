@@ -1,5 +1,6 @@
-import { Source } from '@lloyal-labs/lloyal-agents';
-import type { Tool, Chunk } from '@lloyal-labs/lloyal-agents';
+import { Source } from '@lloyal-labs/rig';
+import type { Tool } from '@lloyal-labs/lloyal-agents';
+import type { Chunk } from '@lloyal-labs/rig';
 import type { Reranker, Document } from '@lloyal-labs/rig';
 import { loadDocuments } from '@lloyal-labs/rig';
 import type { Attachment, AttachmentStore } from '@lloyal-labs/media';

@@ -13,6 +13,11 @@
  * `abilities` family layers for every app: committed entries, then the local
  * overlay whole-replacing a named ability, path-shaped values resolved.
  *
+ * A block — the family a three-level key lives in, `model.vision` — is carried
+ * by its presence: `vision: {}` in either file requests the service and says
+ * nothing about its keys, and a default inside a block stands only once the
+ * block does. Every top-level family the table declares is present.
+ *
  * Node-only: import from `@lloyal-labs/rig/node`.
  *
  * @category Rig
@@ -20,9 +25,12 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parse } from 'yaml';
+import { CONFIG_VERSION, mergeConfig } from './config';
 import type { ConfigKey, ConfigTable, ConfigOf, OriginOf, CliOf, YmlOf } from './config';
-import type { ConfigOriginValue, ConfigPatch, LoadedConfig, RunnerConfigOpts, SaveResult } from './runner';
-import { rung } from './runner';
+import type { BaseHarnessConfig, ConfigOriginValue, ConfigPatch, LoadedConfig, RunnerConfigOpts, SaveResult } from './runner';
+import { FROZEN_FAMILIES, frozenOriginOf, rung } from './runner';
+import { getPath, isBag, setPath } from './config-paths';
+import type { Bag } from './config-paths';
 import {
   resolvePath,
   resolveAppConfigPaths,
@@ -35,10 +43,15 @@ import {
 const JSON_NAME = 'harness.json';
 const YML_NAME = 'harness.yml';
 
-type Bag = Record<string, unknown>;
+/** Whether the committed file carries a block: a mapping, or a bare key — `vision:` — which YAML reads as null. */
+const carriesBlock = (v: unknown): boolean => v === null || isBag(v);
 
-/** A family holds keys; a scalar — or an array — is one value, however deep the table goes. */
-const isFamily = (v: unknown): v is Bag => v !== null && typeof v === 'object' && !Array.isArray(v);
+/** The block a key lives in — the family a three-level key sits under, `model.vision` — or nothing for a
+ *  shallower key. As the key names it, or as the yml does. */
+const blockOf = (dotted: string): string | undefined => {
+  const segs = dotted.split('.');
+  return segs.length >= 3 ? segs.slice(0, -1).join('.') : undefined;
+};
 
 /** Where the rungs are read from. */
 export interface ConfigSource<T extends ConfigTable> {
@@ -47,28 +60,12 @@ export interface ConfigSource<T extends ConfigTable> {
   cwd?: string;
 }
 
-function getPath(bag: unknown, dotted: string): unknown {
-  let node: unknown = bag;
-  for (const seg of dotted.split('.')) {
-    if (node === null || typeof node !== 'object') return undefined;
-    node = (node as Bag)[seg];
-  }
-  return node;
-}
-
-function setPath(bag: Bag, dotted: string, value: unknown): void {
-  const segs = dotted.split('.');
-  let node = bag;
-  for (const seg of segs.slice(0, -1)) {
-    const next = node[seg];
-    if (next === null || typeof next !== 'object') node[seg] = {};
-    node = node[seg] as Bag;
-  }
-  node[segs[segs.length - 1]] = value;
-}
-
 /** Absent, null and the empty string are all "nothing here": a clear. */
 const present = (v: unknown): unknown => (v === undefined || v === null || v === '' ? undefined : v);
+
+/** A value as typed or set: text is trimmed first, so a whitespace-only value is nothing here too. The one
+ *  normalization, for deciding a block's presence and for accepting a key alike. */
+const given = (raw: unknown): unknown => present(typeof raw === 'string' ? raw.trim() : raw);
 
 /** Whether a present value is one the key takes. */
 function takes(key: ConfigKey, v: unknown): boolean {
@@ -92,7 +89,7 @@ function expectation(key: ConfigKey): string {
  *  relative path resolves against `base`: the project for a value from its files or its default, the process for one
  *  typed at the cli or set in the environment. */
 function accept(key: ConfigKey, raw: unknown, base: string, fromEnv = false): unknown {
-  let v = present(typeof raw === 'string' ? raw.trim() : raw);
+  let v = given(raw);
   if (v === undefined) return undefined;
   if (fromEnv && key.integer) v = typeof v === 'string' && /^\d+$/.test(v) ? parseInt(v, 10) : undefined;
   if (v === undefined || !takes(key, v)) return undefined;
@@ -155,15 +152,43 @@ export function loadConfig<T extends ConfigTable>(
   const resolvedPath = path.resolve(cwd, JSON_NAME);
   const local = readJsonOverlay<Bag>(resolvedPath);
 
-  const config: Bag = { version: 1, sources: {}, abilities: {}, model: {} };
+  const config: Bag = { version: CONFIG_VERSION, sources: {}, abilities: {}, model: {} };
+  for (const name of Object.keys(table)) if (name.includes('.')) config[name.split('.')[0]] ??= {};
+
+  // A block is requested by ANY rung naming it, decided before a single key is read: the committed file naming
+  // the block (a mapping, or a bare key), the overlay carrying a mapping (`null` there is a clear, as at a key),
+  // or a cli / env value for a key of it that the key TAKES — presence and acceptance are one rule, so a value
+  // the key refuses requests nothing. A default alone never does. A scalar where a block belongs is a value the
+  // key cannot take — loud from the committed rung, dropped from the local one.
+  const blocks = new Set<string>();
+  for (const [name, key] of Object.entries(table)) {
+    const block = blockOf(name);
+    if (!block) continue;
+    const ymlBlock = key.yml && blockOf(key.yml);
+    if (ymlBlock) {
+      const committed = getPath(yml, ymlBlock);
+      if (committed !== undefined && !carriesBlock(committed)) {
+        throw new Error(`${YML_NAME}: ${ymlBlock} must be a block of keys (got ${JSON.stringify(committed)})`);
+      }
+      if (carriesBlock(committed)) blocks.add(block);
+    }
+    if (isBag(getPath(local, block))) blocks.add(block);
+    if (key.cli && accept(key, cli[key.cli], process.cwd()) !== undefined) blocks.add(block);
+    if (key.env && accept(key, env[key.env], process.cwd(), true) !== undefined) blocks.add(block);
+  }
+  for (const block of blocks) setPath(config, block, {});
+
   const origin: Record<string, ConfigOriginValue> = {};
   for (const [name, key] of Object.entries(table)) {
     const c = key.cli ? accept(key, cli[key.cli], process.cwd()) : undefined;
     const e = key.env ? accept(key, env[key.env], process.cwd(), true) : undefined;
     const l = accept(key, getPath(local, name), cwd);
     const y = key.yml ? accept(key, getPath(yml, key.yml), cwd) : undefined;
-    const chosen = c ?? e ?? l ?? y ?? key.default;
+    const supplied = c ?? e ?? l ?? y;
     origin[name] = rung(c, e, l, y);
+    const block = blockOf(name);
+    const inAbsentBlock = block !== undefined && getPath(config, block) === undefined;
+    const chosen = supplied ?? (inAbsentBlock ? undefined : key.default);
     if (chosen !== undefined) {
       setPath(config, name, key.path && typeof chosen === 'string' ? resolvePath(chosen, cwd) : chosen);
     }
@@ -182,41 +207,18 @@ export function loadConfig<T extends ConfigTable>(
 }
 
 /**
- * Write a patch into `harness.json`, atomically, 0600. Each family the patch
- * touches is merged one level deep over the file's; a top-level key that is a
- * value rather than a family is replaced whole; a key set to `""` is cleared;
- * a named ability is whole-replaced and the others kept. A file the writer
+ * Write a patch into `harness.json`, atomically, 0600. The patch merges over
+ * the file by the table (`mergeConfig`): into each family it names, however
+ * deep, and replacing anything else whole; a key set to `""` is cleared; a
+ * named ability is whole-replaced and the others kept. A file the writer
  * cannot understand is never rebuilt over (`readJsonForWrite`).
  *
  * @category Rig
  */
-export function saveLocalConfig<C>(patch: ConfigPatch<C>, cwd: string = process.cwd()): SaveResult {
+export function saveLocalConfig<C>(table: ConfigTable, patch: ConfigPatch<C>, cwd: string = process.cwd()): SaveResult {
   const resolvedPath = path.resolve(cwd, JSON_NAME);
-  const current = (readJsonForWrite<Bag>(resolvedPath, JSON_NAME) ?? {}) as Bag;
-  const next: Bag = { version: 1, sources: {}, abilities: {} };
-  const families = new Set([...Object.keys(current), ...Object.keys(patch as Bag)]);
-  families.delete('version');
-  for (const family of families) {
-    const before = current[family];
-    const change = (patch as Bag)[family];
-    if (family === 'abilities') {
-      const merged: Bag = { ...(isFamily(before) ? before : {}) };
-      for (const [name, cfg] of Object.entries((change ?? {}) as Bag)) merged[name] = { ...(cfg as Bag) };
-      next.abilities = merged;
-      continue;
-    }
-    // A top-level key may be a family of keys or a value of its own. Only a family
-    // merges; a leaf REPLACES what is there, because spreading a scalar yields `{}`.
-    const top = change !== undefined ? change : before;
-    if (!isFamily(top)) {
-      if (top !== undefined && top !== '') next[family] = top;
-      continue;
-    }
-    const merged: Bag = { ...(isFamily(before) ? before : {}), ...(isFamily(change) ? change : {}) };
-    for (const [k, v] of Object.entries(merged)) if (v === '') delete merged[k];
-    next[family] = merged;
-  }
-  writeJsonAtomic(resolvedPath, next);
+  const current = { sources: {}, abilities: {}, ...(readJsonForWrite<Bag>(resolvedPath, JSON_NAME) ?? {}) } as BaseHarnessConfig;
+  writeJsonAtomic(resolvedPath, mergeConfig(table, current, patch as ConfigPatch<BaseHarnessConfig>));
   return { path: resolvedPath, gitignored: maybeAppendGitignore(resolvedPath), skipped: [] };
 }
 
@@ -238,12 +240,13 @@ export function runnerConfig<T extends ConfigTable>(
   const keys = Object.keys(table);
   return {
     ...loaded,
+    table,
     persist: (patch) => {
-      const saved = saveLocalConfig(patch, source.cwd);
+      const saved = saveLocalConfig(table, patch, source.cwd);
       const relayered = loadConfig(table, yml, source);
       return { ...saved, config: relayered.config, origin: relayered.origin };
     },
     sessionOriginMap: Object.fromEntries(keys.map((k) => [k, k])) as Record<string, keyof OriginOf<T> & string>,
-    frozen: { config: ['model'], origin: keys.filter((k) => k.startsWith('model.')) },
+    frozen: { config: FROZEN_FAMILIES, origin: frozenOriginOf(Object.fromEntries(keys.map((k) => [k, true]))) },
   };
 }

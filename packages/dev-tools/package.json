@@ -1,6 +1,9 @@
 {
   "name": "@lloyal-labs/dev-tools",
   "version": "0.5.0-alpha.10",
+  "engines": {
+    "node": ">=24"
+  },
   "description": "The dev pane for scaffolded harnesses — timeline, sources, and settings over the event bus, gated by the runner's dev signal",
   "type": "module",
   "main": "dist/index.js",

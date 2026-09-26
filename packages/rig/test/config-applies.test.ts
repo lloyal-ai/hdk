@@ -22,7 +22,14 @@ describe('config keys: when a change applies', () => {
   });
   it('what the process already built or loaded is boot: the context it sized, the backend it picked; what names the residency is reload', () => {
     const tier = (k: keyof typeof modelSettings) => (modelSettings[k] as ConfigKey).applies;
-    expect([tier('model.nCtx'), tier('model.branches'), tier('model.kvCache'), tier('model.gpu')]).toEqual(['boot', 'boot', 'boot', 'boot']);
-    expect([tier('model.path'), tier('model.id'), tier('model.reranker')]).toEqual(['reload', 'reload', 'reload']);
+    expect([tier('model.llm.context'), tier('model.llm.branches'), tier('model.llm.kvCache'), tier('model.llm.gpu'), tier('model.reranker.context')]).toEqual(['boot', 'boot', 'boot', 'boot', 'boot']);
+    expect([tier('model.llm.path'), tier('model.llm.id'), tier('model.reranker.path'), tier('model.reranker.id'), tier('model.vision.id')]).toEqual(['reload', 'reload', 'reload', 'reload', 'reload']);
+  });
+  it('every key lives at its yml path: one block per model, the key named as harness.yml names it', () => {
+    for (const [key, decl] of Object.entries(modelSettings) as [string, ConfigKey][]) {
+      expect(decl.yml, key).toBe(key);
+      expect(key.split('.'), key).toHaveLength(3);
+    }
+    expect(Object.keys(modelSettings).filter((k) => k.endsWith('.id')).sort()).toEqual(['model.embedding.id', 'model.llm.id', 'model.reranker.id', 'model.vision.id']);
   });
 });

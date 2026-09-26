@@ -1,6 +1,9 @@
 {
   "name": "@lloyal-labs/host",
   "version": "0.2.0-alpha.10",
+  "engines": {
+    "node": ">=24"
+  },
   "description": "The box model-runtime host — one resident model, N native harness sessions, FIFO admission",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

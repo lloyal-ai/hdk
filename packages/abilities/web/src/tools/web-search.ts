@@ -58,11 +58,11 @@ export class TavilyProvider implements SearchProvider {
 // ── WebSearchTool ───────────────────────────────────────
 
 /**
- * Web search tool backed by a pluggable {@link SearchProvider}.
- *
- * Delegates to the provider's `search` method and returns an array
- * of {@link SearchResult} objects. Use alongside {@link FetchPageTool}
- * to let agents read full page content from promising results.
+ * Web search tool backed by a pluggable {@link SearchProvider}, chosen AT THE CALL: `provider` is the
+ * operation that says which provider stands right now — read from the ability's stored config, so a key
+ * saved under a run reaches the next search of every agent already holding this tool. Delegates to the
+ * provider's `search` and returns an array of {@link SearchResult} objects. Use alongside
+ * {@link FetchPageTool} to let agents read full page content from promising results.
  *
  * @category Rig
  */
@@ -82,10 +82,10 @@ export class WebSearchTool extends Tool<{ query: string }> {
     required: ["query"],
   };
 
-  private _provider: SearchProvider;
+  private _provider: () => Operation<SearchProvider>;
   private _topN: number;
 
-  constructor(provider: SearchProvider, topN = 8) {
+  constructor(provider: () => Operation<SearchProvider>, topN = 8) {
     super();
     this._provider = provider;
     this._topN = topN;
@@ -95,7 +95,7 @@ export class WebSearchTool extends Tool<{ query: string }> {
     const query = trimmed(args.query);
     if (!query) return { error: "query must not be empty" };
 
-    const provider = this._provider;
+    const provider = yield* this._provider();
     const topN = this._topN;
 
     let results: SearchResult[];

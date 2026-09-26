@@ -1044,8 +1044,7 @@ export interface ConfigRow {
   key: string;
   /** When a change takes effect — the key's own declaration, `session` when it says nothing. */
   applies: ConfigTier;
-  /** The values the row offers, or null when it offers none: the key lists no values, it is fixed at boot,
-   *  or it is not a `family.leaf` path, which is all a settings patch can name. */
+  /** The values the row offers, or null when it offers none: the key lists no values, or it is fixed at boot. */
   values: readonly string[] | null;
   /** What the key is, in the declaration's own words; absent when it said nothing. */
   describe?: string;
@@ -1057,7 +1056,7 @@ export interface ConfigRow {
 export function configRows(table: ConfigTable): ConfigRow[] {
   return Object.entries(table).map(([key, decl]) => {
     const applies = decl.applies ?? 'session';
-    const offered = decl.oneOf && applies !== 'boot' && key.split('.').length === 2;
+    const offered = decl.oneOf && applies !== 'boot';
     return {
       key, applies, values: offered ? decl.oneOf! : null,
       ...(decl.describe !== undefined ? { describe: decl.describe } : {}),
@@ -1080,26 +1079,32 @@ export function changing(row: ConfigRow): string {
   }
 }
 
-/** The command that makes a row's choice: rig's own, for the row's tier, carrying a real patch. Null when the
- *  row offers no such choice. */
+/** The command that makes a row's choice: rig's own, for the row's tier, carrying a real patch at the key's own
+ *  depth. Null when the row offers no such choice. */
 export function configCommand(
   row: ConfigRow,
   value: string,
-): { type: 'set_config' | 'reload_runtime'; patch: Record<string, Record<string, string>> } | null {
+): { type: 'set_config' | 'reload_runtime'; patch: Record<string, unknown> } | null {
   if (!row.values?.includes(value)) return null;
-  const [family, leaf] = row.key.split('.');
-  return { type: row.applies === 'reload' ? 'reload_runtime' : 'set_config', patch: { [family]: { [leaf]: value } } };
+  const patch = row.key.split('.').reduceRight<unknown>((inner, seg) => ({ [seg]: inner }), value) as Record<string, unknown>;
+  return { type: row.applies === 'reload' ? 'reload_runtime' : 'set_config', patch };
 }
 
-/** Every path the live config carries — a top-level key, or a `family.leaf` under one — as the rows of a harness
- *  that handed the pane no table. The keys rig owns (`version`, the `abilities` family) are not the app's. */
+/** Every path the live config carries — a top-level value, or one under any depth of families — as the rows of a
+ *  harness that handed the pane no table. The keys rig owns (`version`, the `abilities` family) are not the app's. */
 export function liveConfigKeys(config: Record<string, unknown> | null): string[] {
   const keys: string[] = [];
+  const walk = (node: Record<string, unknown>, at: string): void => {
+    for (const [key, value] of Object.entries(node)) {
+      const here = at ? `${at}.${key}` : key;
+      if (value !== null && typeof value === 'object' && !Array.isArray(value)) walk(value as Record<string, unknown>, here);
+      else keys.push(here);
+    }
+  };
   for (const [key, node] of Object.entries(config ?? {})) {
     if (key === 'version' || key === 'abilities') continue;
-    if (node !== null && typeof node === 'object' && !Array.isArray(node)) {
-      for (const leaf of Object.keys(node as Record<string, unknown>)) keys.push(`${key}.${leaf}`);
-    } else keys.push(key);
+    if (node !== null && typeof node === 'object' && !Array.isArray(node)) walk(node as Record<string, unknown>, key);
+    else keys.push(key);
   }
   return keys;
 }

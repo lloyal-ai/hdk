@@ -27,7 +27,6 @@ export { ReportTool } from './report';
 export type { ReportToolOpts, Reports } from './report';
 export { DelegateTool } from './delegate';
 export type { DelegateToolOpts } from './delegate';
-export type { Reranker, ScoredChunk, ScoredResult } from './types';
 export { PlanTool, taskToContent, singleTaskPlan, taskKey, taskIndexOf } from './plan';
 export { defineOutput, citedReport } from './output';
 export type { Output, OutputOptions } from './output';

@@ -1,7 +1,9 @@
 import { call } from 'effection';
 import type { Operation } from 'effection';
-import { Tool, Trace, admitChunks } from '@lloyal-labs/lloyal-agents';
-import type { JsonSchema, ToolContext, Chunk } from '@lloyal-labs/lloyal-agents';
+import { Tool, Trace } from '@lloyal-labs/lloyal-agents';
+import { admitChunks } from '@lloyal-labs/rig';
+import type { JsonSchema, ToolContext } from '@lloyal-labs/lloyal-agents';
+import type { Chunk } from '@lloyal-labs/rig';
 import type { Reranker, ScoredChunk } from '@lloyal-labs/rig';
 import { pagesOf } from '@lloyal-labs/media';
 import type { Attachment } from '@lloyal-labs/media';

@@ -19,7 +19,7 @@ import { prepareBatch } from './prepare-content';
 import { runReplay } from './replay';
 import { failSettled } from './apply';
 import type { SpawnLedger } from './spawns';
-import type { EntailmentScorer } from './source';
+import type { EntailmentScorer } from './scorer';
 import type { TraceWriter } from './trace-writer';
 import type { TraceEvent } from './trace-types';
 import {

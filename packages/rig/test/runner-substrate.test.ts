@@ -9,7 +9,6 @@ import { describe, it, expect } from 'vitest';
 import {
   makeEdgeRunner,
   makeServedRunner,
-  mergeConfig,
   markSession,
   rung,
 } from '../src/runner';
@@ -19,52 +18,60 @@ import type {
   ConfigPatch,
   SaveResult,
 } from '../src/runner';
+import { defineConfig, mergeConfig, modelSettings, CONFIG_VERSION } from '../src/config';
 
 // ── The two shipped template shapes ─────────────────────────────
 
+const RESEARCH = defineConfig({
+  ...modelSettings,
+  'sources.outputDir': { yml: 'sources.outputDir', path: true },
+  'defaults.reasoningMode': { yml: 'defaults.reasoningMode', oneOf: ['flat', 'deep'] },
+});
 interface ResearchConfig extends BaseHarnessConfig {
   defaults: { reasoningMode: 'flat' | 'deep'; effort: string; maxTurns: number };
-  model: { path?: string; reranker?: string; nCtx?: number; gpu?: string };
+  model: { llm?: { path?: string; context?: number; gpu?: string }; reranker?: { path?: string; id?: string } };
 }
 type ResearchOrigin = Record<
-  'reasoningMode' | 'modelPath' | 'reranker' | 'nCtx' | 'gpu' | 'outputDir',
+  'defaults.reasoningMode' | 'model.llm.path' | 'model.reranker.path' | 'model.llm.context' | 'model.llm.gpu' | 'sources.outputDir',
   ConfigOriginValue
 >;
 const RESEARCH_MAP = {
-  'sources.outputDir': 'outputDir',
-  'model.path': 'modelPath',
-  'model.reranker': 'reranker',
-  'model.nCtx': 'nCtx',
-  'model.gpu': 'gpu',
-  'defaults.reasoningMode': 'reasoningMode',
+  'sources.outputDir': 'sources.outputDir',
+  'model.llm.path': 'model.llm.path',
+  'model.reranker.path': 'model.reranker.path',
+  'model.llm.context': 'model.llm.context',
+  'model.llm.gpu': 'model.llm.gpu',
+  'defaults.reasoningMode': 'defaults.reasoningMode',
 } as const;
 
+const BASIC = defineConfig({ ...modelSettings, 'sources.outputDir': { yml: 'sources.outputDir', path: true }, surface: { yml: 'surface' } });
 interface BasicConfig extends BaseHarnessConfig {
   surface?: string;
-  model: { path?: string; nCtx?: number; gpu?: string; id?: string; sizeBytes?: number };
+  model: { llm?: { path?: string; context?: number; gpu?: string; id?: string; sizeBytes?: number } };
 }
 type BasicOrigin = Record<
-  'modelPath' | 'reranker' | 'nCtx' | 'gpu' | 'outputDir',
+  'model.llm.path' | 'model.reranker.path' | 'model.llm.context' | 'model.llm.gpu' | 'sources.outputDir',
   ConfigOriginValue
 >;
 
 const researchCfg = (): ResearchConfig => ({
-  version: 1,
+  version: CONFIG_VERSION,
   sources: {},
   abilities: {},
   defaults: { reasoningMode: 'flat', effort: 'high', maxTurns: 10 },
-  model: { path: '/resolved/model.gguf', nCtx: 32768, gpu: 'default' },
+  model: { llm: { path: '/resolved/model.gguf', context: 32768, gpu: 'default' } },
 });
 const researchOrigin = (): ResearchOrigin => ({
-  reasoningMode: 'default', modelPath: 'yml', reranker: 'yml',
-  nCtx: 'yml', gpu: 'env', outputDir: 'default',
+  'defaults.reasoningMode': 'default', 'model.llm.path': 'yml', 'model.reranker.path': 'yml',
+  'model.llm.context': 'yml', 'model.llm.gpu': 'env', 'sources.outputDir': 'default',
 });
+const researchOpts = () => ({ table: RESEARCH, origin: researchOrigin(), sessionOriginMap: RESEARCH_MAP });
 
 describe('served runner (in-memory, per-session)', () => {
   it('clones per session; saves never share state or reach disk', () => {
     const cfg = researchCfg();
-    const a = makeServedRunner(cfg, { origin: researchOrigin(), sessionOriginMap: RESEARCH_MAP });
-    const b = makeServedRunner(cfg, { origin: researchOrigin(), sessionOriginMap: RESEARCH_MAP });
+    const a = makeServedRunner(cfg, researchOpts());
+    const b = makeServedRunner(cfg, researchOpts());
     const saved = a.saveConfig({ sources: { outputDir: '/a-only' } });
     expect(saved.path).toBeNull();
     expect(a.config().sources.outputDir).toBe('/a-only');
@@ -72,25 +79,24 @@ describe('served runner (in-memory, per-session)', () => {
     expect(cfg.sources.outputDir).toBeUndefined(); // the shared cfg untouched
   });
 
-  it('marks touched fields `session` per the template map', () => {
-    const r = makeServedRunner(researchCfg(), {
-      origin: researchOrigin(), sessionOriginMap: RESEARCH_MAP,
-    });
-    const saved = r.saveConfig({ defaults: { reasoningMode: 'deep' }, model: { gpu: 'cuda' } });
-    expect(saved.origin.reasoningMode).toBe('session');
-    expect(saved.origin.gpu).toBe('session');
-    expect(saved.origin.modelPath).toBe('yml'); // untouched fields keep boot origin
+  it('marks touched fields `session` per the template map; the model block is the running residency and stays boot-frozen', () => {
+    const r = makeServedRunner(researchCfg(), researchOpts());
+    const saved = r.saveConfig({ defaults: { reasoningMode: 'deep' }, model: { llm: { gpu: 'cuda' } } });
+    expect(saved.origin['defaults.reasoningMode']).toBe('session');
+    expect(saved.config.defaults.reasoningMode).toBe('deep');
+    expect(saved.origin['model.llm.gpu']).toBe('env');        // frozen: a session cannot change what runs
+    expect(saved.config.model.llm?.gpu).toBe('default');
+    expect(saved.origin['model.llm.path']).toBe('yml');       // untouched fields keep boot origin
   });
 
   it('drops an accidentally-passed persist — served never writes', () => {
     let wrote = 0;
     const r = makeServedRunner(researchCfg(), {
-      origin: researchOrigin(),
-      sessionOriginMap: RESEARCH_MAP,
+      ...researchOpts(),
       persist: () => { wrote++; return { path: '/x', gitignored: false, skipped: [], config: researchCfg(), origin: researchOrigin() }; },
     });
     const saved = r.saveConfig({ sources: { outputDir: '/t' } });
-    r.reloadRuntime({ model: { gpu: 'cuda' } });
+    r.reloadRuntime({ model: { llm: { gpu: 'cuda' } } });
     expect(wrote).toBe(0);
     expect(saved.path).toBeNull();
   });
@@ -113,94 +119,113 @@ describe('edge runner (persist + reconcile)', () => {
     const relayered: ResearchConfig = {
       ...researchCfg(),
       sources: { outputDir: '/from-yml' },
-      model: { path: '/next-boot.gguf', nCtx: 16384, gpu: 'cuda' },
+      model: { llm: { path: '/next-boot.gguf', context: 16384, gpu: 'cuda' } },
     };
-    const relayeredOrigin: ResearchOrigin = { ...researchOrigin(), outputDir: 'yml', modelPath: 'file', gpu: 'file' };
+    const relayeredOrigin: ResearchOrigin = { ...researchOrigin(), 'sources.outputDir': 'yml', 'model.llm.path': 'file', 'model.llm.gpu': 'file' };
     const { persist } = mkPersist(relayered, relayeredOrigin);
-    const r = makeEdgeRunner(boot, { origin: researchOrigin(), sessionOriginMap: RESEARCH_MAP, persist });
+    const r = makeEdgeRunner(boot, { ...researchOpts(), persist });
 
     const saved = r.saveConfig({ sources: { outputDir: '' } });
     expect(saved.path).toBe('/proj/harness.json');
     // live-read: relayered value + origin together
     expect(saved.config.sources.outputDir).toBe('/from-yml');
-    expect(saved.origin.outputDir).toBe('yml');
+    expect(saved.origin['sources.outputDir']).toBe('yml');
     // boot-frozen: the RUNNING residency, value and origin
-    expect(saved.config.model.path).toBe('/resolved/model.gguf');
-    expect(saved.origin.modelPath).toBe('yml');
-    expect(saved.origin.gpu).toBe('env');
+    expect(saved.config.model.llm?.path).toBe('/resolved/model.gguf');
+    expect(saved.origin['model.llm.path']).toBe('yml');
+    expect(saved.origin['model.llm.gpu']).toBe('env');
   });
 
   it('reloadRuntime persists the patch (reload-by-relaunch)', () => {
     const { persist, calls } = mkPersist(researchCfg(), researchOrigin());
-    const r = makeEdgeRunner(researchCfg(), { origin: researchOrigin(), sessionOriginMap: RESEARCH_MAP, persist });
-    r.reloadRuntime({ model: { path: '/new.gguf' } });
-    expect(calls).toEqual([{ model: { path: '/new.gguf' } }]);
+    const r = makeEdgeRunner(researchCfg(), { ...researchOpts(), persist });
+    r.reloadRuntime({ model: { llm: { path: '/new.gguf' } } });
+    expect(calls).toEqual([{ model: { llm: { path: '/new.gguf' } } }]);
   });
 
   it('a frozen key ABSENT at boot stays absent — a relayered file cannot bring it live', () => {
     const boot: BasicConfig = {
-      version: 1, sources: {}, abilities: {}, // no `surface` at boot
-      model: { path: '/m.gguf' },
+      version: CONFIG_VERSION, sources: {}, abilities: {},
+      model: { llm: { path: '/m.gguf' } },                          // no gpu at boot
     };
-    const origin: BasicOrigin = { modelPath: 'yml', reranker: 'default', nCtx: 'default', gpu: 'default', outputDir: 'default' };
+    const origin: BasicOrigin = { 'model.llm.path': 'yml', 'model.reranker.path': 'default', 'model.llm.context': 'default', 'model.llm.gpu': 'default', 'sources.outputDir': 'default' };
     const relayered: BasicConfig = {
-      version: 1, sources: {}, abilities: {}, surface: 'web', // file introduces it
-      model: { path: '/other.gguf' },
+      version: CONFIG_VERSION, sources: {}, abilities: {},
+      model: { llm: { path: '/other.gguf', gpu: 'cuda' } },        // the file introduces it
     };
     const r = makeEdgeRunner(boot, {
+      table: BASIC,
       origin,
-      sessionOriginMap: { 'sources.outputDir': 'outputDir' },
+      sessionOriginMap: { 'sources.outputDir': 'sources.outputDir' },
       persist: () => ({ path: '/p/harness.json', gitignored: false, skipped: [], config: relayered, origin }),
     });
     const saved = r.saveConfig({ sources: { outputDir: '/d' } });
-    expect('surface' in saved.config).toBe(false);
-    expect(saved.config.model.path).toBe('/m.gguf'); // frozen value also held
+    expect(saved.config.model.llm?.gpu).toBeUndefined();
+    expect(saved.config.model.llm?.path).toBe('/m.gguf'); // frozen value also held
   });
 
-  it('basic shape: `surface` is boot-frozen by default; absent keys ignored', () => {
+  it('the model family is boot-frozen by default and nothing else is; a harness freezes its own keys by declaring them', () => {
     const boot: BasicConfig = {
-      version: 1, sources: {}, abilities: {}, surface: 'cli',
-      model: { path: '/m.gguf', id: 'qwen', sizeBytes: 42 },
+      version: CONFIG_VERSION, sources: {}, abilities: {}, surface: 'cli',
+      model: { llm: { path: '/m.gguf', id: 'qwen', sizeBytes: 42 } },
     };
-    const origin: BasicOrigin = { modelPath: 'yml', reranker: 'default', nCtx: 'yml', gpu: 'default', outputDir: 'default' };
-    const relayered: BasicConfig = { version: 1, sources: { outputDir: '/d' }, abilities: {}, model: {} };
-    const r = makeEdgeRunner(boot, {
+    const origin: BasicOrigin = { 'model.llm.path': 'yml', 'model.reranker.path': 'default', 'model.llm.context': 'yml', 'model.llm.gpu': 'default', 'sources.outputDir': 'default' };
+    const relayered: BasicConfig = { version: CONFIG_VERSION, sources: { outputDir: '/d' }, abilities: {}, model: {} };
+    const opts = {
+      table: BASIC,
       origin,
-      sessionOriginMap: { 'sources.outputDir': 'outputDir', 'model.path': 'modelPath' },
+      sessionOriginMap: { 'sources.outputDir': 'sources.outputDir', 'model.llm.path': 'model.llm.path' } as const,
       persist: () => ({ path: '/p/harness.json', gitignored: true, skipped: [], config: relayered, origin }),
-    });
-    const saved = r.saveConfig({ sources: { outputDir: '/d' } });
-    expect(saved.config.surface).toBe('cli');           // frozen, though relayer omitted it
-    expect(saved.config.model.id).toBe('qwen');         // measured boot facts survive
-    expect(saved.gitignored).toBe(true);
+    };
+    const byDefault = makeEdgeRunner(boot, opts).saveConfig({ sources: { outputDir: '/d' } });
+    expect(byDefault.config.model.llm?.id).toBe('qwen');    // measured boot facts survive
+    expect('surface' in byDefault.config).toBe(false);      // the relayer's word stands for everything else
+    expect(byDefault.gitignored).toBe(true);
+    const declared = makeEdgeRunner(boot, { ...opts, frozen: { config: ['model', 'surface'] } }).saveConfig({ sources: { outputDir: '/d' } });
+    expect(declared.config.surface).toBe('cli');            // frozen, though the relayer omitted it
   });
 });
 
 describe('mergeConfig / markSession / rung', () => {
-  it('merges one level deep; abilities whole-replace per name; "" clears outputDir; never mutates base', () => {
+  it('merges into the families the table declares, however deep; abilities whole-replace per name; "" clears; never mutates base', () => {
     const base = researchCfg();
     base.sources.outputDir = '/old';
     base.abilities = { web: { tavilyKey: 'k' }, corpus: { corpusPath: '/c' } };
-    const next = mergeConfig(base, {
+    base.model.reranker = { id: 'r', path: '/r.gguf' };
+    const next = mergeConfig(RESEARCH, base, {
       sources: { outputDir: '' },
       abilities: { web: {} },
       defaults: { reasoningMode: 'deep' },
+      model: { reranker: { id: 'r2' } },
     });
     expect(next.sources.outputDir).toBeUndefined();
     expect(next.abilities.web).toEqual({});             // whole-replace
     expect(next.abilities.corpus).toEqual({ corpusPath: '/c' }); // others survive
     expect(next.defaults.effort).toBe('high');          // per-key defaults merge
     expect(next.defaults.reasoningMode).toBe('deep');
+    expect(next.model.reranker).toEqual({ id: 'r2', path: '/r.gguf' }); // a block merges: the table says it holds keys
+    expect(next.model.llm?.path).toBe('/resolved/model.gguf');          // its sibling block untouched
     expect(base.sources.outputDir).toBe('/old');        // base untouched
+    expect(base.model.reranker).toEqual({ id: 'r', path: '/r.gguf' });
   });
 
-  it('markSession sees a cleared key ("" is present) and unknown paths are inert', () => {
+  it('a key the table declares as one value — an object, an array — is replaced whole, not merged into', () => {
+    const table = defineConfig({ 'defaults.guards': { yml: 'defaults.guards' }, tags: { yml: 'tags' } });
+    type Cfg = BaseHarnessConfig & { defaults: { guards?: Record<string, unknown> }; tags?: string[] };
+    const base: Cfg = { version: CONFIG_VERSION, sources: {}, abilities: {}, model: {}, defaults: { guards: { url_dedup: { scope: 'cohort' }, query_dedup: { scope: 'cohort' } } }, tags: ['a', 'b'] };
+    const next = mergeConfig(table, base, { defaults: { guards: { url_dedup: { scope: 'agent' } } }, tags: ['c'] });
+    expect(next.defaults.guards).toEqual({ url_dedup: { scope: 'agent' } });
+    expect(next.tags).toEqual(['c']);
+  });
+
+  it('markSession sees a cleared key ("" is present) at any depth, and unknown paths are inert', () => {
     const o = researchOrigin();
     const next = markSession<ResearchConfig, ResearchOrigin>(
-      o, { sources: { outputDir: '' } }, RESEARCH_MAP,
+      o, { sources: { outputDir: '' }, model: { llm: { gpu: '' } } }, RESEARCH_MAP,
     );
-    expect(next.outputDir).toBe('session');
-    expect(o.outputDir).toBe('default'); // input not mutated
+    expect(next['sources.outputDir']).toBe('session');
+    expect(next['model.llm.gpu']).toBe('session');
+    expect(o['sources.outputDir']).toBe('default'); // input not mutated
   });
 
   it('rung mirrors ?? exactly — null claims no rung', () => {

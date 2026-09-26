@@ -24,17 +24,23 @@
 // Re-export everything from the platform-agnostic barrel
 export * from './index';
 
-// Node-only: Reranker factory (requires @lloyal-labs/lloyal.node)
-export { createReranker } from './reranker';
-export type { RerankerLoadOpts } from './reranker';
+// Node-only: the providers — one per service, each binding its artifact (requires @lloyal-labs/lloyal.node)
+export { providers } from './providers';
+export type { ProviderRow, ModelBlock } from './providers';
+export { createReranker } from './providers/reranker';
+export type { RerankerLoadOpts } from './providers/reranker';
+export { createEmbedder } from './providers/embedding';
+export type { EmbedderLoadOpts } from './providers/embedding';
 
 // Node-only: Resource loading (requires node:fs)
 export { loadResources, chunkResources, resolveCorpusInput } from './resources';
 
 // Node-only: model catalog + verified project-local resolution/fetch
 // (requires node:fs / node:crypto / streaming fetch)
-export { MODEL_CATALOG, catalogEntry, resolveModel, resolveRuntimeModels, fetchVerified } from './models';
-export type { RuntimeModels } from './models';
+export { MODEL_CATALOG, catalogEntry, modelSlot, isModelPresent, resolveModel, fetchVerified, DownloadStopped } from './models';
+// Node-only: the install — what a run acquires before it can work, step by step, from the model family alone.
+export { install, planInstall } from './install';
+export type { InstallOpts, Installed, PlannedStep } from './install';
 export { useTraceWriter } from './trace-sink';
 export { createProjectMediaStore, MEDIA_DIR } from './media-store';
 // Node-only: the content plane — HTTP carries bytes, the WebSocket carries
@@ -53,8 +59,10 @@ export type {
   FetchVerifiedOpts,
 } from './models';
 
-// Node-only: provision the auxiliary models an enabled ability set requires
-// (aggregates each factory's manifest.services → resolveModel + createReranker + RerankerCtx)
+// Node-only: the framework's walk over the providers — what a configuration names, each artifact
+// resolved into its slot, each bound through its provider into reach.
+export { configuredServices, resolveServices, bindServices, trunkOptions } from './provision';
+export type { ProvisionOpts, ServiceArtifacts } from './provision';
 // Node-only: config-file mechanics for the Runner substrate (hdk#109) —
 // atomic 0600 writes, the writer's version guard, git check-ignore append,
 // boundary path resolution. The per-template LAYERING stays in the scaffold.
@@ -82,8 +90,6 @@ export type { ConfigSource } from './config-layering';
 export { settings } from './settings';
 export type { SettingsDeps } from './settings';
 
-export { provisionAbilityModels, resolveAbilityModels } from './provision';
-export type { ProvisionAbilityModelsOpts, AbilityModels } from './provision';
 
 // Node-only: the host-resources sampler a dev boot runs beside the trace writer.
 export { startHostResources } from './host-resources';

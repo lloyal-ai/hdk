@@ -15,8 +15,9 @@
  * @category Rig
  */
 import type { Operation } from 'effection';
-import { AbilityRegistryCtx } from '@lloyal-labs/lloyal-agents';
-import type { Ability } from '@lloyal-labs/lloyal-agents';
+import { AbilityRegistryCtx } from './ability-types';
+import type { Ability } from './ability-types';
+import { holdAbilities } from './registry';
 import type { Attachment } from '@lloyal-labs/media';
 
 /** An ability's `toc` prompt datum for this run's assets, or `null` when it advertises none. */
@@ -25,9 +26,17 @@ export function abilityToc(ability: Ability, attachments: readonly Attachment[] 
   return typeof toc === 'string' ? toc : null;
 }
 
-/** The enabled abilities that can take part in a run: not switched off (`excluded`, by manifest name), with something to read for this run. */
+/**
+ * The enabled abilities that can take part in a run: not switched off (`excluded`, by manifest name), with
+ * something to read for this run. The calling scope HOLDS what it took: every entry behind these handles, and
+ * every entry a save enables under their names meanwhile, lives until that scope ends — so whatever spread
+ * their tools keeps working tools. Call it in the run's own operation, where a Stop reaches. A save reaches
+ * the next take of the sources; a value a tool reads from its ability's store at the call, it reaches at once.
+ */
 export function* participating(excluded: readonly string[] = [], attachments: readonly Attachment[] = []): Operation<Ability[]> {
   const registry = yield* AbilityRegistryCtx.expect();
   const off = new Set(excluded);
-  return registry.enabled().filter((a) => !off.has(a.manifest.name) && abilityToc(a, attachments) !== '');
+  const taking = registry.enabled().filter((a) => !off.has(a.manifest.name) && abilityToc(a, attachments) !== '');
+  yield* holdAbilities(registry, taking.map((a) => a.manifest.name));   // only what this run takes
+  return taking;
 }

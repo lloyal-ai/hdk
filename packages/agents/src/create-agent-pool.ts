@@ -6,7 +6,7 @@ import type { Session } from '@lloyal-labs/sdk';
 import { Tool } from './Tool';
 import type { AgentPoolResult, JsonSchema } from './types';
 import type { AgentPolicy, Budget, GuardOverrides } from './AgentPolicy';
-import type { EntailmentScorer } from './source';
+import type { EntailmentScorer } from './scorer';
 import type { Orchestrator } from './orchestrators';
 import { Ctx, Events, PoolDefaults } from './context';
 import { createToolkit } from './toolkit';

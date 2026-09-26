@@ -244,12 +244,15 @@ describe('the abilities admit the set', () => {
    * which rig 5.5.0 exports. Their manifests said `^5.5.0` anyway, so npm would
    * install them beside a rig that cannot run them and the failure arrived later,
    * inside a search. Their ranges now start at `>=5.6.0-0`, and this list says so
-   * out loud: a future narrowing of web or wikipedia still fails here.
+   * out loud. Since the service contract (rig 5.6) every ability reads `service`,
+   * `AbilityConfigStoreCtx` and `Source` from rig, so none runs on 5.5.0 and the
+   * list is empty — an ability that claims a stable again is added here, and the
+   * claim checked.
    *
    * This is a RANGE check, not a compile: nothing in the repo builds an ability
    * against its declared minimum. That gap is what let the lie stand.
    */
-  const RUNS_ON_STABLE = new Set(['packages/abilities/web', 'packages/abilities/wikipedia']);
+  const RUNS_ON_STABLE = new Set<string>([]);
 
   it('every ability peer on a set member admits the version the NEXT cut stamps, and the stable where it claims to', () => {
     const registry: Record<string, string> = {

@@ -2,7 +2,7 @@ import type { Operation } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import type { AgentPolicy, Budget, GuardOverrides } from './AgentPolicy';
-import type { EntailmentScorer } from './source';
+import type { EntailmentScorer } from './scorer';
 import type { TraceEvent } from './trace-types';
 import type { Attachment } from '@lloyal-labs/media';
 import type { Outcome, ToolLifecycleHooks } from './Tool';

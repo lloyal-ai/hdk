@@ -25,9 +25,9 @@
  */
 
 import type { Operation } from 'effection';
+import { createContext } from 'effection';
+import type { Tool, JsonSchema } from '@lloyal-labs/lloyal-agents';
 import type { Source } from './source';
-import type { Tool } from './Tool';
-import type { JsonSchema } from './types';
 
 // ── Manifest (declarative — what ability.json declares) ──────────────
 
@@ -72,24 +72,6 @@ export interface AbilityHints {
 }
 
 /**
- * The HDK **Services** an ability can declare it needs, via {@link AbilityManifest.services}.
- * A Service is an auxiliary platform capability the harness provides as a shared,
- * injected instance: the ability declares the *service* (not a model), and the platform
- * binds the implementation (which model backs it) one layer down at the
- * harness/deploy level. A closed set today (`reranker`, `embedding`); extensible as
- * the platform adds services. A disclosure sibling of {@link AbilityHints.authKind} and
- * the worker's `entitlements` taxonomy: the harness provisions each required service
- * and publishes the bound instance on the framework context the factory reads
- * (`RerankerCtx`) *before* the factory runs. The trunk `llm` is never listed — it is
- * the harness's own model, always present; abilities declare only the *auxiliary* services
- * they consume. `embedding` is reserved (no consumer yet).
- */
-export const SERVICES = ['reranker', 'embedding'] as const;
-
-/** One of the closed {@link SERVICES} — an HDK service an ability can require. */
-export type Service = (typeof SERVICES)[number];
-
-/**
  * The declarative ability manifest — content of `ability.json` plus the
  * `abilityProtocolVersion` declaration. Imported into the ability's factory
  * and passed to `defineAbility(...)`.
@@ -111,14 +93,15 @@ export interface AbilityManifest {
   /** The model-facing identity. */
   readonly protocol: AbilityProtocol;
   /**
-   * The HDK {@link Service}s this ability needs to function (e.g. `['reranker']` when
-   * a tool scores content). The harness reads this *before* the factory runs,
-   * provisions each service, and publishes the bound instance on the framework
-   * context the factory reads (`RerankerCtx`). Absent / empty means the ability needs
-   * only the trunk `llm`. A governed disclosure — a peer to `entitlements` (NOT the
+   * The services this ability needs to function (`['reranker']` when a tool scores content),
+   * by name. Parsed from `ability.json`, so names, checked against `SERVICES` (`./services`)
+   * where the manifest is defined. The requirement, not the request: the harness binds what its own
+   * `model.<name>` blocks name, and an ability whose requirement is not among them does not
+   * enable — refused before its factory runs, naming the block. Absent / empty means the
+   * ability needs only the trunk `llm`. A governed disclosure — a peer to `entitlements` (NOT the
    * attention surface): signed into the catalog + shown to the reviewer.
    */
-  readonly services?: readonly Service[];
+  readonly services?: readonly string[];
   /** Optional UX/marketplace metadata. */
   readonly hints?: AbilityHints;
   /**
@@ -228,8 +211,8 @@ export interface ConfigFlow {
  * `Source`, `Tool[]`, and prompt templates the framework needs at spawn time.
  *
  * The factory (from `defineAbility(manifest, setup)`) is a zero-arg
- * `Operation<Ability>` whose `setup` reads config from `AbilityConfigStoreCtx` and the
- * shared reranker from `RerankerCtx`.
+ * `Operation<Ability>` whose `setup` reads config from `AbilityConfigStoreCtx` and any
+ * service it declared with `service(name)`.
  * Both npm-distributed abilities and signed-bundle abilities use the identical
  * factory signature.
  */
@@ -273,8 +256,8 @@ export interface Ability {
  * what the registry consumes via `registry.enable(factory)` (the one enable
  * path, whether at boot or dynamically): the registry runs the factory inside a
  * per-ability **detached** Effection scope that it seeds with `AbilityConfigStoreCtx` /
- * `AbilityRegistryCtx` / `RerankerCtx`, so the `setup` reads its config and
- * reranker, does any setup, and returns the runtime pieces `defineAbility`
+ * `AbilityRegistryCtx` / the bound services, so the `setup` reads its config and
+ * its services, does any setup, and returns the runtime pieces `defineAbility`
  * validates + assembles into the Ability.
  *
  * **Setup and teardown are structured, not hooks.** The `setup` you pass to
@@ -357,19 +340,32 @@ export interface AbilityRegistry {
    */
   stateOf(name: string): AbilityState;
   /**
-   * Enable an ability dynamically (the mid-session enable path). Runs
-   * the factory in a fresh per-ability detached scope (seeded with `Ability*Ctx`),
-   * validates the manifest, and adds it. Returns the constructed Ability.
-   * Throws — and tears down the partial scope — if the factory
-   * throws, validation fails, or the name is already enabled. The boot
-   * set is enabled the same way — a `registry.enable(factory)` call per ability.
+   * Enable an ability (the one enable path, at boot and mid-session). Runs the factory in a fresh
+   * per-ability detached scope (seeded with `Ability*Ctx`), validates the manifest, and adds it. Returns the
+   * name's HANDLE — one object per name for the registry's life, forwarding to the entry this call
+   * built. A name already enabled is superseded: the new entry is registered first, then the name resolves
+   * to it, and the one it replaces leaves the roster — ending at once if no scope holds its name, else when
+   * the last scope that took it through `participating()` ends; a holder keeps what it took.
+   * Throws — and tears down the partial scope, leaving the current entry in place — if the factory
+   * throws or validation fails.
    */
   enable(factory: AbilityFactory): Operation<Ability>;
   /**
-   * Disable an ability dynamically: remove it and tear down its detached
-   * scope, firing the factory's `ensure(...)` teardown. A throwing
-   * teardown is logged but the ability is removed regardless. No-op for an
+   * Disable an ability: it leaves the roster and its entry ends the same way a superseded one does —
+   * at once if nothing holds it, else at its last holder's release — firing the factory's `ensure(...)`
+   * teardown, best-effort (a throwing teardown is logged, the ability is gone regardless). No-op for an
    * unknown name.
    */
   disable(name: string): Operation<void>;
 }
+
+/**
+ * Effection context holding the {@link AbilityRegistry}.
+ *
+ * Set by `createAbilityRegistry(...)`. The spine renderer reads it to compose the catalog in registration
+ * order. No gate reads it: a spawn's `assignedAbility` is a non-enforcing label, and the one dispatch-time
+ * precondition is authorization (`Tool.protected` and the session's grants).
+ *
+ * @category Rig
+ */
+export const AbilityRegistryCtx = createContext<AbilityRegistry>('lloyal.abilityRegistry');

@@ -1,10 +1,8 @@
 import { call } from 'effection';
 import type { Operation } from 'effection';
-import { Trace } from './context';
-import { NullTraceWriter } from './trace-writer';
-import type { TraceWriter } from './trace-writer';
-import type { Chunk, Reranker, ScoredChunk } from './chunk';
-import type { ToolContext } from './types';
+import { Trace, NullTraceWriter } from '@lloyal-labs/lloyal-agents';
+import type { TraceWriter, ToolContext } from '@lloyal-labs/lloyal-agents';
+import type { Chunk, Reranker, ScoredChunk } from './retrieval';
 
 /**
  * Selection policy for {@link admitChunks} — the two admission disciplines

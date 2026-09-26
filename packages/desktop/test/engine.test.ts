@@ -72,6 +72,30 @@ describe('createEngine', () => {
   });
 });
 
+describe('the engine retains what is being acquired', () => {
+  it('the last install frame answers a renderer that loaded late; a fresh engine starts with none', async () => {
+    const proc = fakeProcess();
+    let current = proc;
+    const engine = createEngine<Ev | { type: 'install:step'; steps: unknown[] }, { type: 'x' }, S>({ bin: 'x', fork: () => current, initialState: { sum: 0 }, reduce: (s, ev) => ('n' in ev ? { sum: s.sum + ev.n } : s), forward: () => {} });
+    expect(engine.install()).toBeNull();
+    proc.say({ t: 'event', payload: { type: 'install:step', steps: [{ id: 'llm', status: 'running' }] } });
+    proc.say({ t: 'event', payload: { type: 'n', n: 1 } });
+    expect(engine.install()).toEqual({ type: 'install:step', steps: [{ id: 'llm', status: 'running' }] });
+    proc.say({ t: 'event', payload: { type: 'install:step', steps: [] } });
+    expect(engine.install()).toEqual({ type: 'install:step', steps: [] });
+    // A replacement is a new stream: what the old engine was acquiring is not this one's.
+    proc.say({ t: 'event', payload: { type: 'install:step', steps: [{ id: 'llm', status: 'failed' }] } });
+    const next = fakeProcess();
+    current = next;
+    const restarted = engine.restart();
+    proc.exit(1);
+    await new Promise((r) => setTimeout(r, 0));   // the replacement is forked once the old process has gone
+    next.say({ t: 'ready' });
+    await restarted;
+    expect(engine.install()).toBeNull();
+  });
+});
+
 describe('the engine publishes its session', () => {
   /** Fresh processes, in the order the engine asked for them. */
   function forker() {

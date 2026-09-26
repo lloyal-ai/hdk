@@ -11,12 +11,8 @@
  * missing field.
  */
 import type { Operation } from 'effection';
-import type {
-  AbilityRegistry,
-  AbilityConfigStore,
-  AbilityFactory,
-  AbilityManifest,
-} from '@lloyal-labs/lloyal-agents';
+import type { AbilityRegistry, AbilityFactory, AbilityManifest } from './ability-types';
+import type { AbilityConfigStore } from './ability-config';
 
 export interface AbilityDescriptor {
   /** manifest.name (e.g. "web") — routing key + config-store key. */

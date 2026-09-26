@@ -1,19 +1,22 @@
 /**
  * `@lloyal-labs/web-ability` — HDK reference ability: web research.
  *
- * Reads config from `AbilityConfigStoreCtx` and the shared reranker from
- * `RerankerCtx`, constructs the {@link WebSource} already-bound (no
- * `source.bind`), and returns a validated {@link Ability}.
+ * Reads config from `AbilityConfigStoreCtx` and the harness's reranker,
+ * constructs the {@link WebSource} already-bound (no `source.bind`), and
+ * returns a validated {@link Ability}.
  *
  * @packageDocumentation
  */
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { AbilityConfigStoreCtx, RerankerCtx } from "@lloyal-labs/lloyal-agents";
-import type { AbilityManifest, Tool } from "@lloyal-labs/lloyal-agents";
+import type { Operation } from "effection";
+import { AbilityConfigStoreCtx } from "@lloyal-labs/rig";
+import { service } from "@lloyal-labs/rig";
+import type { Tool } from "@lloyal-labs/lloyal-agents";
+import type { AbilityManifest } from "@lloyal-labs/rig";
 import { defineAbility, TavilyProvider, createKeylessSearchProvider } from "@lloyal-labs/rig";
-import type { Reranker, SearchProvider } from "@lloyal-labs/rig";
+import type { SearchProvider } from "@lloyal-labs/rig";
 import { WebSource } from "./source";
 import type { WebSourceOpts } from "./source";
 
@@ -27,29 +30,31 @@ const dir = join(__dirname, "..");
 const manifest = JSON.parse(readFileSync(join(dir, "ability.json"), "utf8")) as AbilityManifest;
 const skill = readFileSync(join(dir, "skill.eta"), "utf8");
 
+/** The Tavily key as the stored config says it now, else the environment's. */
+const tavilyKeyOf = (cfg: Record<string, unknown>): string | undefined =>
+  typeof cfg.tavilyKey === "string" ? cfg.tavilyKey : process.env.TAVILY_API_KEY;
+
 /**
  * Construct the web research ability. Provider selection: a `tavilyKey` in the
  * ability's stored config (or `TAVILY_API_KEY`) → Tavily; otherwise a keyless
- * DuckDuckGo provider. `services: ['reranker']` makes the harness provision +
- * set `RerankerCtx` before this runs, so the reranker is always present — the
- * `catch` below stays only as a defensive guard.
+ * DuckDuckGo provider. The key is read AT EACH SEARCH, so a key saved — or
+ * removed — while a run is live reaches the next search of every agent already
+ * holding the tool. The keyless provider owns a pacer, so it is built once here,
+ * for the ability's life, whatever the key says at enable: a tool this build
+ * handed out always has somewhere to fall back to. `services: ['reranker']` is
+ * the requirement: a harness whose `model.reranker` block is absent does not
+ * enable this ability, so the reranker below is always present.
  */
 export const createWebAbility = defineAbility(manifest, function* () {
   const cfgStore = yield* AbilityConfigStoreCtx.expect();
   const cfg = (yield* cfgStore.get(manifest.name)) ?? {};
-  const tavilyKey =
-    typeof cfg.tavilyKey === "string" ? cfg.tavilyKey : process.env.TAVILY_API_KEY;
+  const reranker = yield* service('reranker');
 
-  let reranker: Reranker | undefined;
-  try {
-    reranker = yield* RerankerCtx.expect();
-  } catch {
-    reranker = undefined;
-  }
-
-  const provider: SearchProvider = tavilyKey
-    ? new TavilyProvider(tavilyKey)
-    : yield* createKeylessSearchProvider();
+  const keyless: SearchProvider = yield* createKeylessSearchProvider();
+  const provider = function* (): Operation<SearchProvider> {
+    const key = tavilyKeyOf((yield* cfgStore.get(manifest.name)) ?? {});
+    return key ? new TavilyProvider(key) : keyless;
+  };
 
   // The source's knobs, when the stored config carries them; the source's defaults otherwise.
   const topN = typeof cfg.topN === "number" ? cfg.topN : undefined;

@@ -115,3 +115,138 @@ describe('the state must be object-shaped', () => {
     expect(typeof stateMustBeObjectShaped).toBe('function');
   });
 });
+
+describe('the install in front of the view', () => {
+  const running = [{ id: 'llm', label: 'Downloading the reasoning model', status: 'running' as const }];
+  const failed = [{ id: 'machine', label: 'This machine', status: 'failed' as const, note: '8 GB · 10 GB needed' }];
+
+  const failedLlm = [{ id: 'llm', label: 'Downloading the reasoning model', status: 'failed' as const, note: 'Failed to fetch from any source' }];
+
+  it('installView: the whole matrix — no steps is the app; steps with a live engine are the installer, failed or not; any list after the engine ended is an install that did not finish, handed to recovery — the download the engine died under included — unless the failed row is the machine\'s, which no engine can mend', async () => {
+    const { installView } = await import('../src/provider');
+    expect(installView([], 'ready')).toBe('app');
+    expect(installView([], 'ended')).toBe('app');
+    // Not yet known — the placement has an install to report and has not answered — is neither: nothing mounts.
+    expect(installView(null, 'ready')).toBe('waiting');
+    expect(installView(null, 'warming')).toBe('waiting');
+    for (const live of ['connecting', 'warming', 'queued', 'ready'] as const) {
+      expect(installView(running, live), live).toBe('acquiring');
+      expect(installView(failedLlm, live), live).toBe('acquiring');   // retry / a file / stop are on offer
+      expect(installView(failed, live), live).toBe('acquiring');
+    }
+    for (const gone of ['ended', 'lost'] as const) {
+      expect(installView(failedLlm, gone), gone).toBe('ended');
+      expect(installView(failed, gone), gone).toBe('refused');
+      expect(installView(running, gone), gone).toBe('ended');   // the engine died mid-download: not the app
+    }
+  });
+
+  it('subscribeInstall: a placement that has installNow and fails to answer is a failed step, never a run that acquires nothing', async () => {
+    const { subscribeInstall } = await import('../src/provider');
+    const b = { onEvent() { return () => {}; }, installNow: () => Promise.reject(new Error("No handler registered for 'harness:install-now'")) };
+    const seen: unknown[] = [];
+    subscribeInstall(b, (steps) => seen.push(steps));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(seen).toEqual([[{ id: 'install', label: 'Asking what this run needs', status: 'failed', note: "No handler registered for 'harness:install-now'" }]]);
+  });
+
+  it('subscribeInstall: the push wins — an answer that arrives after a frame never overwrites it; an answer with no frame stands', async () => {
+    const { subscribeInstall } = await import('../src/provider');
+    let answer!: (v: unknown) => void;
+    const subs = new Set<(f: { epoch: number; seq: number; ev: unknown }) => void>();
+    const b = {
+      onEvent(cb: (f: { epoch: number; seq: number; ev: unknown }) => void) { subs.add(cb); return () => subs.delete(cb); },
+      installNow: () => new Promise<unknown>((r) => { answer = r; }),
+    };
+    const seen: unknown[] = [];
+    const off = subscribeInstall(b, (steps) => seen.push(steps));
+    for (const cb of subs) cb({ epoch: 1, seq: 1, ev: { type: 'install:step', steps: [] } });   // the final frame: over
+    answer({ type: 'install:step', steps: running });                                            // an older answer, late
+    await new Promise((r) => setTimeout(r, 0));
+    expect(seen).toEqual([[]]);
+    off();
+
+    const late: unknown[] = [];
+    const b2 = { onEvent() { return () => {}; }, installNow: () => Promise.resolve({ type: 'install:step', steps: running }) };
+    subscribeInstall(b2, (steps) => late.push(steps));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(late).toEqual([running]);
+  });
+
+  it('subscribeInstall: the steps follow the engine — a failed boot, recovery, then a fully cached boot that publishes nothing clears the installer at `warming`, with the subscription mounted throughout', async () => {
+    const { subscribeInstall } = await import('../src/provider');
+    // A desktop bridge as the renderer sees it: frames, the session channel announcing where things stand
+    // and every change, and `installNow` answering what the CURRENT engine retains (null after a replacement).
+    type Session = { phase: 'warming' | 'live' | 'draining' | 'died' };
+    const subs = new Set<(f: { epoch: number; seq: number; ev: unknown }) => void>();
+    const sessions = new Set<(s: Session) => void>();
+    let session: Session = { phase: 'died' };
+    let retained: unknown = { type: 'install:step', steps: failed };
+    const asked: unknown[] = [];
+    const announce = (s: Session): void => { session = s; for (const cb of sessions) cb(s); };
+    const b = {
+      onEvent(cb: (f: { epoch: number; seq: number; ev: unknown }) => void) { subs.add(cb); return () => subs.delete(cb); },
+      onSession(cb: (s: Session) => void) { sessions.add(cb); cb(session); return () => sessions.delete(cb); },
+      installNow: () => { asked.push(retained); return Promise.resolve(retained); },
+    };
+    const seen: unknown[] = [];
+    const off = subscribeInstall(b as never, (steps) => seen.push(steps));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(seen).toEqual([failed]);                  // the renderer loaded after the machine refusal ended the engine
+    // The reader presses "Start a new engine": the shell drains the old one, drops its retained install,
+    // forks the replacement — which finds every slot full and publishes nothing — and it goes live.
+    announce({ phase: 'draining' });
+    retained = { type: 'install:step', steps: [] };   // the replacement's decision: it acquires nothing
+    announce({ phase: 'warming' });
+    announce({ phase: 'live' });
+    await new Promise((r) => setTimeout(r, 0));
+    // Unknown at the new life, then nothing: the replacement decided so.
+    expect(seen).toEqual([failed, null, []]);
+    expect(asked).toEqual([{ type: 'install:step', steps: failed }, { type: 'install:step', steps: [] }]);
+    // A replacement that fails again pushes its own rows, and they show.
+    announce({ phase: 'draining' });
+    announce({ phase: 'warming' });
+    for (const cb of subs) cb({ epoch: 2, seq: 1, ev: { type: 'install:step', steps: running } });
+    expect(seen).toEqual([failed, null, [], null, running]);
+    off();
+  });
+
+  it('subscribeInstall: an answer from the engine before the replacement is never applied to the replacement', async () => {
+    const { subscribeInstall } = await import('../src/provider');
+    type Session = { phase: 'warming' | 'live' };
+    const sessions = new Set<(s: Session) => void>();
+    const subs = new Set<(f: { epoch: number; seq: number; ev: unknown }) => void>();
+    const answers: Array<(v: unknown) => void> = [];
+    const b = {
+      onEvent(cb: (f: { epoch: number; seq: number; ev: unknown }) => void) { subs.add(cb); return () => subs.delete(cb); },
+      onSession(cb: (s: Session) => void) { sessions.add(cb); cb({ phase: 'live' }); return () => sessions.delete(cb); },
+      installNow: () => new Promise<unknown>((r) => { answers.push(r); }),
+    };
+    const seen: unknown[] = [];
+    subscribeInstall(b as never, (steps) => seen.push(steps));
+    expect(answers).toHaveLength(1);                 // mounted at `live`: asked once, nothing cleared
+    for (const cb of sessions) cb({ phase: 'warming' });
+    expect(answers).toHaveLength(2);
+    answers[0]({ type: 'install:step', steps: failed });   // the old engine's answer, late
+    answers[1](null);
+    await new Promise((r) => setTimeout(r, 0));
+    // Unknown at the new life — the late answer from the old engine never lands — and still unknown on the
+    // replacement's null, live or not: `live` is the binding, before the install; only the install decides.
+    for (const cb of sessions) cb({ phase: 'live' });
+    expect(seen).toEqual([null]);
+    for (const cb of subs) cb({ epoch: 2, seq: 1, ev: { type: 'install:step', steps: [] } });
+    expect(seen).toEqual([null, []]);
+  });
+
+  it('subscribeInstall: after unsubscribing, neither source is heard', async () => {
+    const { subscribeInstall } = await import('../src/provider');
+    let answer!: (v: unknown) => void;
+    const b = { onEvent() { return () => {}; }, installNow: () => new Promise<unknown>((r) => { answer = r; }) };
+    const seen: unknown[] = [];
+    const off = subscribeInstall(b, (steps) => seen.push(steps));
+    off();
+    answer({ type: 'install:step', steps: running });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(seen).toEqual([]);
+  });
+});

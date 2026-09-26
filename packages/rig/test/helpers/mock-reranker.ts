@@ -24,6 +24,7 @@ export function createMockReranker(scoreMap?: Map<string, number>) {
     tokenizeChunks: async (chunks: Array<{ tokens: number[] }>) => {
       for (const c of chunks) c.tokens = [1, 2, 3];
     },
+    tokenize: async (_text: string): Promise<number[]> => [1, 2, 3],
     dispose: () => {},
   };
 }

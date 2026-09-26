@@ -1,12 +1,9 @@
 /**
  * `AbilityConfigStore` — pluggable per-ability config storage.
  *
- * The interface lives in `@lloyal-labs/lloyal-agents` so the framework
- * context (`AbilityConfigStoreCtx`) and ability factories (in `@lloyal-labs/rig`,
- * `@lloyal-labs/web-ability`, `@lloyal-labs/corpus-ability`) share a common type
- * without a dependency cycle. The concrete in-memory implementation
- * (`createInMemoryConfigStore`) and harness-supplied backends live in
- * rig and harness packages.
+ * The interface and its context ({@link AbilityConfigStoreCtx}) live together here; the
+ * concrete in-memory implementation is `createInMemoryConfigStore`, and a harness may
+ * supply its own backend.
  *
  * **Semantics:**
  *
@@ -20,9 +17,10 @@
  *   store interface is pure storage — it does not know about the manifest.
  *
  * @packageDocumentation
- * @category Contract
+ * @category Rig
  */
 
+import { createContext } from 'effection';
 import type { Operation } from 'effection';
 
 /**
@@ -49,3 +47,15 @@ export interface AbilityConfigStore {
    */
   clear(abilityName: string): Operation<void>;
 }
+
+/**
+ * Effection context holding the harness's {@link AbilityConfigStore}.
+ *
+ * Set by `createAbilityRegistry({ configStore })` from its `configStore` option, and seeded into each
+ * ability's detached scope so factories can read it: `(yield* AbilityConfigStoreCtx.expect()).get(manifest.name)`
+ * at construction time. The framework validates the stored config against `ability.manifest.configSchema`
+ * when the ability is enabled. Whole-replace semantics on `set`; last-write-wins on concurrent writes.
+ *
+ * @category Rig
+ */
+export const AbilityConfigStoreCtx = createContext<AbilityConfigStore>('lloyal.abilityConfigStore');

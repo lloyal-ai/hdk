@@ -17,9 +17,11 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { Operation } from 'effection';
-import { defineAbility } from '../../../../rig/src/define-ability';
-import type { AbilitySetup } from '../../../../rig/src/define-ability';
-import type { AbilityManifest, Source, Tool } from '../../../src';
+import type { Tool } from '@lloyal-labs/lloyal-agents';
+import { defineAbility } from '../src/define-ability';
+import type { AbilitySetup } from '../src/define-ability';
+import type { AbilityManifest } from '../src/ability-types';
+import type { Source } from '../src/source';
 
 function manifestWith(useWhen: string): AbilityManifest {
   return {

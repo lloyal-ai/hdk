@@ -54,17 +54,18 @@ describe('config + provenance', () => {
     const m = createPaneModel();
     foldEvent(m, {
       type: 'config:loaded',
-      config: { defaults: { effort: 'high' }, model: { nCtx: 32768 } },
-      origin: { nCtx: 'yml', outputDir: 'default' },
+      config: { defaults: { effort: 'high' }, model: { llm: { context: 32768 } } },
+      origin: { 'model.llm.context': 'yml', 'sources.outputDir': 'default' },
     }, 0);
     expect(readConfigPath(m.config, 'defaults.effort')).toBe('high');
-    expect(m.origin?.nCtx).toBe('yml');
+    expect(readConfigPath(m.config, 'model.llm.context')).toBe(32768);
+    expect(m.origin?.['model.llm.context']).toBe('yml');
     expect(m.lastSavedTo).toBeUndefined(); // no save yet — footer renders nothing
 
     foldEvent(m, {
       type: 'config:updated',
-      config: { defaults: { effort: 'low' }, model: { nCtx: 32768 } },
-      origin: { nCtx: 'yml', outputDir: 'file' },
+      config: { defaults: { effort: 'low' }, model: { llm: { context: 32768 } } },
+      origin: { 'model.llm.context': 'yml', 'sources.outputDir': 'file' },
       savedTo: '/proj/harness.json',
     }, 1);
     expect(readConfigPath(m.config, 'defaults.effort')).toBe('low');
@@ -101,26 +102,26 @@ describe('settings rows, derived from the application\'s config table', () => {
   const table = {
     'defaults.effort': { oneOf: ['low', 'high'], default: 'high' },
     'sources.outputDir': { path: true as const, default: 'reports' },
-    'model.mmproj': { oneOf: ['none', 'qwen-vl'], applies: 'reload' as const },
-    'model.kvCache': { oneOf: ['f16', 'q8_0'], applies: 'boot' as const },
-    'deep.er.key': { oneOf: ['a', 'b'] },
+    'model.vision.id': { oneOf: ['none', 'qwen-vl'], applies: 'reload' as const },
+    'model.llm.kvCache': { oneOf: ['f16', 'q8_0'], applies: 'boot' as const },
+    verbose: { oneOf: ['on', 'off'] },
   };
   it('every key is a row, at the tier it declares; a key that says nothing applies to the session', () => {
     expect(configRows(table).map((r) => [r.key, r.applies])).toEqual([
-      ['defaults.effort', 'session'], ['sources.outputDir', 'session'], ['model.mmproj', 'reload'], ['model.kvCache', 'boot'], ['deep.er.key', 'session'],
+      ['defaults.effort', 'session'], ['sources.outputDir', 'session'], ['model.vision.id', 'reload'], ['model.llm.kvCache', 'boot'], ['verbose', 'session'],
     ]);
   });
-  it('a row offers a choice only where one can be made: it lists its values, it is not fixed at boot, and a patch can name it', () => {
+  it('a row offers a choice only where one can be made: it lists its values and it is not fixed at boot — at whatever depth the key sits', () => {
     const offered = Object.fromEntries(configRows(table).map((r) => [r.key, r.values]));
     expect(offered).toEqual({
-      'defaults.effort': ['low', 'high'], 'sources.outputDir': null, 'model.mmproj': ['none', 'qwen-vl'], 'model.kvCache': null, 'deep.er.key': null,
+      'defaults.effort': ['low', 'high'], 'sources.outputDir': null, 'model.vision.id': ['none', 'qwen-vl'], 'model.llm.kvCache': null, verbose: ['on', 'off'],
     });
   });
   it('a row carries what its key said of itself, and how to change it is said from the declaration alone', () => {
     const rows = configRows({
       'defaults.effort': { yml: 'defaults.effort', oneOf: ['low', 'high'], describe: 'How hard a run tries.' },
-      'model.gpu': { yml: 'model.llm.gpu', env: 'LLOYAL_GPU', oneOf: ['default', 'cuda'], applies: 'boot' as const },
-      'model.path': { applies: 'reload' as const },
+      'model.llm.gpu': { yml: 'model.llm.gpu', env: 'LLOYAL_GPU', oneOf: ['default', 'cuda'], applies: 'boot' as const },
+      'model.llm.path': { applies: 'reload' as const },
     });
     expect(rows.map((r) => [r.describe, r.yml, r.env])).toEqual([
       ['How hard a run tries.', 'defaults.effort', undefined], [undefined, 'model.llm.gpu', 'LLOYAL_GPU'], [undefined, undefined, undefined],
@@ -129,19 +130,20 @@ describe('settings rows, derived from the application\'s config table', () => {
     expect(changing(rows[1])).toBe('Fixed for this run. Set harness.yml → model.llm.gpu (or LLOYAL_GPU), then restart.');
     expect(changing(rows[2])).toBe('Saved now; the next start loads it.');
   });
-  it('a choice is sent as rig\'s own command for its tier, with a real patch', () => {
-    const [effort, , mmproj, kv] = configRows(table);
+  it('a choice is sent as rig\'s own command for its tier, with a real patch at the key\'s own depth', () => {
+    const [effort, , vision, kv, verbose] = configRows(table);
     expect(configCommand(effort, 'low')).toEqual({ type: 'set_config', patch: { defaults: { effort: 'low' } } });
-    expect(configCommand(mmproj, 'qwen-vl')).toEqual({ type: 'reload_runtime', patch: { model: { mmproj: 'qwen-vl' } } });
+    expect(configCommand(vision, 'qwen-vl')).toEqual({ type: 'reload_runtime', patch: { model: { vision: { id: 'qwen-vl' } } } });
+    expect(configCommand(verbose, 'on')).toEqual({ type: 'set_config', patch: { verbose: 'on' } });
     expect(configCommand(kv, 'q8_0')).toBeNull();
     expect(configCommand(effort, 'not-a-value')).toBeNull();
   });
 });
 
 describe('settings rows of a harness that handed the pane no table', () => {
-  it('every path the live config carries is a row — a top-level scalar as much as a family leaf; rig\'s own keys are not', () => {
-    const config = { version: 1, maxRows: 10, model: { id: 'qwen', gpu: 'default' }, tags: ['a'], abilities: { corpus: { corpusPath: 'x' } } };
-    expect(liveConfigKeys(config)).toEqual(['maxRows', 'model.id', 'model.gpu', 'tags']);
+  it('every path the live config carries is a row — a top-level scalar, a family leaf, a key of a block; rig\'s own keys are not', () => {
+    const config = { version: 2, maxRows: 10, model: { llm: { id: 'qwen', gpu: 'default' }, vision: {} }, tags: ['a'], abilities: { corpus: { corpusPath: 'x' } } };
+    expect(liveConfigKeys(config)).toEqual(['maxRows', 'model.llm.id', 'model.llm.gpu', 'tags']);
     expect(liveConfigKeys(null)).toEqual([]);
   });
 });

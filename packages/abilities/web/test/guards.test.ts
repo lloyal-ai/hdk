@@ -11,6 +11,7 @@ import { FetchPageTool } from '../src/tools/fetch-page';
 import { WebSearchTool } from '../src/tools/web-search';
 import type { SearchProvider } from '../src/tools/web-search';
 import { WebSource } from '../src/source';
+import { stubReranker } from './helpers/stub-reranker';
 
 /** A call as a gate sees it, over the arguments this scope already attended. */
 const seen = (tool: string, args: Record<string, unknown>, attended: Record<string, unknown>[]): GuardInput =>
@@ -25,6 +26,13 @@ describe("url_dedup — fetch_page's gate", () => {
 
   it('admits a URL not yet attended', () => {
     expect(urlDedup.reject(seen('fetch_page', { url: 'https://example.com/b' }, [page]))).toBe(false);
+  });
+
+  it('the resource is the page AND the question: the same url with another query is another selection, and admitted', () => {
+    const asked = { url: 'https://example.com/a', query: 'when do cats sleep' };
+    expect(urlDedup.reject(seen('fetch_page', asked, [asked]))).toBe(true);
+    expect(urlDedup.reject(seen('fetch_page', { url: 'https://example.com/a', query: 'how do dogs behave' }, [asked]))).toBe(false);
+    expect(urlDedup.reject(seen('fetch_page', { url: 'https://example.com/a', query: '  When do CATS sleep ' }, [asked]))).toBe(true);
   });
 
   it('trims the way the tool trims: a whitespace-only variant is the same resource, on either side', () => {
@@ -43,7 +51,7 @@ describe("url_dedup — fetch_page's gate", () => {
 
   it('is published under its name, with the message the model reads', () => {
     expect(urlDedup.name).toBe('url_dedup');
-    expect(urlDedup.message).toBe('This URL was already attempted in this run. Try a different source.');
+    expect(urlDedup.message).toBe('This URL was already read for this question in this run. Ask it something else, or try a different source.');
   });
 });
 
@@ -76,14 +84,14 @@ describe("query_dedup — web_search's gate", () => {
 
 describe('the tools declare their gates', () => {
   it('fetch_page declares url_dedup; web_search declares query_dedup', () => {
-    expect(new FetchPageTool().hooks.beforeDispatch).toEqual([urlDedup]);
+    expect(new FetchPageTool(stubReranker).hooks.beforeDispatch).toEqual([urlDedup]);
     const provider: SearchProvider = { returnsFullContentMarkdown: false, search: async () => [] };
-    expect(new WebSearchTool(provider).hooks.beforeDispatch).toEqual([queryDedup]);
+    expect(new WebSearchTool(function* () { return provider; }).hooks.beforeDispatch).toEqual([queryDedup]);
   });
 
   it("the source's buffering fetch_page inherits the declaration", () => {
     const provider: SearchProvider = { returnsFullContentMarkdown: false, search: async () => [] };
-    const fetchPage = new WebSource(provider).tools.find((t) => t.name === 'fetch_page')!;
+    const fetchPage = new WebSource(function* () { return provider; }, { reranker: stubReranker }).tools.find((t) => t.name === 'fetch_page')!;
     expect(fetchPage.hooks?.beforeDispatch).toEqual([urlDedup]);
   });
 

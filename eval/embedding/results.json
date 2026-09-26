@@ -1,0 +1,224 @@
+{
+  "ranAt": "2026-09-25T04:14:35.341Z",
+  "resident": true,
+  "models": [
+    {
+      "id": "nomic-embed-text-v1.5-q4",
+      "dimension": 768,
+      "loadMs": 68,
+      "msPerText": 22.7,
+      "texts": 656,
+      "refused": 0,
+      "recallAt10": 0.525,
+      "spearman": 0.471,
+      "rssLoad": 81018880,
+      "per": [
+        {
+          "id": "q01",
+          "kind": "vague",
+          "recallAt10": 0.2,
+          "spearman": 0.1442776735459662
+        },
+        {
+          "id": "q02",
+          "kind": "vague",
+          "recallAt10": 0.2,
+          "spearman": 0.49868667917448406
+        },
+        {
+          "id": "q03",
+          "kind": "vague",
+          "recallAt10": 0.4,
+          "spearman": 0.6181988742964353
+        },
+        {
+          "id": "q04",
+          "kind": "vague",
+          "recallAt10": 0.2,
+          "spearman": 0.476172607879925
+        },
+        {
+          "id": "q05",
+          "kind": "vague",
+          "recallAt10": 0.6,
+          "spearman": 0.4189493433395872
+        },
+        {
+          "id": "q06",
+          "kind": "refined",
+          "recallAt10": 0.6,
+          "spearman": 0.7200750469043151
+        },
+        {
+          "id": "q07",
+          "kind": "refined",
+          "recallAt10": 1,
+          "spearman": 0.7091932457786116
+        },
+        {
+          "id": "q08",
+          "kind": "refined",
+          "recallAt10": 0.8,
+          "spearman": 0.7384615384615385
+        },
+        {
+          "id": "q09",
+          "kind": "refined",
+          "recallAt10": 0.4,
+          "spearman": 0.18986866791744839
+        },
+        {
+          "id": "q10",
+          "kind": "refined",
+          "recallAt10": 1,
+          "spearman": 0.6902439024390243
+        },
+        {
+          "id": "q11",
+          "kind": "refined",
+          "recallAt10": 0.8,
+          "spearman": 0.4645403377110694
+        },
+        {
+          "id": "q12",
+          "kind": "hard",
+          "recallAt10": 0.8,
+          "spearman": 0.7900562851782365
+        },
+        {
+          "id": "q13",
+          "kind": "hard",
+          "recallAt10": 0.6,
+          "spearman": 0.3523452157598499
+        },
+        {
+          "id": "q14",
+          "kind": "absent",
+          "recallAt10": 0.4,
+          "spearman": 0.35272045028142585
+        },
+        {
+          "id": "q15",
+          "kind": "absent",
+          "recallAt10": 0.2,
+          "spearman": 0.4234521575984991
+        },
+        {
+          "id": "q16",
+          "kind": "absent",
+          "recallAt10": 0.2,
+          "spearman": -0.048217636022514165
+        }
+      ]
+    },
+    {
+      "id": "qwen3-embedding-0.6b-q8",
+      "dimension": 1024,
+      "loadMs": 871,
+      "msPerText": 87.9,
+      "texts": 656,
+      "refused": 0,
+      "recallAt10": 0.6,
+      "spearman": 0.421,
+      "rssLoad": 782630912,
+      "per": [
+        {
+          "id": "q01",
+          "kind": "vague",
+          "recallAt10": 0.6,
+          "spearman": 0.22176360225140712
+        },
+        {
+          "id": "q02",
+          "kind": "vague",
+          "recallAt10": 0.6,
+          "spearman": 0.300375234521576
+        },
+        {
+          "id": "q03",
+          "kind": "vague",
+          "recallAt10": 0.6,
+          "spearman": 0.673921200750469
+        },
+        {
+          "id": "q04",
+          "kind": "vague",
+          "recallAt10": 0.2,
+          "spearman": 0.499249530956848
+        },
+        {
+          "id": "q05",
+          "kind": "vague",
+          "recallAt10": 0.4,
+          "spearman": -0.15159474671669804
+        },
+        {
+          "id": "q06",
+          "kind": "refined",
+          "recallAt10": 0.8,
+          "spearman": 0.7183864915572233
+        },
+        {
+          "id": "q07",
+          "kind": "refined",
+          "recallAt10": 1,
+          "spearman": 0.6851782363977486
+        },
+        {
+          "id": "q08",
+          "kind": "refined",
+          "recallAt10": 0.6,
+          "spearman": 0.6476547842401501
+        },
+        {
+          "id": "q09",
+          "kind": "refined",
+          "recallAt10": 0.4,
+          "spearman": 0.10956848030018762
+        },
+        {
+          "id": "q10",
+          "kind": "refined",
+          "recallAt10": 0.8,
+          "spearman": 0.7902439024390244
+        },
+        {
+          "id": "q11",
+          "kind": "refined",
+          "recallAt10": 1,
+          "spearman": 0.5632270168855535
+        },
+        {
+          "id": "q12",
+          "kind": "hard",
+          "recallAt10": 0.8,
+          "spearman": 0.7123827392120075
+        },
+        {
+          "id": "q13",
+          "kind": "hard",
+          "recallAt10": 0.8,
+          "spearman": 0.5191369606003753
+        },
+        {
+          "id": "q14",
+          "kind": "absent",
+          "recallAt10": 0.2,
+          "spearman": 0.06378986866791747
+        },
+        {
+          "id": "q15",
+          "kind": "absent",
+          "recallAt10": 0.2,
+          "spearman": -0.01575984990619128
+        },
+        {
+          "id": "q16",
+          "kind": "absent",
+          "recallAt10": 0.6,
+          "spearman": 0.40150093808630394
+        }
+      ]
+    }
+  ]
+}

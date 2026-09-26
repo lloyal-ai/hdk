@@ -6,7 +6,7 @@
  * `registry.enable(factory)` calls (creation is not enablement — there is one
  * enable path, so the two can't collide); each factory runs in its own
  * *detached* Effection scope (`createScope()` — does NOT inherit context, so the
- * registry seeds `AbilityConfigStoreCtx` / `AbilityRegistryCtx` / `RerankerCtx`
+ * registry seeds `AbilityConfigStoreCtx` / `AbilityRegistryCtx` / the bound `Services`
  * into it explicitly; the detachment is what isolates teardown errors so
  * `disable` can swallow them). `disable` / registry scope-exit tear that
  * scope down, firing the factory's `ensure(...)`. `enable` is the dynamic
@@ -32,10 +32,12 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { run, ensure } from 'effection';
-import { AbilityConfigStoreCtx } from '@lloyal-labs/lloyal-agents';
+import { AbilityConfigStoreCtx } from '../src/ability-config';
 import { Attachments } from '@lloyal-labs/lloyal-agents';
+import { Services, service } from '../src/services';
 import type { AttachmentStore } from '@lloyal-labs/media';
-import type { Ability, AbilityManifest, AbilityFactory } from '@lloyal-labs/lloyal-agents';
+import type { Ability, AbilityManifest, AbilityFactory } from '../src/ability-types';
+import type { Reranker } from '../src/retrieval';
 import { createAbilityRegistry } from '../src/registry';
 import { createInMemoryConfigStore } from '../src/config-store';
 
@@ -153,6 +155,71 @@ describe('createAbilityRegistry', () => {
       return inFactory === store;
     });
     expect(seen).toBe(true);
+  });
+
+  it('seeds every bound service into the factory scope: what the harness bound is what the ability reaches', async () => {
+    const seen = await run(function* () {
+      const reranker = { marker: 'the bound reranker' } as unknown as Reranker;
+      yield* Services.set({ reranker });
+      let inFactory: unknown;
+      const factory: AbilityFactory = function* () {
+        inFactory = yield* service('reranker');
+        return fakeApp({ name: 'scorer' });
+      };
+      const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
+      yield* registry.enable(factory);
+      return inFactory === reranker;
+    });
+    expect(seen).toBe(true);
+  });
+
+  it('an ability that requires a service nothing bound does not enable: refused before its factory runs, naming the block', async () => {
+    let ran = false;
+    const factory: AbilityFactory = Object.assign(function* () { ran = true; return fakeApp({ name: 'scorer' }); }, {
+      manifest: { name: 'scorer', protocol: { name: 'scorer_p', useWhen: 'scoring', tools: ['t'] }, services: ['reranker'] } as AbilityManifest,
+    });
+    await expect(run(function* () {
+      const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
+      yield* registry.enable(factory);
+    })).rejects.toThrow('scorer requires `reranker`, which is not configured — add `model.reranker` to harness.yml');
+    expect(ran).toBe(false);
+    // Bound, the same factory enables.
+    const enabled = await run(function* () {
+      yield* Services.set({ reranker: { marker: 'bound' } as unknown as Reranker });
+      const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
+      yield* registry.enable(factory);
+      return registry.stateOf('scorer');
+    });
+    expect(enabled).toBe('enabled');
+    expect(ran).toBe(true);
+  });
+
+  it('a requirement no row provides is refused as such — never told to add a block the platform does not know', async () => {
+    const factory: AbilityFactory = Object.assign(function* () { return fakeApp({ name: 'hearer' }); }, {
+      manifest: { name: 'hearer', protocol: { name: 'hearer_p', useWhen: 'hearing', tools: ['t'] }, services: ['whisper'] } as unknown as AbilityManifest,
+    });
+    await expect(run(function* () {
+      const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
+      yield* registry.enable(factory);
+    })).rejects.toThrow('hearer requires `whisper`, which is not a service this platform provides');
+  });
+
+  it('a factory with no static manifest is held to the manifest it returns: the requirement is what the registry registers', async () => {
+    const plain: AbilityFactory = function* () {
+      return { ...fakeApp({ name: 'seer' }), manifest: { name: 'seer', protocol: { name: 'seer_p', useWhen: 'seeing', tools: ['t'] }, services: ['vision'] } as AbilityManifest };
+    };
+    expect(plain.manifest).toBeUndefined();
+    await expect(run(function* () {
+      const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
+      yield* registry.enable(plain);
+    })).rejects.toThrow('seer requires `vision`, which is not configured — add `model.vision` to harness.yml');
+    const state = await run(function* () {
+      yield* Services.set({ vision: { artifact: '/v.gguf' } });
+      const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
+      yield* registry.enable(plain);
+      return registry.stateOf('seer');
+    });
+    expect(state).toBe('enabled');
   });
 
   it('runs the factory body (setup) when enabled', async () => {
@@ -310,25 +377,23 @@ describe('createAbilityRegistry', () => {
     ).rejects.toThrow('declares "number"');
   });
 
-  it('throws on duplicate ability name; the first enable survives', async () => {
+  it('enabling a name already enabled supersedes it: one handle, one roster entry, the new entry behind it; unheld, the old one ends at once', async () => {
+    const torn: string[] = [];
     const result = await run(function* () {
       const registry = yield* createAbilityRegistry({ configStore: createInMemoryConfigStore() });
-      yield* registry.enable(plainFactory({ name: 'dup' }));
-      const first = registry.byName('dup');
-      try {
-        yield* registry.enable(plainFactory({ name: 'dup' }));
-      } catch (err) {
-        return {
-          message: (err as Error).message,
-          stillThere: registry.byName('dup') === first,
-          count: registry.enabled().filter((a) => a.manifest.name === 'dup').length,
-        };
-      }
-      return { message: undefined, stillThere: false, count: -1 };
+      yield* registry.enable(resourceFactory({ name: 'dup' }, { onTeardown: () => torn.push('first') }));
+      const first = registry.byName('dup')!;
+      yield* registry.enable(resourceFactory({ name: 'dup' }, { onTeardown: () => torn.push('second') }));
+      return {
+        sameHandle: registry.byName('dup') === first,
+        count: registry.enabled().filter((a) => a.manifest.name === 'dup').length,
+        afterSecondEnable: [...torn],
+      };
     });
-    expect(result.message).toContain('already enabled');
-    expect(result.stillThere).toBe(true);
+    expect(result.sameHandle).toBe(true);
     expect(result.count).toBe(1);
+    expect(result.afterSecondEnable).toEqual(['first']);
+    expect(torn).toEqual(['first', 'second']);   // the registry's own exit ends the entry still serving
   });
 
   it('throws on a colliding protocol name across two differently-named abilities (cross-publisher clash)', async () => {

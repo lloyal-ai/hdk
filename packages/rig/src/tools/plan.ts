@@ -1,6 +1,7 @@
 import type { Operation } from 'effection';
 import { Tool, agent } from '@lloyal-labs/lloyal-agents';
-import type { JsonSchema, Ability, PromptOf } from '@lloyal-labs/lloyal-agents';
+import type { JsonSchema, PromptOf } from '@lloyal-labs/lloyal-agents';
+import type { Ability } from '../ability-types';
 import type { Session, Branch } from '@lloyal-labs/sdk';
 import { TASK_ROUTING_KEY } from '../protocol';
 

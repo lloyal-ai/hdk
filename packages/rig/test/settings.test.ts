@@ -16,15 +16,15 @@ import { createAbilityRegistry } from '../src/registry';
 import { createInMemoryConfigStore } from '../src/config-store';
 import { makeServedRunner, makeEdgeRunner } from '../src/runner';
 import type { ConfigPatch, SaveResult } from '../src/runner';
-import { defineConfig, modelSettings } from '../src/config';
+import { defineConfig, modelSettings, CONFIG_VERSION } from '../src/config';
 import { settings } from '../src/settings';
 import type { SettingsCommand, SettingsEvent } from '../src/settings-protocol';
 import type { JsonSchema } from '@lloyal-labs/lloyal-agents';
 import { fakeAbility } from './helpers/fake-ability';
 
 const table = defineConfig({ ...modelSettings, 'sources.outputDir': { yml: 'sources.outputDir', path: true, default: 'reports' } });
-type Config = { version: 1; sources: { outputDir?: string }; abilities: Record<string, Record<string, unknown>>; model: Record<string, unknown> };
-const base = (abilities: Record<string, Record<string, unknown>> = {}): Config => ({ version: 1, sources: { outputDir: '/out' }, abilities, model: {} });
+type Config = { version: typeof CONFIG_VERSION; sources: { outputDir?: string }; abilities: Record<string, Record<string, unknown>>; model: { llm?: { path?: string; gpu?: string } } };
+const base = (abilities: Record<string, Record<string, unknown>> = {}): Config => ({ version: CONFIG_VERSION, sources: { outputDir: '/out' }, abilities, model: {} });
 const origin = { 'sources.outputDir': 'yml' as const };
 const identity = { 'sources.outputDir': 'sources.outputDir' as const };
 
@@ -32,21 +32,20 @@ const identity = { 'sources.outputDir': 'sources.outputDir' as const };
 function* world(opts: {
   abilities: ReturnType<typeof fakeAbility>[];
   config?: Config;
-  busy?: boolean;
   persist?: (patch: ConfigPatch<Config>) => SaveResult & { config: Config; origin: typeof origin };
   enable?: string[];
 }) {
   const sent: SettingsEvent[] = [];
   const cfg = opts.config ?? base();
   const runner = opts.persist
-    ? makeEdgeRunner<Config, typeof origin>(cfg, { origin, sessionOriginMap: identity, persist: opts.persist })
-    : makeServedRunner<Config, typeof origin>(cfg, { origin, sessionOriginMap: identity });
+    ? makeEdgeRunner<Config, typeof origin>(cfg, { table, origin, sessionOriginMap: identity, persist: opts.persist })
+    : makeServedRunner<Config, typeof origin>(cfg, { table, origin, sessionOriginMap: identity });
   const store = createInMemoryConfigStore();
   for (const [name, c] of Object.entries(cfg.abilities)) yield* store.set(name, c);
   const registry = yield* createAbilityRegistry({ configStore: store });
   for (const name of opts.enable ?? []) yield* registry.enable(opts.abilities.find((a) => a.manifest!.name === name)!);
   const wire = { *send(e: SettingsEvent): Operation<void> { sent.push(e); } };
-  const group = settings({ runner, registry, store, wire, run: { busy: opts.busy ?? false }, abilities: opts.abilities, config: table });
+  const group = settings({ runner, registry, store, wire, abilities: opts.abilities, config: table });
   return { sent, runner, store, registry, handlers: group.handlers };
 }
 const dispatch = (w: { handlers: ReturnType<typeof settings>['handlers'] }, c: SettingsCommand) =>
@@ -72,14 +71,18 @@ describe('set_config', () => {
 describe('set_ability_config', () => {
   const REQUIRED: JsonSchema = { type: 'object', required: ['corpusPath'], properties: { corpusPath: { type: 'string' } } };
 
-  it('is refused with a toast while a run is live; nothing changes', async () => {
+  it('a save supersedes an enabled ability through its one handle, and never asks whether a run is live', async () => {
+    // The run's side — what a run holds keeps working until the run ends — is the rig invariants' (R1–R5).
     await run(function* () {
-      const web = fakeAbility({ name: 'web' });
-      const w = yield* world({ abilities: [web], busy: true });
+      const seen: unknown[] = [];
+      const web = fakeAbility({ name: 'web', saw: (c) => seen.push(c) });
+      const w = yield* world({ abilities: [web], enable: ['web'] });
+      const before = w.registry.byName('web');
       yield* dispatch(w, { type: 'set_ability_config', name: 'web', values: { tavilyKey: 'k' } });
-      expect(w.sent).toEqual([{ type: 'ui:error', message: expect.stringMatching(/run|brief|settle/i) }]);
-      expect(yield* w.store.get('web')).toBeUndefined();
-      expect(w.runner.config().abilities).toEqual({});
+      expect(w.sent.map((e) => e.type)).toEqual(['config:updated', 'abilities:state']);
+      expect(seen).toEqual([undefined, { tavilyKey: 'k' }]);
+      expect(w.registry.byName('web')).toBe(before);
+      expect(w.registry.enabled()).toHaveLength(1);
     });
   });
 
@@ -198,7 +201,7 @@ describe('reload_runtime', () => {
     // would reasonably read it as the change having taken.
     await run(function* () {
       const w = yield* world({ abilities: [] });   // no `persist`: the served runner
-      const flow = yield* dispatch(w, { type: 'reload_runtime', patch: { model: { gpu: 'cuda' } } });
+      const flow = yield* dispatch(w, { type: 'reload_runtime', patch: { model: { llm: { gpu: 'cuda' } } } });
       expect(flow, 'the session ended for a change that was never applied').toBeUndefined();
       expect(w.sent.map((e) => e.type)).toEqual(['ui:error']);
       expect((w.sent[0] as { type: 'ui:error'; message: string }).message).toMatch(/server/i);
@@ -209,10 +212,19 @@ describe('reload_runtime', () => {
     await run(function* () {
       const persist = vi.fn((patch: ConfigPatch<Config>) => ({ path: '/p', gitignored: false, skipped: [], config: base(), origin }));
       const w = yield* world({ abilities: [], persist });
-      const flow = yield* dispatch(w, { type: 'reload_runtime', patch: { model: { gpu: 'cuda' } } });
+      const flow = yield* dispatch(w, { type: 'reload_runtime', patch: { model: { llm: { gpu: 'cuda' } } } });
       expect(flow).toBe('exit');
-      expect(persist).toHaveBeenCalledWith({ model: { gpu: 'cuda' } });
+      expect(persist).toHaveBeenCalledWith({ model: { llm: { gpu: 'cuda' } } });
       expect(w.sent).toEqual([]);
+    });
+  });
+
+  it('a path key inside a model block is resolved before it persists — `~` expanded, made absolute', async () => {
+    await run(function* () {
+      const persist = vi.fn((_patch: ConfigPatch<Config>) => ({ path: '/p', gitignored: false, skipped: [], config: base(), origin }));
+      const w = yield* world({ abilities: [], persist });
+      yield* dispatch(w, { type: 'reload_runtime', patch: { model: { llm: { path: '~/weights/m.gguf' } } } });
+      expect(persist).toHaveBeenCalledWith({ model: { llm: { path: path.join(os.homedir(), 'weights/m.gguf') } } });
     });
   });
 });

@@ -26,7 +26,8 @@ import type { Session, SessionContext } from '@lloyal-labs/sdk';
 import {
   initAgents, reconstructBranch, WindDown, CancelAgent, Pause, PoolDefaults, NSeqMax,
 } from '@lloyal-labs/lloyal-agents';
-import type { AbilityConfigStore, AbilityFactory, AbilityRegistry } from '@lloyal-labs/lloyal-agents';
+import type { AbilityConfigStore } from './ability-config';
+import type { AbilityFactory, AbilityRegistry } from './ability-types';
 import type { ConfigTable, ConfigOf, OriginOf } from './config';
 import { RunnerCtx } from './runner';
 import type { Runner } from './runner';

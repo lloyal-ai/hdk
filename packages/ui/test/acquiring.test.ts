@@ -1,0 +1,199 @@
+// @vitest-environment jsdom
+/**
+ * The provider and the installer together, in a DOM: what a reader is offered when the engine behind the
+ * steps ends. Rendered with React's `act`, because the install and the session are read in effects that a
+ * server render never runs.
+ */
+import { describe, it, expect, beforeAll } from 'vitest';
+import { act, createElement } from 'react';
+import { createRoot } from 'react-dom/client';
+import type { Root } from 'react-dom/client';
+import type { Bridge, Frame, SessionState } from '@lloyal-labs/binding';
+import { HarnessProvider } from '../src/provider';
+import type { InstallerStep } from '../src/installer';
+
+type S = { n: number };
+
+/** A desktop-shaped bridge: a session plane, an install to ask, a file dialog that answers when told, a new engine on offer. */
+function desktopBridge(now: readonly InstallerStep[]): Bridge<unknown, unknown, S> & {
+  push(steps: readonly InstallerStep[]): void;
+  session(state: SessionState): void;
+  /** Answer the open file dialog. */
+  chosen(path: string | null): void;
+  sent: unknown[];
+  recovered: number;
+} {
+  const events = new Set<(f: Frame<unknown>) => void>();
+  const sessions = new Set<(s: SessionState) => void>();
+  let answer: ((path: string | null) => void) | null = null;
+  let seq = 0;
+  const sent: unknown[] = [];
+  return {
+    recovered: 0,
+    sent,
+    onEvent(cb) { events.add(cb); return () => events.delete(cb); },
+    onSession(cb) { sessions.add(cb); return () => sessions.delete(cb); },
+    send: (c: unknown) => { sent.push(c); },   // unbound by the provider, as a real bridge's is
+    requestSnapshot: () => Promise.resolve({ state: { n: 0 }, epoch: 1, seq }),
+    installNow: () => Promise.resolve({ type: 'install:step', steps: now }),
+    chooseFile: () => new Promise<string | null>((resolve) => { answer = resolve; }),
+    chosen(path) { answer?.(path); answer = null; },
+    recover() { this.recovered += 1; },
+    push(steps) { seq += 1; for (const cb of events) cb({ epoch: 1, seq, ev: { type: 'install:step', steps } }); },
+    session(state) { for (const cb of sessions) cb(state); },
+  };
+}
+
+const running: InstallerStep[] = [
+  { id: 'machine', label: 'This machine', status: 'done', note: '16 GB · 10 GB needed' },
+  { id: 'llm', label: 'Downloading the reasoning model', status: 'running', got: 1024 ** 3, total: 2 * 1024 ** 3, file: true },
+  { id: 'reranker', label: 'Downloading the reranker', status: 'pending', file: true },
+];
+
+const flush = (): Promise<void> => act(async () => { await Promise.resolve(); });
+
+describe('the install view when the engine ends', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  beforeAll(() => { (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true; });
+
+  function mount(bridge: Bridge<unknown, unknown, S>): void {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    act(() => {
+      root.render(createElement(HarnessProvider<unknown, unknown, S>, { bridge, initialState: { n: 0 }, reduce: (s: S) => s, children: createElement('main', null, 'the app') }));
+    });
+  }
+
+  it('an engine that dies under a download: the step it died under has failed, and a new engine is the one thing offered', async () => {
+    const bridge = desktopBridge(running);
+    mount(bridge);
+    await flush();
+    expect(container.textContent).toContain('STEP 2 OF 3');
+    expect(container.querySelectorAll('button').length).toBeGreaterThan(0);   // live: use a file
+    act(() => bridge.session({ phase: 'died', code: 1 }));
+    expect(container.textContent).toContain('The engine ended');
+    const buttons = [...container.querySelectorAll('button')].map((b) => b.textContent);
+    expect(buttons).toEqual(['Start a new engine']);
+    expect(container.textContent).toContain('STOPPED AT STEP 2');
+    act(() => { (container.querySelector('button') as HTMLButtonElement).click(); });
+    expect(bridge.recovered).toBe(1);
+    act(() => root.unmount());
+  });
+
+  it('a machine this model cannot run on: the refusal, and nothing a new engine would repeat', async () => {
+    const refused: InstallerStep[] = [
+      { id: 'machine', label: 'This machine', status: 'failed', note: 'Run this harness on a machine with at least 16 GB.' },
+      { id: 'llm', label: 'Downloading the reasoning model', status: 'pending', file: true },
+    ];
+    const bridge = desktopBridge(refused);
+    mount(bridge);
+    await flush();
+    act(() => bridge.session({ phase: 'died', code: 1 }));
+    expect(container.textContent).toContain('This machine cannot run this model');
+    expect(container.querySelectorAll('button').length).toBe(0);
+    act(() => root.unmount());
+  });
+
+  it('a file chosen for an install that has since ended is dropped — the dialog answers only the acquisition it was opened for', async () => {
+    const bridge = desktopBridge(running);
+    mount(bridge);
+    await flush();
+    const useFile = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Use a file I already have') as HTMLButtonElement;
+    act(() => useFile.click());          // the dialog is open
+    act(() => bridge.session({ phase: 'died', code: 1 }));
+    await act(async () => { bridge.chosen('/weights/late.gguf'); await Promise.resolve(); });
+    expect(bridge.sent).toEqual([]);
+    // …and one opened for a live install still answers it.
+    bridge.installNow = () => Promise.resolve({ type: 'install:step', steps: running });
+    act(() => bridge.session({ phase: 'warming' }));
+    await flush();
+    act(() => bridge.session({ phase: 'live' }));
+    const again = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Use a file I already have') as HTMLButtonElement;
+    act(() => again.click());
+    await act(async () => { bridge.chosen('/weights/mine.gguf'); await Promise.resolve(); });
+    expect(bridge.sent).toEqual([{ type: 'install:use_file', step: 'llm', path: '/weights/mine.gguf' }]);
+    act(() => root.unmount());
+  });
+
+  it('until the placement has said what this run acquires, nothing is mounted — neither the app nor the installer', async () => {
+    const bridge = desktopBridge(running);
+    let answer!: (steps: readonly InstallerStep[]) => void;
+    bridge.installNow = () => new Promise((resolve) => { answer = (steps) => resolve({ type: 'install:step', steps }); });
+    mount(bridge);
+    await flush();
+    expect(container.textContent).toBe('');   // the app's own effects have not run under an installer that is about to replace it
+    await act(async () => { answer([]); await Promise.resolve(); });
+    expect(container.textContent).toBe('the app');
+    act(() => root.unmount());
+  });
+
+  it('an engine that has retained nothing yet is still unknown: nothing mounts until it goes live having said nothing, or a frame arrives', async () => {
+    const bridge = desktopBridge(running);
+    bridge.installNow = () => Promise.resolve(null as unknown as { type: string; steps: readonly InstallerStep[] });
+    mount(bridge);
+    await flush();
+    act(() => bridge.session({ phase: 'warming' }));
+    await flush();
+    expect(container.textContent).toBe('');   // the child has not said what it acquires; a download may be a moment away
+    act(() => bridge.push(running));
+    expect(container.textContent).toContain('STEP 2 OF 3');
+    act(() => root.unmount());
+
+    // `live` is the binding accepting commands — BEFORE the install runs — so it decides nothing. The install's
+    // own decision does: an empty list, which every run publishes when it acquires nothing.
+    const quiet = desktopBridge(running);
+    quiet.installNow = () => Promise.resolve(null as unknown as { type: string; steps: readonly InstallerStep[] });
+    mount(quiet);
+    await flush();
+    act(() => quiet.session({ phase: 'warming' }));
+    await flush();
+    act(() => quiet.session({ phase: 'live' }));
+    expect(container.textContent).toBe('');
+    act(() => quiet.push([]));
+    expect(container.textContent).toBe('the app');
+    act(() => root.unmount());
+
+    // An engine that ended having decided nothing — it died before the install ran — has nothing more to say:
+    // the app, and its own recovery.
+    const dead = desktopBridge(running);
+    dead.installNow = () => Promise.resolve(null as unknown as { type: string; steps: readonly InstallerStep[] });
+    mount(dead);
+    await flush();
+    act(() => dead.session({ phase: 'died', code: 1 }));
+    expect(container.textContent).toBe('the app');
+    act(() => root.unmount());
+  });
+
+  it('a replaced bridge starts unknown — the steps of the bridge before it are never shown through the new one', async () => {
+    const first = desktopBridge(running);
+    mount(first);
+    await flush();
+    expect(container.textContent).toContain('STEP 2 OF 3');
+    // A bridge that can neither be asked nor announces a session — a web placement — replaces it.
+    const web: Bridge<unknown, unknown, S> = {
+      onEvent() { return () => {}; },
+      send: () => {},
+      requestSnapshot: () => Promise.resolve({ state: { n: 0 }, epoch: 1, seq: 0 }),
+    };
+    act(() => {
+      root.render(createElement(HarnessProvider<unknown, unknown, S>, { bridge: web, initialState: { n: 0 }, reduce: (s: S) => s, children: createElement('main', null, 'the app') }));
+    });
+    await flush();
+    expect(container.textContent).toBe('the app');
+    act(() => root.unmount());
+  });
+
+  it('a new engine that acquires nothing: the steps clear at warming and the app is shown', async () => {
+    const bridge = desktopBridge(running);
+    mount(bridge);
+    await flush();
+    act(() => bridge.session({ phase: 'died', code: 1 }));
+    bridge.installNow = () => Promise.resolve({ type: 'install:step', steps: [] });
+    act(() => bridge.session({ phase: 'warming' }));
+    await flush();
+    expect(container.textContent).toBe('the app');
+    act(() => root.unmount());
+  });
+});

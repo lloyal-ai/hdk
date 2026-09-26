@@ -56,16 +56,26 @@ describe('resolveAppConfigPaths', () => {
   });
 });
 
+describe('a version-1 file, written before alpha.10', () => {
+  it('is refused by name with the fix, by the loader and the writer alike — nothing from before the alpha is carried forward', () => {
+    const p = path.join(dir, 'harness.json');
+    fs.writeFileSync(p, JSON.stringify({ version: 1, model: { id: 'q', reranker: '/r', mmproj: 'mm' } }));
+    expect(() => readJsonOverlay(p)).toThrow('harness.json is version 1, written before alpha.10 — delete it and relaunch.');
+    expect(() => readJsonForWrite(p)).toThrow('harness.json is version 1, written before alpha.10 — delete it and relaunch.');
+    expect(JSON.parse(fs.readFileSync(p, 'utf8')).version).toBe(1);   // untouched
+  });
+});
+
 describe('readJsonOverlay (loader: ignorable)', () => {
-  it('absent / corrupt / future-versioned all read as null; version 1 parses', () => {
+  it('absent / corrupt / future-versioned all read as null; the current version parses', () => {
     const p = path.join(dir, 'harness.json');
     expect(readJsonOverlay(p)).toBeNull();
     fs.writeFileSync(p, '{not json');
     expect(readJsonOverlay(p)).toBeNull();
-    fs.writeFileSync(p, JSON.stringify({ version: 2, model: {} }));
+    fs.writeFileSync(p, JSON.stringify({ version: 3, model: {} }));
     expect(readJsonOverlay(p)).toBeNull();
-    fs.writeFileSync(p, JSON.stringify({ version: 1, model: { gpu: 'cuda' } }));
-    expect(readJsonOverlay<{ model: { gpu: string } }>(p)?.model?.gpu).toBe('cuda');
+    fs.writeFileSync(p, JSON.stringify({ version: 2, model: { llm: { gpu: 'cuda' } } }));
+    expect(readJsonOverlay<{ model: { llm: { gpu: string } } }>(p)?.model?.llm?.gpu).toBe('cuda');
   });
 });
 
@@ -78,12 +88,12 @@ describe('readJsonForWrite (writer: never rebuild over unusable)', () => {
     fs.writeFileSync(p, '{oops');
     expect(() => readJsonForWrite(p)).toThrow(/harness\.json is not valid JSON.*nothing was saved/);
   });
-  it("version ≠ 1 throws — a newer runtime's settings are not overwritten", () => {
+  it("a version this runtime does not write throws — a newer runtime's settings are not overwritten", () => {
     const p = path.join(dir, 'harness.json');
-    const v2 = JSON.stringify({ version: 2, secret: 'keep-me' });
-    fs.writeFileSync(p, v2);
-    expect(() => readJsonForWrite(p)).toThrow(/version 2.*not overwriting a newer runtime/);
-    expect(fs.readFileSync(p, 'utf8')).toBe(v2); // byte-identical
+    const v3 = JSON.stringify({ version: 3, secret: 'keep-me' });
+    fs.writeFileSync(p, v3);
+    expect(() => readJsonForWrite(p)).toThrow(/version 3.*not overwriting a newer runtime/);
+    expect(fs.readFileSync(p, 'utf8')).toBe(v3); // byte-identical
   });
   it('a JSON `null` (or any non-object) hits the version guard, never a TypeError', () => {
     const p = path.join(dir, 'harness.json');
@@ -96,7 +106,7 @@ describe('readJsonForWrite (writer: never rebuild over unusable)', () => {
   });
   it.skipIf(process.getuid?.() === 0)('an unreadable file throws with its errno, not null', () => {
     const p = path.join(dir, 'harness.json');
-    fs.writeFileSync(p, JSON.stringify({ version: 1 }));
+    fs.writeFileSync(p, JSON.stringify({ version: 2 }));
     fs.chmodSync(p, 0o000);
     expect(() => readJsonForWrite(p)).toThrow(/cannot be read \(EACCES\).*nothing was saved/);
     fs.chmodSync(p, 0o600);

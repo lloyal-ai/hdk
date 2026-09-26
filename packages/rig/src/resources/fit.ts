@@ -8,7 +8,7 @@
  * package, and nothing on the platform-agnostic barrel may depend on it — so
  * the paragraph splitter lives here and `./files` imports it.
  */
-import type { Chunk } from '@lloyal-labs/lloyal-agents';
+import type { Chunk } from '../retrieval';
 
 /**
  * Default passage size, in tokens of the scoring reranker's vocabulary.

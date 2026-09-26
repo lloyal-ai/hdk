@@ -3,9 +3,11 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { run } from 'effection';
-import { AbilityConfigStoreCtx, RerankerCtx, Trace, NullTraceWriter } from '@lloyal-labs/lloyal-agents';
+import { Trace, NullTraceWriter } from '@lloyal-labs/lloyal-agents';
+import { AbilityConfigStoreCtx } from '@lloyal-labs/rig';
+import { Services } from '@lloyal-labs/rig';
 import type { Reranker, ScoredChunk } from '@lloyal-labs/rig';
-import type { Chunk } from '@lloyal-labs/lloyal-agents';
+import type { Chunk } from '@lloyal-labs/rig';
 import { createInMemoryConfigStore } from '@lloyal-labs/rig';
 import { createCorpusAbility } from '../src/index';
 import { SearchTool } from '../src/tools/search';
@@ -30,7 +32,7 @@ describe('createCorpusAbility', () => {
       const store = createInMemoryConfigStore();
       yield* store.set('corpus', { corpusPath: dir });
       yield* AbilityConfigStoreCtx.set(store);
-      yield* RerankerCtx.set(mockReranker);
+      yield* Services.set({ reranker: mockReranker });
       return yield* createCorpusAbility();
     });
 
@@ -47,7 +49,7 @@ describe('createCorpusAbility', () => {
         yield* AbilityConfigStoreCtx.set(store);
         return yield* createCorpusAbility();
       }),
-    ).rejects.toThrow(/requires a reranker/);
+    ).rejects.toThrow(/`reranker` is not configured — add `model\.reranker`/);
   });
 
   it('fits a long section into more than one window with real line ranges', async () => {
@@ -80,7 +82,7 @@ describe('createCorpusAbility', () => {
         const store = createInMemoryConfigStore();
         yield* store.set('corpus', { corpusPath: longDir });
         yield* AbilityConfigStoreCtx.set(store);
-        yield* RerankerCtx.set(wordy);
+        yield* Services.set({ reranker: wordy });
         const ability = yield* createCorpusAbility();
         const search = ability.tools.find((t) => t.name === 'search')!;
         return yield* search.execute({ query: 'alpha' });
@@ -103,7 +105,7 @@ describe('createCorpusAbility', () => {
     await expect(
       run(function* () {
         yield* AbilityConfigStoreCtx.set(createInMemoryConfigStore());
-        yield* RerankerCtx.set(mockReranker);
+        yield* Services.set({ reranker: mockReranker });
         return yield* createCorpusAbility();
       }),
     ).rejects.toThrow(/corpusPath/);

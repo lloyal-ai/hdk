@@ -13,10 +13,11 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { RerankerCtx, Attachments } from '@lloyal-labs/lloyal-agents';
-import type { AbilityManifest, Tool } from '@lloyal-labs/lloyal-agents';
+import { Attachments } from '@lloyal-labs/lloyal-agents';
+import { service } from '@lloyal-labs/rig';
+import type { Tool } from '@lloyal-labs/lloyal-agents';
+import type { AbilityManifest } from '@lloyal-labs/rig';
 import { defineAbility } from '@lloyal-labs/rig';
-import type { Reranker } from '@lloyal-labs/rig';
 import { DocumentsSource } from './source';
 import { documentIndexer } from './documents-index';
 import { SearchDocumentsTool } from './tools/search-documents';
@@ -39,23 +40,13 @@ const manifest = JSON.parse(readFileSync(join(dir, 'ability.json'), 'utf8')) as 
 const skill = readFileSync(join(dir, 'skill.eta'), 'utf8');
 
 /**
- * Construct the documents ability. Reads the reranker from `RerankerCtx` and
- * the content store from `Attachments`, builds the per-session indexer, and
- * wires the three tools. Under `lloyal describe` the default store answers
- * null and the ability is simply empty.
+ * Construct the documents ability. Reads the harness's reranker and the content
+ * store from `Attachments`, builds the per-session indexer, and wires the three
+ * tools. Under `lloyal describe` the default store answers null and the ability
+ * is simply empty.
  */
 export const createDocumentsAbility = defineAbility(manifest, function* () {
-  let reranker: Reranker;
-  try {
-    reranker = yield* RerankerCtx.expect();
-  } catch {
-    throw new Error(
-      'createDocumentsAbility: the documents ability requires a reranker (its `search_documents` tool ' +
-        'scores passages), but RerankerCtx is unset. The harness boot normally provisions it from ' +
-        "the ability's `services: ['reranker']` — call provisionAbilityModels({ abilities, projectRoot }) " +
-        '(or otherwise set RerankerCtx) before enabling this ability.',
-    );
-  }
+  const reranker = yield* service('reranker');
   const store = yield* Attachments.expect();
   const indexFor = documentIndexer(store, (text) => reranker.tokenize(text));
   const tools: Tool[] = [

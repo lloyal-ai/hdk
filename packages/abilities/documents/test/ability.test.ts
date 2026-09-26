@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { run } from 'effection';
-import { RerankerCtx, Attachments } from '@lloyal-labs/lloyal-agents';
+import { Attachments } from '@lloyal-labs/lloyal-agents';
+import { Services } from '@lloyal-labs/rig';
 import type { Reranker } from '@lloyal-labs/rig';
 import { createDocumentsAbility } from '../src/index';
 import { makeFixture, wordTokenize } from './helpers/fixture';
@@ -14,12 +15,12 @@ describe('createDocumentsAbility', () => {
   it('builds document_research with the three tools and the documents source', async () => {
     const { store } = makeFixture();
     const ability = await run(function* () {
-      yield* RerankerCtx.set(mockReranker);
+      yield* Services.set({ reranker: mockReranker });
       yield* Attachments.set(store);
       return yield* createDocumentsAbility();
     });
     expect(ability.manifest.protocol.name).toBe('document_research');
-    expect(ability.manifest.services).toEqual(['reranker']);
+    expect(ability.manifest.services).toEqual(['reranker', 'vision']);
     expect(ability.manifest.configSchema).toBeUndefined();
     expect(ability.source.name).toBe('documents');
     expect(ability.tools.map((t) => t.name).sort()).toEqual(['read_document', 'search_documents', 'view_page']);
@@ -33,12 +34,12 @@ describe('createDocumentsAbility', () => {
   });
 
   it('throws a clear error when no reranker is set', async () => {
-    await expect(run(function* () { return yield* createDocumentsAbility(); })).rejects.toThrow(/requires a reranker/);
+    await expect(run(function* () { return yield* createDocumentsAbility(); })).rejects.toThrow(/`reranker` is not configured — add `model\.reranker`/);
   });
 
   it('constructs with the default store and no attachments, and the toc is empty', async () => {
     const source = await run(function* () {
-      yield* RerankerCtx.set(mockReranker);
+      yield* Services.set({ reranker: mockReranker });
       return (yield* createDocumentsAbility()).source;
     });
     expect(source.promptData()).toEqual({ toc: '' });

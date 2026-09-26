@@ -47,6 +47,10 @@ export interface CreateEngineOpts<E, S> {
   /** Added to the engine's environment. `RR_BRIDGE` is set for you: it is what makes the cli boot mount the ipc binding. */
   env?: Record<string, string>;
   initialState: S;
+  /** The harness's fold. The engine's stream carries the PLATFORM's events beside the harness's own — the
+   *  install's steps, trace and host-resource events — through this same reducer, so it must return its state
+   *  unchanged for an event it does not know; the platform's events are read from the stream, never from the
+   *  fold. Every template holds this with a row in its own tests. */
   reduce: (state: S, ev: E) => S;
   /** Where a frame goes: the renderer, when its window is alive. */
   forward: (frame: Frame<E>) => void;
@@ -63,6 +67,10 @@ function forkUtilityProcess(bin: string, env: NodeJS.ProcessEnv): EngineProcess 
   return utilityProcess.fork(bin, [], { serviceName: 'harness-engine', stdio: 'pipe', env }) as unknown as EngineProcess;
 }
 
+/** The install snapshot rig last sent, retained verbatim. Structural on purpose: this package names the shape it
+ *  relays, never rig's type. */
+export type InstallFrame = { type: 'install:step'; steps: readonly unknown[] };
+
 export interface Engine<C, S> {
   /** Post a command to the engine. False when the engine is not running. */
   send(command: C): boolean;
@@ -74,6 +82,10 @@ export interface Engine<C, S> {
   kill(): void;
   /** This session's life, as the renderer's view reads it. */
   session(): SessionState;
+  /** What is being acquired, as last reported: the last install frame — the empty list once the run has
+   *  decided it acquires nothing (more) — or null while the child has not said yet, and again after a restart.
+   *  Null is undecided, never "nothing": every install ends with a frame. */
+  install(): InstallFrame | null;
   /** Subscribe to it: the current state at once, then every change. Returns the unsubscribe. */
   onSession(cb: (state: SessionState) => void): () => void;
   /**
@@ -106,6 +118,7 @@ export function createEngine<E, C, S>(opts: CreateEngineOpts<E, S>): Engine<C, S
   let awaitStartup: (() => void) | null = null;
   let restarting: Promise<void> | null = null;
   let session: SessionState = { phase: 'warming' };
+  let install: InstallFrame | null = null;
   const sessionListeners = new Set<(state: SessionState) => void>();
   const pending = new Map<number, { resolve: (d: Descriptor) => void; reject: (e: Error) => void }>();
   let ingestId = 0;
@@ -167,6 +180,11 @@ export function createEngine<E, C, S>(opts: CreateEngineOpts<E, S>): Engine<C, S
       if (msg?.t === 'event' && msg.payload !== undefined) {
         seq += 1;
         state = opts.reduce(state, msg.payload);
+        // Retained beside the fold, not inside it: acquiring weights is the platform's business, so no harness
+        // declares it and none can drop it. A renderer that loads after the install finished — or after a
+        // refusal ended the engine — asks for this rather than guessing, exactly as it does for the session.
+        const ev = msg.payload as { type?: unknown };
+        if (ev && ev.type === 'install:step') install = msg.payload as unknown as InstallFrame;
         opts.forward({ epoch, seq, ev: msg.payload });
         return;
       }
@@ -200,6 +218,7 @@ export function createEngine<E, C, S>(opts: CreateEngineOpts<E, S>): Engine<C, S
     send: (command) => post({ t: 'command', payload: command }),
     snapshot: () => ({ state, epoch, seq }),
     session: () => session,
+    install: () => install,
     onSession(cb) {
       sessionListeners.add(cb);
       cb(session);   // a renderer that loads mid-session is told where things stand
@@ -246,6 +265,7 @@ export function createEngine<E, C, S>(opts: CreateEngineOpts<E, S>): Engine<C, S
         epoch = Math.max(Date.now(), epoch + 1);
         seq = 0;
         state = opts.initialState;
+        install = null;
         // Stay in flight until the replacement is usable or has failed, so a reader who presses
         // again a moment later REUSES this one. Clearing at the fork would let the second press
         // kill an engine that is still loading its model, throwing away the wait and starting it

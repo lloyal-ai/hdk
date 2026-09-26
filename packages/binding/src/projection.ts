@@ -94,6 +94,22 @@ export interface Bridge<E, C, S> {
    *  browser opens a new connection, a desktop shell starts a new engine — so a
    *  view asks and never decides. Absent where the bridge cannot provide one. */
   recover?(): void;
+  /** What this run is acquiring, as last reported: the last `install:step` frame
+   *  — the empty list once the run has decided it acquires nothing (more) — or
+   *  null while the engine has not said yet. Null is undecided, never "nothing":
+   *  every install ends with a frame, and a view keeps waiting on null. Asked once
+   *  on mount: the push arrives as an ordinary frame, but a renderer that loaded
+   *  after the install began — or after a refusal ended the engine — would
+   *  otherwise be left guessing. The same pairing as {@link Bridge.onSession} and
+   *  its "now" channel. Absent where the placement retains nothing to answer with. */
+  installNow?(): Promise<unknown>;
+  /** Ask the reader to choose a local file, answering the path they picked or
+   *  null if they cancelled. What choosing means belongs to the placement — a
+   *  desktop shell opens the system dialog. Absent in a browser, and not from
+   *  neglect: a page is handed file BYTES and never a path, so there is nothing
+   *  it could answer with. A view offers the affordance only where the bridge
+   *  has one. */
+  chooseFile?(opts?: { extensions?: readonly string[]; title?: string }): Promise<string | null>;
   /** The origin of the content plane — where bytes live — or absent when the
    *  bridge has no plane. */
   contentOrigin?(): string;
@@ -108,6 +124,12 @@ export interface Projection<S> {
   dispose(): void;
 }
 
+/**
+ * Fold a bridge's stream into a state, seeded from the bridge's snapshot. `reduce` is the harness's fold, and
+ * the stream carries the PLATFORM's events beside the harness's own — the install's steps, trace and
+ * host-resource events — so it must return its state unchanged for an event it does not know; the platform
+ * reads those events from the stream, never from the fold.
+ */
 export function connectProjection<E, C, S>(
   bridge: Bridge<E, C, S>,
   initialState: S,

@@ -13,7 +13,8 @@
 import type { Operation } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import { agentPool, parallel, withSpine, DefaultAgentPolicy, budgetPolicyOpts } from '@lloyal-labs/lloyal-agents';
-import type { Ability, Agent, Budget, ContextPressure, GuardOverrides, PromptOf, ToolLifecycleHooks } from '@lloyal-labs/lloyal-agents';
+import type { Agent, Budget, ContextPressure, GuardOverrides, PromptOf, ToolLifecycleHooks } from '@lloyal-labs/lloyal-agents';
+import type { Ability } from './ability-types';
 import type { Attachment } from '@lloyal-labs/media';
 import { reportTool } from './tools';
 import { renderSpine } from './spine-render';

@@ -19,10 +19,12 @@
  *
  * @category UI
  */
-import { createContext, createElement, useContext, useMemo, useSyncExternalStore } from 'react';
+import { Fragment, createContext, createElement, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { connectProjection, availabilityOf } from '@lloyal-labs/binding';
-import type { Availability, Bridge, Projection, SessionState, WireStatus } from '@lloyal-labs/binding';
+import type { Availability, Bridge, Frame, Projection, SessionState, WireStatus } from '@lloyal-labs/binding';
+import { Installer } from './installer.js';
+import type { InstallerStep } from './installer.js';
 
 export interface Harness<E, C, S extends object> {
   bridge: Bridge<E, C, S>;
@@ -46,6 +48,11 @@ export function projectionFor<E, C, S extends object>(bridge: Bridge<E, C, S>, i
   return projection;
 }
 
+/**
+ * The provider connects the bridge once and mounts the harness's view — behind the installer, for as long as
+ * the run is acquiring what it needs. A harness writes nothing for that: acquiring weights is the platform's
+ * business, and the screen for it is the platform's too.
+ */
 export function HarnessProvider<E, C, S extends object>({ bridge, initialState, reduce, children }: {
   bridge: Bridge<E, C, S>;
   initialState: S;
@@ -53,7 +60,80 @@ export function HarnessProvider<E, C, S extends object>({ bridge, initialState, 
   children: ReactNode;
 }): ReactElement {
   const value = useMemo<Harness<E, C, S>>(() => ({ bridge, projection: projectionFor(bridge, initialState, reduce) }), [bridge]);
-  return createElement(HarnessContext.Provider, { value: value as Harness<unknown, unknown, object> }, children);
+  return createElement(HarnessContext.Provider, { value: value as Harness<unknown, unknown, object> }, createElement(Acquiring, null, children));
+}
+
+/**
+ * What the provider shows in front of the harness's view: the installer only for an acquisition that can still
+ * be acted on. Steps with a live engine are the installer and its remedies. Steps after the engine ended are an
+ * install that did not finish — a finished one publishes the empty list — shown as the same list, offered the
+ * app's own recovery (a new engine) and nothing that would be sent to a process that is gone; a row still
+ * `running` there is the download the engine died under, shown as the failure it is ({@link asEnded}) so the
+ * remedy has a row to stand beside. Unless the failed row is the MACHINE's, which a new
+ * engine refuses identically: that list is shown with its refusal and no remedy at all. No steps at all is
+ * the app.
+ */
+export function installView(steps: readonly InstallerStep[] | null, availability: Availability): 'waiting' | 'app' | 'acquiring' | 'ended' | 'refused' {
+  // Not yet known: the placement has an install to report and has not answered. Neither the app nor the
+  // installer mounts until it does — an app mounted for a moment runs its effects under an installer about
+  // to replace it, and an empty list must mean "this run acquires nothing", never "nobody has said yet".
+  if (steps === null) return 'waiting';
+  if (steps.length === 0) return 'app';
+  if (availability === 'ended' || availability === 'lost') {
+    return steps.some((s) => s.status === 'failed' && s.id === 'machine') ? 'refused' : 'ended';
+  }
+  return 'acquiring';
+}
+
+/** The steps as an engine that ended leaves them: the one it was running has failed, and its note says why.
+ *  The list then says what happened on its own, and the installer draws it by its one rule — a failed step is
+ *  where the remedies go. */
+export function asEnded(steps: readonly InstallerStep[]): readonly InstallerStep[] {
+  return steps.map((s) => (s.status === 'running' ? { ...s, status: 'failed', note: 'The engine ended during this step' } : s));
+}
+
+/** The installer while the run acquires; the harness's view once it is done — or at once, on a run that acquires nothing. */
+function Acquiring({ children }: { children: ReactNode }): ReactElement | null {
+  const steps = useInstall();
+  const availability = useAvailability();
+  const recover = useRecover();
+  const send = useSend<{ type: string; step?: string; path?: string }>();
+  const chooseFile = useChooseFile();
+  const [dialog, setDialog] = useState<string | null>(null);
+  const view = installView(steps, availability);
+  // A file dialog answers on its own time: what it answers is sent only to the acquisition it was opened for.
+  // Each time this view stops acquiring — the install finished, the engine ended, a new engine's life began —
+  // the acquisition it showed is over, and a dialog opened under it is dropped. A dialog that fails is said
+  // here rather than left as an unhandled rejection.
+  const acquisition = useRef(0);
+  useEffect(() => { if (view !== 'acquiring') acquisition.current += 1; }, [view]);
+  useEffect(() => () => { acquisition.current += 1; }, []);
+  if (view === 'waiting' || steps === null) return null;
+  if (view === 'app') return createElement(Fragment, null, children);
+  if (view === 'refused') return createElement(Installer, { steps, footnote: 'This machine cannot run this model' });
+  if (view === 'ended') {
+    return createElement(Installer, {
+      steps: asEnded(steps),
+      footnote: 'The engine ended',
+      ...(recover ? { onRetry: recover, retryLabel: 'Start a new engine' } : {}),
+    });
+  }
+  return createElement(Installer, {
+    steps,
+    footnote: dialog ?? 'First run only',
+    onRetry: () => send({ type: 'install:retry' }),
+    onStop: () => send({ type: 'install:quit' }),
+    ...(chooseFile ? {
+      onUseFile: (step: string) => {
+        const mine = acquisition.current;
+        const still = (): boolean => mine === acquisition.current;
+        chooseFile({ extensions: ['gguf'], title: 'Choose a model file' }).then(
+          (path) => { if (path && still()) send({ type: 'install:use_file', step, path }); },
+          (err: unknown) => { if (still()) setDialog(`The file dialog failed: ${err instanceof Error ? err.message : String(err)}`); },
+        );
+      },
+    } : {}),
+  });
 }
 
 /** The provider's bridge and projection, for a consumer outside the hooks (a history adapter). */
@@ -147,7 +227,7 @@ function availabilityFor(bridge: Bridge<unknown, unknown, unknown>): Availabilit
     // itself knows no placements.
     let wire: WireStatus = 'connected';
     let session: SessionState | null = bridge.onSession ? null : { phase: 'live' };
-    let value = availabilityOf(session, wire);
+    let value: Availability;
     const listeners = new Set<() => void>();
     const settle = (): void => {
       const next = availabilityOf(session, wire);
@@ -155,7 +235,11 @@ function availabilityFor(bridge: Bridge<unknown, unknown, unknown>): Availabilit
       value = next;
       for (const notify of listeners) notify();
     };
-    bridge.onStatus?.((next) => { wire = next; settle(); });
+    // The wire through the one status store, so a bridge is asked once however many hooks read it.
+    const status = statusFor(bridge);
+    wire = status.getSnapshot();
+    value = availabilityOf(session, wire);
+    status.subscribe(() => { wire = status.getSnapshot(); settle(); });
     bridge.onSession?.((next) => { session = next; settle(); });
     store = {
       subscribe(notify) {
@@ -197,6 +281,117 @@ export function useAvailability(): Availability {
 export function useRecover(): (() => void) | null {
   const { bridge } = useHarness();
   return useMemo(() => (bridge.recover ? (): void => bridge.recover!() : null), [bridge]);
+}
+
+/**
+ * What this run is acquiring before it can work — the install, read off the platform's own stream.
+ *
+ * Deliberately NOT folded into a harness's state. Acquiring weights is the platform's business, like the
+ * wire's status and the session's phase: a harness that had to declare the event in its union and fold it in
+ * its reducer could miswire or delete either, and the experience would differ per harness for no reason.
+ *
+ * Two sources, because one is not enough. The push is an ordinary frame, so a running install self-heals:
+ * every change carries the whole list, and the next tick catches a late subscriber up. A REFUSAL does not —
+ * the gate reports once and the run ends — so the placement is also asked what it is holding, exactly as
+ * `onSession` is paired with a "now" channel. Empty once a run has decided it acquires nothing (more).
+ */
+export function useInstall(): readonly InstallerStep[] | null {
+  const { bridge } = useHarness();
+  // Unknown until a placement that can be asked has answered; a placement with nothing to ask holds nothing.
+  const [steps, setSteps] = useState<readonly InstallerStep[] | null>(() => initialSteps(bridge));
+  useEffect(() => {
+    // The steps are this bridge's: a bridge that replaces another starts where a first mount does, never with
+    // what the one before it showed.
+    setSteps(initialSteps(bridge));
+    return subscribeInstall(bridge, setSteps);
+  }, [bridge]);
+  return steps;
+}
+
+/** One empty list for every bridge that holds nothing, so a reset to it is no change. */
+const NO_STEPS: readonly InstallerStep[] = [];
+const initialSteps = (bridge: Pick<Bridge<unknown, unknown, unknown>, 'installNow'>): readonly InstallerStep[] | null => (bridge.installNow ? null : NO_STEPS);
+
+/**
+ * The install as the bridge tells it, from both sources, with one rule between them: the push wins. The
+ * answer to `installNow` was true when it was asked; a frame is true now. So the answer stands only while no
+ * frame has arrived, and a frame that arrives while the answer is in flight is never overwritten by it.
+ *
+ * The steps are the CURRENT engine's. A placement that replaces its engine announces the new one as a session
+ * that is `warming`, and that is where this starts over: the old steps cleared, the new engine asked what it
+ * holds, an answer from the old one never applied. A bridge with no session plane has one life, asked once.
+ * Returns the unsubscribe.
+ */
+export function subscribeInstall(bridge: Pick<Bridge<unknown, unknown, unknown>, 'onEvent' | 'installNow' | 'onSession'>, set: (steps: readonly InstallerStep[] | null) => void): () => void {
+  let live = true;
+  let life = 0;
+  // Per life: a frame has been taken (an answer never overrides it); the engine answered that it holds no frame;
+  // and whether this life is over. A null answer is an engine that has not DECIDED yet — every install ends
+  // with a frame, the empty list when it acquires nothing — so the steps stay unknown until one arrives. No
+  // session phase can stand in: a placement announces its binding `live` before the install runs. Only a life
+  // that has ended without deciding has nothing more to say, and shows the app and its own recovery.
+  let pushed = false;
+  let answeredNothing = false;
+  let over = !bridge.onSession;
+  const stepsOf = (ev: unknown): readonly InstallerStep[] | null => {
+    const e = ev as { type?: unknown; steps?: readonly InstallerStep[] };
+    return e && e.type === 'install:step' && Array.isArray(e.steps) ? e.steps : null;
+  };
+  const settle = (): void => {
+    if (!pushed && answeredNothing && over) { pushed = true; set([]); }
+  };
+  const ask = (): void => {
+    const mine = ++life;
+    pushed = false;
+    answeredNothing = false;
+    // A placement with no `installNow` has nothing to report; one that HAS it and fails to answer is a broken
+    // wiring, shown as a failed step rather than as a run that acquires nothing.
+    void bridge.installNow?.().then((now) => {
+      if (!live || mine !== life || pushed) return;
+      const steps = stepsOf(now);
+      if (steps) { pushed = true; set(steps); return; }
+      answeredNothing = true;
+      settle();
+    }, (err: unknown) => {
+      if (live && mine === life && !pushed) {
+        pushed = true;
+        set([{ id: 'install', label: 'Asking what this run needs', status: 'failed', note: err instanceof Error ? err.message : String(err) }]);
+      }
+    });
+  };
+  const off = bridge.onEvent((frame: Frame<unknown>) => {
+    const steps = stepsOf(frame.ev);
+    if (!live || !steps) return;
+    pushed = true;
+    set(steps);
+  });
+  const offSession = bridge.onSession?.((state: SessionState) => {
+    if (!live) return;
+    over = state.phase === 'died' || state.phase === 'reaped';
+    if (state.phase !== 'warming') return settle();
+    // A new life: what it holds is unknown until it answers — and known to be nothing where nothing can be asked.
+    set(bridge.installNow ? null : []);
+    ask();
+  });
+  ask();
+  return () => {
+    live = false;
+    offSession?.();
+    off();
+  };
+}
+
+/** What a placement's file chooser takes, and answers. */
+export type ChooseFileOpts = { extensions?: readonly string[]; title?: string };
+export type ChooseFile = (opts?: ChooseFileOpts) => Promise<string | null>;
+
+/**
+ * Choose a local file, or null on a bridge that cannot — which a browser cannot, since a page is handed bytes
+ * and never a path. A view offers the affordance only when this is non-null.
+ */
+export function useChooseFile(): ChooseFile | null {
+  const { bridge } = useHarness();
+  return useMemo(() => (bridge.chooseFile ? (opts?: ChooseFileOpts) => bridge.chooseFile!(opts) : null), [bridge]);
 }
 
 /** The content plane's origin, or null on a bridge without one. */

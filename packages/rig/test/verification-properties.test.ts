@@ -29,7 +29,7 @@
 
 import { describe, it, expect } from 'vitest';
 import fc from 'fast-check';
-import type { Ability, AbilityManifest } from '@lloyal-labs/lloyal-agents';
+import type { Ability, AbilityManifest } from '../src/ability-types';
 import { renderSpine, renderAgentPreamble } from '../src/spine-render';
 import { BOUNDARY_MARKER } from '../src/protocol';
 

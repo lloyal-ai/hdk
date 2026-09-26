@@ -17,6 +17,7 @@ import type { ParseChatOutputOptions, ParseChatOutputResult } from '@lloyal-labs
 import { useAgentPool, parallel, Ctx, Store, Events, Trace, DefaultAgentPolicy } from '@lloyal-labs/lloyal-agents';
 import type { AgentEvent, Tool, TraceWriter, TraceEvent, TraceId, GuardOverrides } from '@lloyal-labs/lloyal-agents';
 import { FetchPageTool } from '../src/tools/fetch-page';
+import { stubReranker } from './helpers/stub-reranker';
 
 const STOP = 999;
 const URL = 'https://example.test/same-page';
@@ -24,6 +25,7 @@ const URL = 'https://example.test/same-page';
 /** The real `fetch_page` — its declaration, its trimming — with the network replaced by a canned page. */
 class CannedFetch extends FetchPageTool {
   calls: string[] = [];
+  constructor() { super(stubReranker); }
   *execute(args: { url: string; query?: string }): Operation<unknown> {
     this.calls.push(args.url);
     return { url: args.url, title: 'Page', content: 'text' };
