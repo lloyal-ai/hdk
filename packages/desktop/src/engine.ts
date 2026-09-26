@@ -82,8 +82,9 @@ export interface Engine<C, S> {
   kill(): void;
   /** This session's life, as the renderer's view reads it. */
   session(): SessionState;
-  /** What is being acquired, as last reported — or null when this run acquires nothing, which is every run
-   *  after the first. */
+  /** What is being acquired, as last reported: the last install frame — the empty list once the run has
+   *  decided it acquires nothing (more) — or null while the child has not said yet, and again after a restart.
+   *  Null is undecided, never "nothing": every install ends with a frame. */
   install(): InstallFrame | null;
   /** Subscribe to it: the current state at once, then every change. Returns the unsubscribe. */
   onSession(cb: (state: SessionState) => void): () => void;
