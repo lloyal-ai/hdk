@@ -70,6 +70,13 @@ describe('weaveOrdinalCitations', () => {
     expect(out).toContain('Then see [1](https://one.io/a).');
   });
 
+  it('a number the body DEFINES as a reference is already a link — it keeps its own url, whatever the trailing list says', () => {
+    const body = 'Claim [1]. Another [2].\n\n[1]: https://original.io\n\n## Sources\n\n- [Other](https://other.io)\n- [Second](https://two.io/b)';
+    const out = weaveOrdinalCitations(body);
+    expect(out).toContain('Claim [1]. Another [2](https://two.io/b).');
+    expect(out).toContain('[1]: https://original.io');
+  });
+
   it('a body with no trailing list, or no bare number, is returned unchanged', () => {
     expect(weaveOrdinalCitations('Nothing to do [1].')).toBe('Nothing to do [1].');
     expect(weaveOrdinalCitations(`No numbers here.${list}`)).toBe(`No numbers here.${list}`);

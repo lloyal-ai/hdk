@@ -115,13 +115,16 @@ export function weaveOrdinalCitations(result: string): string {
   while (i > 0 && lines[i - 1].trim() === '') i--;
   if (urls.length === 0 || i < 1 || !LIST_HEAD.test(lines[i - 1])) return unanchored;
   // Only the prose above the heading is woven; a `[n]` is bare when nothing links or defines it — not a
-  // markdown link's text (`[n](`), not a definition (`[n]:`), not an HTML anchor's text (`>[n]</a>`), which a
-  // model that weaves its own links writes as readily as markdown — and never inside code, where `list[2]`
-  // is an index. Code is every CommonMark spelling: a backtick or tilde fence, a span of any backtick run.
+  // markdown link's text (`[n](`), not a definition (`[n]:`) nor any use of a number the body defines (a
+  // reference link already, with its own url), not an HTML anchor's text (`>[n]</a>`), which a model that
+  // weaves its own links writes as readily as markdown — and never inside code, where `list[2]` is an index.
+  // Code is every CommonMark spelling: a backtick or tilde fence, a span of any backtick run.
   const head = lines.slice(0, i - 1).join('\n');
   const tail = lines.slice(i - 1).join('\n');
+  const defined = new Set<string>();
+  outsideCode(unanchored, (prose) => { for (const d of prose.matchAll(/^\s*\[(\d+)\]:/gm)) defined.add(d[1]); return prose; });
   const woven = outsideCode(head, (prose) => prose.replace(/(^|[^\]\\>[])\[(\d+)\](?![(:])/g, (m, before: string, n: string) => {
-    const url = urls[Number(n) - 1];
+    const url = defined.has(n) ? undefined : urls[Number(n) - 1];
     return url ? `${before}[${n}](${url})` : m;
   }));
   return woven === head ? unanchored : `${woven}\n${tail}`;
