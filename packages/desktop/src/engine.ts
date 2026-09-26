@@ -71,6 +71,14 @@ function forkUtilityProcess(bin: string, env: NodeJS.ProcessEnv): EngineProcess 
  *  relays, never rig's type. */
 export type InstallFrame = { type: 'install:step'; steps: readonly unknown[] };
 
+/**
+ * The platform's snapshot-shaped events: each one says the whole of its subject, so the latest is the truth and
+ * the shell retains it beside the fold. A renderer that subscribes after they were said — the dev pane mounts
+ * only once the installer has cleared — is handed them first (see `bootstrap`). No harness declares these, so
+ * none can drop them; the app's own state comes from the snapshot, never from here.
+ */
+const RETAINED = new Set(['install:step', 'config:loaded', 'config:updated', 'abilities:state']);
+
 export interface Engine<C, S> {
   /** Post a command to the engine. False when the engine is not running. */
   send(command: C): boolean;
@@ -86,6 +94,9 @@ export interface Engine<C, S> {
    *  decided it acquires nothing (more) — or null while the child has not said yet, and again after a restart.
    *  Null is undecided, never "nothing": every install ends with a frame. */
   install(): InstallFrame | null;
+  /** What a late subscriber must be told before the live stream: the latest retained frame of each
+   *  snapshot-shaped platform event, in the order they were numbered. Empty for a fresh engine. */
+  bootstrap(): Frame<unknown>[];
   /** Subscribe to it: the current state at once, then every change. Returns the unsubscribe. */
   onSession(cb: (state: SessionState) => void): () => void;
   /**
@@ -118,7 +129,8 @@ export function createEngine<E, C, S>(opts: CreateEngineOpts<E, S>): Engine<C, S
   let awaitStartup: (() => void) | null = null;
   let restarting: Promise<void> | null = null;
   let session: SessionState = { phase: 'warming' };
-  let install: InstallFrame | null = null;
+  /** The latest frame per retained type — the seed for a renderer that subscribes late. */
+  let retained = new Map<string, Frame<E>>();
   const sessionListeners = new Set<(state: SessionState) => void>();
   const pending = new Map<number, { resolve: (d: Descriptor) => void; reject: (e: Error) => void }>();
   let ingestId = 0;
@@ -180,12 +192,13 @@ export function createEngine<E, C, S>(opts: CreateEngineOpts<E, S>): Engine<C, S
       if (msg?.t === 'event' && msg.payload !== undefined) {
         seq += 1;
         state = opts.reduce(state, msg.payload);
-        // Retained beside the fold, not inside it: acquiring weights is the platform's business, so no harness
-        // declares it and none can drop it. A renderer that loads after the install finished — or after a
-        // refusal ended the engine — asks for this rather than guessing, exactly as it does for the session.
+        const frame: Frame<E> = { epoch, seq, ev: msg.payload };
+        // Retained beside the fold, not inside it: a renderer that subscribes after these were said — after the
+        // install finished, after a refusal ended the engine, once the installer has cleared — asks for them
+        // rather than guessing, exactly as it does for the session.
         const ev = msg.payload as { type?: unknown };
-        if (ev && ev.type === 'install:step') install = msg.payload as unknown as InstallFrame;
-        opts.forward({ epoch, seq, ev: msg.payload });
+        if (ev && typeof ev.type === 'string' && RETAINED.has(ev.type)) retained.set(ev.type, frame);
+        opts.forward(frame);
         return;
       }
       if (typeof msg?.id !== 'number') return;
@@ -218,7 +231,8 @@ export function createEngine<E, C, S>(opts: CreateEngineOpts<E, S>): Engine<C, S
     send: (command) => post({ t: 'command', payload: command }),
     snapshot: () => ({ state, epoch, seq }),
     session: () => session,
-    install: () => install,
+    install: () => (retained.get('install:step')?.ev as unknown as InstallFrame | undefined) ?? null,
+    bootstrap: () => [...retained.values()].sort((a, b) => a.seq - b.seq),
     onSession(cb) {
       sessionListeners.add(cb);
       cb(session);   // a renderer that loads mid-session is told where things stand
@@ -265,7 +279,7 @@ export function createEngine<E, C, S>(opts: CreateEngineOpts<E, S>): Engine<C, S
         epoch = Math.max(Date.now(), epoch + 1);
         seq = 0;
         state = opts.initialState;
-        install = null;
+        retained = new Map();
         // Stay in flight until the replacement is usable or has failed, so a reader who presses
         // again a moment later REUSES this one. Clearing at the fork would let the second press
         // kill an engine that is still loading its model, throwing away the wait and starting it

@@ -12,17 +12,23 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { Bridge, Frame, SessionState, Snapshot } from '@lloyal-labs/binding';
 import { CHANNELS } from './preload-channels';
+import { subscribeSeeded } from './seeded-subscription';
 
 export { CHANNELS };
 
 export function preloadBridge<E, C, S>(contentOrigin = 'attachment://store'): void {
   const api: Bridge<E, C, S> = {
     onEvent(cb: (frame: Frame<E>) => void): () => void {
-      const h = (_e: unknown, frame: Frame<E>): void => cb(frame);
-      ipcRenderer.on(CHANNELS.event, h);
-      return () => {
-        ipcRenderer.removeListener(CHANNELS.event, h);
-      };
+      // Told what it missed first: the frames main retained, then the live stream in order. A view that
+      // mounts once the installer has cleared has missed the harness's opening frames otherwise.
+      return subscribeSeeded<Frame<E>>({
+        live: (deliver) => {
+          const h = (_e: unknown, frame: Frame<E>): void => deliver(frame);
+          ipcRenderer.on(CHANNELS.event, h);
+          return () => { ipcRenderer.removeListener(CHANNELS.event, h); };
+        },
+        seed: () => ipcRenderer.invoke(CHANNELS.bootstrap) as Promise<Frame<E>[]>,
+      }, cb);
     },
     send(command: C): void {
       ipcRenderer.send(CHANNELS.command, command);

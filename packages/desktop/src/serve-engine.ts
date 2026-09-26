@@ -34,6 +34,7 @@ export function serveEngine<C, S>(engine: Engine<C, S>, send: (channel: string, 
   // never dropped, which is why this is not a reload.
   ipcMain.handle(CHANNELS.recover, () => engine.restart());
   ipcMain.handle(CHANNELS.installNow, () => engine.install());
+  ipcMain.handle(CHANNELS.bootstrap, () => engine.bootstrap());
   ipcMain.handle(CHANNELS.chooseFile, async (_e, opts?: { extensions?: readonly string[]; title?: string }) => {
     const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
     const picked = await (win ? dialog.showOpenDialog(win, dialogOptions(opts)) : dialog.showOpenDialog(dialogOptions(opts)));
@@ -42,6 +43,6 @@ export function serveEngine<C, S>(engine: Engine<C, S>, send: (channel: string, 
   return () => {
     offSession();
     ipcMain.off(CHANNELS.command, onCommand);
-    for (const channel of [CHANNELS.snapshot, CHANNELS.sessionNow, CHANNELS.recover, CHANNELS.installNow, CHANNELS.chooseFile]) ipcMain.removeHandler(channel);
+    for (const channel of [CHANNELS.snapshot, CHANNELS.sessionNow, CHANNELS.recover, CHANNELS.installNow, CHANNELS.bootstrap, CHANNELS.chooseFile]) ipcMain.removeHandler(channel);
   };
 }

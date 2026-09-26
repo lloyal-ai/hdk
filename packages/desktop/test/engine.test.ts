@@ -259,3 +259,45 @@ describe('the engine publishes its session', () => {
     expect(forwarded.filter((fr) => fr.epoch === after.epoch).map((fr) => fr.ev.n)).toEqual([7]);
   });
 });
+
+describe('the engine retains the platform\'s snapshot-shaped frames for a renderer that subscribes late', () => {
+  type P = Ev
+    | { type: 'install:step'; steps: unknown[] }
+    | { type: 'config:loaded'; dev: boolean }
+    | { type: 'config:updated'; savedTo: string | null }
+    | { type: 'abilities:state'; abilities: string[] };
+
+  it('the latest of each retained type, in sequence order, with the frames\' own numbering; app events are not kept', () => {
+    const proc = fakeProcess();
+    const engine = createEngine<P, { type: 'x' }, S>({ bin: 'x', fork: () => proc, initialState: { sum: 0 }, reduce: (s) => s, forward: () => {} });
+    expect(engine.bootstrap()).toEqual([]);
+    proc.say({ t: 'event', payload: { type: 'install:step', steps: [] } });                      // seq 1
+    proc.say({ t: 'event', payload: { type: 'config:loaded', dev: true } });                     // seq 2
+    proc.say({ t: 'event', payload: { type: 'n', n: 1 } });                                      // seq 3, the app's
+    proc.say({ t: 'event', payload: { type: 'abilities:state', abilities: ['web'] } });          // seq 4
+    proc.say({ t: 'event', payload: { type: 'config:updated', savedTo: null } });                // seq 5
+    proc.say({ t: 'event', payload: { type: 'abilities:state', abilities: ['web', 'corpus'] } }); // seq 6 replaces 4
+    const epoch = engine.snapshot().epoch;
+    expect(engine.bootstrap()).toEqual([
+      { epoch, seq: 1, ev: { type: 'install:step', steps: [] } },
+      { epoch, seq: 2, ev: { type: 'config:loaded', dev: true } },
+      { epoch, seq: 5, ev: { type: 'config:updated', savedTo: null } },
+      { epoch, seq: 6, ev: { type: 'abilities:state', abilities: ['web', 'corpus'] } },
+    ]);
+    expect(engine.install()).toEqual({ type: 'install:step', steps: [] });
+  });
+
+  it('a replacement engine starts with nothing retained', async () => {
+    const made: ReturnType<typeof fakeProcess>[] = [];
+    const engine = createEngine<P, { type: 'x' }, S>({ bin: 'x', fork: () => { const p = fakeProcess(); made.push(p); return p; }, initialState: { sum: 0 }, reduce: (s) => s, forward: () => {} });
+    made[0].say({ t: 'event', payload: { type: 'config:loaded', dev: true } });
+    expect(engine.bootstrap()).toHaveLength(1);
+    const restarted = engine.restart();
+    made[0].exit(0);
+    await Promise.resolve();
+    made[1].say({ t: 'ready' });
+    await restarted;
+    expect(engine.bootstrap()).toEqual([]);
+    expect(engine.install()).toBeNull();
+  });
+});

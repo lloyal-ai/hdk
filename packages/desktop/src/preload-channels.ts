@@ -12,6 +12,9 @@ export const CHANNELS = {
   /** …and what is being acquired right now, for a renderer that loaded after the install began — or after a
    *  refusal ended the engine. Same shape as `sessionNow`, for the same reason. */
   installNow: 'harness:install-now',
+  /** …and what a subscriber that arrives late must be told first: the latest of each snapshot-shaped platform
+   *  frame, so a view that mounts after the harness has spoken folds from the start, not the middle. */
+  bootstrap: 'harness:bootstrap',
   /** The reader choosing a local file; main opens the system dialog and answers the path, or null if they
    *  cancelled. */
   chooseFile: 'harness:choose-file',
