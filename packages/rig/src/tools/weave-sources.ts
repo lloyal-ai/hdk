@@ -169,11 +169,14 @@ export function weaveOrdinalCitations(result: string): string {
       if (node.type !== 'text' || parents.some((p) => NOT_PROSE.has(p.type))) return;
       const at = startOf(node);
       if (at >= above || inAnchor(at)) return;
-      const woven = node.value.replace(/(^|[^\]\\>[])\[(\d+)\](?![(:])/g, (m, before: string, n: string) => {
+      // The SOURCE of the node, not its value: the parser has already unescaped `\*` and decoded `&lt;` in the
+      // value, and writing that back would change what renders. An escaped `\[1]` is no citation either.
+      const source = result.slice(at, endOf(node));
+      const woven = source.replace(/(^|[^\]\\>[])\[(\d+)\](?![(:])/g, (m, before: string, n: string) => {
         const url = defined.has(n) ? undefined : urls[Number(n) - 1];
         return url ? `${before}[${n}](${url})` : m;
       });
-      if (woven !== node.value) edits.push({ start: at, end: endOf(node), text: woven });
+      if (woven !== source) edits.push({ start: at, end: endOf(node), text: woven });
     };
     // Definitions anywhere in the body count, so they are read before any text is woven.
     const collect = (node: Nodes): void => { if (node.type === 'definition' && /^\d+$/.test(node.identifier)) defined.add(node.identifier); if (isParent(node)) node.children.forEach(collect); };

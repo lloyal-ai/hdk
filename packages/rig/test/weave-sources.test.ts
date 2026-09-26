@@ -87,6 +87,12 @@ describe('weaveOrdinalCitations', () => {
     expect(out).toContain('then [2](https://two.io/b).');
   });
 
+  it('what the model wrote is what stays: an escape, an entity, an escaped bracket — the source, never the parser\'s reading of it', () => {
+    const body = 'Use \\*literal\\* and [1]. Show &lt;example&gt; and [2]. Not \\[1] this.' + list;
+    const out = weaveOrdinalCitations(body);
+    expect(out).toContain('Use \\*literal\\* and [1](https://one.io/a). Show &lt;example&gt; and [2](https://two.io/b). Not \\[1] this.');
+  });
+
   it('a body with no trailing list, or no bare number, is returned unchanged', () => {
     expect(weaveOrdinalCitations('Nothing to do [1].')).toBe('Nothing to do [1].');
     expect(weaveOrdinalCitations(`No numbers here.${list}`)).toBe(`No numbers here.${list}`);
