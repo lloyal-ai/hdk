@@ -10,6 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { satisfies } from 'semver';
 import { CUTS } from '../../../scripts/cut-alpha.lib.mjs';
 
 const ROOT = join(__dirname, '..', '..', '..');
@@ -47,13 +48,17 @@ describe('workspace lockfile', () => {
   });
 
   it('resolved the binding rig pins, not a stable a devDependency range let in', () => {
-    // rig peers on the binding EXACTLY; sdk and host used to develop against
-    // `^3.1.1`, which resolves to the published stable — so the workspace
-    // tested the arc against the old binding while the symlink hid it.
+    // The workspace's binding is what rig's peer names. Under an alpha cut the
+    // peer is an exact prerelease and this is equality; on a stable it is a
+    // caret at the release floor, and the resolved binding must fall inside it.
+    // sdk and host used to develop against `^3.1.1`, which resolved to the
+    // published stable — so the workspace tested the arc against the old
+    // binding while the symlink hid it.
     const rig = JSON.parse(readFileSync(join(ROOT, 'packages/rig/package.json'), 'utf8')) as {
       peerDependencies: Record<string, string>;
     };
-    expect(lock.packages['node_modules/@lloyal-labs/lloyal.node']?.version)
-      .toBe(rig.peerDependencies['@lloyal-labs/lloyal.node']);
+    const peer = rig.peerDependencies['@lloyal-labs/lloyal.node'];
+    const resolved = lock.packages['node_modules/@lloyal-labs/lloyal.node']?.version ?? '';
+    expect(satisfies(resolved, peer), `lockfile ${resolved} vs rig's peer ${peer}`).toBe(true);
   });
 });

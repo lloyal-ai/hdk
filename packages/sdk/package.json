@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/sdk",
-  "version": "4.0.0-alpha.11",
+  "version": "4.0.0",
   "engines": {
     "node": ">=24"
   },
@@ -38,6 +38,6 @@
     "LICENSE-FAQ.md"
   ],
   "devDependencies": {
-    "@lloyal-labs/lloyal.node": "3.2.0-alpha.10"
+    "@lloyal-labs/lloyal.node": "^3.2.0"
   }
 }

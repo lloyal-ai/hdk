@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/media",
-  "version": "0.2.0-alpha.11",
+  "version": "0.2.0",
   "engines": {
     "node": ">=24"
   },

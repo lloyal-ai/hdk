@@ -255,9 +255,14 @@ describe('the abilities admit the set', () => {
   const RUNS_ON_STABLE = new Set<string>([]);
 
   it('every ability peer on a set member admits the version the NEXT cut stamps, and the stable where it claims to', () => {
+    // The registry as it stood when the arc began. media's latest was its first alpha (a manual first
+    // publish stamps latest), so its pending base is 0.2.0 whatever the manifest says; without this row
+    // a stable 0.2.0 manifest would read as shipped and the next cut would plan 0.3.0-alpha.N, which no
+    // range written today can admit (a prerelease needs a comparator naming its own triple).
     const registry: Record<string, string> = {
       '@lloyal-labs/sdk': '3.1.0', '@lloyal-labs/lloyal-agents': '5.5.1', '@lloyal-labs/rig': '5.5.0',
       '@lloyal-labs/dev-tools': '0.4.3', '@lloyal-labs/lloyal.node': '3.1.1', '@lloyal-labs/binding': '0.1.0',
+      '@lloyal-labs/media': '0.2.0-alpha.0',
     };
     const view = (name: string) => { if (name in registry) return registry[name]; throw e404; };
     const stamped = planAlphas({ cut: 99, packages: arcPackages(CUTS, EXTERNAL, manifestOf), view });

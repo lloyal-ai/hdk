@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/desktop",
-  "version": "0.1.0-alpha.11",
+  "version": "0.1.0",
   "engines": {
     "node": ">=24"
   },
@@ -41,9 +41,9 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@lloyal-labs/binding": "0.2.0-alpha.11",
-    "@lloyal-labs/media": "0.2.0-alpha.11",
-    "@lloyal-labs/rig": "5.6.0-alpha.11"
+    "@lloyal-labs/binding": "^0.2.0",
+    "@lloyal-labs/media": "^0.2.0",
+    "@lloyal-labs/rig": "^5.6.0"
   },
   "peerDependencies": {
     "electron": ">=38"
