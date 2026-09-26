@@ -81,10 +81,12 @@ describe('planInstall: the steps, from the model family alone', () => {
     expect(llm).toMatchObject({ status: 'failed', file: true, note: expect.stringMatching(/Invalid model id/) });
   });
 
-  it('a file is offered only for a refusal a file can answer: a block naming no model takes one; a tuning refusal — pooling nothing can say — does not', () => {
+  it('a file is offered only for a refusal a file would answer: a block naming no model; a pooling that contradicts the catalog (a path pools as it says); never a pooling nothing can say', () => {
     const lenient = planInstall({ llm: { id: 'qwen3.5-4b' }, reranker: { context: 16384 }, embedding: { path: '/e.gguf', context: 2048 } }, { lenient: true });
     expect(lenient.find((s) => s.id === 'reranker')).toMatchObject({ status: 'failed', file: true });
     expect(lenient.find((s) => s.id === 'embedding')).toMatchObject({ status: 'failed', file: false });
+    const conflict = planInstall({ llm: { id: 'qwen3.5-4b' }, embedding: { id: 'nomic-embed-text-v1.5-q4', pooling: 'last', context: 2048 } }, { lenient: true });
+    expect(conflict.find((s) => s.id === 'embedding')).toMatchObject({ status: 'failed', file: true, note: expect.stringMatching(/use a `path`/) });
   });
 
   it('a block that names nothing it can is refused before anything runs — and says when a derivation was tried', () => {
@@ -95,12 +97,12 @@ describe('planInstall: the steps, from the model family alone', () => {
   });
 });
 
-describe('install: a run that acquires nothing reports nothing', () => {
-  it('every artifact already in its slot → resolved, and not one snapshot sent', async () => {
+describe('install: a run that acquires nothing reports its decision, and nothing else', () => {
+  it('every artifact already in its slot → resolved, and ONE snapshot sent: the empty list, so a view that asks is told "nothing" rather than left waiting', async () => {
     present.add('llm/qwen3.5-4b').add('reranker/r');
     const sent: InstallStepEvent[] = [];
     const acquired = await run(() => install({ projectRoot: '/proj', model: { llm: { id: 'qwen3.5-4b' }, reranker: { id: 'r', context: 16384 } }, totalBytes: 16 * GB, report: (ev) => sent.push(ev) }));
-    expect(sent).toEqual([]);
+    expect(sent).toEqual([{ type: 'install:step', steps: [] }]);
     expect(acquired.llm).toBe('/proj/models/llm/qwen3.5-4b.gguf');
     expect(acquired.services).toEqual({ reranker: '/proj/models/reranker/r.gguf' });
     expect(acquired.services.vision).toBeUndefined();

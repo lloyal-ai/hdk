@@ -293,7 +293,7 @@ export function useRecover(): (() => void) | null {
  * Two sources, because one is not enough. The push is an ordinary frame, so a running install self-heals:
  * every change carries the whole list, and the next tick catches a late subscriber up. A REFUSAL does not —
  * the gate reports once and the run ends — so the placement is also asked what it is holding, exactly as
- * `onSession` is paired with a "now" channel. Empty on every run that acquires nothing.
+ * `onSession` is paired with a "now" channel. Empty once a run has decided it acquires nothing (more).
  */
 export function useInstall(): readonly InstallerStep[] | null {
   const { bridge } = useHarness();
@@ -326,17 +326,19 @@ export function subscribeInstall(bridge: Pick<Bridge<unknown, unknown, unknown>,
   let live = true;
   let life = 0;
   // Per life: a frame has been taken (an answer never overrides it); the engine answered that it holds no frame;
-  // and whether this life is still acquiring — a null answer while `warming` is an engine that has not said
-  // yet, and one past it is an engine that had nothing to say.
+  // and whether this life is over. A null answer is an engine that has not DECIDED yet — every install ends
+  // with a frame, the empty list when it acquires nothing — so the steps stay unknown until one arrives. No
+  // session phase can stand in: a placement announces its binding `live` before the install runs. Only a life
+  // that has ended without deciding has nothing more to say, and shows the app and its own recovery.
   let pushed = false;
   let answeredNothing = false;
-  let warming = false;
+  let over = !bridge.onSession;
   const stepsOf = (ev: unknown): readonly InstallerStep[] | null => {
     const e = ev as { type?: unknown; steps?: readonly InstallerStep[] };
     return e && e.type === 'install:step' && Array.isArray(e.steps) ? e.steps : null;
   };
   const settle = (): void => {
-    if (!pushed && answeredNothing && !warming) { pushed = true; set([]); }
+    if (!pushed && answeredNothing && over) { pushed = true; set([]); }
   };
   const ask = (): void => {
     const mine = ++life;
@@ -365,8 +367,8 @@ export function subscribeInstall(bridge: Pick<Bridge<unknown, unknown, unknown>,
   });
   const offSession = bridge.onSession?.((state: SessionState) => {
     if (!live) return;
-    warming = state.phase === 'warming';
-    if (!warming) return settle();
+    over = state.phase === 'died' || state.phase === 'reaped';
+    if (state.phase !== 'warming') return settle();
     // A new life: what it holds is unknown until it answers — and known to be nothing where nothing can be asked.
     set(bridge.installNow ? null : []);
     ask();

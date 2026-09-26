@@ -196,13 +196,13 @@ describe('the install in front of the view', () => {
     // The reader presses "Start a new engine": the shell drains the old one, drops its retained install,
     // forks the replacement — which finds every slot full and publishes nothing — and it goes live.
     announce({ phase: 'draining' });
-    retained = null;
+    retained = { type: 'install:step', steps: [] };   // the replacement's decision: it acquires nothing
     announce({ phase: 'warming' });
     announce({ phase: 'live' });
     await new Promise((r) => setTimeout(r, 0));
-    // Unknown at the new life, then nothing: the replacement retained no frame, so it acquires nothing.
+    // Unknown at the new life, then nothing: the replacement decided so.
     expect(seen).toEqual([failed, null, []]);
-    expect(asked).toEqual([{ type: 'install:step', steps: failed }, null]);
+    expect(asked).toEqual([{ type: 'install:step', steps: failed }, { type: 'install:step', steps: [] }]);
     // A replacement that fails again pushes its own rows, and they show.
     announce({ phase: 'draining' });
     announce({ phase: 'warming' });
@@ -215,9 +215,10 @@ describe('the install in front of the view', () => {
     const { subscribeInstall } = await import('../src/provider');
     type Session = { phase: 'warming' | 'live' };
     const sessions = new Set<(s: Session) => void>();
+    const subs = new Set<(f: { epoch: number; seq: number; ev: unknown }) => void>();
     const answers: Array<(v: unknown) => void> = [];
     const b = {
-      onEvent() { return () => {}; },
+      onEvent(cb: (f: { epoch: number; seq: number; ev: unknown }) => void) { subs.add(cb); return () => subs.delete(cb); },
       onSession(cb: (s: Session) => void) { sessions.add(cb); cb({ phase: 'live' }); return () => sessions.delete(cb); },
       installNow: () => new Promise<unknown>((r) => { answers.push(r); }),
     };
@@ -230,9 +231,10 @@ describe('the install in front of the view', () => {
     answers[1](null);
     await new Promise((r) => setTimeout(r, 0));
     // Unknown at the new life — the late answer from the old engine never lands — and still unknown on the
-    // replacement's null: it is warming, and may publish a step yet. Nothing, once it is live having said none.
-    expect(seen).toEqual([null]);
+    // replacement's null, live or not: `live` is the binding, before the install; only the install decides.
     for (const cb of sessions) cb({ phase: 'live' });
+    expect(seen).toEqual([null]);
+    for (const cb of subs) cb({ epoch: 2, seq: 1, ev: { type: 'install:step', steps: [] } });
     expect(seen).toEqual([null, []]);
   });
 

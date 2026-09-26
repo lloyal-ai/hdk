@@ -34,8 +34,8 @@ export interface InstallStep {
 /**
  * The install as it now stands — every step, each time. A snapshot rather than a delta so a
  * view holds no state machine: the fold is `steps = ev.steps`, and pending rows can be drawn
- * because what has not started is in the list too. Empty when the install is over — and a
- * run that acquires nothing never sends one at all.
+ * because what has not started is in the list too. Empty when the install is over — the one
+ * snapshot every run sends, so a run that acquires nothing still says so.
  */
 export interface InstallStepEvent {
   type: 'install:step';

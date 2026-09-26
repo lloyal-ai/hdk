@@ -141,14 +141,27 @@ describe('the install view when the engine ends', () => {
     expect(container.textContent).toContain('STEP 2 OF 3');
     act(() => root.unmount());
 
+    // `live` is the binding accepting commands — BEFORE the install runs — so it decides nothing. The install's
+    // own decision does: an empty list, which every run publishes when it acquires nothing.
     const quiet = desktopBridge(running);
     quiet.installNow = () => Promise.resolve(null as unknown as { type: string; steps: readonly InstallerStep[] });
     mount(quiet);
     await flush();
     act(() => quiet.session({ phase: 'warming' }));
     await flush();
+    act(() => quiet.session({ phase: 'live' }));
     expect(container.textContent).toBe('');
-    act(() => quiet.session({ phase: 'live' }));   // live, having said nothing: this run acquired nothing
+    act(() => quiet.push([]));
+    expect(container.textContent).toBe('the app');
+    act(() => root.unmount());
+
+    // An engine that ended having decided nothing — it died before the install ran — has nothing more to say:
+    // the app, and its own recovery.
+    const dead = desktopBridge(running);
+    dead.installNow = () => Promise.resolve(null as unknown as { type: string; steps: readonly InstallerStep[] });
+    mount(dead);
+    await flush();
+    act(() => dead.session({ phase: 'died', code: 1 }));
     expect(container.textContent).toBe('the app');
     act(() => root.unmount());
   });

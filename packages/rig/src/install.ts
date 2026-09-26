@@ -3,7 +3,7 @@
  *
  * INSTALL IS NOT BOOT. Install acquires bytes a machine does not have yet, so it happens on a
  * first run and then never again; boot loads bytes already on disk, and happens every start.
- * A run that acquires nothing, and fails at nothing, reports nothing and simply opens.
+ * A run that acquires nothing, and fails at nothing, reports one thing — the empty list, its decision — and opens.
  *
  * The steps are DERIVED: the machine, the reasoning model, then every service the configuration
  * names — each one a provider, never a list a view or a boot maintains. `planInstall` is the ONE
@@ -65,8 +65,9 @@ function acquires(role: ModelRole, spec: ModelSpec): Pick<InstallStep, 'model' |
  * beside it, the model's own name and the slot it fills, for the reader watching it arrive.
  */
 export function planInstall(model: ModelFamily, opts: { lenient?: boolean } = {}): PlannedStep[] {
-  // A step the derivation refuses: failed with the refusal as its note; a file is offered only where one could
-  // answer it — a block naming no model, an id no slot can hold — never for a tuning refusal a path leaves as it is.
+  // A step the derivation refuses: failed with the refusal as its note; a file is offered only where one WOULD
+  // answer it — a block naming no model, an id no slot can hold, a pooling that contradicts the catalog (a
+  // path pools as the block says) — never for a refusal a path leaves as it is, a pooling nothing can say.
   const refuse = (step: PlannedStep, err: unknown, byFile: boolean): void => {
     if (!opts.lenient) throw err;
     step.status = 'failed';
@@ -91,7 +92,8 @@ export function planInstall(model: ModelFamily, opts: { lenient?: boolean } = {}
       step.spec = specOf(name, model);
       Object.assign(step, acquires(name, step.spec));
     } catch (err) {
-      refuse(step, err, refusalOf(name, model) === undefined);
+      const withFile = { ...model, [name]: { ...(model[name] ?? {}), id: undefined, path: '/a/file.gguf' } } as ModelFamily;
+      refuse(step, err, refusalOf(name, withFile) === undefined);
     }
     steps.push(step);
   }
@@ -164,8 +166,9 @@ export function* install(opts: InstallOpts): Operation<Installed> {
   // buffered here, where a fresh subscription per attempt would have missed it.
   const controls: Subscription<InstallCommand, void> | undefined = opts.controls ? yield* opts.controls : undefined;
   // A view hears from the install once there is something it must act on or wait through: a step that
-  // fetches, or a step that failed — whichever comes first. Silent otherwise, so a run that acquires nothing
-  // and fails at nothing simply opens.
+  // fetches, or a step that failed — whichever comes first. Silent otherwise until the end, where every run
+  // says the one thing a view that asks must be told: the empty list, the decision that nothing (more) is
+  // acquired. A placement announces its binding before the install runs, so no session phase can say it.
   let announced = false;
   const send = (): void => opts.report({ type: 'install:step', steps: steps.map(({ role: _r, spec: _s, refused: _f, ...step }) => ({ ...step })) });
   const publish = (): void => { announced = true; send(); };
@@ -246,10 +249,8 @@ export function* install(opts: InstallOpts): Operation<Installed> {
     // step it touched.
   }
 
-  if (announced) {
-    steps.length = 0;
-    send();
-  }
+  steps.length = 0;
+  send();
   const services: ServiceArtifacts = {};
   for (const name of SERVICES) if (artifacts[name] !== undefined) services[name as Service] = artifacts[name];
   return { model, llm: artifacts.llm!, services };
