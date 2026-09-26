@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/documents-ability",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "engines": {
     "node": ">=24"
   },
@@ -28,9 +28,9 @@
     "build": "tsc -b"
   },
   "peerDependencies": {
-    "@lloyal-labs/lloyal-agents": ">=6.0.0-0 <7.0.0",
+    "@lloyal-labs/lloyal-agents": ">=6.0.0-alpha.11 <7.0.0",
     "@lloyal-labs/media": ">=0.2.0-0 <0.3.0",
-    "@lloyal-labs/rig": ">=5.6.0-0 <6.0.0",
+    "@lloyal-labs/rig": ">=5.6.0-alpha.11 <6.0.0",
     "effection": "^4.0.2"
   }
 }
