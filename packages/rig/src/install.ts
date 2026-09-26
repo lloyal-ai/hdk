@@ -47,6 +47,15 @@ export interface PlannedStep extends InstallStep {
 /** Whether a step's block takes a `path` — the one condition under which a file the reader already has can stand in. */
 const takesFile = (id: string): boolean => `model.${id}.path` in modelSettings;
 
+/**
+ * Whether a file would BIND for this service: the block as a chosen file leaves it — the path beside whatever
+ * the block already says, the id included, since a persisted path outranks the committed id without removing
+ * it — put to the row's own refusal. A catalog embedding whose pooling only the catalog knew cannot take a
+ * file until the block says its pooling; one that says it, or contradicts the catalog, can.
+ */
+const fileWouldBind = (name: Service, model: ModelFamily): boolean =>
+  refusalOf(name, { ...model, [name]: { ...(model[name] ?? {}), path: '/a/file.gguf' } } as ModelFamily) === undefined;
+
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 /** What a spec acquires and where it goes, for a reader: the catalog's name and the slot, or the file's own name and path. */
@@ -65,15 +74,13 @@ function acquires(role: ModelRole, spec: ModelSpec): Pick<InstallStep, 'model' |
  * beside it, the model's own name and the slot it fills, for the reader watching it arrive.
  */
 export function planInstall(model: ModelFamily, opts: { lenient?: boolean } = {}): PlannedStep[] {
-  // A step the derivation refuses: failed with the refusal as its note; a file is offered only where one WOULD
-  // answer it — a block naming no model, an id no slot can hold, a pooling that contradicts the catalog (a
-  // path pools as the block says) — never for a refusal a path leaves as it is, a pooling nothing can say.
-  const refuse = (step: PlannedStep, err: unknown, byFile: boolean): void => {
+  // A step the derivation refuses: failed with the refusal as its note. Whether a file is offered is the
+  // step's `file`, decided the same way for a pending step and a failed one: only where a file would bind.
+  const refuse = (step: PlannedStep, err: unknown): void => {
     if (!opts.lenient) throw err;
     step.status = 'failed';
     step.refused = message(err);
     step.note = step.refused;
-    step.file = step.file && byFile;
   };
   const llm = model.llm ?? {};
   const llmSpec: ModelSpec | undefined = llm.path ? { path: llm.path } : llm.id ? { id: llm.id } : undefined;
@@ -82,18 +89,17 @@ export function planInstall(model: ModelFamily, opts: { lenient?: boolean } = {}
     try {
       Object.assign(llmStep, { spec: llmSpec }, acquires('llm', llmSpec));
     } catch (err) {
-      refuse(llmStep, err, true);
+      refuse(llmStep, err);
     }
   }
   const steps: PlannedStep[] = [{ id: 'machine', label: 'This machine', status: 'pending' }, llmStep];
   for (const name of configuredServices(model)) {
-    const step: PlannedStep = { id: name, label: `Downloading the ${providers[name].name}`, status: 'pending', role: name, file: takesFile(name) };
+    const step: PlannedStep = { id: name, label: `Downloading the ${providers[name].name}`, status: 'pending', role: name, file: takesFile(name) && fileWouldBind(name, model) };
     try {
       step.spec = specOf(name, model);
       Object.assign(step, acquires(name, step.spec));
     } catch (err) {
-      const withFile = { ...model, [name]: { ...(model[name] ?? {}), id: undefined, path: '/a/file.gguf' } } as ModelFamily;
-      refuse(step, err, refusalOf(name, withFile) === undefined);
+      refuse(step, err);
     }
     steps.push(step);
   }

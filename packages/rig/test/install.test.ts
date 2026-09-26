@@ -81,6 +81,14 @@ describe('planInstall: the steps, from the model family alone', () => {
     expect(llm).toMatchObject({ status: 'failed', file: true, note: expect.stringMatching(/Invalid model id/) });
   });
 
+  it('a file is offered only where the block WITH that file would bind — the id stays under the path, and a catalog embedding whose pooling only the catalog knew cannot take one until the block says its pooling', () => {
+    const plain = planInstall({ llm: { id: 'qwen3.5-4b' }, embedding: { id: 'nomic-embed-text-v1.5-q4', context: 2048 }, reranker: { id: 'r', context: 16384 } });
+    expect(plain.find((s) => s.id === 'embedding')).toMatchObject({ status: 'pending', file: false });   // a file would leave `pooling` unsaid
+    expect(plain.find((s) => s.id === 'reranker')).toMatchObject({ status: 'pending', file: true });
+    const said = planInstall({ llm: { id: 'qwen3.5-4b' }, embedding: { id: 'nomic-embed-text-v1.5-q4', pooling: 'mean', context: 2048 } });
+    expect(said.find((s) => s.id === 'embedding')).toMatchObject({ status: 'pending', file: true });
+  });
+
   it('a file is offered only for a refusal a file would answer: a block naming no model; a pooling that contradicts the catalog (a path pools as it says); never a pooling nothing can say', () => {
     const lenient = planInstall({ llm: { id: 'qwen3.5-4b' }, reranker: { context: 16384 }, embedding: { path: '/e.gguf', context: 2048 } }, { lenient: true });
     expect(lenient.find((s) => s.id === 'reranker')).toMatchObject({ status: 'failed', file: true });
