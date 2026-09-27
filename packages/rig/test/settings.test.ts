@@ -34,12 +34,14 @@ function* world(opts: {
   config?: Config;
   persist?: (patch: ConfigPatch<Config>) => SaveResult & { config: Config; origin: typeof origin };
   enable?: string[];
+  projectRoot?: string;
 }) {
   const sent: SettingsEvent[] = [];
   const cfg = opts.config ?? base();
+  const projectRoot = opts.projectRoot ?? process.cwd();
   const runner = opts.persist
-    ? makeEdgeRunner<Config, typeof origin>(cfg, { table, origin, sessionOriginMap: identity, persist: opts.persist })
-    : makeServedRunner<Config, typeof origin>(cfg, { table, origin, sessionOriginMap: identity });
+    ? makeEdgeRunner<Config, typeof origin>(cfg, { table, origin, sessionOriginMap: identity, projectRoot, persist: opts.persist })
+    : makeServedRunner<Config, typeof origin>(cfg, { table, origin, sessionOriginMap: identity, projectRoot });
   const store = createInMemoryConfigStore();
   for (const [name, c] of Object.entries(cfg.abilities)) yield* store.set(name, c);
   const registry = yield* createAbilityRegistry({ configStore: store });
@@ -50,6 +52,26 @@ function* world(opts: {
 }
 const dispatch = (w: { handlers: ReturnType<typeof settings>['handlers'] }, c: SettingsCommand) =>
   (w.handlers[c.type] as (c: SettingsCommand) => Operation<'exit' | void>)(c);
+
+describe('the base a live path resolves against', () => {
+  it("is the runner's project root, not the process's working directory — a packaged app runs in a read-only bundle", async () => {
+    await run(function* () {
+      // A reader who types a relative folder into the settings pane means it relative to the harness's
+      // own root. In a packaged app the process's working directory is the app's resources, so resolving
+      // there would send them somewhere read-only that has nothing to do with their work.
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'settings-root-'));
+      fs.mkdirSync(path.join(root, 'notes'));
+      const saved: ConfigPatch<Config>[] = [];
+      const w = yield* world({
+        abilities: [],
+        projectRoot: root,
+        persist: (patch) => { saved.push(patch); return { path: null, gitignored: false, skipped: [], config: base(), origin }; },
+      });
+      yield* dispatch(w, { type: 'set_config', patch: { sources: { outputDir: 'notes' } } as ConfigPatch<Config> });
+      expect(saved.at(-1)).toEqual({ sources: { outputDir: path.join(root, 'notes') } });
+    });
+  });
+});
 
 describe('set_config', () => {
   it('saves only what changed and announces it with ability values redacted; a path key is resolved', async () => {

@@ -47,12 +47,12 @@ const message = (err: unknown): string => (err instanceof Error ? err.message : 
 
 /** A patch with its declared path keys resolved (`~` expanded, made absolute), at whatever depth the table
  *  declares them; `""` stays a clear. */
-function resolvePatchPaths<C>(table: ConfigTable, patch: ConfigPatch<C>): ConfigPatch<C> {
+function resolvePatchPaths<C>(table: ConfigTable, patch: ConfigPatch<C>, base: string): ConfigPatch<C> {
   let out = patch as Bag;
   for (const [key, decl] of Object.entries(table)) {
     if (!decl.path) continue;
     const v = getPath(out, key);
-    if (typeof v === 'string' && v !== '') out = withPath(out, key.split('.'), resolvePath(v));
+    if (typeof v === 'string' && v !== '') out = withPath(out, key.split('.'), resolvePath(v, base));
   }
   return out as ConfigPatch<C>;
 }
@@ -71,11 +71,11 @@ export function settings<C extends BaseHarnessConfig, O extends Record<string, C
   return {
     handlers: {
       *set_config({ patch }) {
-        yield* wire.send(configUpdated(runner.saveConfig(resolvePatchPaths(config, patch))));
+        yield* wire.send(configUpdated(runner.saveConfig(resolvePatchPaths(config, patch, runner.projectRoot))));
       },
 
       *set_ability_config({ name, values }) {
-        const patch = resolveAppConfigPaths(values);
+        const patch = resolveAppConfigPaths(values, runner.projectRoot);
         // A path must exist before anything persists or enables: a factory handed a
         // bad path can take the process down, and a persisted one would do so at every boot.
         const missing = Object.entries(patch).find(([k, v]) => isPathShaped(k, v) && !fs.existsSync(v));
@@ -121,7 +121,7 @@ export function settings<C extends BaseHarnessConfig, O extends Record<string, C
       *reload_runtime({ patch }) {
         // Only where a next launch will read it: on a served host the model is the server's, chosen
         // once at startup for every session, so ending this one would apply nothing.
-        if (!runner.reloadRuntime(resolvePatchPaths(config, patch))) {
+        if (!runner.reloadRuntime(resolvePatchPaths(config, patch, runner.projectRoot))) {
           return yield* toast('The model is chosen where this server starts, not per session — this change would apply to nothing.');
         }
         return 'exit';

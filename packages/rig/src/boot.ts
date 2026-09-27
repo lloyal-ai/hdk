@@ -24,6 +24,7 @@ import { main, call, createSignal, ensure, exit, suspend } from 'effection';
 import type { Operation, Signal } from 'effection';
 import { createServer } from 'node:http';
 import * as os from 'node:os';
+import * as path from 'node:path';
 import { parseArgs } from 'node:util';
 import { WebSocketServer } from 'ws';
 import type { SessionContext } from '@lloyal-labs/sdk';
@@ -89,8 +90,28 @@ function progressOnStderr(): (ev: InstallStepEvent) => void {
   };
 }
 
+/**
+ * Where this run's work lives: the manifest it reads, the overlay it writes, the model slots it
+ * fills, the content store and the folders the app keeps.
+ *
+ * A developer standing in their project is the working directory, and that is the default. A shell
+ * that knows better says so: a packaged app's working directory is its own read-only bundle, so the
+ * desktop shell points this at a writable place and seeds the manifest there. That belongs in the
+ * environment and not in `harness.yml`, for the reason the served box's own values already do (see
+ * {@link DEFAULT_MAX_SESSIONS}) — it describes the machine, not the harness, and one build serves
+ * many machines. A caller's own option still wins, because passing one is a decision rather than a
+ * default. Blank is nothing said, never the root of the filesystem, and the answer is absolute so
+ * every consumer joining onto it lands in the same place.
+ */
+export function projectRootOf(opts: { projectRoot?: string }, env: NodeJS.ProcessEnv = process.env): string {
+  // The first one that SAYS something, in order. Selecting on presence instead would let a caller
+  // passing an unset field through as `''` outrank a shell that has put the work somewhere writable.
+  const said = [opts.projectRoot, env.LLOYAL_PROJECT_ROOT].find((v) => v?.trim());
+  return path.resolve(said ?? process.cwd());
+}
+
 export interface BootEdgeOpts<E, C> {
-  /** Where `harness.yml` is — the project. Default: the process's cwd. */
+  /** Where `harness.yml` is — the project. Default: `LLOYAL_PROJECT_ROOT`, else the process's cwd. */
   projectRoot?: string;
   /** The terminal view for a TTY: a render binding `(bus, dispatch, bootstrap) => dispose`. Without one a TTY gets JSON lines. */
   render?: Binding<E, C>;
@@ -104,7 +125,7 @@ export interface BootEdgeOpts<E, C> {
  * exits with the run's outcome.
  */
 export function bootEdge<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>, opts: BootEdgeOpts<E, C> = {}): void {
-  const projectRoot = opts.projectRoot ?? process.cwd();
+  const projectRoot = projectRootOf(opts);
   // Snapshotted before `prepareBackend` writes LLOYAL_GPU, so a re-layering after a save reads the operator's env.
   const bootEnv = { ...process.env };
   const { values: flags } = parseArgs({ args: (opts.argv ?? process.argv).slice(2), options: { query: { type: 'string' } }, strict: false });
@@ -173,7 +194,7 @@ export function bootEdge<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>, 
     const traceWriter = yield* useTraceWriter((cfg as { sources: { outputDir: string } }).sources.outputDir, dev, (ev) => events.send(ev as unknown as E));
     yield* RunnerCtx.set({
       ...makeEdgeRunner<ConfigOf<T>, OriginOf<T>>(cfg, {
-        traceWriter, attachmentStore: media, dev,
+        traceWriter, attachmentStore: media, dev, projectRoot,
         table: loaded.table, origin, persist: loaded.persist, sessionOriginMap: loaded.sessionOriginMap, frozen: loaded.frozen,
       }),
       mode: oneShot ? 'oneshot' : 'interactive',
@@ -197,6 +218,7 @@ export function bootEdge<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>, 
 }
 
 export interface BootServedOpts {
+  /** Where `harness.yml` is — the project. Default: `LLOYAL_PROJECT_ROOT`, else the process's cwd. */
   projectRoot?: string;
   /** Named in the host's log line. */
   name?: string;
@@ -231,7 +253,7 @@ const envInt = (name: string, fallback: number): number => {
 
 /** Serve N browser sessions over one resident model, until the process is signalled. */
 export function bootServed<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>, opts: BootServedOpts = {}): void {
-  const projectRoot = opts.projectRoot ?? process.cwd();
+  const projectRoot = projectRootOf(opts);
   const bootEnv = { ...process.env };
   const loaded = loadOrExit(app.config, projectRoot, bootEnv);
   let model = loaded.config.model as ModelFamily;
@@ -274,7 +296,7 @@ export function bootServed<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>
         if (dev) yield* ensure(startHostResources((ev) => m.uiChannel.send(ev as unknown as E)));
         const traceWriter = yield* useTraceWriter((cfg as { sources: { outputDir: string } }).sources.outputDir, dev, (ev) => m.uiChannel.send(ev as unknown as E));
         yield* RunnerCtx.set(makeServedRunner<ConfigOf<T>, OriginOf<T>>(cfg, {
-          traceWriter, attachmentStore: media, dev,
+          traceWriter, attachmentStore: media, dev, projectRoot,
           table: loaded.table, origin: loaded.origin, sessionOriginMap: loaded.sessionOriginMap, frozen: loaded.frozen,
         }));
         yield* Ingress.set(ingress);

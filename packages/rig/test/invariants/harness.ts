@@ -107,7 +107,7 @@ export interface World {
 export function* world(spec: { abilities: AbilityFactory[]; enable?: string[]; config?: Record<string, Record<string, unknown>> }): Operation<World> {
   const sent: SettingsEvent[] = [];
   const cfg: Config = { version: CONFIG_VERSION, sources: { outputDir: '/out' }, abilities: spec.config ?? {}, model: {} };
-  const runner = makeServedRunner<Config, typeof origin>(cfg, { table, origin, sessionOriginMap: identity });
+  const runner = makeServedRunner<Config, typeof origin>(cfg, { table, origin, sessionOriginMap: identity, projectRoot: '/project' });
   const store = createInMemoryConfigStore();
   for (const [name, c] of Object.entries(cfg.abilities)) yield* store.set(name, c);
   const registry = yield* createAbilityRegistry({ configStore: store });
