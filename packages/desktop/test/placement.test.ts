@@ -7,11 +7,22 @@
  * Only the copy is tested here; deciding the locations reads Electron and is a handful of lines over
  * `app.isPackaged`.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { seedIfAbsent, SeedFailed } from '../src/placement';
+
+/** Fired after the copy and before the publish: where a competing launch fits. */
+let midCopy: (() => void) | null = null;
+vi.mock('node:fs', async (importActual) => {
+  const actual = await importActual<typeof import('node:fs')>();
+  return {
+    ...actual,
+    copyFileSync: (from: fs.PathLike, to: fs.PathLike) => { actual.copyFileSync(from, to); midCopy?.(); },
+  };
+});
+afterEach(() => { midCopy = null; });
 
 const made: string[] = [];
 const tmp = (): string => {
@@ -56,6 +67,28 @@ describe('seedIfAbsent', () => {
     fs.mkdirSync(to);
     expect(() => seedIfAbsent(from, to)).toThrow(SeedFailed);
     expect(fs.readdirSync(dir).filter((f) => f !== 'harness.yml')).toEqual([]);
+  });
+
+  it('never overwrites a manifest another launch created while this one was copying', () => {
+    // Two first launches. The second wins the race, seeds, and the reader edits it before the first
+    // gets to its own publish. Checking then renaming would replace their file with the default,
+    // because a rename overwrites whatever is in its way.
+    const from = path.join(tmp(), 'harness.yml');
+    fs.writeFileSync(from, 'shipped\n');
+    const to = path.join(tmp(), 'harness.yml');
+    midCopy = () => fs.writeFileSync(to, 'theirs, edited\n');
+    expect(seedIfAbsent(from, to)).toBe('present');
+    expect(fs.readFileSync(to, 'utf8')).toBe('theirs, edited\n');
+  });
+
+  it('leaves nothing behind when it loses that race', () => {
+    const from = path.join(tmp(), 'harness.yml');
+    fs.writeFileSync(from, 'shipped\n');
+    const dir = tmp();
+    const to = path.join(dir, 'harness.yml');
+    midCopy = () => fs.writeFileSync(to, 'theirs\n');
+    seedIfAbsent(from, to);
+    expect(fs.readdirSync(dir)).toEqual(['harness.yml']);
   });
 
   it('says which file it could not read when the application default is missing', () => {

@@ -104,8 +104,10 @@ function progressOnStderr(): (ev: InstallStepEvent) => void {
  * every consumer joining onto it lands in the same place.
  */
 export function projectRootOf(opts: { projectRoot?: string }, env: NodeJS.ProcessEnv = process.env): string {
-  const said = opts.projectRoot ?? env.LLOYAL_PROJECT_ROOT;
-  return path.resolve(said?.trim() ? said : process.cwd());
+  // The first one that SAYS something, in order. Selecting on presence instead would let a caller
+  // passing an unset field through as `''` outrank a shell that has put the work somewhere writable.
+  const said = [opts.projectRoot, env.LLOYAL_PROJECT_ROOT].find((v) => v?.trim());
+  return path.resolve(said ?? process.cwd());
 }
 
 export interface BootEdgeOpts<E, C> {

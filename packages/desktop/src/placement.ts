@@ -20,7 +20,7 @@
  */
 import { app } from 'electron';
 import { randomBytes } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, linkSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 /** The manifest, by the one name rig reads it under. */
@@ -49,29 +49,40 @@ export class SeedFailed extends Error {
   }
 }
 
+/** Is there a manifest here already? A directory of that name is not one. */
+const manifestAt = (p: string): boolean => existsSync(p) && statSync(p).isFile();
+
 /**
  * Copy the application's default manifest into a fresh installation, once.
  *
  * Returns `present` without reading anything when the installation already has one: what is there is
  * the reader's, including every edit and every model they have chosen since.
  *
- * The copy lands whole or not at all. It is written beside its destination under a name carrying this
- * process's id and then renamed, which is atomic on one filesystem, so a first launch interrupted
- * half way leaves nothing for the next launch to mistake for a seeded manifest. A failure removes
- * what it wrote and says which file it could not manage.
+ * The copy lands whole or not at all, and it lands only if nothing is there. It is written beside its
+ * destination under a name carrying this process's id, and published by LINKING rather than renaming:
+ * a link fails when the name is taken, where a rename would replace whatever is in its way. That
+ * matters because nothing makes two first launches impossible, and the gap between asking whether a
+ * manifest exists and putting one there is long enough for the other launch to seed it and the reader
+ * to edit it. Losing that race is simply `present`. The temporary file goes either way, so an
+ * interrupted launch leaves nothing for the next one to mistake for a seeded manifest, and a failure
+ * says which file it could not manage.
  */
 export function seedIfAbsent(from: string, to: string): 'seeded' | 'present' {
-  // A directory in the manifest's place is not a manifest; fall through, fail on the rename, and say so.
-  if (existsSync(to) && statSync(to).isFile()) return 'present';
+  if (manifestAt(to)) return 'present';
   const partial = `${to}.${process.pid}.${randomBytes(4).toString('hex')}.partial`;
   try {
     mkdirSync(dirname(to), { recursive: true });
     copyFileSync(from, partial);
-    renameSync(partial, to);
+    linkSync(partial, to);   // same directory, so the same filesystem; fails if the name is taken
     return 'seeded';
   } catch (cause) {
-    try { rmSync(partial, { force: true }); } catch { /* the failure below is the one worth reporting */ }
+    // The name was taken while we copied. Someone else's manifest is the installation's, unless what
+    // took the name is not a manifest at all, which is a broken installation and worth saying.
+    if ((cause as NodeJS.ErrnoException)?.code === 'EEXIST' && manifestAt(to)) return 'present';
     throw new SeedFailed(from, to, cause);
+  } finally {
+    // After a successful link the destination and this name are one file; dropping this one leaves it.
+    try { rmSync(partial, { force: true }); } catch { /* whatever brought us here is the story */ }
   }
 }
 

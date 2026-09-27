@@ -26,6 +26,15 @@ describe('projectRootOf', () => {
     expect(projectRootOf({}, { LLOYAL_PROJECT_ROOT: '   ' })).toBe(process.cwd());
   });
 
+  it('treats a blank option the same way — nothing said, so the environment is still heard', () => {
+    // A caller that passes through an unset field says nothing, and nothing must not outrank a shell
+    // that has put the work somewhere writable. Selecting on presence rather than on blankness would
+    // let `projectRoot: ''` fall straight past the environment to the working directory.
+    expect(projectRootOf({ projectRoot: '' }, { LLOYAL_PROJECT_ROOT: '/data/fieldnote' })).toBe('/data/fieldnote');
+    expect(projectRootOf({ projectRoot: '  ' }, { LLOYAL_PROJECT_ROOT: '/data/fieldnote' })).toBe('/data/fieldnote');
+    expect(projectRootOf({ projectRoot: '' }, {})).toBe(process.cwd());
+  });
+
   it('answers an absolute path, so every consumer joining onto it lands in the same place', () => {
     expect(projectRootOf({ projectRoot: 'relative/here' }, {})).toBe(`${process.cwd()}/relative/here`);
     expect(projectRootOf({}, { LLOYAL_PROJECT_ROOT: 'also/relative' })).toBe(`${process.cwd()}/also/relative`);
