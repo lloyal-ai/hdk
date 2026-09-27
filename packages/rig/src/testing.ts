@@ -317,6 +317,7 @@ export async function runHarness<T extends ConfigTable, C extends { type: string
   const served = makeServedRunner<Cfg, OriginOf<T>>(cfg, {
     traceWriter: trace,
     dev: false,
+    projectRoot: loaded.projectRoot,
     table: loaded.table,
     origin: loaded.origin,
     sessionOriginMap: loaded.sessionOriginMap,

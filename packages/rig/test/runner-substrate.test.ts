@@ -65,7 +65,7 @@ const researchOrigin = (): ResearchOrigin => ({
   'defaults.reasoningMode': 'default', 'model.llm.path': 'yml', 'model.reranker.path': 'yml',
   'model.llm.context': 'yml', 'model.llm.gpu': 'env', 'sources.outputDir': 'default',
 });
-const researchOpts = () => ({ table: RESEARCH, origin: researchOrigin(), sessionOriginMap: RESEARCH_MAP });
+const researchOpts = () => ({ table: RESEARCH, origin: researchOrigin(), sessionOriginMap: RESEARCH_MAP, projectRoot: '/project' });
 
 describe('served runner (in-memory, per-session)', () => {
   it('clones per session; saves never share state or reach disk', () => {
@@ -156,6 +156,7 @@ describe('edge runner (persist + reconcile)', () => {
     const r = makeEdgeRunner(boot, {
       table: BASIC,
       origin,
+      projectRoot: '/project',
       sessionOriginMap: { 'sources.outputDir': 'sources.outputDir' },
       persist: () => ({ path: '/p/harness.json', gitignored: false, skipped: [], config: relayered, origin }),
     });
@@ -174,6 +175,7 @@ describe('edge runner (persist + reconcile)', () => {
     const opts = {
       table: BASIC,
       origin,
+      projectRoot: '/project',
       sessionOriginMap: { 'sources.outputDir': 'sources.outputDir', 'model.llm.path': 'model.llm.path' } as const,
       persist: () => ({ path: '/p/harness.json', gitignored: true, skipped: [], config: relayered, origin }),
     };

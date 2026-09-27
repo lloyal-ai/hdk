@@ -46,6 +46,14 @@ export interface CreateEngineOpts<E, S> {
   bin: string;
   /** Added to the engine's environment. `RR_BRIDGE` is set for you: it is what makes the cli boot mount the ipc binding. */
   env?: Record<string, string>;
+  /** The engine's working directory. Omitted, it inherits this process's — right for a project run.
+   *  A packaged shell passes the application's own resources, because that is what `cwd`-relative
+   *  assets resolve against and it must be a real directory, never a path inside the archive. */
+  cwd?: string;
+  /** Where this run's work lives: the manifest, the overlay, the models, the media store. Omitted,
+   *  the engine uses its own working directory, which is what a developer standing in their project
+   *  means. A packaged shell passes somewhere writable, since its own files are not. */
+  projectRoot?: string;
   initialState: S;
   /** The harness's fold. The engine's stream carries the PLATFORM's events beside the harness's own — the
    *  install's steps, trace and host-resource events — through this same reducer, so it must return its state
@@ -57,14 +65,17 @@ export interface CreateEngineOpts<E, S> {
   /** The engine's own stdout/stderr lines. */
   log?: (stream: 'stdout' | 'stderr' | 'exit', text: string) => void;
   /** Fork it yourself. The default forks `bin` as an Electron utility process; a test hands in a fake. */
-  fork?: (bin: string, env: NodeJS.ProcessEnv) => EngineProcess;
+  fork?: (bin: string, opts: { env: NodeJS.ProcessEnv; cwd?: string }) => EngineProcess;
 }
 
 /** The default: this project's cli boot as a utility process, with the bridge flag set and its output piped. */
-function forkUtilityProcess(bin: string, env: NodeJS.ProcessEnv): EngineProcess {
+function forkUtilityProcess(bin: string, opts: { env: NodeJS.ProcessEnv; cwd?: string }): EngineProcess {
   // A missing binary is the one failure worth naming: the window would otherwise open onto an engine that never speaks.
   if (!existsSync(bin)) throw new Error(`engine not built: ${bin} not found — build the cli target first.`);
-  return utilityProcess.fork(bin, [], { serviceName: 'harness-engine', stdio: 'pipe', env }) as unknown as EngineProcess;
+  return utilityProcess.fork(bin, [], {
+    serviceName: 'harness-engine', stdio: 'pipe', env: opts.env,
+    ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+  }) as unknown as EngineProcess;
 }
 
 /** The install snapshot rig last sent, retained verbatim. Structural on purpose: this package names the shape it
@@ -168,7 +179,15 @@ export function createEngine<E, C, S>(opts: CreateEngineOpts<E, S>): Engine<C, S
     announce({ phase: 'warming' });
     let proc: EngineProcess;
     try {
-      proc = fork(opts.bin, { ...process.env, ...opts.env, RR_BRIDGE: '1' });
+      proc = fork(opts.bin, {
+        env: {
+          ...process.env, ...opts.env, RR_BRIDGE: '1',
+          // Named here and nowhere above: which variable carries the root is the platform's business,
+          // so a shell says WHERE its work lives and never how the engine is told.
+          ...(opts.projectRoot !== undefined ? { LLOYAL_PROJECT_ROOT: opts.projectRoot } : {}),
+        },
+        ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+      });
     } catch (err) {
       // A shell whose engine will not start must still open and say so; throwing here would take
       // the main process down before the window that could report it exists.

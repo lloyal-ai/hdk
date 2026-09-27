@@ -109,6 +109,10 @@ export interface RunnerConfigOpts<
 > {
   /** The table the config was layered from: what a patch merges by. */
   table: ConfigTable;
+  /** Where this run's work lives — the root the boot layered from. A relative path a reader sets at
+   *  runtime is theirs relative to the harness, never to the process's working directory, which in a
+   *  packaged app is the app's own read-only resources. */
+  projectRoot: string;
   origin: O;
   persist?: (patch: ConfigPatch<C>) => SaveResult & { config: C; origin: O };
   /** Patch-path → origin key (e.g. `{ "model.gpu": "gpu" }`) — DATA, the one
@@ -178,6 +182,8 @@ export interface Runner<
   initialQuery: string | undefined;
   /** True only on the runner's first boot iteration — gates the auto-submit. */
   isFirstIteration: boolean;
+  /** Where this run's work lives. The base a live path setting resolves against. */
+  projectRoot: string;
 }
 
 /** The ambient seam the harness reads. Templates re-export a façade typed to
@@ -254,6 +260,7 @@ function makeRunner<
     origin: markSession(sessionOrigin, patch, opts.sessionOriginMap),
   });
   return {
+    projectRoot: opts.projectRoot,
     config: () => sessionConfig,
     origin: () => sessionOrigin,
     saveConfig(patch) {

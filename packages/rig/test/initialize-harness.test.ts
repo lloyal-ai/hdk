@@ -30,7 +30,7 @@ const REQUIRED: JsonSchema = { type: 'object', required: ['corpusPath'], propert
 function boot(abilities: Record<string, Record<string, unknown>> = {}, dev = false) {
   const ctx = new MockSessionContext({ nCtx: 8192 });
   const cfg: Config = { version: CONFIG_VERSION, sources: { outputDir: '/out' }, abilities, model: {} };
-  const runner = makeServedRunner<Config, { 'sources.outputDir': 'yml' }>(cfg, { table, origin: { 'sources.outputDir': 'yml' }, sessionOriginMap: { 'sources.outputDir': 'sources.outputDir' }, dev });
+  const runner = makeServedRunner<Config, { 'sources.outputDir': 'yml' }>(cfg, { table, origin: { 'sources.outputDir': 'yml' }, projectRoot: '/project', sessionOriginMap: { 'sources.outputDir': 'sources.outputDir' }, dev });
   const events: Event[] = [];
   const bus = { send: (e: Event) => { events.push(e); } };
   return { ctx, runner, events, bus };

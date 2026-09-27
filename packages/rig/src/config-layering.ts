@@ -241,6 +241,9 @@ export function runnerConfig<T extends ConfigTable>(
   return {
     ...loaded,
     table,
+    // The root this config was layered from, carried on so a live path setting resolves where the
+    // file rungs did — never against the process, which in a packaged app is somewhere read-only.
+    projectRoot: path.resolve(source.cwd ?? process.cwd()),
     persist: (patch) => {
       const saved = saveLocalConfig(table, patch, source.cwd);
       const relayered = loadConfig(table, yml, source);

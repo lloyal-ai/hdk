@@ -72,6 +72,33 @@ describe('createEngine', () => {
   });
 });
 
+describe('where the engine runs and where its work goes', () => {
+  it('forks in the working directory it was given, and tells the engine where its work lives', () => {
+    const proc = fakeProcess();
+    const seen: { bin: string; opts: { env: NodeJS.ProcessEnv; cwd?: string } }[] = [];
+    createEngine<Ev, never, S>({
+      bin: 'x', cwd: '/app/Contents/Resources', projectRoot: '/data/fieldnote',
+      initialState: { sum: 0 }, reduce: (s) => s, forward: () => {},
+      fork: (bin, opts) => { seen.push({ bin, opts }); return proc; },
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].opts.cwd).toBe('/app/Contents/Resources');
+    expect(seen[0].opts.env.LLOYAL_PROJECT_ROOT).toBe('/data/fieldnote');
+    expect(seen[0].opts.env.RR_BRIDGE).toBe('1');
+  });
+
+  it('says nothing about either when nobody said — a project run is its own working directory', () => {
+    const proc = fakeProcess();
+    const seen: { opts: { env: NodeJS.ProcessEnv; cwd?: string } }[] = [];
+    createEngine<Ev, never, S>({
+      bin: 'x', initialState: { sum: 0 }, reduce: (s) => s, forward: () => {},
+      fork: (_bin, opts) => { seen.push({ opts }); return proc; },
+    });
+    expect(seen[0].opts.cwd).toBeUndefined();
+    expect('LLOYAL_PROJECT_ROOT' in seen[0].opts.env).toBe(false);
+  });
+});
+
 describe('the engine retains what is being acquired', () => {
   it('the last install frame answers a renderer that loaded late; a fresh engine starts with none', async () => {
     const proc = fakeProcess();
