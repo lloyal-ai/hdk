@@ -11,6 +11,7 @@ export { createEngine } from './engine';
 export type { Engine, EngineProcess, CreateEngineOpts, InstallFrame } from './engine';
 export { serveEngine } from './serve-engine';
 export { registerContentScheme, serveContentScheme, CONTENT_ORIGIN } from './content';
+export { cannotRun } from './cannot-run';
 export { placeHarness, seedIfAbsent, SeedFailed } from './placement';
 export type { HarnessPlacement } from './placement';
 export { readBounded, TooLarge, TooSlow } from './read-bounded';
