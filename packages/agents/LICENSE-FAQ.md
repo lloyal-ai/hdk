@@ -1,8 +1,7 @@
 # Licensing FAQ
 
-> Canonical version at https://docs.lloyal.ai/licensing/faq.
-> This file is a synced copy. Edit the canonical source and re-run
-> `scripts/sync-license-faq.sh` in lloyal-sdk to update all copies.
+> This file is a synced copy of the licensing FAQ in hdk-docs. Edit it there
+> and re-run `scripts/sync-license-faq.sh` in lloyal-sdk to update all copies.
 
 
 **You can build and sell commercial products using HDK.**

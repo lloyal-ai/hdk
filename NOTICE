@@ -35,5 +35,4 @@ ship NOTICE files crediting transitive native-stack dependencies
 
 For a plain-English explanation of what FSL-1.1-Apache-2.0 means in
 practice — including what commercial uses are permitted and what is
-specifically restricted — see LICENSE-FAQ.md in this repository or the
-canonical version at https://docs.lloyal.ai/licensing/faq.
+specifically restricted — see LICENSE-FAQ.md in this repository.

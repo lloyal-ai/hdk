@@ -76,9 +76,8 @@ trap 'rm -f "$PLAIN_FAQ"' EXIT
 {
   echo "# Licensing FAQ"
   echo ""
-  echo "> Canonical version at https://docs.lloyal.ai/licensing/faq."
-  echo "> This file is a synced copy. Edit the canonical source and re-run"
-  echo "> \`scripts/sync-license-faq.sh\` in lloyal-sdk to update all copies."
+  echo "> This file is a synced copy of the licensing FAQ in hdk-docs. Edit it there"
+  echo "> and re-run \`scripts/sync-license-faq.sh\` in lloyal-sdk to update all copies."
   echo ""
   strip_frontmatter "$CANONICAL"
 } > "$PLAIN_FAQ"

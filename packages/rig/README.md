@@ -221,7 +221,7 @@ bodies with your real backend, keep the schemas, and you're a
 `lloyal publish` away from being installable in any HDK
 harness.
 
-See [docs.lloyal.ai/build-an-app](https://docs.lloyal.ai/build-an-app)
+See [docs.lloyal.ai/abilities](https://docs.lloyal.ai/abilities)
 for the full App protocol contract.
 
 ## Documentation
