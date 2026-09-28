@@ -119,11 +119,9 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     id: 'qwen3.8-27b-q4',
     role: 'llm',
     label: 'Qwen3.8 27B · Q4_K_M',
-    // Upstream only: models.lloyal.ai does not carry these yet (verified 404
-    // while the 4B mirror returns 200). Add the mirror URL when it is seeded,
-    // rather than listing a fallback that cannot serve.
     urls: [
       'https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_M.gguf',
+      'https://models.lloyal.ai/Qwen3.8-27B-UD-Q4_K_M.gguf',
     ],
     sha256: '322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482',
     sizeBytes: 16_464_440_224,
@@ -137,6 +135,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     label: 'Qwen3.8 27B · UD-IQ1_S',
     urls: [
       'https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-IQ1_S.gguf',
+      'https://models.lloyal.ai/Qwen3.8-27B-UD-IQ1_S.gguf',
     ],
     sha256: '3895b6eaa91e705c06ad1938d16c22e86f073c6a67df86260a1da79be3d1f887',
     sizeBytes: 6_192_222_208,
@@ -150,10 +149,11 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     id: 'qwen3.5-4b-mmproj',
     role: 'vision',
     label: 'Qwen3.5 4B vision projector · F16',
-    // Upstream only: models.lloyal.ai does not carry the mmprojs yet — add
-    // the mirror URL when seeded, never a fallback that cannot serve.
+    // Upstream calls BOTH projectors `mmproj-F16.gguf`, in different repositories. The mirror is a
+    // flat bucket, so its key names the model instead — not a mismatch to be tidied away.
     urls: [
       'https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/mmproj-F16.gguf',
+      'https://models.lloyal.ai/mmproj-Qwen3.5-4B-F16.gguf',
     ],
     sha256: 'cd88edcf8d031894960bb0c9c5b9b7e1fea6ebee02b9f7ce925a00d12891f864',
     sizeBytes: 672_423_616,
@@ -164,6 +164,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     label: 'Qwen3.8 27B vision projector · F16',
     urls: [
       'https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.gguf',
+      'https://models.lloyal.ai/mmproj-Qwen3.8-27B-F16.gguf',
     ],
     sha256: 'cbb841a9ee0636b2ec172f5bb8df2ea8dfeb01e90fe7c6126581d662a0b4e43e',
     sizeBytes: 927_607_488,
@@ -186,7 +187,10 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     // The edge default: a tenth of the memory and a quarter of the latency of the 0.6B Qwen encoder, and it
     // orders the long tail more like the reranker (eval/embedding/README.md). Qwen recalls more of the judge's
     // top five and is offered for an appliance-class box.
-    urls: ['https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf'],
+    urls: [
+      'https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf',
+      'https://models.lloyal.ai/nomic-embed-text-v1.5.Q4_K_M.gguf',
+    ],
     sha256: 'd4e388894e09cf3816e8b0896d81d265b55e7a9fff9ab03fe8bf4ef5e11295ac',
     sizeBytes: 84_106_624,
     pooling: 'mean',
@@ -195,9 +199,10 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     id: 'qwen3-embedding-0.6b-q8',
     role: 'embedding',
     label: 'Qwen3 Embedding 0.6B · Q8_0',
-    // Upstream only: models.lloyal.ai does not carry the embedding models yet — add the mirror URL when
-    // seeded, never a fallback that cannot serve.
-    urls: ['https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf'],
+    urls: [
+      'https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf',
+      'https://models.lloyal.ai/Qwen3-Embedding-0.6B-Q8_0.gguf',
+    ],
     sha256: '06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439',
     sizeBytes: 639_150_592,
     pooling: 'last',
