@@ -15,20 +15,20 @@
 #
 # Assumes the following directory layout (same as the working monorepo):
 #   ../hdk-docs/licensing/faq.mdx              <- canonical source
-#   ../liblloyal/LICENSE-FAQ.md                <- sync target
+#   ../lloyal-node/liblloyal/LICENSE-FAQ.md     <- sync target (submodule)
 #   ../lloyal-node/LICENSE-FAQ.md              <- sync target
-#   ./LICENSE-FAQ.md                           <- sync target (lloyal-sdk root)
-#   ./packages/{agents,sdk,rig,abilities/corpus,abilities/web}/LICENSE-FAQ.md  <- sync targets
+#   ./LICENSE-FAQ.md                           <- sync target (HDK root)
+#   ./packages/*/LICENSE-FAQ.md                <- existing FSL package copies
+#   ./packages/abilities/*/LICENSE-FAQ.md      <- existing FSL ability copies
 #
-# packages/channel-verify is NOT synced (Apache 2.0, not FSL — see CONTRIBUTING
-# for the cross-repo licensing policy).
+# Only the FSL package FAQ copies listed below are synced.
 
 set -euo pipefail
 
 # Resolve paths relative to this script's location.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SDK_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-APPS_DIR="$(cd "$SDK_DIR/.." && pwd)"
+HDK_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+APPS_DIR="$(cd "$HDK_DIR/.." && pwd)"
 
 CANONICAL="$APPS_DIR/hdk-docs/licensing/faq.mdx"
 
@@ -39,19 +39,22 @@ if [[ ! -f "$CANONICAL" ]]; then
 fi
 
 # Sync targets — in-repo LICENSE-FAQ.md files for every FSL surface.
-# Note: liblloyal lives as a git submodule inside lloyal-node, not as a
-# standalone repo. The standalone /Users/zuhairnaqvi/dev/apps/liblloyal/
-# directory exists but has broken git internals and is not the canonical
-# working tree. Always target the submodule path.
+# liblloyal is checked out as a git submodule inside the sibling lloyal-node
+# working tree; sync that copy along with the binding's root FAQ.
 TARGETS=(
   "$APPS_DIR/lloyal-node/liblloyal/LICENSE-FAQ.md"
   "$APPS_DIR/lloyal-node/LICENSE-FAQ.md"
-  "$SDK_DIR/LICENSE-FAQ.md"
-  "$SDK_DIR/packages/agents/LICENSE-FAQ.md"
-  "$SDK_DIR/packages/sdk/LICENSE-FAQ.md"
-  "$SDK_DIR/packages/rig/LICENSE-FAQ.md"
-  "$SDK_DIR/packages/abilities/corpus/LICENSE-FAQ.md"
-  "$SDK_DIR/packages/abilities/web/LICENSE-FAQ.md"
+  "$HDK_DIR/LICENSE-FAQ.md"
+  "$HDK_DIR/packages/agents/LICENSE-FAQ.md"
+  "$HDK_DIR/packages/sdk/LICENSE-FAQ.md"
+  "$HDK_DIR/packages/rig/LICENSE-FAQ.md"
+  "$HDK_DIR/packages/binding/LICENSE-FAQ.md"
+  "$HDK_DIR/packages/host/LICENSE-FAQ.md"
+  "$HDK_DIR/packages/media/LICENSE-FAQ.md"
+  "$HDK_DIR/packages/relay/LICENSE-FAQ.md"
+  "$HDK_DIR/packages/abilities/corpus/LICENSE-FAQ.md"
+  "$HDK_DIR/packages/abilities/documents/LICENSE-FAQ.md"
+  "$HDK_DIR/packages/abilities/web/LICENSE-FAQ.md"
 )
 
 # Convert .mdx to .md by stripping leading frontmatter block (--- ... ---).
@@ -78,7 +81,7 @@ trap 'rm -f "$PLAIN_FAQ"' EXIT
   echo ""
   echo "> Canonical version at https://docs.lloyal.ai/licensing/faq."
   echo "> This file is a synced copy. Edit the canonical source and re-run"
-  echo "> \`scripts/sync-license-faq.sh\` in lloyal-sdk to update all copies."
+  echo "> \`scripts/sync-license-faq.sh\` in hdk to update all copies."
   echo ""
   strip_frontmatter "$CANONICAL"
 } > "$PLAIN_FAQ"
