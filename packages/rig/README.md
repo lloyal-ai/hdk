@@ -1,23 +1,16 @@
 # @lloyal-labs/rig
 
-**The App runtime for the [lloyal HDK](https://github.com/lloyal-ai/hdk).**
+**The ability runtime for the [lloyal HDK](https://github.com/lloyal-ai/hdk).**
 
-An App packages a knowledge source, its tools, and a skill prompt into a signed, installable capability. `rig` is everything between a signed bundle and tools live in an agent's context: load, verify, register, configure, authorize, and compose Apps into the shared prompt spine — plus the framework toolset (`report`, `delegate`, `plan`) and the shared reranker every App scores against.
+An ability packages a knowledge source, its tools, and a skill prompt into a signed, installable capability. `rig` is everything between a signed bundle and tools live in an agent's context: load, verify, register, configure, authorize, and compose abilities into the shared prompt spine — plus the framework toolset (`report`, `delegate`, `plan`) and the shared reranker every ability scores against.
 
 ```bash
 npm i @lloyal-labs/rig @lloyal-labs/lloyal-agents @lloyal-labs/lloyal.node
 ```
 
-```typescript
-import { createAppRegistry, loadBundle, renderSpine } from "@lloyal-labs/rig";
+See the [abilities guide](https://docs.lloyal.ai/abilities) for the maintained API reference.
 
-const registry = yield* createAppRegistry();
-const factory = yield* loadBundle("lloyal/corpus");   // fetch + Ed25519-verify from the channel
-const app = yield* registry.enable(factory);
-const spinePrompt = renderSpine({ apps: registry.enabled() });
-```
-
-**[Docs →](https://docs.lloyal.ai)** · **[Build an App →](https://docs.lloyal.ai/build-an-app/what-is-an-app)** · **[lloyal-ai CLI →](https://www.npmjs.com/package/lloyal-ai)**
+**[Docs →](https://docs.lloyal.ai)** · **[Build an ability →](https://docs.lloyal.ai/abilities)** · **[lloyal-ai CLI →](https://www.npmjs.com/package/lloyal-ai)**
 
 ## Why retrieval lives inside generation
 
@@ -57,10 +50,10 @@ An agent that greps with a narrow pattern and gets 0 matches will broaden the pa
 
 Depth scales with `maxTurns`. At 2 turns, agents do single-shot retrieval. At 6 turns, agents do 3–4 rounds of iterative refinement. At 20 turns, agents go deep — following citation chains, cross-referencing claims, building evidence maps. The quality difference is in the later tool call inputs.
 
-## Sources via the HDK 3.0 App protocol
+## Sources via the HDK 3.0 ability protocol
 
 `@lloyal-labs/rig` is the framework layer; concrete `Source` implementations
-ship as separate **apps** under the HDK 3.0 App protocol (RFC §5):
+ship as separate **abilities** under the HDK 3.0 ability protocol (RFC §5):
 
 **`@lloyal-labs/corpus-ability`** — local files with grep, semantic search,
 read_file, and recursive delegation. Agents investigate a knowledge base by
@@ -98,7 +91,7 @@ if (corpusDir) yield* registry.enable(createCorpusAbility);
 yield* registry.enable(createWebAbility);  // keyless search when no tavilyKey is stored
 ```
 
-When multiple apps are enabled, their sources run sequentially — each gets
+When multiple abilities are enabled, their sources run sequentially — each gets
 the full KV budget. After source N completes, its inner branches are pruned
 and KV is freed for source N+1.
 
@@ -157,16 +150,16 @@ Full architectural walkthrough: [RIG Pipeline reference](https://docs.lloyal.ai/
 | `PlanTool`     | Grammar-constrained query decomposition with intent classification           |
 | `DelegateTool` | Generic recursive-delegation tool — agent calls it to spawn a sub-agent pool |
 
-App-scoped tools (`web_search`, `fetch_page`, `search`, `read_file`,
-`grep`) live in their owning app — `@lloyal-labs/web-ability`,
+Ability-scoped tools (`web_search`, `fetch_page`, `search`, `read_file`,
+`grep`) live in their owning ability — `@lloyal-labs/web-ability`,
 `@lloyal-labs/corpus-ability`, and so on — installed via
-`lloyal install lloyal/<name>`. Build your own app with
+`lloyal install lloyal/<name>`. Build your own ability with
 `lloyal ability:new <name>`.
 
 ## Search providers
 
-The `lloyal/web` app ships with two interchangeable `SearchProvider`
-implementations exposed from rig so apps can swap providers without
+The `lloyal/web` ability ships with two interchangeable `SearchProvider`
+implementations exposed from rig so abilities can swap providers without
 vendoring an API client:
 
 | Provider                           | Description                                                       |
@@ -179,7 +172,7 @@ vendoring an API client:
 | Symbol                 | Description                                                                |
 | ---------------------- | -------------------------------------------------------------------------- |
 | `createReranker(path)` | Semantic reranker — runs the cross-encoder GGUF against text batches       |
-| `loadResources(dir)`   | Walk a directory into `Resource[]` for corpus apps                         |
+| `loadResources(dir)`   | Walk a directory into `Resource[]` for corpus abilities                    |
 | `chunkResources(rs)`   | Split resources into `Chunk[]` for tokenization + reranker scoring         |
 
 ### `DelegateTool`
@@ -203,9 +196,9 @@ const delegate = new DelegateTool({
 
 The agent sees `web_research` (or whatever `name` you give it) as a callable tool. Calling it spawns parallel sub-agents that recurse into the corpus or web. The deeper an investigation goes, the richer the attention state at depth — and the cost of inheritance is zero.
 
-## Building your own App
+## Building your own ability
 
-Apps are the HDK 3.0 unit of distribution. An App bundles a
+Abilities are the HDK 3.0 unit of distribution. An ability bundles a
 `Source` + `Tool[]` + `skill.eta` + `ability.json` manifest and gets
 shipped to consumers via the signed channel at `apps.lloyal.ai`.
 
@@ -221,12 +214,12 @@ bodies with your real backend, keep the schemas, and you're a
 `lloyal publish` away from being installable in any HDK
 harness.
 
-See [docs.lloyal.ai/build-an-app](https://docs.lloyal.ai/build-an-app)
-for the full App protocol contract.
+See [docs.lloyal.ai/abilities](https://docs.lloyal.ai/abilities)
+for the full ability protocol contract.
 
 ## Documentation
 
-Full positioning, App protocol, reranker mechanics, and pipeline
+Full positioning, ability protocol, reranker mechanics, and pipeline
 patterns at [docs.lloyal.ai](https://docs.lloyal.ai).
 
 ## License

@@ -1,6 +1,6 @@
 # @lloyal-labs/channel-verify
 
-**The signature primitives for the Lloyal app channel.** Apache-2.0, zero
+**The signature primitives for the Lloyal ability channel.** Apache-2.0, zero
 dependencies, zero native binaries, no I/O.
 
 ```ts
@@ -22,7 +22,7 @@ if (!(await verifyCatalogSignature(parsed, key))) throw new Error('bad signature
 
 ## What it does
 
-The channel's trust chain starts with a **signed catalog** that names every app
+The channel's trust chain starts with a **signed catalog** that names every ability
 and pins each version's `manifestUrl`, `tarballUrl` and `sizeBytes`. Each
 bundle's manifest then carries an Ed25519 signature over the **raw tarball
 bytes**. A client that can reproduce the exact bytes the platform signed for a
@@ -38,10 +38,10 @@ Four copies of this encoding existed — the publish worker (which signs), the
 rig (which verifies in-process), the CLI (which verifies at install time), and
 a test file that mirrored the helper to use as its own oracle. They were
 byte-identical, but nothing enforced it, and a copy that drifts does not fail
-loudly: it makes every published app uninstallable.
+loudly: it makes every published ability uninstallable.
 
 The CLI's copy existed for a real reason this package also resolves. Importing
-the rig pulls in the App runtime, which chain-imports the native
+the rig pulls in the ability runtime, which chain-imports the native
 `@lloyal-labs/lloyal.node`; a CLI that scaffolds projects must not require a
 native binary on the user's platform. This package costs neither side anything —
 no `node:*` imports, so it runs anywhere that provides `crypto.subtle` **and**
@@ -93,7 +93,7 @@ Only provably-identical code lives here. Three things deliberately do not:
 - **Version resolution** — the rig uses node-semver, the CLI hand-rolls a matcher
   to stay dependency-free, and they genuinely disagree on `'*'` against a
   prerelease and on `'>=1.0.0'`. Unifying them would change which version of an
-  app gets installed, which is a decision to take deliberately rather than as a
+  ability gets installed, which is a decision to take deliberately rather than as a
   side effect of de-duplication.
 
 ## License

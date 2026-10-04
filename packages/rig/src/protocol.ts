@@ -185,7 +185,7 @@ export const TASK_ROUTING_KEY = 'ability';
 // ── Distribution channel ─────────────────────────────────
 
 /**
- * Canonical channel endpoint — `apps.lloyal.ai/v1/catalog.json`.
+ * Canonical channel endpoint — `apps.lloyal.ai/v1/abilities/catalog.json`.
  * Framework-vendored compile-time constant; the harness cannot override.
  *
  * The `lloyal install` CLI uses {@link resolveAbilityEntry} to look up
