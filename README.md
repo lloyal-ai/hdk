@@ -307,8 +307,9 @@ The runtime packages — `@lloyal-labs/sdk`, `@lloyal-labs/lloyal-agents`, `@llo
 `@lloyal-labs/media`, `@lloyal-labs/binding`, `@lloyal-labs/host`, `@lloyal-labs/relay`,
 `@lloyal-labs/desktop`, `@lloyal-labs/ui`, `@lloyal-labs/dev-tools`, and the four first-party abilities — are
 Fair Source under FSL-1.1-Apache-2.0 and convert to Apache 2.0 two years after each release.
-`@lloyal-labs/channel-verify` is Apache 2.0 from day one — see its own `LICENSE` file; so is the CLI, which
-lives in [`lloyal-ai/lloyal-ai`](https://github.com/lloyal-ai/lloyal-ai). `channel-verify` is Apache by design:
+`@lloyal-labs/channel-verify` is Apache 2.0 from day one — see its own `LICENSE` file. The CLI is
+[MIT-licensed](https://github.com/lloyal-ai/lloyal-ai/blob/main/LICENSE) and lives in
+[`lloyal-ai/lloyal-ai`](https://github.com/lloyal-ai/lloyal-ai). `channel-verify` is Apache by design:
 it is the public half of an asymmetric signing scheme, so anyone who wants to verify the channel must be free to.
 
 See [`LICENSE-FAQ.md`](./LICENSE-FAQ.md) for concrete examples of what's permitted and what's restricted,
