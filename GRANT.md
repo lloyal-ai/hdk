@@ -29,8 +29,8 @@ Package within another:
   this Grant in its repository
 
 (together, the **"Software"**, matching the License's defined term for each
-package). Packages Lloyal publishes under Apache 2.0 (for example, the
-`lloyal-ai` CLI) carry no use restrictions and need no grant.
+package). Packages Lloyal publishes under MIT or Apache 2.0 (for example,
+the MIT-licensed `lloyal-ai` CLI) carry no use restrictions and need no grant.
 
 ## 2. Definitions
 
