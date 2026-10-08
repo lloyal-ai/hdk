@@ -2,8 +2,8 @@
 
 [![CI](https://github.com/lloyal-ai/hdk/actions/workflows/ci.yml/badge.svg)](https://github.com/lloyal-ai/hdk/actions/workflows/ci.yml)
 [![GPU Tests](https://github.com/lloyal-ai/lloyal.node/actions/workflows/gpu-test.yml/badge.svg)](https://github.com/lloyal-ai/lloyal.node/actions/workflows/gpu-test.yml)
-[![License](https://img.shields.io/badge/license-FSL--1.1--Apache--2.0-blue.svg)](LICENSE)
-[![Commercial Use](https://img.shields.io/badge/commercial%20use-unrestricted-brightgreen.svg)](#why-fsl-instead-of-mit)
+[![License](https://img.shields.io/badge/license-FSL--1.1--MIT-blue.svg)](LICENSE)
+[![Commercial Use](https://img.shields.io/badge/commercial%20use-unrestricted-brightgreen.svg)](#why-fsl-before-mit)
 
 **A harness is a tree of owned lifetimes governing a tree of live inference state.**
 
@@ -288,14 +288,14 @@ against the native runtime on NVIDIA L4 hardware and runs the full agent integra
 - **Learn, reference, guides** → [docs.lloyal.ai](https://docs.lloyal.ai) — start with [Thinking in lloyal](https://docs.lloyal.ai/thinking-in-lloyal)
 - **API reference** — TypeDoc-generated from source
 
-## Why FSL instead of MIT?
+## Why FSL before MIT?
 
 Because abilities reach the model's attention and a runtime on a user's machine has no kill switch, safety is
 the channel: [apps.lloyal.ai](https://apps.lloyal.ai) reviews and Ed25519-signs every ability, and the runtime
 verifies that signature against a trust root compiled in at install ([above](#signed-abilities-are-the-plugins)).
-MIT does not preserve that — a fork could strip the trust root and ship to an unreviewed channel. FSL restricts
-one thing, that fork, to keep the trust root enforceable. It cannot stop a determined bad actor; it keeps
-channel-switching from being the easy path.
+During each version's first two years, FSL and the [Developer Grant](./GRANT.md) restrict competing
+runtimes and general HDK Ability distribution channels. After two years that version becomes available
+under MIT. The grant permits applications, their own plugin systems, and private distribution to their users.
 
 ## License
 
@@ -306,7 +306,9 @@ or alternative HDK Ability distribution channel.
 The runtime packages — `@lloyal-labs/sdk`, `@lloyal-labs/lloyal-agents`, `@lloyal-labs/rig`,
 `@lloyal-labs/media`, `@lloyal-labs/binding`, `@lloyal-labs/host`, `@lloyal-labs/relay`,
 `@lloyal-labs/desktop`, `@lloyal-labs/ui`, `@lloyal-labs/dev-tools`, and the four first-party abilities — are
-Fair Source under FSL-1.1-Apache-2.0 and convert to Apache 2.0 two years after each release.
+Fair Source under FSL-1.1-MIT and become available under MIT two years after each version is first made available.
+Previously published versions keep the licence, future-licence date and grant supplied with them, including
+any Apache 2.0 future licence. See the [licensing FAQ](./LICENSE-FAQ.md).
 `@lloyal-labs/channel-verify` is Apache 2.0 from day one — see its own `LICENSE` file. The CLI is
 [MIT-licensed](https://github.com/lloyal-ai/lloyal-ai/blob/main/LICENSE) and lives in
 [`lloyal-ai/lloyal-ai`](https://github.com/lloyal-ai/lloyal-ai). `channel-verify` is Apache by design:

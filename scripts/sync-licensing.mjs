@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url';
 
 const defaultHdkDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const legalFiles = ['LICENSE', 'GRANT.md', 'LICENSE-FAQ.md'];
-const fslHeader = '# Functional Source License, Version 1.1, Apache 2.0 Future License';
+const fslHeader = '# Functional Source License, Version 1.1, MIT Future License';
+const anyFslHeader = /^(?:#\s*)?Functional Source License\b/m;
 
 function read(path) {
   try {
@@ -46,7 +47,9 @@ export function discoverFslPackages(hdkDir) {
     throw new Error('HDK package.json must declare its workspaces');
   }
   const rootLicense = read(join(hdkDir, 'LICENSE'));
-  if (!rootLicense.startsWith(fslHeader)) throw new Error('HDK LICENSE is not the expected FSL license');
+  if (!rootLicense.startsWith(`${fslHeader}\n`) || !/^FSL-1\.1-MIT$/m.test(rootLicense)) {
+    throw new Error('HDK LICENSE must contain the FSL-1.1-MIT header and abbreviation');
+  }
   const manifests = new Set();
   for (const workspace of root.workspaces) {
     const matches = globSync(`${workspace}/package.json`, { cwd: hdkDir });
@@ -62,8 +65,15 @@ export function discoverFslPackages(hdkDir) {
     const license = read(join(packageDir, 'LICENSE'));
     // The actual license, not a generic SEE LICENSE marker, defines scope.
     // Apache-licensed channel-verify and other independently licensed packages stay out.
-    if (!license.startsWith(fslHeader)) continue;
-    if (manifest.license !== 'SEE LICENSE IN LICENSE' && manifest.license !== 'FSL-1.1-Apache-2.0') {
+    // Recognize every FSL variant before checking identity. An old Apache-future
+    // package must fail the migration check rather than silently leave its scope.
+    if (!anyFslHeader.test(license)) {
+      if (typeof manifest.license === 'string' && manifest.license.startsWith('FSL-')) {
+        throw new Error(`${manifestPath} declares ${manifest.license} but has no FSL LICENSE`);
+      }
+      continue;
+    }
+    if (manifest.license !== 'SEE LICENSE IN LICENSE' && manifest.license !== 'FSL-1.1-MIT') {
       throw new Error(`${manifestPath} declares ${manifest.license} but contains an FSL LICENSE`);
     }
     if (license !== rootLicense) {
@@ -80,6 +90,21 @@ export function discoverFslPackages(hdkDir) {
   return packages;
 }
 
+function validateDocsTemplate(docsDir, rootLicense) {
+  const path = join(docsDir, 'licensing', 'fsl-template.md');
+  const template = read(path);
+  const body = /^## Template\n[\s\S]*?^---\n([\s\S]*?)^---(?:\n|$)/m.exec(template)?.[1];
+  const notice = /^Copyright [^\n]+$/m.exec(rootLicense)?.[0];
+  if (!body || !notice || !/^Copyright \\<Year> \\<Licensor>$/m.test(body)) {
+    throw new Error(`${path} must contain a delimited license template with the copyright parameters`);
+  }
+  const instantiated = body.replace(/^\n+/, '').replace(/\n*$/, '\n')
+    .replace(/^Copyright \\<Year> \\<Licensor>$/m, notice);
+  if (instantiated !== rootLicense) {
+    throw new Error(`${path} differs from HDK LICENSE after substituting copyright parameters`);
+  }
+}
+
 export function syncLicensing({ hdkDir = defaultHdkDir, docsDir, nativeDir, kernelDir, check = false } = {}) {
   hdkDir = resolve(hdkDir);
   const external = [docsDir, nativeDir, kernelDir];
@@ -88,6 +113,7 @@ export function syncLicensing({ hdkDir = defaultHdkDir, docsDir, nativeDir, kern
     throw new Error('Cross-repository sync requires --docs-dir, --native-dir and --kernel-dir together');
   }
   const packageDirs = discoverFslPackages(hdkDir);
+  const rootLicense = read(join(hdkDir, 'LICENSE'));
   const grant = read(join(hdkDir, 'GRANT.md'));
   if (!grant.trim()) throw new Error('Canonical GRANT.md is empty');
   let faq;
@@ -101,10 +127,11 @@ export function syncLicensing({ hdkDir = defaultHdkDir, docsDir, nativeDir, kern
       throw new Error('HDK, docs, native and kernel directories must be distinct');
     }
     for (const directory of [nativeDir, kernelDir]) {
-      if (!read(join(directory, 'LICENSE')).startsWith(fslHeader)) {
-        throw new Error(`${directory}/LICENSE is not the expected FSL license`);
+      if (read(join(directory, 'LICENSE')) !== rootLicense) {
+        throw new Error(`${directory}/LICENSE differs from HDK LICENSE; review it before synchronizing`);
       }
     }
+    validateDocsTemplate(docsDir, rootLicense);
     faq = renderFaq(read(join(docsDir, 'licensing', 'faq.md')));
     destinations.push(nativeDir, kernelDir);
   } else {

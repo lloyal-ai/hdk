@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { renderFaq, syncLicensing } from './sync-licensing.mjs';
 
-const fsl = '# Functional Source License, Version 1.1, Apache 2.0 Future License\n\nFixture license, never rewritten.\n';
+const fsl = '# Functional Source License, Version 1.1, MIT Future License\n\n## Abbreviation\n\nFSL-1.1-MIT\n\n## Notice\n\nCopyright 2026 Fixture\n\nFixture license, never rewritten.\n';
 const grant = '# Developer Grant\n\nFixture grant.\n';
 const faq = '# Licensing FAQ\n\nFixture FAQ.\n';
 const legalFiles = ['dist/', 'LICENSE', 'GRANT.md', 'LICENSE-FAQ.md'];
@@ -38,6 +38,9 @@ function fixture(t) {
     const kernelDir = join(directory, 'liblloyal');
     mkdirSync(join(docsDir, 'licensing'), { recursive: true });
     write(join(docsDir, 'licensing', 'faq.md'), '---\ntitle: Licensing FAQ\n---\n\nCanonical FAQ.\n');
+    write(join(docsDir, 'licensing', 'fsl-template.md'), '## Template\n\n---\n\n'
+      + fsl.replace('Copyright 2026 Fixture', 'Copyright \\<Year> \\<Licensor>')
+      + '\n---\n\nMaintainer notes.\n');
     for (const destination of [nativeDir, kernelDir]) {
       mkdirSync(destination);
       write(join(destination, 'LICENSE'), fsl);
@@ -104,6 +107,24 @@ test('changed FSL terms require review rather than being overwritten', t => {
   assert.equal(existsSync(join(runtime, 'GRANT.md')), false);
 });
 
+test('an old FSL variant cannot silently leave the package sync scope', t => {
+  const { hdkDir, runtime, addPackage } = fixture(t);
+  addPackage('current-runtime', fsl, 'FSL-1.1-MIT');
+  const oldFsl = fsl.replace('MIT Future License', 'Apache 2.0 Future License')
+    .replace('FSL-1.1-MIT', 'FSL-1.1-Apache-2.0');
+  write(join(runtime, 'LICENSE'), oldFsl);
+  assert.throws(() => syncLicensing({ hdkDir }), /differs from HDK LICENSE/);
+  assert.equal(read(join(runtime, 'LICENSE')), oldFsl);
+  assert.equal(existsSync(join(runtime, 'GRANT.md')), false);
+});
+
+test('the canonical license must identify the MIT future variant', t => {
+  const { hdkDir, runtime } = fixture(t);
+  write(join(hdkDir, 'LICENSE'), fsl.replace('FSL-1.1-MIT', 'FSL-1.1-Apache-2.0'));
+  assert.throws(() => syncLicensing({ hdkDir }), /FSL-1\.1-MIT header and abbreviation/);
+  assert.equal(existsSync(join(runtime, 'GRANT.md')), false);
+});
+
 test('manifest cannot mislabel a package that has an FSL LICENSE', t => {
   const { hdkDir, runtime } = fixture(t);
   const path = join(runtime, 'package.json');
@@ -134,6 +155,34 @@ test('full sync generates FAQ from docs and updates every root and workspace', t
   write(join(paths.docsDir, 'licensing', 'faq.md'), source + '\nUpdated FAQ.\n');
   assert.throws(() => syncLicensing({ hdkDir, ...paths, check: true }), /Licensing copies are missing or out of date/);
   assert.equal(read(join(hdkDir, 'LICENSE-FAQ.md')), expectedFaq);
+});
+
+test('native and kernel license drift fails before any FAQ or grant write', t => {
+  const { hdkDir, runtime, external } = fixture(t);
+  const paths = external();
+  for (const target of [paths.nativeDir, paths.kernelDir]) {
+    // A matching header cannot conceal changed operative terms.
+    write(join(target, 'LICENSE'), fsl + '\nDifferent future terms.\n');
+    assert.throws(() => syncLicensing({ hdkDir, ...paths }), /differs from HDK LICENSE/);
+    assert.equal(read(join(hdkDir, 'LICENSE-FAQ.md')), faq);
+    for (const destination of [runtime, paths.nativeDir, paths.kernelDir]) {
+      assert.equal(existsSync(join(destination, 'GRANT.md')), false);
+    }
+    assert.equal(read(join(target, 'LICENSE')), fsl + '\nDifferent future terms.\n');
+    write(join(target, 'LICENSE'), fsl);
+  }
+});
+
+test('the docs template cannot drift from the shipped license', t => {
+  const { hdkDir, runtime, external } = fixture(t);
+  const paths = external();
+  const path = join(paths.docsDir, 'licensing', 'fsl-template.md');
+  write(path, read(path).replace('MIT Future License', 'Apache 2.0 Future License'));
+  assert.throws(() => syncLicensing({ hdkDir, ...paths }), /differs from HDK LICENSE after substituting copyright/);
+  assert.equal(read(join(hdkDir, 'LICENSE-FAQ.md')), faq);
+  assert.equal(existsSync(join(runtime, 'GRANT.md')), false);
+  write(path, 'No license template.\n');
+  assert.throws(() => syncLicensing({ hdkDir, ...paths }), /must contain a delimited license template/);
 });
 
 test('a malformed canonical FAQ cannot leave a partially updated stack', t => {
