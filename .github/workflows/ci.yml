@@ -9,6 +9,16 @@ on:
     branches: [main, 'feat/**']
 
 jobs:
+  licensing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm run license:test
+      - run: npm run license:check
+
   build:
     runs-on: ubuntu-latest
     steps:

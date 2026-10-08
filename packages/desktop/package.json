@@ -53,6 +53,8 @@
   },
   "files": [
     "dist/",
-    "LICENSE"
+    "LICENSE",
+    "GRANT.md",
+    "LICENSE-FAQ.md"
   ]
 }

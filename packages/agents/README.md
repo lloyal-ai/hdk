@@ -84,4 +84,4 @@ Full reference at [hdk.lloyal.ai/reference](https://hdk.lloyal.ai/reference); po
 
 ## License
 
-See [LICENSE](./LICENSE) (Functional Source License 1.1 — Apache 2.0 Future License) and the [licensing FAQ](./LICENSE-FAQ.md).
+See [LICENSE](./LICENSE) (Functional Source License 1.1 — MIT Future License) and the [licensing FAQ](./LICENSE-FAQ.md).

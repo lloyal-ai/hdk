@@ -224,4 +224,4 @@ patterns at [docs.lloyal.ai](https://docs.lloyal.ai).
 
 ## License
 
-See [LICENSE](./LICENSE) (Functional Source License 1.1 — Apache 2.0 Future License).
+See [LICENSE](./LICENSE) (Functional Source License 1.1 — MIT Future License).

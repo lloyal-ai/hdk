@@ -49,6 +49,7 @@
     "dist/",
     "README.md",
     "LICENSE",
+    "GRANT.md",
     "LICENSE-FAQ.md"
   ],
   "devDependencies": {

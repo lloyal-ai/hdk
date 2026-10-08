@@ -44,7 +44,9 @@
   "license": "SEE LICENSE IN LICENSE",
   "files": [
     "dist/",
-    "LICENSE"
+    "LICENSE",
+    "GRANT.md",
+    "LICENSE-FAQ.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json"

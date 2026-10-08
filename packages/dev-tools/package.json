@@ -45,6 +45,8 @@
   "files": [
     "dist/",
     "LICENSE",
+    "GRANT.md",
+    "LICENSE-FAQ.md",
     "README.md"
   ],
   "scripts": {
