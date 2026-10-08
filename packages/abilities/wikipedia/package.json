@@ -21,7 +21,9 @@
     "ability.json",
     "skill.eta",
     "attention-surface.json",
-    "LICENSE"
+    "LICENSE",
+    "GRANT.md",
+    "LICENSE-FAQ.md"
   ],
   "scripts": {
     "build": "tsc -b"

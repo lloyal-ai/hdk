@@ -22,6 +22,7 @@
     "skill.eta",
     "attention-surface.json",
     "LICENSE",
+    "GRANT.md",
     "LICENSE-FAQ.md"
   ],
   "scripts": {

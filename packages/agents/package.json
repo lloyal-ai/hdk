@@ -42,6 +42,7 @@
   "files": [
     "dist/",
     "LICENSE",
+    "GRANT.md",
     "LICENSE-FAQ.md",
     "docs/"
   ]
