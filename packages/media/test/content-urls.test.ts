@@ -5,14 +5,24 @@
  * grammar the documents ability emits resolves only against digests the view
  * already holds, exactly one of them.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
-  configUrl, ingressUrl, manifestUrl, parseAttachmentHref, representationUrl, resolvePrefix, sourceUrl,
+  configUrl, ingestMedia, ingressUrl, manifestUrl, parseAttachmentHref, representationUrl, resolvePrefix, sourceUrl,
 } from '../src/content-urls';
 
 const DIGEST = 'sha256:' + 'a1b2c3d4e5f6'.padEnd(64, '0');
 
 describe('content urls', () => {
+  it('passes cancellation to the existing upload request', async () => {
+    const controller = new AbortController();
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}'));
+    try {
+      await ingestMedia('', new Uint8Array([1, 2]), { signal: controller.signal });
+      expect(fetch.mock.calls[0][1]?.signal).toBe(controller.signal);
+    } finally {
+      fetch.mockRestore();
+    }
+  });
   it('every door derives from one origin and matches the route grammar', () => {
     const origin = 'http://host:8787';
     expect(ingressUrl(origin)).toBe('http://host:8787/v1/media/ingress');

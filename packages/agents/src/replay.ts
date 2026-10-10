@@ -338,7 +338,7 @@ export function* runReplay(branch: Branch, steps: readonly ReplayStep[]): Operat
   const store = yield* Store.expect();
   for (const step of steps) {
     if (step.kind === 'tokens') yield* prefill(store, [[branch, step.tokens]]);
-    else yield* prefillBranchMultimodal(branch, step.delta.prompt, step.delta.bitmaps, step.delta.sep);
+    else yield* prefillBranchMultimodal(branch, step.delta.prompt, step.delta.bitmaps, step.delta.sep, step.delta.audioLimits);
   }
 }
 

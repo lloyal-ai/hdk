@@ -7,6 +7,21 @@
   "description": "Backend-agnostic TypeScript SDK for the lloyal inference platform",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.js"
+    },
+    "./dist/*": "./dist/*",
+    "./package.json": "./package.json"
+  },
+  "typesVersions": {
+    "*": { "node": ["dist/node.d.ts"] }
+  },
   "publishConfig": {
     "access": "public"
   },
@@ -30,7 +45,9 @@
   "license": "SEE LICENSE IN LICENSE",
   "type": "commonjs",
   "scripts": {
-    "build": "tsc -b"
+    "build": "tsc -b",
+    "test:audio": "tsx --test test/audio-integration.ts",
+    "test:images": "tsx --test test/image-integration.ts"
   },
   "files": [
     "dist/",
@@ -39,5 +56,11 @@
   ],
   "devDependencies": {
     "@lloyal-labs/lloyal.node": "^3.2.0"
+  },
+  "peerDependencies": {
+    "@lloyal-labs/lloyal.node": "^3.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@lloyal-labs/lloyal.node": { "optional": true }
   }
 }

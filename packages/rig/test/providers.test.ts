@@ -27,7 +27,7 @@ describe('the provider table', () => {
 
   it('every row names what it acquires, in a reader\'s words — the install\'s step label is made of it', () => {
     expect(Object.fromEntries(Object.entries(providers).map(([k, row]) => [k, row.name]))).toEqual({
-      reranker: 'reranker', vision: 'vision projector', embedding: 'embedding model',
+      reranker: 'reranker', vision: 'vision projector', embedding: 'embedding model', transcription: 'transcription model',
     });
   });
 

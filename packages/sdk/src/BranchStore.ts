@@ -1,5 +1,5 @@
 import type { Branch } from './Branch';
-import type { SessionContext, MultimodalPrefillResult } from './types';
+import type { SessionContext, MultimodalPrefillResult, MultimodalInput, AudioLimits } from './types';
 import type { MultimodalDelta } from './deltas';
 
 /**
@@ -166,15 +166,17 @@ export class BranchStore {
     const handles: number[] = [];
     const sepTokens: number[][] = [];
     const prompts: string[] = [];
-    const bitmaps: Uint8Array[][] = [];
+    const inputs: MultimodalInput[][] = [];
+    const audioLimits: Array<AudioLimits | undefined> = [];
     for (const [branch, delta] of entries) {
       if (branch.disposed) throw new Error('BranchStore.prefillMultimodal: branch is disposed');
       handles.push(branch.handle);
       sepTokens.push(delta.sep);
       prompts.push(delta.prompt);
-      bitmaps.push(delta.bitmaps);
+      inputs.push(delta.bitmaps);
+      audioLimits.push(delta.audioLimits);
     }
-    const results = await this._ctx._storePrefillMultimodal(handles, sepTokens, prompts, bitmaps);
+    const results = await this._ctx._storePrefillMultimodal(handles, sepTokens, prompts, inputs, audioLimits);
     // A landed entry ended its branch's text stream; a failed one is pruned
     // by the caller, tail and all.
     results.forEach((r, i) => { if (!r.error) entries[i][0]._endTail(); });

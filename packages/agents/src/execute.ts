@@ -1,6 +1,6 @@
 import { call, ensure, spawn, scoped, action } from 'effection';
 import type { Operation, Task, Signal, Queue } from 'effection';
-import type { Branch, BranchStore, SessionContext, ParsedToolCall, MultimodalDelta } from '@lloyal-labs/sdk';
+import type { Branch, BranchStore, SessionContext, ParsedToolCall, MultimodalDelta, MultimodalInput, AudioLimits } from '@lloyal-labs/sdk';
 import {
   CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, GrammarTriggerType,
   buildToolResultDelta, buildToolResultDeltaMultimodal, decodeErrorOf, deltaCells,
@@ -60,8 +60,8 @@ export function* prefillBranch(branch: Branch, tokens: number[]): Operation<void
   yield* waitUntilSettled(branch.prefill(tokens));
 }
 
-export function* prefillBranchMultimodal(branch: Branch, prompt: string, bitmaps: Uint8Array[], sep?: number[]) {
-  return yield* waitUntilSettled(branch.prefillMultimodal(prompt, bitmaps, sep));
+export function* prefillBranchMultimodal(branch: Branch, prompt: string, inputs: MultimodalInput[], sep?: number[], audioLimits?: AudioLimits) {
+  return yield* waitUntilSettled(branch.prefillMultimodal(prompt, inputs, sep, audioLimits));
 }
 
 /** The cells a multimodal delta will cost — measured, never estimated. */

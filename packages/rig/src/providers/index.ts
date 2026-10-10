@@ -14,12 +14,13 @@
 import type { Operation } from 'effection';
 import type { ContextOptions } from '@lloyal-labs/sdk';
 import type { ModelFamily } from '../config';
-import type { ModelSpec } from '../models';
+import type { ModelRole, ModelSpec } from '../models';
 import type { Service, ServiceMap, Trunk } from '../services';
 import { catalogEntry } from '../models';
 import type { EmbeddingPooling } from '../retrieval';
 import { createReranker } from './reranker';
 import { createEmbedder } from './embedding';
+import { createTranscriber } from './transcription';
 
 /** A service's block as the layering resolved it — its selection and its tuning, typed from `modelSettings`. */
 export type ModelBlock<K extends Service> = NonNullable<ModelFamily[K]>;
@@ -34,7 +35,13 @@ export interface ProviderRow<K extends Service> {
   derive?(of: { llm: { id?: string; path?: string } }): ModelSpec | undefined;
   /** Bind the artifact — the model file in the service's slot — as the instance `service(name)` answers. A
    *  `resource()`: the instance lives as long as the scope that bound it. */
-  bind?(artifact: string, block: ModelBlock<K>): Operation<ServiceMap[K]>;
+  bind?(artifact: string, block: ModelBlock<K>, projector?: string): Operation<ServiceMap[K]>;
+  /** A companion projector acquired through the same verified model resolver. */
+  projector?: {
+    role: Exclude<ModelRole, 'llm' | Service>;
+    name: string;
+    select(block: ModelBlock<K>): ModelSpec;
+  };
   /** The options the artifact contributes to the resident context — for a service that is a capability of the
    *  trunk. `service(name)` then answers the {@link Trunk} marker. */
   trunk?: ServiceMap[K] extends Trunk ? (artifact: string, block: ModelBlock<K>) => Partial<ContextOptions> : never;
@@ -44,6 +51,14 @@ export interface ProviderRow<K extends Service> {
 }
 
 export const providers: { [K in Service]: ProviderRow<K> } = {
+  transcription: {
+    name: 'transcription model',
+    projector: { role: 'transcription.projector', name: 'audio projector', select: transcriptionProjector },
+    bind: (artifact, block, projector) => {
+      if (!projector) throw new Error('transcription requires its audio projector');
+      return createTranscriber(artifact, projector, block);
+    },
+  },
   reranker: {
     name: 'reranker',
     bind: (artifact, block) => createReranker(artifact, { nCtx: block.context, instruction: block.instruction }),
@@ -73,6 +88,20 @@ export const providers: { [K in Service]: ProviderRow<K> } = {
     },
   },
 };
+
+function transcriptionProjector(block: ModelBlock<'transcription'>): ModelSpec {
+  const explicit = block.projector;
+  if (explicit?.path) return { path: explicit.path };
+  const paired = block.path || !block.id ? undefined : catalogEntry('transcription', block.id)?.projector;
+  if (explicit?.id) {
+    if (!catalogEntry('transcription.projector', explicit.id) || (paired && paired !== explicit.id)) {
+      throw new Error('model.transcription.projector.id does not name a compatible audio projector; use a matching catalog pair or explicit local paths');
+    }
+    return { id: explicit.id };
+  }
+  if (paired) return { id: paired };
+  throw new Error('set model.transcription.projector.id or model.transcription.projector.path; no audio projector follows from this decoder');
+}
 
 const UNKNOWN_POOLING = '`model.embedding` names a model whose pooling the catalog does not know — set `model.embedding.pooling` (mean, cls or last) in harness.yml';
 

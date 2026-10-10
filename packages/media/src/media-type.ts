@@ -14,7 +14,8 @@
  * validating pixels belongs to the normalizer that runs before ingress, and to
  * the decoder, both of which fail with a better message than this could.
  */
-const SIGNATURES: ReadonlyArray<{ mediaType: string; magic: readonly number[] }> = [
+const SIGNATURES: ReadonlyArray<{ mediaType: string; magic: readonly number[]; at?: { offset: number; magic: readonly number[] } }> = [
+  { mediaType: 'audio/wav', magic: [0x52, 0x49, 0x46, 0x46], at: { offset: 8, magic: [0x57, 0x41, 0x56, 0x45] } },
   { mediaType: 'image/jpeg', magic: [0xff, 0xd8, 0xff] },
   { mediaType: 'image/png', magic: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] },
   { mediaType: 'image/gif', magic: [0x47, 0x49, 0x46, 0x38] },
@@ -36,7 +37,8 @@ const SIGNATURES: ReadonlyArray<{ mediaType: string; magic: readonly number[] }>
 export const UNKNOWN_MEDIA_TYPE = 'application/octet-stream';
 
 export function sniffMediaType(bytes: Uint8Array): string {
-  return SIGNATURES.find(s => s.magic.every((b, i) => bytes[i] === b))?.mediaType
+  const matches = (magic: readonly number[], offset = 0): boolean => magic.every((b, i) => bytes[offset + i] === b);
+  return SIGNATURES.find(s => matches(s.magic) && (!s.at || matches(s.at.magic, s.at.offset)))?.mediaType
     ?? UNKNOWN_MEDIA_TYPE;
 }
 

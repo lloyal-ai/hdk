@@ -15,6 +15,8 @@ import { createImageIngress } from './image';
 import type { NormalizeOpts } from './image';
 import { createDocumentIngress } from './pdf';
 import type { DocumentOpts } from './pdf';
+import { createAudioIngress } from './audio-ingress';
+import type { AudioIngressOptions } from './audio-ingress';
 
 /**
  * How long a host should allow an upload that may be a document, end to end:
@@ -31,15 +33,15 @@ export const DOCUMENT_UPLOAD_TIMEOUT_MS = 180_000;
  */
 export function createContentIngress(
   store: AttachmentStore,
-  opts: { image?: NormalizeOpts; document?: DocumentOpts } = {},
+  opts: { image?: NormalizeOpts; document?: DocumentOpts; audio?: AudioIngressOptions } = {},
 ): ContentIngress {
   const image = createImageIngress(store, opts.image);
   const document = createDocumentIngress(store, opts.document);
+  const audio = createAudioIngress(store, opts.audio);
+  const formats: Record<string, ContentIngress> = { 'application/pdf': document, 'audio/wav': audio };
   return {
     ingest(bytes: Uint8Array, signal?: AbortSignal) {
-      return sniffMediaType(bytes) === 'application/pdf'
-        ? document.ingest(bytes, signal)
-        : image.ingest(bytes, signal);
+      return (formats[sniffMediaType(bytes)] ?? image).ingest(bytes, signal);
     },
   };
 }

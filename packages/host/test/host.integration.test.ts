@@ -27,7 +27,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { run, sleep, suspend, call, createSignal, type Operation } from "effection";
-import { createContext } from "@lloyal-labs/lloyal.node";
+import { createContext } from "@lloyal-labs/sdk/node";
 import { Branch } from "@lloyal-labs/sdk";
 import type { SessionContext } from "@lloyal-labs/sdk";
 import { createBus } from "@lloyal-labs/binding";
