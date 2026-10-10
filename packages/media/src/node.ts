@@ -13,6 +13,8 @@ export { createImageIngress, DEFAULT_MAX_PIXELS, normalizeImage } from './image'
 export type { NormalizedImage, NormalizeImage, NormalizeOpts } from './image';
 
 export { FileAttachmentStore } from './file-store';
+export { createAudioIngress } from './audio-ingress';
+export type { AudioIngressOptions } from './audio-ingress';
 
 // The document codec and the dispatching ingress. `@embedpdf/pdfium` is an
 // OPTIONAL peer like sharp: required at call time, never at import.

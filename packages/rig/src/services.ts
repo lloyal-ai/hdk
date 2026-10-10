@@ -17,6 +17,7 @@
 import { createContext } from 'effection';
 import type { Operation } from 'effection';
 import type { Embedder, Reranker } from './retrieval';
+import type { Transcriber } from './transcription';
 
 export interface ServiceMap {
   /** The pointwise judge the abilities score with. */
@@ -26,6 +27,7 @@ export interface ServiceMap {
   vision: Trunk;
   /** The encoder a harness indexes with, one vector per text. */
   embedding: Embedder;
+  transcription: Transcriber;
 }
 
 /** A service that is a capability of the trunk rather than an instance of its own: the artifact the platform put
@@ -38,7 +40,7 @@ export interface Trunk {
 export type Service = keyof ServiceMap;
 
 /** The names, as a runtime list, for what parses a manifest. Exhaustive against {@link ServiceMap}. */
-export const SERVICES = ['reranker', 'vision', 'embedding'] as const satisfies readonly Service[];
+export const SERVICES = ['reranker', 'vision', 'embedding', 'transcription'] as const satisfies readonly Service[];
 const _everyServiceNamed: Exclude<Service, (typeof SERVICES)[number]> extends never ? true : never = true;
 void _everyServiceNamed;
 

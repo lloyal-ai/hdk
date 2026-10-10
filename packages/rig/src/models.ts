@@ -21,12 +21,14 @@ import { createHash, randomBytes } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { Service } from './services';
+import type { modelSettings } from './config';
 import type { EmbeddingPooling } from './retrieval';
 import type { MachineClass } from './machine';
 
 /** The model roles a harness provisions — the slot `models/<role>/` each is kept in: the reasoning model, and
  *  every service by its name. */
-export type ModelRole = 'llm' | Service;
+type SelectionRole<K> = K extends `model.${infer Role}.id` ? Role : never;
+export type ModelRole = SelectionRole<keyof typeof modelSettings>;
 
 /**
  * A curated default model. `sha256` is the platform trust root — every catalog
@@ -56,6 +58,8 @@ export interface ModelCatalogEntry {
   /** Embedding entries only: how this model pools its token states — the model's own property, so the
    *  provider never has to guess and a `path:` model has to say. */
   pooling?: EmbeddingPooling;
+  /** The audio projector paired with a transcription decoder. */
+  projector?: string;
 }
 
 const USER_AGENT = '@lloyal-labs/rig model-fetch';
@@ -101,6 +105,18 @@ export function isModelPresent(projectRoot: string, role: ModelRole, id: string)
  * `models/<role>/<id>.gguf`.
  */
 export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
+  {
+    id: 'qwen3-asr-0.6b-q8', role: 'transcription', label: 'Qwen3-ASR 0.6B · Q8_0',
+    urls: ['https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/928ab958557df9aa2ef1c93e0e83c7ad0933fae2/Qwen3-ASR-0.6B-Q8_0.gguf'],
+    sha256: 'bca259818b50ca7c4c05e9bdb35a5dc04fa039653a6d6f3f0f331f96f6aa1971',
+    sizeBytes: 804_749_248, recommendedContext: 4096, projector: 'qwen3-asr-0.6b-mmproj-q8',
+  },
+  {
+    id: 'qwen3-asr-0.6b-mmproj-q8', role: 'transcription.projector', label: 'Qwen3-ASR 0.6B audio projector · Q8_0',
+    urls: ['https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/928ab958557df9aa2ef1c93e0e83c7ad0933fae2/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf'],
+    sha256: '41a342b5e4c514e968cb756de6cd1b7be39eff43c44c57a2ef5fc6522e36603d',
+    sizeBytes: 214_392_480,
+  },
   {
     id: 'qwen3.5-4b',
     role: 'llm',

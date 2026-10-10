@@ -27,3 +27,7 @@ export { resolveAsset, useAssets, pageFacts, pageList } from './assets.js';
 export type { Asset } from './assets.js';
 export * from './fold.js';
 export * from './prose.js';
+export { RecordingWaveform } from './recording-waveform.js';
+export type { RecordingWaveformProps } from './recording-waveform.js';
+export { VoiceInput } from './voice-input.js';
+export type { VoiceInputProps } from './voice-input.js';

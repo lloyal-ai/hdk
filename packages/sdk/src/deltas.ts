@@ -1,10 +1,10 @@
-import type { SessionContext } from './types';
+import type { SessionContext, MultimodalInput, AudioLimits } from './types';
 
 /**
- * The media marker — one per image in a prompt
+ * The media marker — one per media input in a prompt
  *
  * mtmd's literal placeholder: the native tokenizer splits the templated
- * prompt on this marker and replaces each occurrence with that image's
+ * prompt on this marker and replaces each occurrence with that input's
  * encoded rows. Injected as a `media_marker` content part (the chat
  * layer's native part type — never spliced into a content string).
  *
@@ -15,36 +15,36 @@ export const MEDIA_MARKER = '<__media__>';
 /** Defang a literal media marker in model-visible text. The native layer
  *  splits the rendered prompt on EVERY literal occurrence, so text that
  *  happens to contain the marker would desynchronize markers and bitmaps —
- *  more markers than images fails the prefill; an off-by-one mispairs them.
+ *  more markers than inputs fails the prefill; an off-by-one mispairs them.
  *  Applied wherever text enters a multimodal prompt. */
 const defangMarker = (text: string): string => text.split(MEDIA_MARKER).join('<media>');
 
 /**
- * Chat content carrying one media marker per image
+ * Chat content carrying one media marker per input
  *
  * The ONE place `media_marker` parts are emitted. Every ingress — a user turn,
  * a spine header, a tool result — renders its text through this, so the marker
  * grammar cannot drift between them.
  *
- * Returns the bare string when there are no images, so a caller can route text
+ * Returns the bare string when there are no inputs, so a caller can route text
  * and multimodal content through the same expression without branching.
  *
  * Structured parts, never string splicing: `media_marker` is the chat layer's
  * native part type, and the part-joiner owns newline hygiene around markers.
  *
  * @param text - The message text the markers follow
- * @param images - One marker is emitted per entry; bytes are not read here
+ * @param inputs - One marker is emitted per entry; bytes are not read here
  *
  * @category Agents
  */
 export function mediaContent(
   text: string,
-  images: readonly Uint8Array[],
+  inputs: readonly MultimodalInput[],
 ): string | Array<{ type: string; text: string }> {
-  if (images.length === 0) return text;
+  if (inputs.length === 0) return text;
   return [
     { type: 'text', text: defangMarker(text) },
-    ...images.map(() => ({ type: 'media_marker', text: MEDIA_MARKER })),
+    ...inputs.map(() => ({ type: 'media_marker', text: MEDIA_MARKER })),
   ];
 }
 
@@ -54,17 +54,50 @@ export function mediaContent(
  * Token deltas end at `number[]` because JS owns tokenization on the text
  * path. On the multimodal path mtmd owns tokenization, so the delta stops
  * at the string stage: sep tokens + the templated prompt (markers embedded)
- * + the image bytes, ready for {@link Branch.prefillMultimodal}.
+ * + the media bytes, ready for {@link Branch.prefillMultimodal}.
  *
  * @category Agents
  */
 export interface MultimodalDelta {
   /** Turn separator tokens (decoded ahead of the prompt) */
   sep: number[];
-  /** Templated prompt containing one {@link MEDIA_MARKER} per image */
+  /** Templated prompt containing one {@link MEDIA_MARKER} per input */
   prompt: string;
-  /** Encoded image bytes in a format the projector decodes, one per marker, in order */
-  bitmaps: Uint8Array[];
+  /** Owned media bytes in marker order. Bare byte arrays retain image semantics. */
+  bitmaps: MultimodalInput[];
+  /** Required for audio; used unchanged by measurement and prefill. */
+  audioLimits?: AudioLimits;
+}
+
+/** Own both bytes and descriptors so caller mutations cannot change admitted content. */
+const snapshotInput = (input: MultimodalInput): MultimodalInput => input instanceof Uint8Array
+  ? snapshotBytes(input)
+  : { kind: input.kind, bytes: snapshotBytes(input.bytes) };
+
+function snapshotBytes(bytes: Uint8Array): Uint8Array {
+  if (!(bytes instanceof Uint8Array)) throw new TypeError('Media bytes must be a Uint8Array or Buffer');
+  return new Uint8Array(bytes);
+}
+
+function multimodalDelta(sep: number[], prompt: string, inputs: readonly MultimodalInput[], audioLimits?: AudioLimits): MultimodalDelta {
+  // Bound the owned copy here; decoded-sample admission remains native.
+  const audioBytes = inputs.flatMap(input => input instanceof Uint8Array || input.kind !== 'audio' ? [] : [input.bytes]);
+  if (audioBytes.length > 0) {
+    if (!audioLimits || !Number.isSafeInteger(audioLimits.maxBytes) || audioLimits.maxBytes <= 0) {
+      throw new RangeError('Audio requires a positive safe-integer byte limit');
+    }
+    const bytes = audioBytes.reduce((sum, recording) => sum + recording.byteLength, 0);
+    if (bytes > audioLimits.maxBytes) throw new RangeError('Audio exceeds the aggregate byte limit');
+  }
+  return {
+    sep, prompt, bitmaps: inputs.map(snapshotInput),
+    ...(audioLimits ? { audioLimits: { ...audioLimits } } : {}),
+  };
+}
+
+export interface MultimodalDeltaOpts extends DeltaOpts {
+  /** Aggregate audio admission budgets for this prompt. */
+  audioLimits?: AudioLimits;
 }
 
 /**
@@ -134,17 +167,17 @@ export function buildUserDelta(
 }
 
 /**
- * Build a multimodal delta for a user turn with images
+ * Build a multimodal delta for a user turn with media
  *
  * The multimodal counterpart of {@link buildUserDelta}: same composition,
  * same options, but the user content carries one `media_marker` part per
- * image and the delta stops at the string stage (mtmd owns tokenization —
+ * input and the delta stops at the string stage (mtmd owns tokenization —
  * tokenizing the prompt here would double-tokenize).
  *
  * @param ctx - Active session context (created with `mmprojPath`)
  * @param content - User message text
- * @param images - Encoded image bytes, one marker emitted per image
- * @param opts - Same as {@link buildUserDelta}
+ * @param inputs - Typed media or legacy image bytes, one marker per input
+ * @param opts - Chat formatting options and aggregate audio limits
  * @returns Delta ready for {@link Branch.prefillMultimodal}
  *
  * @category Agents
@@ -152,17 +185,17 @@ export function buildUserDelta(
 export function buildUserDeltaMultimodal(
   ctx: SessionContext,
   content: string,
-  images: Uint8Array[],
-  opts: { tools?: string; system?: string } & DeltaOpts = {}
+  inputs: readonly MultimodalInput[],
+  opts: { tools?: string; system?: string } & MultimodalDeltaOpts = {}
 ): MultimodalDelta {
   const sep = ctx.getTurnSeparator();
   const fmtOpts: Record<string, unknown> = {};
   if (opts.tools) fmtOpts.tools = opts.tools;
   if (opts.enableThinking !== undefined) fmtOpts.enableThinking = opts.enableThinking;
-  // Defanged even with zero images: this delta always lands via the
+  // Defanged even with zero inputs: this delta always lands via the
   // multimodal prefill, whose native splitter sees the whole prompt —
   // system content included.
-  const userContent = mediaContent(defangMarker(content), images);
+  const userContent = mediaContent(defangMarker(content), inputs);
   const { prompt } = ctx.formatChatSync(
     JSON.stringify([
       { role: 'system', content: defangMarker(opts.system ?? '') },
@@ -170,9 +203,7 @@ export function buildUserDeltaMultimodal(
     ]),
     fmtOpts
   );
-  // A snapshot: the prompt fixed its marker count here, and the bitmaps must
-  // still be that set at prefill, whatever the caller does to its array.
-  return { sep, prompt, bitmaps: [...images] };
+  return multimodalDelta(sep, prompt, inputs, opts.audioLimits);
 }
 
 /**
@@ -297,11 +328,11 @@ export function buildToolResultDelta(
 }
 
 /**
- * Build a multimodal delta for a tool result carrying images
+ * Build a multimodal delta for a tool result carrying media
  *
  * The multimodal counterpart of {@link buildToolResultDelta}: a tool that
  * returns media (a rasterized document page, a rendered chart) has its result
- * text rendered with one marker per image, and the delta stops at the string
+ * text rendered with one marker per input, and the delta stops at the string
  * stage because mtmd owns tokenization.
  *
  * The generation prompt is concatenated onto the prompt STRING rather than
@@ -312,8 +343,8 @@ export function buildToolResultDelta(
  * @param ctx - Active session context (created with `mmprojPath`)
  * @param resultStr - JSON-serialized tool result, with the media stripped out
  * @param callId - Tool call identifier from the model's parsed output
- * @param images - Encoded image bytes, one marker emitted per image
- * @param opts - Optional thinking flag; see {@link DeltaOpts}
+ * @param inputs - Typed media or legacy image bytes, one marker per input
+ * @param opts - Thinking flag and aggregate audio limits
  * @returns Delta ready for {@link Branch.prefillMultimodal}
  *
  * @category Agents
@@ -322,8 +353,8 @@ export function buildToolResultDeltaMultimodal(
   ctx: SessionContext,
   resultStr: string,
   callId: string,
-  images: Uint8Array[],
-  opts: DeltaOpts = {},
+  inputs: readonly MultimodalInput[],
+  opts: MultimodalDeltaOpts = {},
 ): MultimodalDelta {
   const sep = ctx.getTurnSeparator();
   const fmtOpts: Record<string, unknown> = {};
@@ -331,7 +362,7 @@ export function buildToolResultDeltaMultimodal(
   const { prompt, generationPrompt } = ctx.formatChatSync(
     JSON.stringify([
       { role: 'system', content: '' },
-      { role: 'tool', content: mediaContent(defangMarker(resultStr), images), tool_call_id: callId },
+      { role: 'tool', content: mediaContent(defangMarker(resultStr), inputs), tool_call_id: callId },
     ]),
     fmtOpts,
   );
@@ -339,7 +370,7 @@ export function buildToolResultDeltaMultimodal(
     generationPrompt && !prompt.endsWith(generationPrompt)
       ? prompt + generationPrompt
       : prompt;
-  return { sep, prompt: withGen, bitmaps: [...images] };
+  return multimodalDelta(sep, withGen, inputs, opts.audioLimits);
 }
 
 /**
@@ -365,7 +396,7 @@ export function buildToolResultDeltaMultimodal(
  *
  * @param ctx - Active session context (created with `mmprojPath`)
  * @param delta - Built by any of the multimodal delta builders
- * @returns Cells the prefill would add — sep + text + image rows
+ * @returns Cells the prefill would add: separator, text and projected media rows
  *
  * @category Agents
  */
@@ -373,5 +404,5 @@ export async function deltaCells(
   ctx: SessionContext,
   delta: MultimodalDelta,
 ): Promise<number> {
-  return ctx._cellsMultimodal(delta.sep, delta.prompt, delta.bitmaps);
+  return ctx._cellsMultimodal(delta.sep, delta.prompt, delta.bitmaps, delta.audioLimits);
 }

@@ -8,7 +8,8 @@
  * @category Runtime
  */
 import { spawnSync } from 'node:child_process';
-import { createContext as createNativeContext, resolveBackendPackDirSync } from '@lloyal-labs/lloyal.node';
+import { resolveBackendPackDirSync } from '@lloyal-labs/lloyal.node';
+import { createContext } from '@lloyal-labs/sdk/node';
 import type { ContextOptions, SessionContext } from '@lloyal-labs/sdk';
 
 /** The llm block a boot resolved: the config's `model.llm` keys with `path` concrete. */
@@ -114,5 +115,5 @@ export function residentContextOptions(model: ResidentModel, trunk: Partial<Cont
 export function createResidentContext(model: ResidentModel, trunk: Partial<ContextOptions> = {}): Promise<SessionContext> {
   applyGpuEnv(model);
   const { options, load } = residentContextOptions(model, trunk);
-  return createNativeContext(options as Parameters<typeof createNativeContext>[0], load as Parameters<typeof createNativeContext>[1]);
+  return createContext(options as Parameters<typeof createContext>[0], load as Parameters<typeof createContext>[1]);
 }
