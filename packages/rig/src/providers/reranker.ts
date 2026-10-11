@@ -1,6 +1,6 @@
-import { createContext } from "@lloyal-labs/lloyal.node";
+import { createContext } from "@lloyal-labs/sdk/node";
 import { Rerank } from "@lloyal-labs/sdk";
-import type { SessionContext, KvCacheType, RerankInstruction } from "@lloyal-labs/sdk";
+import type { KvCacheType, RerankInstruction } from "@lloyal-labs/sdk";
 import { resource } from "effection";
 import { acquire } from "../acquire";
 import type { Operation } from "effection";
@@ -91,7 +91,7 @@ export function createReranker(
       (c) => c.dispose(),
     );
     const rerank = yield* acquire(
-      () => Rerank.create(ctx as unknown as SessionContext, { nSeqMax, nCtx, instruction: opts?.instruction }),
+      () => Rerank.create(ctx, { nSeqMax, nCtx, instruction: opts?.instruction }),
       (r) => r.dispose(),
     );
 

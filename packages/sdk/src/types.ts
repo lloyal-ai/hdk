@@ -273,6 +273,20 @@ export interface ContextOptions {
   imageMaxTokens?: number;
 }
 
+/** Encoded media in marker order. Audio accepts PCM WAV; bare bytes are images. */
+export type MultimodalInput = Uint8Array | {
+  kind: 'image' | 'audio';
+  bytes: Uint8Array;
+};
+
+/** Aggregate admission budgets for one prompt's audio inputs. */
+export interface AudioLimits {
+  /** Maximum encoded bytes. Must be a positive safe integer. */
+  maxBytes: number;
+  /** Positive safe-integer cap on mono samples at the projector rate, including resampling headroom. */
+  maxSamples: number;
+}
+
 /**
  * Per-branch result of a multimodal prefill
  *
@@ -285,7 +299,7 @@ export interface ContextOptions {
  * @category Branching
  */
 export interface MultimodalPrefillResult {
-  /** KV cells added (sep + text + image rows) */
+  /** KV cells added (sep + text + media rows) */
   tokensDecoded: number;
   /** Branch position advance (< tokensDecoded under M-RoPE with images) */
   positionAdvance: number;
@@ -1030,10 +1044,11 @@ export interface SessionContext {
    * True when the loaded mmproj has an audio encoder
    *
    * `false` when no mmproj was configured, and for vision-only projectors.
-   * Audio input has no API surface yet — a prefill that routes audio bytes
-   * throws rather than silently skipping.
    */
   supportsAudio(): boolean;
+
+  /** Required mono sample rate of the audio encoder, or zero without one. */
+  audioSampleRate(): number;
 
   /**
    * Clear all KV cache (fresh start)
@@ -1611,23 +1626,25 @@ export interface SessionContext {
   _storePrefill(handles: number[], tokenArrays: number[][]): Promise<void>;
 
   /** @internal — multimodal prefill: per-branch sep tokens + templated
-   *  prompt (with `<__media__>` markers) + image bytes. The native worker
-   *  walks TEXT/IMAGE chunks in order (token rail / embedding rail) and
+   *  prompt (with `<__media__>` markers) + media inputs. The native worker
+   *  walks TEXT/IMAGE/AUDIO chunks in order (token rail / embedding rail) and
    *  returns per-branch counts. See {@link Branch.prefillMultimodal}. */
   _storePrefillMultimodal(
     handles: number[],
     sepTokens: number[][],
     prompts: string[],
-    bitmaps: Uint8Array[][],
+    inputs: MultimodalInput[][],
+    audioLimits?: Array<AudioLimits | undefined>,
   ): Promise<MultimodalPrefillResult[]>;
 
   /** @internal — KV cells a multimodal prefill WOULD consume, known before
-   *  anything decodes. Pays bitmap decode + tokenization, not the vision-tower
+   *  anything decodes. Pays media decode + tokenization, not the encoder
    *  encode. Wrapped by {@link deltaCells}. */
   _cellsMultimodal(
     sepTokens: number[],
     prompt: string,
-    bitmaps: Uint8Array[],
+    inputs: MultimodalInput[],
+    audioLimits?: AudioLimits,
   ): Promise<number>;
 
   /** @internal — additively merge experts' logits_snapshot into dst's:

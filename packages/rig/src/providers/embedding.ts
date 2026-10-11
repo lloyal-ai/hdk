@@ -9,7 +9,7 @@
  *
  * Node-only. Import from `@lloyal-labs/rig/node`.
  */
-import { createContext } from '@lloyal-labs/lloyal.node';
+import { createContext } from '@lloyal-labs/sdk/node';
 import { PoolingType } from '@lloyal-labs/sdk';
 import type { SessionContext } from '@lloyal-labs/sdk';
 import { call, ensure, resource, until } from 'effection';
@@ -45,7 +45,7 @@ export function createEmbedder(modelPath: string, opts: EmbedderLoadOpts): Opera
     let freed = false;
     const free = (c: SessionContext): void => { if (freed) return; freed = true; c.dispose(); };
     const ctx = yield* acquire(
-      () => createContext({ modelPath, nCtx, nBatch: nCtx, nSeqMax: 1, embeddings: true, poolingType: POOLING[opts.pooling] }) as Promise<SessionContext>,
+      () => createContext({ modelPath, nCtx, nBatch: nCtx, nSeqMax: 1, embeddings: true, poolingType: POOLING[opts.pooling] }),
       free,
     );
 

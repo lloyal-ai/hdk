@@ -21,7 +21,7 @@ const { createContext, fakeCtx, log, gate } = vi.hoisted(() => {
   };
   return { log, gate, fakeCtx, createContext: vi.fn(async (_opts: Record<string, unknown>) => fakeCtx) };
 });
-vi.mock('@lloyal-labs/lloyal.node', () => ({ createContext }));
+vi.mock('@lloyal-labs/sdk/node', () => ({ createContext }));
 
 const { createEmbedder } = await import('../src/providers/embedding');
 

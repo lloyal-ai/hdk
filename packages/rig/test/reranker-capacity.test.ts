@@ -17,7 +17,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import * as path from 'node:path';
-import { createContext } from '@lloyal-labs/lloyal.node';
+import { createContext } from '@lloyal-labs/sdk/node';
 import { Rerank } from '@lloyal-labs/sdk';
 import type { RerankTruncation, SessionContext } from '@lloyal-labs/sdk';
 import { DEFAULT_CHUNK_TOKENS } from '../src/resources/fit';

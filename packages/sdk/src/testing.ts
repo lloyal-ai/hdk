@@ -51,10 +51,14 @@ import type {
   ParseChatOutputResult,
   ParseChatOutputOptions,
   MultimodalPrefillResult,
+  MultimodalInput,
+  AudioLimits,
 } from './types.js';
 import { Branch } from './Branch.js';
 import { BranchStore } from './BranchStore.js';
 import { Session } from './Session.js';
+
+const isAudio = (input: MultimodalInput): boolean => !(input instanceof Uint8Array) && input.kind === 'audio';
 
 /** Internal branch state tracked by the mock */
 interface BranchState {
@@ -260,6 +264,8 @@ export class MockSessionContext implements SessionContext {
     sepTokens: number[][];
     prompts: string[];
     bitmapCounts: number[];
+    inputKinds: Array<Array<'image' | 'audio'>>;
+    audioLimits: Array<AudioLimits | undefined>;
     /** What the call reported back — the counts a caller must not re-derive. */
     results: MultimodalPrefillResult[];
   }> = [];
@@ -268,12 +274,15 @@ export class MockSessionContext implements SessionContext {
   mockImageCells = 16;
   /** Position advance one mock image costs — deliberately below mockImageCells. */
   mockImagePositions = 4;
+  /** Audio advances one position per cell on the linear embedding rail. */
+  mockAudioCells = 8;
 
   async _storePrefillMultimodal(
     handles: number[],
     sepTokens: number[][],
     prompts: string[],
-    bitmaps: Uint8Array[][],
+    inputs: MultimodalInput[][],
+    audioLimits: Array<AudioLimits | undefined> = [],
   ): Promise<MultimodalPrefillResult[]> {
     // The binding applies the kernel's rule to this rail too, before its worker
     // runs (`_storePrefillMultimodal` → `require_distinct_handles`).
@@ -283,14 +292,16 @@ export class MockSessionContext implements SessionContext {
       handles: [...handles],
       sepTokens: sepTokens.map((s) => [...s]),
       prompts: [...prompts],
-      bitmapCounts: bitmaps.map((b) => b.length),
+      bitmapCounts: inputs.map(batch => batch.filter(input => !isAudio(input)).length),
+      inputKinds: inputs.map(batch => batch.map(input => isAudio(input) ? 'audio' : 'image')),
+      audioLimits: handles.map((_, i) => audioLimits[i] ? { ...audioLimits[i]! } : undefined),
       results: out,
     });
 
     for (let i = 0; i < handles.length; i++) {
       // Per-entry failure, the property the native worker guarantees: a bad
       // image reports on ITS OWN result and the cohort keeps going.
-      const failure = this.mockMultimodalError?.(prompts[i], bitmaps[i]) ?? null;
+      const failure = this.mockMultimodalError?.(prompts[i], inputs[i]) ?? null;
       if (failure) {
         const f = typeof failure === 'string' ? { message: failure } : failure;
         out.push({
@@ -299,8 +310,8 @@ export class MockSessionContext implements SessionContext {
         });
         continue;
       }
-      const tokensDecoded = this._mockCells(sepTokens[i], prompts[i], bitmaps[i].length);
-      const positionAdvance = this._mockPositions(sepTokens[i], prompts[i], bitmaps[i].length);
+      const tokensDecoded = this._mockCost(sepTokens[i], prompts[i], inputs[i], this.mockImageCells);
+      const positionAdvance = this._mockCost(sepTokens[i], prompts[i], inputs[i], this.mockImagePositions);
 
       const b = this._branches.get(handles[i]);
       if (b && !b.disposed) {
@@ -319,7 +330,7 @@ export class MockSessionContext implements SessionContext {
    *  siblings case and the rc-classified self-healing ladder. */
   mockMultimodalError?: (
     prompt: string,
-    bitmaps: Uint8Array[],
+    inputs: MultimodalInput[],
   ) => string | { message: string; rc?: number; partial?: boolean } | null;
 
   /** Cells one multimodal prefill consumes. Text stands in at one cell per 4
@@ -327,30 +338,28 @@ export class MockSessionContext implements SessionContext {
    *  with image rows. Shared by the prefill and the cost query so the mock
    *  cannot quote one number and charge another — the property the real
    *  `MtmdSource::cells()` guarantees by counting before it encodes. */
-  private _mockCells(sep: number[], prompt: string, markers: number): number {
+  private _mockCost(sep: number[], prompt: string, inputs: MultimodalInput[], imageCost: number): number {
     const textCells = Math.ceil(prompt.replace(/<__media__>/g, '').length / 4);
-    return sep.length + textCells + markers * this.mockImageCells;
-  }
-
-  /** Position advance for the same prefill — deliberately below the cell count
-   *  (the M-RoPE decoupling this mock exists to model). */
-  private _mockPositions(sep: number[], prompt: string, markers: number): number {
-    const textCells = Math.ceil(prompt.replace(/<__media__>/g, '').length / 4);
-    return sep.length + textCells + markers * this.mockImagePositions;
+    const mediaCells = inputs.reduce((sum, input) => sum + (isAudio(input) ? this.mockAudioCells : imageCost), 0);
+    return sep.length + textCells + mediaCells;
   }
 
   async _cellsMultimodal(
     sepTokens: number[],
     prompt: string,
-    bitmaps: Uint8Array[],
+    inputs: MultimodalInput[],
+    _audioLimits?: AudioLimits,
   ): Promise<number> {
-    return this._mockCells(sepTokens, prompt, bitmaps.length);
+    return this._mockCost(sepTokens, prompt, inputs, this.mockImageCells);
   }
 
   /** Whether the mock stands in for a vision-capable projector. */
   mockSupportsVision = true;
   supportsVision(): boolean { return this.mockSupportsVision; }
-  supportsAudio(): boolean { return false; }
+  /** Zero stands in for a projector without audio support. */
+  mockAudioSampleRate = 0;
+  supportsAudio(): boolean { return this.mockAudioSampleRate > 0; }
+  audioSampleRate(): number { return this.mockAudioSampleRate; }
 
   _storeMergeLogits(_dstHandle: number, _srcHandles: number[], _alpha: number): void {
     /* mock no-op */

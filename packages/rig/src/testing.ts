@@ -49,6 +49,7 @@ import type { Service, ServiceMap } from './services';
 import type { TraceWriter, TraceEvent } from '@lloyal-labs/lloyal-agents';
 import type { Embedder, Reranker } from './retrieval';
 import type { AttachmentStore } from '@lloyal-labs/media';
+import { DEFAULT_AUDIO_ADMISSION } from '@lloyal-labs/media';
 import { bufferedCommandSignal } from './buffered-command-signal';
 import { makeServedRunner, RunnerCtx } from './runner';
 import { runnerConfig } from './config-layering';
@@ -210,6 +211,10 @@ const STUBS: { [K in Service]: ServiceMap[K] } = {
   reranker: stubReranker,
   vision: { artifact: 'the stub projector' },
   embedding: stubEmbedder,
+  transcription: {
+    limits: DEFAULT_AUDIO_ADMISSION,
+    *transcribe() { throw new Error('provide a transcription test double for this harness'); },
+  },
 };
 
 /** The document folders under a library root, sorted. */

@@ -38,9 +38,10 @@ export const representationUrl = (origin: string, digest: string, index = 0): st
  * a reference; the client never learns the digest of anything it uploaded,
  * because the root is the manifest's hash, not the file's.
  */
-export async function ingestMedia(origin: string, bytes: Uint8Array): Promise<Descriptor> {
+export async function ingestMedia(origin: string, bytes: Uint8Array, options: { signal?: AbortSignal } = {}): Promise<Descriptor> {
   const res = await fetch(ingressUrl(origin), {
     method: 'POST',
+    signal: options.signal,
     // No `Content-Type`: the bytes answer that question, and the route stopped
     // reading the header because a client cannot be the authority on content
     // it did not produce.

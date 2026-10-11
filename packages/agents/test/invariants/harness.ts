@@ -3,7 +3,7 @@ import type { Channel } from 'effection';
 import { MockSessionContext } from '../../../sdk/src/testing.js';
 import { Branch } from '../../../sdk/src/Branch';
 import { BranchStore } from '../../../sdk/src/BranchStore';
-import type { ChatFormat, ParseChatOutputOptions, ParseChatOutputResult, MultimodalPrefillResult } from '@lloyal-labs/sdk';
+import type { ChatFormat, ParseChatOutputOptions, ParseChatOutputResult, MultimodalPrefillResult, MultimodalInput, AudioLimits } from '@lloyal-labs/sdk';
 import { useAgentPool } from '../../src/agent-pool';
 import type { Orchestrator } from '../../src/orchestrators';
 import { parallel, chain } from '../../src/orchestrators';
@@ -22,7 +22,7 @@ import { CapturingTraceWriter } from '../helpers/capturing-trace';
 
 const STOP = 999;
 
-export type NativeOp = 'prefill' | 'commit' | 'sample' | 'prefillMultimodal';
+export type NativeOp = 'prefill' | 'commit' | 'sample' | 'prefillMultimodal' | 'cellsMultimodal';
 
 export interface NativeCall {
   seq: number;
@@ -61,62 +61,58 @@ export class InstrumentedMockSessionContext extends MockSessionContext {
    *  in the committed batch (deterministic — tie it to a report-turn sentinel token). */
   throwOnCommitToken: number | null = null;
 
-  async _storePrefill(handles: number[], tokenArrays: number[][]): Promise<void> {
-    const tStart = performance.now();
-    const seq = this._seq++;
-    await super._storePrefill(handles, tokenArrays);
-    const tEnd = performance.now();
-    this.nativeCalls.push({
-      seq, op: 'prefill', tStart, tEnd,
-      branchCount: handles.length,
-      tokenCount: tokenArrays.reduce((s, a) => s + a.length, 0),
-      handles: [...handles],
-    });
+  private async observeNative<T>(
+    op: NativeOp,
+    handles: number[],
+    work: () => Promise<T>,
+    count: (result: T) => number,
+  ): Promise<T> {
+    const call: NativeCall = {
+      seq: this._seq++, op, tStart: performance.now(), tEnd: Infinity,
+      branchCount: handles.length, handles: [...handles], tokenCount: 0,
+    };
+    // Pending and rejected work must remain visible to overlap and pause checks.
+    this.nativeCalls.push(call);
+    try {
+      const result = await work();
+      call.tokenCount = count(result);
+      return result;
+    } finally {
+      call.tEnd = performance.now();
+    }
   }
 
-  /**
-   * The embedding rail, recorded like the token rail.
-   *
-   * Without this override every multimodal prefill is invisible in
-   * `nativeCalls`, so `I1_nativeStoreSingleFiber` and `I32_pauseHoldsNative`
-   * — both of which reason about native access — silently do not cover media
-   * at all. `tokenCount` is the CELL count the mock reports, which is the unit
-   * admission actually spends.
-   */
+  async _storePrefill(handles: number[], tokenArrays: number[][]): Promise<void> {
+    return this.observeNative('prefill', handles,
+      () => super._storePrefill(handles, tokenArrays),
+      () => tokenArrays.reduce((sum, tokens) => sum + tokens.length, 0));
+  }
+
   async _storePrefillMultimodal(
     handles: number[],
     sepTokens: number[][],
     prompts: string[],
-    bitmaps: Uint8Array[][],
+    inputs: MultimodalInput[][],
+    audioLimits?: Array<AudioLimits | undefined>,
   ): Promise<MultimodalPrefillResult[]> {
-    const tStart = performance.now();
-    const seq = this._seq++;
-    const out = await super._storePrefillMultimodal(handles, sepTokens, prompts, bitmaps);
-    const tEnd = performance.now();
-    this.nativeCalls.push({
-      seq, op: 'prefillMultimodal', tStart, tEnd,
-      branchCount: handles.length,
-      // CELLS, not tokens — the unit admission actually spends on this rail.
-      tokenCount: out.reduce((n, r) => n + (r?.tokensDecoded ?? 0), 0),
-      handles: [...handles],
-    });
-    return out;
+    return this.observeNative('prefillMultimodal', handles,
+      () => super._storePrefillMultimodal(handles, sepTokens, prompts, inputs, audioLimits),
+      results => results.reduce((sum, result) => sum + result.tokensDecoded, 0));
+  }
+
+  async _cellsMultimodal(sep: number[], prompt: string, inputs: MultimodalInput[], audioLimits?: AudioLimits): Promise<number> {
+    return this.observeNative('cellsMultimodal', [],
+      () => super._cellsMultimodal(sep, prompt, inputs, audioLimits),
+      cells => cells);
   }
 
   async _storeCommit(handles: number[], tokens: number[]): Promise<void> {
-    if (this.throwOnCommitToken != null && tokens.includes(this.throwOnCommitToken)) {
-      throw new Error('llama_decode failed: no KV slot (mock OOM)');
-    }
-    const tStart = performance.now();
-    const seq = this._seq++;
-    await super._storeCommit(handles, tokens);
-    const tEnd = performance.now();
-    this.nativeCalls.push({
-      seq, op: 'commit', tStart, tEnd,
-      branchCount: handles.length,
-      tokenCount: tokens.length,
-      handles: [...handles],
-    });
+    return this.observeNative('commit', handles, async () => {
+      if (this.throwOnCommitToken != null && tokens.includes(this.throwOnCommitToken)) {
+        throw new Error('llama_decode failed: no KV slot (mock OOM)');
+      }
+      await super._storeCommit(handles, tokens);
+    }, () => tokens.length);
   }
 
   /** Handles of every branch not yet disposed — what a fork leak looks like. */

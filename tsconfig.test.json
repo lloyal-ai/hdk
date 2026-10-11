@@ -39,6 +39,7 @@
     "baseUrl": ".",
     "paths": {
       "@lloyal-labs/sdk": ["packages/sdk/src/index.ts"],
+      "@lloyal-labs/sdk/node": ["packages/sdk/src/node.ts"],
       "@lloyal-labs/lloyal-agents": ["packages/agents/src/index.ts"],
       "@lloyal-labs/rig": ["packages/rig/src/index.ts"],
       "@lloyal-labs/rig/node": ["packages/rig/src/node.ts"],

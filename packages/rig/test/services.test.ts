@@ -12,10 +12,10 @@ import type { Ability, AbilityFactory, AbilityManifest, Reranker, ServiceMap } f
 
 describe('the closed service set', () => {
   it('SERVICES lists every key of ServiceMap, and nothing else — the trunk llm is never a service', () => {
-    expect(SERVICES).toEqual(['reranker', 'vision', 'embedding']);
+    expect(SERVICES).toEqual(['reranker', 'vision', 'embedding', 'transcription']);
     expect(SERVICES).not.toContain('llm');
     // Exhaustive in both directions: a key of the map without a name, or a name without a key, is a build error.
-    const every: { [K in keyof ServiceMap]: true } = { reranker: true, vision: true, embedding: true };
+    const every: { [K in keyof ServiceMap]: true } = { reranker: true, vision: true, embedding: true, transcription: true };
     expect(Object.keys(every).sort()).toEqual([...SERVICES].sort());
   });
 });

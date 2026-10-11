@@ -28,11 +28,9 @@ import type { BaseHarnessConfig, ConfigPatch } from './runner';
 import { checkMachine, gb, refusalMessage } from './machine';
 import { catalogEntry, isModelPresent, resolveModel, slotOf } from './models';
 import type { ModelCatalogEntry, ModelRole, ModelSpec } from './models';
-import { configuredServices, specOf, refusalOf } from './provision';
-import { providers } from './providers';
-import type { ServiceArtifacts } from './provision';
-import { SERVICES } from './services';
-import type { Service } from './services';
+import { configuredServices, serviceRequirements } from './provision';
+import type { ServiceArtifacts, ServiceRequirement } from './provision';
+import { setPath } from './config-paths';
 import type { InstallCommand, InstallStep, InstallStepEvent } from './install-protocol';
 
 /** A step with what acquires it: the slot it fills and the spec that satisfies it. The machine step has neither.
@@ -53,8 +51,11 @@ const takesFile = (id: string): boolean => `model.${id}.path` in modelSettings;
  * it — put to the row's own refusal. A catalog embedding whose pooling only the catalog knew cannot take a
  * file until the block says its pooling; one that says it, or contradicts the catalog, can.
  */
-const fileWouldBind = (name: Service, model: ModelFamily): boolean =>
-  refusalOf(name, { ...model, [name]: { ...(model[name] ?? {}), path: '/a/file.gguf' } } as ModelFamily) === undefined;
+function fileWouldBind(request: ServiceRequirement, model: ModelFamily): boolean {
+  const changed = structuredClone(model);
+  setPath(changed, `${request.role}.path`, '/a/file.gguf');
+  try { request.select(changed); return true; } catch { return false; }
+}
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
@@ -93,11 +94,12 @@ export function planInstall(model: ModelFamily, opts: { lenient?: boolean } = {}
     }
   }
   const steps: PlannedStep[] = [{ id: 'machine', label: 'This machine', status: 'pending' }, llmStep];
-  for (const name of configuredServices(model)) {
-    const step: PlannedStep = { id: name, label: `Downloading the ${providers[name].name}`, status: 'pending', role: name, file: takesFile(name) && fileWouldBind(name, model) };
+  for (const request of configuredServices(model).flatMap(name => serviceRequirements(name))) {
+    const role = request.role;
+    const step: PlannedStep = { id: role, label: `Downloading the ${request.name}`, status: 'pending', role, file: takesFile(role) && fileWouldBind(request, model) };
     try {
-      step.spec = specOf(name, model);
-      Object.assign(step, acquires(name, step.spec));
+      step.spec = request.select(model);
+      Object.assign(step, acquires(role, step.spec));
     } catch (err) {
       refuse(step, err);
     }
@@ -240,7 +242,9 @@ export function* install(opts: InstallOpts): Operation<Installed> {
       // Remembered first, then the steps derived again from what was remembered: the file's own step, and
       // every step whose selection followed from the one that changed.
       try {
-        model = opts.persist({ model: { [command.step]: { path: command.path } } });
+        const patch: ConfigPatch<BaseHarnessConfig> = {};
+        setPath(patch, `model.${command.step}.path`, command.path);
+        model = opts.persist(patch);
       } catch (err) {
         set(step, { status: 'failed', note: `the file could not be remembered: ${message(err)}` });
         command = undefined;
@@ -257,9 +261,8 @@ export function* install(opts: InstallOpts): Operation<Installed> {
 
   steps.length = 0;
   send();
-  const services: ServiceArtifacts = {};
-  for (const name of SERVICES) if (artifacts[name] !== undefined) services[name as Service] = artifacts[name];
-  return { model, llm: artifacts.llm!, services };
+  const { llm: reasoning, ...services } = artifacts;
+  return { model, llm: reasoning, services };
 }
 
 /** Why a file cannot stand in for the step a command names: no such step, or a step whose block takes no file. */

@@ -1,6 +1,7 @@
 import { Branch } from './Branch';
 import type { BranchStore } from './BranchStore';
-import type { SessionContext } from './types';
+import type { SessionContext, MultimodalInput } from './types';
+import type { MultimodalDeltaOpts } from './deltas';
 import { buildUserDelta, buildUserDeltaMultimodal, buildAssistantDelta, buildToolResultDelta, buildTurnDelta } from './deltas';
 
 /**
@@ -193,26 +194,26 @@ export class Session {
    * forked from it attend the same encoded rows.
    *
    * @param content - User message text
-   * @param images - Encoded image bytes in a format the projector decodes
-   * @param opts - Optional tools JSON string
+   * @param inputs - Typed media or legacy image bytes accepted by the projector
+   * @param opts - Tools, thinking flag, audio limits and attachment references
    */
   async prefillUserMultimodal(
     content: string,
-    images: Uint8Array[],
+    inputs: readonly MultimodalInput[],
     opts: {
       tools?: string;
-      /** Roots for the content in `images`, already committed by the caller's
+      /** Roots for the content in `inputs`, already committed by the caller's
        *  barrier. Passed through to the prefill observer so the trace records
        *  what was admitted; the Session itself never inspects them. */
       attachments?: readonly { digest: string; mediaType: string; size: number }[];
-    } = {},
+    } & MultimodalDeltaOpts = {},
   ): Promise<void> {
-    const { sep, prompt, bitmaps } = buildUserDeltaMultimodal(this._ctx, content, images, opts);
+    const { sep, prompt, bitmaps, audioLimits } = buildUserDeltaMultimodal(this._ctx, content, inputs, opts);
     const attachments = opts.attachments;
     if (this._trunk) {
       const trunk = this._trunk;
       try {
-        const { tokensDecoded } = await trunk.prefillMultimodal(prompt, bitmaps, sep);
+        const { tokensDecoded } = await trunk.prefillMultimodal(prompt, bitmaps, sep, audioLimits);
         this._userSidePending = true;
         this._onPrefill?.({ role: 'user', content, cells: tokensDecoded, branchHandle: trunk.handle, ...(attachments ? { attachments } : {}) });
       } catch (e) {
@@ -232,7 +233,7 @@ export class Session {
     } else {
       const trunk = Branch.create(this._ctx, 0, {});
       try {
-        const { tokensDecoded } = await trunk.prefillMultimodal(prompt, bitmaps, []);
+        const { tokensDecoded } = await trunk.prefillMultimodal(prompt, bitmaps, [], audioLimits);
         await this.promote(trunk);
         this._userSidePending = true;
         this._onPrefill?.({ role: 'user', content, cells: tokensDecoded, branchHandle: trunk.handle, ...(attachments ? { attachments } : {}) });

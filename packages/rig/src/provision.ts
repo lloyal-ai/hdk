@@ -17,7 +17,7 @@ import type { Operation } from 'effection';
 import type { ContextOptions } from '@lloyal-labs/sdk';
 import type { ModelFamily } from './config';
 import { resolveModel } from './models';
-import type { ModelProgress, ModelSpec } from './models';
+import type { ModelProgress, ModelRole, ModelSpec } from './models';
 import { SERVICES, Services } from './services';
 import type { Service, ServiceMap } from './services';
 import { providers } from './providers';
@@ -43,7 +43,24 @@ export interface ProvisionOpts {
 }
 
 /** The artifact each resolved service binds from: the model file in its slot. */
-export type ServiceArtifacts = Partial<Record<Service, string>>;
+export type ServiceArtifacts = Partial<Record<Exclude<ModelRole, 'llm'>, string>>;
+
+/** Each independently verified file a service needs, including a companion projector when declared. */
+export interface ServiceRequirement {
+  role: Exclude<ModelRole, 'llm'>;
+  name: string;
+  select(model: ModelFamily): ModelSpec;
+}
+
+export function serviceRequirements<K extends Service>(name: K): ServiceRequirement[] {
+  const row: ProviderRow<K> = providers[name];
+  const primary: ServiceRequirement = { role: name, name: row.name, select: model => specOf(name, model) };
+  const projector = row.projector;
+  return projector ? [primary, {
+    role: projector.role, name: projector.name,
+    select: model => projector.select((model[name] ?? {}) as ModelBlock<K>),
+  }] : [primary];
+}
 
 /** The block's selection: `path`, else `id`, else what the row derives from the llm. A block that names neither
  *  and derives nothing asked for a service and chose no model — a request nothing can satisfy, refused by the
@@ -77,10 +94,13 @@ export function refusalOf<K extends Service>(name: K, model: ModelFamily): strin
  */
 export function* resolveServices(configured: readonly Service[], opts: ProvisionOpts): Operation<ServiceArtifacts> {
   const artifacts: ServiceArtifacts = {};
-  for (const name of configured) {
+  const requested = configured.flatMap(name => serviceRequirements(name).map(requirement => ({
+    name, role: requirement.role, spec: requirement.select(opts.model),
+  })));
+  for (const { name, role, spec } of requested) {
     const onProgress: ModelProgress | undefined = opts.onProgress ? (got, total) => opts.onProgress!(name, got, total) : undefined;
-    artifacts[name] = yield* call(() =>
-      resolveModel({ projectRoot: opts.projectRoot, role: name, spec: specOf(name, opts.model), ...(onProgress ? { onProgress } : {}) }),
+    artifacts[role] = yield* call(() =>
+      resolveModel({ projectRoot: opts.projectRoot, role, spec, ...(onProgress ? { onProgress } : {}) }),
     );
   }
   return artifacts;
@@ -97,17 +117,17 @@ export function* bindServices(artifacts: ServiceArtifacts, model: ModelFamily): 
   const bound: Partial<ServiceMap> = {};
   for (const name of SERVICES) {
     const artifact = artifacts[name];
-    if (artifact !== undefined) yield* bindRow(bound, name, artifact, model);
+    if (artifact !== undefined) yield* bindRow(bound, name, artifact, model, artifacts);
   }
   yield* Services.set(bound);
 }
 
 /** One provider's instance into the bag: what `bind` yields, or — for a trunk provider, whose artifact is already
  *  on the resident context — the marker that says it is there. */
-function* bindRow<K extends Service>(bound: Partial<ServiceMap>, name: K, artifact: string, model: ModelFamily): Operation<void> {
+function* bindRow<K extends Service>(bound: Partial<ServiceMap>, name: K, artifact: string, model: ModelFamily, artifacts: ServiceArtifacts): Operation<void> {
   const row: ProviderRow<K> = providers[name];
   const block = (model[name] ?? {}) as ModelBlock<K>;
-  bound[name] = row.bind ? yield* row.bind(artifact, block) : ({ artifact } as ServiceMap[K]);
+  bound[name] = row.bind ? yield* row.bind(artifact, block, row.projector ? artifacts[row.projector.role] : undefined) : ({ artifact } as ServiceMap[K]);
 }
 
 /**

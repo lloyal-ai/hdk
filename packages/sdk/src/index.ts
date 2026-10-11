@@ -7,7 +7,7 @@ export type { RerankOpts, RerankTruncation, RerankInstruction } from './Rerank';
 export { buildUserDelta, buildUserDeltaMultimodal, buildAssistantDelta, buildToolResultDelta,
          buildToolResultDeltaMultimodal, buildTurnDelta, mediaContent, deltaCells,
          MEDIA_MARKER } from './deltas';
-export type { DeltaOpts, MultimodalDelta } from './deltas';
+export type { DeltaOpts, MultimodalDeltaOpts, MultimodalDelta } from './deltas';
 
 // ── Enums + constants ────────────────────────────────────────
 export { PoolingType, CHAT_FORMAT_CONTENT_ONLY, CHAT_FORMAT_GENERIC, ReasoningFormat, GrammarTriggerType, decodeErrorOf } from './types';
@@ -32,7 +32,7 @@ export type {
   AdvancedSamplingParams,
   SamplingParams,
   SessionContext,
-  MultimodalPrefillResult, DecodeError,
+  MultimodalInput, AudioLimits, MultimodalPrefillResult, DecodeError,
   Produced,
   RerankOptions,
   RerankResult,

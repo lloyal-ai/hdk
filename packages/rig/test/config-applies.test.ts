@@ -28,8 +28,11 @@ describe('config keys: when a change applies', () => {
   it('every key lives at its yml path: one block per model, the key named as harness.yml names it', () => {
     for (const [key, decl] of Object.entries(modelSettings) as [string, ConfigKey][]) {
       expect(decl.yml, key).toBe(key);
-      expect(key.split('.'), key).toHaveLength(3);
+      expect(key.split('.').length, key).toBeGreaterThanOrEqual(3);
     }
-    expect(Object.keys(modelSettings).filter((k) => k.endsWith('.id')).sort()).toEqual(['model.embedding.id', 'model.llm.id', 'model.reranker.id', 'model.vision.id']);
+    expect(Object.keys(modelSettings).filter((k) => k.endsWith('.id')).sort()).toEqual([
+      'model.embedding.id', 'model.llm.id', 'model.reranker.id',
+      'model.transcription.id', 'model.transcription.projector.id', 'model.vision.id',
+    ]);
   });
 });

@@ -34,7 +34,7 @@ const { createContext, fakeCtx } = vi.hoisted(() => {
 
 // The native binding and Rerank's boot gates both need a real model; neither is
 // the unit under test. What is under test is the context REQUEST.
-vi.mock('@lloyal-labs/lloyal.node', () => ({ createContext }));
+vi.mock('@lloyal-labs/sdk/node', () => ({ createContext }));
 const { rerankCreate, rerankDispose } = vi.hoisted(() => ({
   rerankDispose: vi.fn(),
   rerankCreate: vi.fn(),

@@ -34,6 +34,9 @@ export { PROJECTOR_FORMATS, sniffMediaType, UNKNOWN_MEDIA_TYPE } from './media-t
 export { DOCUMENT_CONFIG_TYPE, asDocumentMeta, pagesOf } from './document';
 export type { DocumentMeta, SectionOrigin } from './document';
 
+export { AUDIO_CONFIG_TYPE, AUDIO_MEDIA_TYPE, DEFAULT_AUDIO_ADMISSION, audioAdmission, asAudioMeta, inspectPcmWav, resolveAudio } from './audio';
+export type { AdmittedAudio, AudioAdmission, AudioMeta } from './audio';
+
 // The client half of the content plane: every door derived from the one origin a
 // bridge reports, and the citation grammar a view resolves against its own roots.
 export {

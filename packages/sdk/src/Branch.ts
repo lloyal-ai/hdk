@@ -1,4 +1,4 @@
-import type { SessionContext, SamplingParams, Produced, GrammarTrigger, MultimodalPrefillResult } from './types';
+import type { SessionContext, SamplingParams, Produced, GrammarTrigger, MultimodalPrefillResult, MultimodalInput, AudioLimits } from './types';
 import { GrammarTriggerType } from './types';
 import { splitCompleteUtf8, concatBytes } from './utf8';
 
@@ -228,17 +228,18 @@ export class Branch {
    * Prefill a templated prompt with images into this branch's KV
    *
    * The multimodal counterpart of {@link prefill}. The prompt carries one
-   * `<__media__>` marker per image (build it with
+   * `<__media__>` marker per media input (build it with
    * `buildUserDeltaMultimodal`); the native layer tokenizes it, decodes
-   * text on the token rail and image rows on the embedding rail, in order.
+   * text on the token rail and media rows on the embedding rail, in order.
    * Requires a context created with `mmprojPath`.
    *
-   * The image lands as an ordinary shared prefix: fork afterwards and every
+   * Projected media lands as an ordinary shared prefix: fork afterwards and every
    * child attends it with zero re-encode.
    *
    * @param prompt - Templated prompt containing the media markers
-   * @param bitmaps - Encoded image bytes the projector decodes, one per marker
+   * @param inputs - Typed media or legacy image bytes, one per marker
    * @param sepTokens - Optional leading token run (e.g. a turn separator)
+   * @param audioLimits - Required when inputs contain audio; applies across the prompt
    * @returns Counts — see `MultimodalPrefillResult` (JS can't know
    *   multimodal token counts; the native walk reports them)
    * @throws If the prefill failed. The cohort form reports failure per entry
@@ -248,12 +249,13 @@ export class Branch {
    */
   async prefillMultimodal(
     prompt: string,
-    bitmaps: Uint8Array[],
+    inputs: MultimodalInput[],
     sepTokens: number[] = [],
+    audioLimits?: AudioLimits,
   ): Promise<MultimodalPrefillResult> {
     this._ensureNotDisposed();
     const [result] = await this._ctx._storePrefillMultimodal(
-      [this._handle], [sepTokens], [prompt], [bitmaps]);
+      [this._handle], [sepTokens], [prompt], [inputs], [audioLimits]);
     if (result.error) {
       // Forward rc and partial as data — a re-wrap that dropped them would
       // strip the classification callers gate on (decodeErrorOf reads them back).

@@ -151,3 +151,7 @@ export type { AbilityDescriptor } from './ability-descriptors';
 export type { HostResourcesEvent } from './host-resources';
 export { bufferedCommandSignal } from './buffered-command-signal';
 export { HarnessExit } from './harness-exit';
+export type { Transcriber, Transcription } from './transcription';
+export { useVoiceCommands } from './voice';
+export type { VoiceCommandsOptions } from './voice';
+export type { VoiceCommand, VoiceEvent, VoiceCapabilities, VoiceResult } from '@lloyal-labs/binding';

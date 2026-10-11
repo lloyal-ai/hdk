@@ -17,4 +17,5 @@ export type { HarnessPlacement } from './placement';
 export { readBounded, TooLarge, TooSlow } from './read-bounded';
 export { createWindow } from './window';
 export type { CreateWindowOpts } from './window';
+export { allowMicrophone, microphoneConsent, prepareMicrophone } from './microphone';
 export { CHANNELS } from './preload-channels';

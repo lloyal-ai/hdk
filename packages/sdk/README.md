@@ -8,12 +8,12 @@
 npm i @lloyal-labs/sdk
 ```
 
-The SDK exports the `SessionContext` contract and the primitives that operate on it. A backend binding (e.g. [`@lloyal-labs/lloyal.node`](https://github.com/lloyal-ai/lloyal.node) for Node) provides `createContext()` — the SDK takes it from there. Underneath, [liblloyal](https://github.com/lloyal-ai/liblloyal) is the C++ core; the Node binding is one front-end on top of it.
+The SDK exports the `SessionContext` contract and the primitives that operate on it. For Node, install [`@lloyal-labs/lloyal.node`](https://github.com/lloyal-ai/lloyal.node) and import `createContext()` from `@lloyal-labs/sdk/node`. The main SDK entry remains independent of native loading. Underneath, [liblloyal](https://github.com/lloyal-ai/liblloyal) is the C++ core; the Node binding is one front-end on top of it.
 
 ## The Branch API
 
 ```typescript
-import { createContext } from '@lloyal-labs/lloyal.node';
+import { createContext } from '@lloyal-labs/sdk/node';
 import { Branch, BranchStore } from '@lloyal-labs/sdk';
 
 const ctx = await createContext({ modelPath: './model.gguf', nSeqMax: 6 });
@@ -136,7 +136,7 @@ session.trunk;  // the live branch
 
 `commitTurn` is the recommended high-level helper. Future queries fork from `session.trunk` and read prior conversation through KV attention — no prompt-history injection.
 
-## Multimodal (Vision)
+## Multimodal
 
 With a context created with `mmprojPath`, images prefill into any branch's KV beside text. One `<__media__>` marker per image; the native layer tokenizes the prompt and decodes text on the token rail, image rows on the embedding rail.
 
@@ -155,6 +155,14 @@ const { tokensDecoded } = await branch.prefillMultimodal(prompt, bitmaps, sep);
 ```
 
 The image lands as an ordinary shared prefix: fork afterwards and every child attends it with zero re-encode. Several markers with several images in one prefill also works — video frames, each preceded by a timestamp, are just that.
+
+Audio uses the same prefill methods with `{ kind: 'audio', bytes: pcmWav }` and a matching audio model/projector pair. Bare `Uint8Array` inputs retain image semantics. `ctx.supportsAudio()` and `ctx.audioSampleRate()` report the loaded projector's capabilities. The caller supplies `audioLimits: { maxBytes, maxSamples }`; both limits apply across all audio in the prompt, with samples counted as mono at the projector's rate, including resampling headroom.
+
+Multimodal delta builders snapshot bytes and limits. Pass the same delta to `deltaCells(ctx, delta)` and `store.prefillMultimodal([[branch, delta]])` to measure and prefill the same content. A direct branch call takes limits as its fourth argument: `branch.prefillMultimodal(prompt, inputs, sep, audioLimits)`.
+
+Run the SDK audio integration suite with `LLOYAL_LOCAL=1 npm run test:audio -w packages/sdk`. It requires a linked local Node checkout with Qwen3-ASR and its projector in `models/audio/qwen3-asr`; `LLOYAL_NODE_REPO`, `LLAMA_ASR_MODEL` and `LLAMA_ASR_MMPROJ` override those paths. The suite fails if the local addon or matching artifacts are unavailable.
+
+Run image regressions separately with `LLOYAL_LOCAL=1 npm run test:images -w packages/sdk`. These use Qwen3.5-4B and its vision projector from the same checkout; `LLAMA_VL_MODEL` and `LLAMA_VL_MMPROJ` override the pair.
 
 ## Rerank
 

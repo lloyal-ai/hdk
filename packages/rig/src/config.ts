@@ -18,6 +18,7 @@ import type { RerankInstruction } from '@lloyal-labs/sdk';
 import type { BaseHarnessConfig, ConfigOriginValue, ConfigPatch } from './runner';
 import { isBag } from './config-paths';
 import type { Bag } from './config-paths';
+import { DEFAULT_AUDIO_ADMISSION } from '@lloyal-labs/media';
 
 /** The shape `harness.json` is written in, and the live config carries: one block per model. A version-1
  *  file, written before alpha.10 with the model keys flat, is refused by name — nothing before the alpha is
@@ -208,6 +209,16 @@ export const modelSettings = defineConfig({
   'model.embedding.path': { yml: 'model.embedding.path', path: true, applies: 'reload', describe: 'A local .gguf for the embedding model; outranks the catalog id.' },
   'model.embedding.context': { yml: 'model.embedding.context', integer: true, default: 2048, applies: 'boot', describe: 'The most tokens one text may embed as; a longer text is refused, never truncated.' },
   'model.embedding.pooling': { yml: 'model.embedding.pooling', oneOf: EMBEDDING_POOLINGS, applies: 'boot', describe: 'How the model folds token states into one vector — its own property; a catalog id carries it, a local file must say.' },
+  'model.transcription.id': { yml: 'model.transcription.id', applies: 'reload', describe: 'The catalog id of the speech transcription model.' },
+  'model.transcription.path': { yml: 'model.transcription.path', path: true, applies: 'reload', describe: 'A local transcription decoder; outranks the catalog id.' },
+  'model.transcription.projector.id': { yml: 'model.transcription.projector.id', applies: 'reload', describe: 'The audio projector; otherwise paired from the transcription decoder in the catalog.' },
+  'model.transcription.projector.path': { yml: 'model.transcription.projector.path', path: true, applies: 'reload', describe: 'A local audio projector; outranks its catalog id.' },
+  'model.transcription.context': { yml: 'model.transcription.context', integer: true, default: 4096, applies: 'boot', describe: 'The context budget shared by one transcription and its generated text.' },
+  'model.transcription.maxTokens': { yml: 'model.transcription.maxTokens', integer: true, default: 512, applies: 'boot', describe: 'The output token ceiling; an unfinished transcript is refused.' },
+  'model.transcription.maxBytes': { yml: 'model.transcription.maxBytes', integer: true, default: DEFAULT_AUDIO_ADMISSION.maxBytes, applies: 'boot', describe: 'The largest encoded recording admitted for transcription.' },
+  'model.transcription.maxDurationSeconds': { yml: 'model.transcription.maxDurationSeconds', integer: true, default: DEFAULT_AUDIO_ADMISSION.maxDurationSeconds, applies: 'boot', describe: 'The maximum recording duration.' },
+  'model.transcription.maxChannels': { yml: 'model.transcription.maxChannels', integer: true, default: DEFAULT_AUDIO_ADMISSION.maxChannels, applies: 'boot', describe: 'The maximum number of channels in a recording.' },
+  'model.transcription.maxSampleRate': { yml: 'model.transcription.maxSampleRate', integer: true, default: DEFAULT_AUDIO_ADMISSION.maxSampleRate, applies: 'boot', describe: 'The maximum input sample rate before native resampling.' },
 });
 
 /** The model family as the layering resolves it: one block per model, present when a rung requested it. */

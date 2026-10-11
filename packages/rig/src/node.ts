@@ -31,6 +31,8 @@ export { createReranker } from './providers/reranker';
 export type { RerankerLoadOpts } from './providers/reranker';
 export { createEmbedder } from './providers/embedding';
 export type { EmbedderLoadOpts } from './providers/embedding';
+export { createTranscriber } from './providers/transcription';
+export type { TranscriberLoadOpts } from './providers/transcription';
 
 // Node-only: Resource loading (requires node:fs)
 export { loadResources, chunkResources, resolveCorpusInput } from './resources';
