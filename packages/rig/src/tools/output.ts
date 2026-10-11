@@ -25,6 +25,7 @@ import { z } from 'zod';
 import type { ZodType } from 'zod';
 import { Tool, stripDanglingToolCall } from '@lloyal-labs/lloyal-agents';
 import type { JsonSchema, ToolLifecycleHooks } from '@lloyal-labs/lloyal-agents';
+import type { GrammarOrder } from '@lloyal-labs/sdk';
 import { weaveSourcesIntoResult } from './weave-sources';
 
 /** A typed output: the terminal tool, and the reading of what it captured. */
@@ -37,6 +38,9 @@ export interface Output<T> {
 export interface OutputOptions<T> {
   /** What the model is told the tool is for. @default `Submit your <name>.` */
   description?: string;
+  /** How a branch samples under this output's grammar: see `Tool.grammarOrder`. An output whose value is mostly
+   *  prose (a report) declares `'sampleFirst'`; one whose value is structure keeps the exact default. */
+  grammarOrder?: GrammarOrder;
   /** Make the result text from the validated value (a report's citation weave). The output then reads as text.
    *  The third argument is the template's reasoning close (empty when it does not think) — a capture that
    *  repairs prose needs it, because the framework's own repair cannot see a fragment once text is appended
@@ -52,6 +56,7 @@ class OutputTool<S extends ZodType> extends Tool<Record<string, unknown>> {
     readonly description: string,
     schema: S,
     capture?: (value: z.output<S>, raw: string, thinkingEndTag: string) => string,
+    readonly grammarOrder?: GrammarOrder,
   ) {
     super();
     // The schema is the grammar: what the model can emit is what `read` accepts.
@@ -83,14 +88,14 @@ class OutputTool<S extends ZodType> extends Tool<Record<string, unknown>> {
 export function defineOutput<S extends ZodType>(
   name: string,
   schema: S,
-  opts: { description?: string; capture: (value: z.output<S>, raw: string, thinkingEndTag: string) => string },
+  opts: { description?: string; grammarOrder?: GrammarOrder; capture: (value: z.output<S>, raw: string, thinkingEndTag: string) => string },
 ): Output<string>;
 export function defineOutput<S extends ZodType>(
   name: string,
   schema: S,
   // `capture?: never` so options whose TYPE admits a capture cannot land here: they would be promised a
   // `schema` the captured output does not carry, and a pool constrained by `undefined` decodes unconstrained.
-  opts?: { description?: string; capture?: never },
+  opts?: { description?: string; grammarOrder?: GrammarOrder; capture?: never },
 ): Output<z.output<S>> & {
   /** The value's shape as JSON Schema — the tool's parameters. An agent can be constrained to generate the value
    *  alone (`agentPool({ schema })`, `useAgent({ schema })`), and `read` decodes an accepted answer as it decodes
@@ -102,7 +107,7 @@ export function defineOutput<S extends ZodType>(
   schema: S,
   opts: OutputOptions<z.output<S>> = {},
 ): Output<unknown> & { readonly schema?: JsonSchema } {
-  const tool = new OutputTool(name, opts.description ?? `Submit your ${name}.`, schema, opts.capture);
+  const tool = new OutputTool(name, opts.description ?? `Submit your ${name}.`, schema, opts.capture, opts.grammarOrder);
   if (opts.capture) {
     // Absence is `null` here as it is everywhere else: `''` is text the capture
     // can legitimately make, so it cannot also stand for "no outcome".
@@ -146,6 +151,10 @@ export const citedReport: Output<string> = defineOutput(
   {
     description:
       'Submit your final research findings with specific evidence, direct quotes, and data points. Cite each claim inline as [title](url) using the exact URL seen in tool results. Fill the sources field with the structured list of every source you used. State what you found AND what you checked but could not find. Do not summarize — preserve detail.',
+    // The findings are a document: a thousand tokens of prose under a grammar whose only work inside them is
+    // to forbid an early close. Masking the whole vocabulary for each of them is what made a report stream at
+    // two tokens per second; the structure the grammar protects is the envelope and the sources list.
+    grammarOrder: 'sampleFirst',
     // The findings are prose the model may have cut short: a trailing unclosed call goes BEFORE the trailer
     // is appended, where the framework's end-anchored strip could no longer see it. A reaped agent restarts
     // its envelope inside the argument it was writing, so the close that opens that restart goes with it —

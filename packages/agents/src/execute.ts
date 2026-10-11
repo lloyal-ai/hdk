@@ -204,9 +204,7 @@ export interface ExecDeps {
   toolIndexMap: Map<string, number>;
   toolkitSize: number;
   terminalGrammar: string | null;
-  /** The tool whose call ends an agent's work. Its body is the one long free-text span the pool
-   *  samples under a grammar, so a branch found to be calling it samples first and asks the grammar
-   *  after; every other call keeps the exact mask-first order. */
+  /** The tool whose call ends an agent's work; an extracting agent is given its grammar alone. */
   terminalToolName: string | null;
   eagerGrammar?: string;
   enableThinking: boolean;
@@ -411,7 +409,8 @@ export class Executor {
         a.resetTurn();
         if (a.extracting && d.terminalGrammar) {
           a.branch.setGrammar(d.terminalGrammar);
-          a.branch.setGrammarOrder('sampleFirst');
+          const terminal = d.terminalToolName === null ? undefined : d.tools.get(d.terminalToolName);
+          if (terminal?.grammarOrder === 'sampleFirst') a.branch.setGrammarOrder('sampleFirst');
         } else this.applyLazyGrammar(a);
       }
     }
@@ -534,14 +533,13 @@ export class Executor {
   /** Eager grammar (schema agents) beats the lazy tool-call grammar; with no
    *  tools the template's tool grammar is deliberately NOT installed, so a
    *  no-tool agent is free to wander back to prose. */
-  /** Read the turn so far. The moment the call is identified as the terminal tool, the branch samples
-   *  first and asks the grammar after: the envelope and the name were masked, the document is not. */
+  /** Read the turn so far. The moment the call is identified as a tool that samples first, the branch
+   *  does: the envelope and the name were masked, the arguments are not. */
   private observe(a: Agent): void {
     const known = a.currentTool !== null;
     a.observe(this.d.ctx);
-    if (!known && a.currentTool !== null && a.currentTool === this.d.terminalToolName) {
-      a.branch.setGrammarOrder('sampleFirst');
-    }
+    if (known || a.currentTool === null) return;
+    if (this.d.tools.get(a.currentTool)?.grammarOrder === 'sampleFirst') a.branch.setGrammarOrder('sampleFirst');
   }
 
   applyLazyGrammar(a: Agent): void {

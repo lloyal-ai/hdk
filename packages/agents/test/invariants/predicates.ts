@@ -455,3 +455,31 @@ export function I43_attendedIsAdmitted(run: PoolRun): PredicateResult {
   }
   return ok();
 }
+
+/**
+ * I44 Sample-first-follows-identification: a branch is asked to sample first only once the pool knows
+ * which tool it is calling. Under a lazy grammar (a turn with tools) that is after at least one token has
+ * been sampled, because the call is identified from the model's own text; under an eager grammar (an
+ * extracting agent, given the terminal tool's grammar alone) the tool is known at the attach, so the order
+ * may follow the attach directly. At most one request per attach, because an attach resets the order and
+ * the identification latches for the turn; a mask-first request is never issued, because the attach
+ * already did that.
+ */
+export function I44_sampleFirstFollowsIdentification(run: PoolRun): PredicateResult {
+  const lazy = new Map<number, boolean>();
+  const samplesSinceAttach = new Map<number, number>();
+  const ordersSinceAttach = new Map<number, number>();
+  for (const ev of run.grammarEvents) {
+    if (ev.kind === 'attach') { lazy.set(ev.handle, ev.lazy); samplesSinceAttach.set(ev.handle, 0); ordersSinceAttach.set(ev.handle, 0); continue; }
+    if (ev.kind === 'sample') { samplesSinceAttach.set(ev.handle, (samplesSinceAttach.get(ev.handle) ?? 0) + 1); continue; }
+    if (!ev.sampleFirst) return fail('I44', `branch ${ev.handle}: asked to mask first (seq ${ev.seq}); the attach already did that`, ev.seq);
+    if (!lazy.has(ev.handle)) return fail('I44', `branch ${ev.handle}: asked to sample first (seq ${ev.seq}) with no grammar attached`, ev.seq);
+    if (lazy.get(ev.handle) && (samplesSinceAttach.get(ev.handle) ?? 0) === 0) {
+      return fail('I44', `branch ${ev.handle}: asked to sample first (seq ${ev.seq}) under a lazy grammar before any token identified the call`, ev.seq);
+    }
+    const n = (ordersSinceAttach.get(ev.handle) ?? 0) + 1;
+    ordersSinceAttach.set(ev.handle, n);
+    if (n > 1) return fail('I44', `branch ${ev.handle}: asked to sample first ${n} times under one attach (seq ${ev.seq})`, ev.seq);
+  }
+  return ok();
+}
