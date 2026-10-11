@@ -17,6 +17,7 @@
       "types": "./dist/fold.d.ts",
       "default": "./dist/fold.js"
     },
+    "./pcm-worklet": "./dist/pcm-worklet.js",
     "./prose": {
       "types": "./dist/prose.d.ts",
       "default": "./dist/prose.js"

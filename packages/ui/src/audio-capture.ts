@@ -25,6 +25,7 @@ export function encodePcmWav(chunks: readonly Int16Array[], sampleRate: number, 
 
 /** Capture once, with track, graph, timer and worklet lifetimes owned by the caller's signal. */
 export async function startAudioCapture(opts: {
+  workletUrl: string;
   signal: AbortSignal;
   limits?: Partial<AudioAdmission>;
   onLevel(level: number, elapsed: number): void;
@@ -63,7 +64,7 @@ export async function startAudioCapture(opts: {
   try {
     context = new AudioContext({ sampleRate: Math.min(48000, limits.maxSampleRate) });
     if (context.sampleRate > limits.maxSampleRate) throw new Error('The microphone sample rate exceeds the configured limit.');
-    await context.audioWorklet.addModule(new URL('./pcm-worklet.js', import.meta.url));
+    await context.audioWorklet.addModule(opts.workletUrl);
     opts.signal.throwIfAborted();
     const maxFrames = Math.floor(Math.min(limits.maxDurationSeconds * context.sampleRate, (limits.maxBytes - 44) / 2));
     if (maxFrames < 2) throw new Error('The recording limit is too small.');

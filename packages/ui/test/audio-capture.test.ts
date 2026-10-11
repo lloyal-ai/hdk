@@ -14,7 +14,7 @@ describe('microphone capture', () => {
     const stop = vi.fn();
     vi.stubGlobal('navigator', { mediaDevices: { getUserMedia: () => new Promise<MediaStream>(r => { grant = r; }) } });
     const controller = new AbortController();
-    const pending = capture.startAudioCapture({ signal: controller.signal, onLevel: () => {} });
+    const pending = capture.startAudioCapture({ workletUrl: '/assets/pcm-worklet.js', signal: controller.signal, onLevel: () => {} });
     controller.abort();
     grant({ getTracks: () => [{ stop }] } as unknown as MediaStream);
     await expect(pending).rejects.toThrow();

@@ -6,7 +6,9 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Bridge, Frame, VoiceCommand, VoiceEvent, VoiceResult, WireStatus } from '@lloyal-labs/binding';
 import { DEFAULT_AUDIO_ADMISSION, ingestMedia, MANIFEST_TYPE } from '@lloyal-labs/media';
 import { HarnessProvider } from '../src/provider';
-import { VoiceInput } from '../src/voice-input';
+import { useVoiceInput } from '../src/voice-input';
+import type { VoiceInputOptions } from '../src/voice-input';
+import { RecordingWaveform } from '../src/recording-waveform';
 import { startAudioCapture } from '../src/audio-capture';
 
 vi.mock('../src/audio-capture', () => ({ startAudioCapture: vi.fn() }));
@@ -15,6 +17,22 @@ vi.mock('@lloyal-labs/media', async (original) => ({ ...await original<object>()
 const audio = { mediaType: MANIFEST_TYPE, digest: `sha256:${'a'.repeat(64)}`, size: 120 };
 const result = { text: 'spoken words', audio, silent: false } as VoiceResult;
 const capabilities = { enabled: true as const, model: 'Qwen3 ASR', limits: DEFAULT_AUDIO_ADMISSION };
+
+/** The smallest composer: one row that gives the hook's state the same controls a real one does. */
+function Composer(options: VoiceInputOptions) {
+  const voice = useVoiceInput(options);
+  return createElement('div', null,
+    voice.available && createElement('button', {
+      'aria-label': voice.phase === 'recording' ? 'Stop recording' : 'Record voice',
+      disabled: voice.active && voice.phase !== 'recording',
+      onClick: () => (voice.phase === 'recording' ? voice.stop() : voice.start()),
+    }),
+    voice.active && createElement('button', { 'aria-label': 'Cancel dictation', onClick: voice.cancel }),
+    voice.pending && createElement('button', { onClick: voice.insertPending }, 'Insert transcript'),
+    voice.active && createElement(RecordingWaveform, { levels: voice.levels, elapsed: voice.elapsed, recording: voice.phase === 'recording' }),
+    voice.error && createElement('span', { role: 'alert' }, voice.error),
+  );
+}
 
 function voiceBridge() {
   const events = new Set<(frame: Frame<VoiceEvent>) => void>();
@@ -54,29 +72,36 @@ describe('dictation in an editable draft', () => {
     const render = async (draft: string, destination = 'one') => {
       await act(async () => root.render(createElement(HarnessProvider, {
         bridge: transport.bridge, initialState: {}, reduce: s => s,
-        children: createElement(VoiceInput, { draft, onDraft: changed, destination }),
+        children: createElement(Composer, { workletUrl: '/assets/pcm-worklet.js', draft, onDraft: changed, destination }),
       })));
     };
     await render('Existing');
     return { ...transport, render };
   }
 
+  const button = (label: string): HTMLButtonElement | undefined =>
+    [...container.querySelectorAll('button')].find(b => b.getAttribute('aria-label') === label || b.textContent === label);
+
   async function click(label: string): Promise<void> {
-    const button = [...container.querySelectorAll('button')].find(b => b.getAttribute('aria-label') === label || b.textContent === label);
-    expect(button, label).toBeDefined();
-    await act(async () => button!.click());
+    const target = button(label);
+    expect(target, label).toBeDefined();
+    await act(async () => target!.click());
   }
 
   it('shows actual capture levels and inserts the transcript without submitting the draft', async () => {
     const { sent, push } = await setup();
     await click('Record voice');
+    expect(startAudioCapture).toHaveBeenCalledWith(expect.objectContaining({ workletUrl: '/assets/pcm-worklet.js' }));
     expect(container.textContent).toContain('00:04');
     expect(container.querySelector('.lloyal-wave-live rect[opacity="0.9"]')).not.toBeNull();
     await click('Stop recording');
+    expect(button('Record voice')?.disabled).toBe(true);
     const request = sent.find(c => c.type === 'voice:transcribe')!;
     expect(request).toMatchObject({ audio });
     await act(async () => push({ type: 'voice:result', requestId: request.requestId, result }));
     expect(changed).toHaveBeenCalledExactlyOnceWith('Existing spoken words');
+    expect(button('Record voice')?.disabled).toBe(false);
+    expect(container.querySelector('.lloyal-wave-live')).toBeNull();
     expect(sent.every(c => c.type.startsWith('voice:'))).toBe(true);
   });
 
@@ -96,8 +121,30 @@ describe('dictation in an editable draft', () => {
     await click('Record voice');
     await render('Another draft', 'two');
     expect(captureSignal.aborted).toBe(true);
-    expect(container.querySelector('[aria-label="Record voice"]')).not.toBeNull();
-    expect(container.textContent).toContain('00:00');
+    expect(button('Record voice')?.disabled).toBe(false);
+    expect(container.querySelector('.lloyal-wave-live')).toBeNull();
+  });
+
+  it('cancels from the row, telling the host, and leaves the draft untouched', async () => {
+    const { sent } = await setup();
+    await click('Record voice'); await click('Stop recording');
+    const request = sent.find(c => c.type === 'voice:transcribe')!;
+    await click('Cancel dictation');
+    expect(captureSignal.aborted).toBe(true);
+    expect(sent.at(-1)).toEqual({ type: 'voice:cancel', requestId: request.requestId });
+    expect(changed).not.toHaveBeenCalled();
+    expect(button('Record voice')?.disabled).toBe(false);
+  });
+
+  it('turns a silent recording into one quiet sentence that the next attempt clears', async () => {
+    const { sent, push } = await setup();
+    await click('Record voice'); await click('Stop recording');
+    const request = sent.find(c => c.type === 'voice:transcribe')!;
+    await act(async () => push({ type: 'voice:result', requestId: request.requestId, result: { ...result, text: '', silent: true } }));
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe('The recording was silent.');
+    expect(changed).not.toHaveBeenCalled();
+    await click('Record voice');
+    expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
   it('aborts on connection loss without sending to the lost connection or accepting an obsolete result', async () => {
@@ -111,6 +158,6 @@ describe('dictation in an editable draft', () => {
     await act(async () => { status('connected'); });
     await act(async () => push({ type: 'voice:result', requestId: request.requestId, result }));
     expect(changed).not.toHaveBeenCalled();
-    expect(container.querySelector('[aria-label="Record voice"]')?.hasAttribute('disabled')).toBe(false);
+    expect(button('Record voice')?.disabled).toBe(false);
   });
 });

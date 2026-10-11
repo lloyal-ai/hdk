@@ -29,5 +29,5 @@ export * from './fold.js';
 export * from './prose.js';
 export { RecordingWaveform } from './recording-waveform.js';
 export type { RecordingWaveformProps } from './recording-waveform.js';
-export { VoiceInput } from './voice-input.js';
-export type { VoiceInputProps } from './voice-input.js';
+export { useVoiceInput, insertTranscript, MicGlyph } from './voice-input.js';
+export type { VoiceInput, VoiceInputOptions, VoicePhase } from './voice-input.js';
