@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 import { act, createElement, useState } from 'react';
+import type { ReactElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { Popover } from '../src/popover';
 
 /** A control and the surface it owns, the way a composer would hold them. */
-function Host({ child = createElement('button', { 'aria-label': 'web' }, 'web') }: { child?: ReturnType<typeof createElement> } = {}) {
+function Host({ child = createElement('button', { 'aria-label': 'web' }, 'web') }: { child?: ReactElement }): ReactElement {
   const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
   const [open, setOpen] = useState(false);
   return createElement('div', null,
@@ -53,7 +54,7 @@ describe('a popover over the page', () => {
   });
 
   it('hands focus to the first native control of any kind, and to itself when it holds none', async () => {
-    const open = async (child: ReturnType<typeof createElement>) => {
+    const open = async (child: ReactElement): Promise<void> => {
       container = document.createElement('div'); document.body.appendChild(container);
       root = createRoot(container);
       await act(async () => root.render(createElement(Host, { child })));
