@@ -445,6 +445,15 @@ export interface FormatChatOptions {
  *
  * @category Chat
  */
+export interface GrammarTrigger {
+  /** Trigger type */
+  type: GrammarTriggerType;
+  /** Trigger value (token text, word, or regex pattern depending on type) */
+  value: string;
+  /** Token ID (for TOKEN-type triggers, -1 when not applicable) */
+  token: number;
+}
+
 /**
  * How a branch consults its grammar on each sample.
  *
@@ -459,15 +468,6 @@ export interface FormatChatOptions {
  * @see {@link Branch.setGrammarOrder}
  */
 export type GrammarOrder = 'maskFirst' | 'sampleFirst';
-
-export interface GrammarTrigger {
-  /** Trigger type */
-  type: GrammarTriggerType;
-  /** Trigger value (token text, word, or regex pattern depending on type) */
-  value: string;
-  /** Token ID (for TOKEN-type triggers, -1 when not applicable) */
-  token: number;
-}
 
 /**
  * Result from chat template formatting

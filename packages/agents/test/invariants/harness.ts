@@ -70,7 +70,7 @@ export class InstrumentedMockSessionContext extends MockSessionContext {
   private _seq = 0;
   private _grammarSeq = 0;
 
-  noteGrammar(ev: Omit<GrammarEvent, 'seq'>): void {
+  noteGrammar(ev: GrammarEvent extends infer E ? E extends GrammarEvent ? Omit<E, 'seq'> : never : never): void {
     this.grammarEvents.push({ ...ev, seq: this._grammarSeq++ } as GrammarEvent);
   }
 

@@ -49,7 +49,7 @@ const withGrammar = (ctx: InstrumentedMockSessionContext) => {
     ...format(msgs, opts),
     grammar: 'root ::= "<tool_call>" [^<]* "</tool_call>"',
     grammarLazy: true,
-    grammarTriggers: [{ type: GrammarTriggerType.WORD, value: '<tool_call>' }],
+    grammarTriggers: [{ type: GrammarTriggerType.WORD, value: '<tool_call>', token: -1 }],
   });
 };
 

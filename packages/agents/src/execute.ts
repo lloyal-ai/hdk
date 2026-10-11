@@ -530,9 +530,6 @@ export class Executor {
     return true;
   }
 
-  /** Eager grammar (schema agents) beats the lazy tool-call grammar; with no
-   *  tools the template's tool grammar is deliberately NOT installed, so a
-   *  no-tool agent is free to wander back to prose. */
   /** Read the turn so far. The moment the call is identified as a tool that samples first, the branch
    *  does: the envelope and the name were masked, the arguments are not. */
   private observe(a: Agent): void {
@@ -542,6 +539,9 @@ export class Executor {
     if (this.d.tools.get(a.currentTool)?.grammarOrder === 'sampleFirst') a.branch.setGrammarOrder('sampleFirst');
   }
 
+  /** Eager grammar (schema agents) beats the lazy tool-call grammar; with no
+   *  tools the template's tool grammar is deliberately NOT installed, so a
+   *  no-tool agent is free to wander back to prose. */
   applyLazyGrammar(a: Agent): void {
     const d = this.d;
     if (d.eagerGrammar) {
