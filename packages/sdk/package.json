@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/sdk",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "engines": {
     "node": ">=24"
   },
@@ -20,7 +20,11 @@
     "./package.json": "./package.json"
   },
   "typesVersions": {
-    "*": { "node": ["dist/node.d.ts"] }
+    "*": {
+      "node": [
+        "dist/node.d.ts"
+      ]
+    }
   },
   "publishConfig": {
     "access": "public"
@@ -61,6 +65,8 @@
     "@lloyal-labs/lloyal.node": "^3.2.0"
   },
   "peerDependenciesMeta": {
-    "@lloyal-labs/lloyal.node": { "optional": true }
+    "@lloyal-labs/lloyal.node": {
+      "optional": true
+    }
   }
 }
