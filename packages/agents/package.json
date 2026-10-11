@@ -4,7 +4,7 @@
   "engines": {
     "node": ">=24"
   },
-  "description": "Multi-agent inference inside the decode loop \u2014 structured concurrency over shared KV state",
+  "description": "Multi-agent inference inside the decode loop — structured concurrency over shared KV state",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "publishConfig": {
