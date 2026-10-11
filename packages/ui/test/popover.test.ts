@@ -65,5 +65,11 @@ describe('a popover over the page', () => {
     await act(async () => root.unmount()); container.remove();
     await open(createElement('p', null, 'nothing to press'));
     expect(document.activeElement).toBe(dialog());
+    await act(async () => root.unmount()); container.remove();
+    await open(createElement('div', null,
+      createElement('button', { disabled: true, 'aria-label': 'off' }, 'off'),
+      createElement('button', { 'aria-label': 'on' }, 'on'),
+    ));
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('on');
   });
 });

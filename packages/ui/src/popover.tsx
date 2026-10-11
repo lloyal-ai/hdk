@@ -11,7 +11,10 @@ import type { CSSProperties, ReactElement, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
 /** What a keyboard can land on: every native control, and anything that opted in. */
-const FOCUSABLE = 'button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+const FOCUSABLE = [
+  'button:not([disabled])', 'a[href]', 'input:not([disabled]):not([type="hidden"])', 'select:not([disabled])',
+  'textarea:not([disabled])', '[tabindex]:not([tabindex="-1"])',
+].join(', ');
 
 export interface PopoverProps {
   /** The control the surface belongs to; its rectangle places the surface and its focus is restored on close. */
