@@ -23,6 +23,8 @@ export { Markdown } from './markdown.js';
 export type { MarkdownComponents } from './markdown.js';
 export { Lightbox } from './lightbox.js';
 export type { LightboxProps } from './lightbox.js';
+export { Popover } from './popover.js';
+export type { PopoverProps } from './popover.js';
 export { resolveAsset, useAssets, pageFacts, pageList } from './assets.js';
 export type { Asset } from './assets.js';
 export * from './fold.js';
