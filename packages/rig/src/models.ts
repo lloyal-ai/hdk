@@ -107,13 +107,19 @@ export function isModelPresent(projectRoot: string, role: ModelRole, id: string)
 export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
   {
     id: 'qwen3-asr-0.6b-q8', role: 'transcription', label: 'Qwen3-ASR 0.6B · Q8_0',
-    urls: ['https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/928ab958557df9aa2ef1c93e0e83c7ad0933fae2/Qwen3-ASR-0.6B-Q8_0.gguf'],
+    urls: [
+      'https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/928ab958557df9aa2ef1c93e0e83c7ad0933fae2/Qwen3-ASR-0.6B-Q8_0.gguf',
+      'https://models.lloyal.ai/Qwen3-ASR-0.6B-Q8_0.gguf',
+    ],
     sha256: 'bca259818b50ca7c4c05e9bdb35a5dc04fa039653a6d6f3f0f331f96f6aa1971',
     sizeBytes: 804_749_248, recommendedContext: 4096, projector: 'qwen3-asr-0.6b-mmproj-q8',
   },
   {
     id: 'qwen3-asr-0.6b-mmproj-q8', role: 'transcription.projector', label: 'Qwen3-ASR 0.6B audio projector · Q8_0',
-    urls: ['https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/928ab958557df9aa2ef1c93e0e83c7ad0933fae2/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf'],
+    urls: [
+      'https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/928ab958557df9aa2ef1c93e0e83c7ad0933fae2/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf',
+      'https://models.lloyal.ai/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf',
+    ],
     sha256: '41a342b5e4c514e968cb756de6cd1b7be39eff43c44c57a2ef5fc6522e36603d',
     sizeBytes: 214_392_480,
   },
