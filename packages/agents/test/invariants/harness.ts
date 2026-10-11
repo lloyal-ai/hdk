@@ -50,12 +50,6 @@ export interface PoolRun {
   error?: unknown;
 }
 
-/**
- * MockSessionContext wrapper that records every native entry point
- * with start/end timestamps. Temporal overlap between two recorded calls
- * is prima facie evidence that two fibers reached the native layer
- * simultaneously — which the architecture forbids.
- */
 /** What the pool told a branch about its grammar, in order: an attach (which resets the order to mask
  *  first), a request to sample first, or a sample under whatever is attached. */
 export type GrammarEvent =
@@ -63,6 +57,12 @@ export type GrammarEvent =
   | { seq: number; kind: 'order'; handle: number; sampleFirst: boolean }
   | { seq: number; kind: 'sample'; handle: number };
 
+/**
+ * MockSessionContext wrapper that records every native entry point
+ * with start/end timestamps. Temporal overlap between two recorded calls
+ * is prima facie evidence that two fibers reached the native layer
+ * simultaneously — which the architecture forbids.
+ */
 export class InstrumentedMockSessionContext extends MockSessionContext {
   readonly nativeCalls: NativeCall[] = [];
   /** Every grammar attach, order request and sample, in the order the pool issued them. */
