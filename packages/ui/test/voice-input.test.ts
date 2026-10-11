@@ -3,7 +3,7 @@ import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { Bridge, Frame, VoiceCommand, VoiceEvent, VoiceResult, WireStatus } from '@lloyal-labs/binding';
+import type { Bridge, Frame, VoiceCapabilities, VoiceCommand, VoiceEvent, VoiceResult, WireStatus } from '@lloyal-labs/binding';
 import { DEFAULT_AUDIO_ADMISSION, ingestMedia, MANIFEST_TYPE } from '@lloyal-labs/media';
 import { HarnessProvider } from '../src/provider';
 import { useVoiceInput } from '../src/voice-input';
@@ -18,13 +18,15 @@ const audio = { mediaType: MANIFEST_TYPE, digest: `sha256:${'a'.repeat(64)}`, si
 const result = { text: 'spoken words', audio, silent: false } as VoiceResult;
 const capabilities = { enabled: true as const, model: 'Qwen3 ASR', limits: DEFAULT_AUDIO_ADMISSION };
 
-/** The smallest composer: one row that gives the hook's state the same controls a real one does. */
+/** The smallest composer: one row that gives the hook's state the same controls a real one does.
+ *  The mic has its place from first paint and is switched on, never inserted. */
 function Composer(options: VoiceInputOptions) {
   const voice = useVoiceInput(options);
   return createElement('div', null,
-    voice.available && createElement('button', {
+    createElement('button', {
       'aria-label': voice.phase === 'recording' ? 'Stop recording' : 'Record voice',
-      disabled: voice.active && voice.phase !== 'recording',
+      'data-enabled': String(voice.enabled),
+      disabled: !voice.available || (voice.active && voice.phase !== 'recording'),
       onClick: () => (voice.phase === 'recording' ? voice.stop() : voice.start()),
     }),
     voice.active && createElement('button', { 'aria-label': 'Cancel dictation', onClick: voice.cancel }),
@@ -34,7 +36,7 @@ function Composer(options: VoiceInputOptions) {
   );
 }
 
-function voiceBridge() {
+function voiceBridge(answer: VoiceCapabilities | null = capabilities) {
   const events = new Set<(frame: Frame<VoiceEvent>) => void>();
   const statuses = new Set<(status: WireStatus) => void>();
   const sent: VoiceCommand[] = [];
@@ -42,7 +44,7 @@ function voiceBridge() {
   const bridge: Bridge<VoiceEvent, VoiceCommand, object> = {
     onEvent(cb) { events.add(cb); return () => { events.delete(cb); }; },
     onStatus(cb) { statuses.add(cb); cb('connected'); return () => { statuses.delete(cb); }; },
-    send(command) { sent.push(command); if (command.type === 'voice:describe') push({ type: 'voice:capabilities', capabilities }); },
+    send(command) { sent.push(command); if (command.type === 'voice:describe' && answer) push({ type: 'voice:capabilities', capabilities: answer }); },
     requestSnapshot: async () => ({ state: {}, epoch: 1, seq: 0 }),
     contentOrigin: () => '',
   };
@@ -58,8 +60,8 @@ describe('dictation in an editable draft', () => {
   beforeAll(() => { (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true; });
   afterEach(() => { act(() => root?.unmount()); container?.remove(); vi.clearAllMocks(); });
 
-  async function setup() {
-    const transport = voiceBridge();
+  async function setup(answer: VoiceCapabilities | null = capabilities) {
+    const transport = voiceBridge(answer);
     vi.mocked(ingestMedia).mockResolvedValue(audio);
     vi.mocked(startAudioCapture).mockImplementation(async ({ signal, onLevel }) => {
       captureSignal = signal;
@@ -87,6 +89,18 @@ describe('dictation in an editable draft', () => {
     expect(target, label).toBeDefined();
     await act(async () => target!.click());
   }
+
+  it('keeps the mic in place but off until the host answers, then switches it on or leaves it off', async () => {
+    const { push } = await setup(null);
+    expect(button('Record voice')?.disabled).toBe(true);
+    expect(button('Record voice')?.getAttribute('data-enabled')).toBe('undefined');
+    await act(async () => push({ type: 'voice:capabilities', capabilities: { enabled: false } }));
+    expect(button('Record voice')?.disabled).toBe(true);
+    expect(button('Record voice')?.getAttribute('data-enabled')).toBe('false');
+    await act(async () => push({ type: 'voice:capabilities', capabilities }));
+    expect(button('Record voice')?.disabled).toBe(false);
+    expect(button('Record voice')?.getAttribute('data-enabled')).toBe('true');
+  });
 
   it('shows actual capture levels and inserts the transcript without submitting the draft', async () => {
     const { sent, push } = await setup();

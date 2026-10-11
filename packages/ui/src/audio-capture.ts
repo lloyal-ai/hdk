@@ -23,6 +23,15 @@ export function encodePcmWav(chunks: readonly Int16Array[], sampleRate: number, 
   return bytes;
 }
 
+/** The browser's refusal, as one sentence a person can act on; its own wording names only the mechanism. */
+export function explainDenial(error: unknown): string {
+  const name = error instanceof DOMException || (typeof error === 'object' && error !== null && 'name' in error) ? String((error as { name: unknown }).name) : '';
+  if (name === 'NotAllowedError' || name === 'SecurityError') return 'Microphone access was refused. Allow it for this app, then try again.';
+  if (name === 'NotFoundError' || name === 'OverconstrainedError') return 'No microphone was found.';
+  if (name === 'NotReadableError') return 'The microphone is in use by another app.';
+  return error instanceof Error && error.message ? error.message : 'Recording failed.';
+}
+
 /** Capture once, with track, graph, timer and worklet lifetimes owned by the caller's signal. */
 export async function startAudioCapture(opts: {
   workletUrl: string;
@@ -33,7 +42,8 @@ export async function startAudioCapture(opts: {
   const limits = audioAdmission(opts.limits);
   opts.signal.throwIfAborted();
   if (!navigator.mediaDevices?.getUserMedia) throw new Error('Microphone access requires a secure page and a supported browser.');
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }, video: false });
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }, video: false })
+    .catch((error: unknown) => { throw new Error(explainDenial(error)); });
   if (opts.signal.aborted) { stream.getTracks().forEach(track => track.stop()); opts.signal.throwIfAborted(); }
   let context: AudioContext | undefined;
   let source: MediaStreamAudioSourceNode | undefined;

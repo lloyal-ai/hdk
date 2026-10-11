@@ -26,6 +26,9 @@ export interface VoiceInputOptions {
 
 /** Dictation as the composer sees it: one state, the actions on it, and nothing about layout. */
 export interface VoiceInput {
+  /** Whether the harness offers transcription; undefined until the host has answered, so a composer can
+   *  keep the mic's place from first paint and only switch it on. */
+  enabled?: boolean;
   /** The harness offers transcription and the composer can accept edits right now. */
   available: boolean;
   phase: VoicePhase;
@@ -56,7 +59,7 @@ export function useVoiceInput({ workletUrl, draft, onDraft, selection, destinati
   const { bridge } = useHarness<VoiceEvent, VoiceCommand>();
   const origin = useContentOrigin();
   const availability = useAvailability();
-  const [capabilities, setCapabilities] = useState<VoiceCapabilities>({ enabled: false });
+  const [capabilities, setCapabilities] = useState<VoiceCapabilities | null>(null);
   const [state, setState] = useState<VoiceState>(INITIAL);
   const latest = useRef({ draft, revision: 0, onDraft, selection, availability });
   if (latest.current.draft !== draft) latest.current.revision++;
@@ -77,7 +80,7 @@ export function useVoiceInput({ workletUrl, draft, onDraft, selection, destinati
 
   useEffect(() => {
     setState(INITIAL);
-    setCapabilities({ enabled: false });
+    setCapabilities(null);
     if (availability !== 'ready' || origin === null || disabled) return;
     const unsubscribe = bridge.onEvent(({ ev }) => {
       if (ev.type === 'voice:capabilities') { setCapabilities(ev.capabilities); return; }
@@ -109,10 +112,10 @@ export function useVoiceInput({ workletUrl, draft, onDraft, selection, destinati
     };
   }, [bridge, availability, origin, destination, disabled]);
 
-  const available = capabilities.enabled && origin !== null && availability === 'ready' && !disabled;
+  const available = capabilities?.enabled === true && origin !== null && availability === 'ready' && !disabled;
 
   const start = async (): Promise<void> => {
-    if (!capabilities.enabled || origin === null || active.current || disabled) return;
+    if (!capabilities?.enabled || origin === null || active.current || disabled) return;
     const current = {
       id: crypto.randomUUID(), controller: new AbortController(), revision: latest.current.revision,
       draft: latest.current.draft, range: latest.current.selection?.() ?? { start: draft.length, end: draft.length },
@@ -125,7 +128,8 @@ export function useVoiceInput({ workletUrl, draft, onDraft, selection, destinati
       current.capture = await startAudioCapture({
         workletUrl,
         signal: current.controller.signal, limits: capabilities.limits,
-        onLevel: (level, elapsed) => { if (owns()) setState(s => ({ ...s, levels: [...s.levels.slice(-79), Math.min(1, Math.sqrt(level))], elapsed })); },
+        // About twenty seconds of history at the worklet's flush rate: enough for the widest row to show real levels.
+        onLevel: (level, elapsed) => { if (owns()) setState(s => ({ ...s, levels: [...s.levels.slice(-479), Math.min(1, Math.sqrt(level))], elapsed })); },
       });
       if (!owns()) return;
       setState(s => ({ ...s, phase: 'recording' }));
@@ -157,7 +161,7 @@ export function useVoiceInput({ workletUrl, draft, onDraft, selection, destinati
   };
 
   return {
-    available, phase: state.phase, active: ACTIVE.includes(state.phase),
+    enabled: capabilities?.enabled, available, phase: state.phase, active: ACTIVE.includes(state.phase),
     levels: state.levels, elapsed: state.elapsed, error: state.error, pending: state.pending,
     start: () => { void start(); }, stop, cancel, insertPending,
   };

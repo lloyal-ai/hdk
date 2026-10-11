@@ -20,6 +20,13 @@ describe('the recording waveform', () => {
     expect(html).not.toContain('00:09');
     expect(html).toContain('height="14"');
   });
+  it('keeps every bar at its pixel size, so width adds history rather than girth', () => {
+    const html = renderToString(createElement(RecordingWaveform, { levels: [1, 1], elapsed: 1, recording: true }));
+    expect(html).not.toContain('preserveAspectRatio');
+    expect(html.match(/<rect /g)?.length).toBe(Math.floor((560 + 3.5) / 6));
+    expect(html).toContain('width="2.5"');
+    expect(html).toContain('mask-image');
+  });
   it('offers a quiet dotted baseline for reduced motion with no invented activity', () => {
     const html = renderToString(createElement(RecordingWaveform, { levels: [], elapsed: 0, recording: true }));
     expect(html).toContain('lloyal-wave-still');

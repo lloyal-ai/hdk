@@ -6,7 +6,12 @@
  * @category Desktop
  */
 import { BrowserWindow, shell } from 'electron';
-import type { BrowserWindowConstructorOptions } from 'electron';
+import type { BrowserWindowConstructorOptions, Session, WebContents } from 'electron';
+import { allowMicrophone } from './microphone';
+
+/** The windows this host opened, and the sessions already guarding the microphone for them. */
+const own = new WeakSet<WebContents>();
+const guarded = new WeakSet<Session>();
 
 /** Only http(s) links may leave the app. */
 function isExternalUrl(url: string): boolean {
@@ -35,6 +40,12 @@ export function createWindow(opts: CreateWindowOpts): BrowserWindow {
     webPreferences: { preload: opts.preload, contextIsolation: true, sandbox: false, ...(opts.window?.webPreferences ?? {}) },
   });
   win.once('ready-to-show', () => win.show());
+  // Dictation may hold the microphone from this window only; the session's handlers are installed once.
+  own.add(win.webContents);
+  if (!guarded.has(win.webContents.session)) {
+    guarded.add(win.webContents.session);
+    allowMicrophone(win.webContents.session, (contents) => contents !== null && own.has(contents));
+  }
   // Links open in the system browser; the renderer never navigates away.
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (isExternalUrl(url)) void shell.openExternal(url);
