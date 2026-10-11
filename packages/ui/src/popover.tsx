@@ -10,6 +10,9 @@ import { useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, ReactElement, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
+/** What a keyboard can land on: every native control, and anything that opted in. */
+const FOCUSABLE = 'button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+
 export interface PopoverProps {
   /** The control the surface belongs to; its rectangle places the surface and its focus is restored on close. */
   anchor: HTMLElement | null;
@@ -58,7 +61,8 @@ export function Popover({ anchor, open, onClose, label, children, style }: Popov
     };
     window.addEventListener('keydown', onKey);
     document.addEventListener('pointerdown', onPress);
-    node?.querySelector<HTMLElement>('button, [tabindex]')?.focus();
+    // Focus lands on the first control of any native kind; a surface with none takes it itself.
+    (node?.querySelector<HTMLElement>(FOCUSABLE) ?? node)?.focus();
     return () => {
       window.removeEventListener('resize', measure);
       window.removeEventListener('scroll', measure, true);
@@ -70,7 +74,7 @@ export function Popover({ anchor, open, onClose, label, children, style }: Popov
 
   if (!open || !anchor) return null;
   return createPortal(
-    <div ref={panel} role="dialog" aria-label={label} style={{ ...surface, ...position, ...style }}>
+    <div ref={panel} role="dialog" aria-label={label} tabIndex={-1} style={{ ...surface, ...position, ...style }}>
       {children}
     </div>,
     document.body,

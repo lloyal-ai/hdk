@@ -6,7 +6,7 @@ import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { Popover } from '../src/popover';
 
 /** A control and the surface it owns, the way a composer would hold them. */
-function Host() {
+function Host({ child = createElement('button', { 'aria-label': 'web' }, 'web') }: { child?: ReturnType<typeof createElement> } = {}) {
   const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
   const [open, setOpen] = useState(false);
   return createElement('div', null,
@@ -14,7 +14,7 @@ function Host() {
     createElement('p', { id: 'outside' }, 'elsewhere'),
     createElement(Popover, {
       anchor, open, onClose: () => setOpen(false), label: 'Abilities',
-      children: createElement('button', { 'aria-label': 'web' }, 'web'),
+      children: child,
     }),
   );
 }
@@ -50,5 +50,19 @@ describe('a popover over the page', () => {
     expect(dialog()).not.toBeNull();
     await act(async () => { document.getElementById('outside')!.dispatchEvent(new Event('pointerdown', { bubbles: true })); });
     expect(dialog()).toBeNull();
+  });
+
+  it('hands focus to the first native control of any kind, and to itself when it holds none', async () => {
+    const open = async (child: ReturnType<typeof createElement>) => {
+      container = document.createElement('div'); document.body.appendChild(container);
+      root = createRoot(container);
+      await act(async () => root.render(createElement(Host, { child })));
+      await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Abilities"]')!.click());
+    };
+    await open(createElement('a', { href: '#settings', 'aria-label': 'settings' }, 'settings'));
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('settings');
+    await act(async () => root.unmount()); container.remove();
+    await open(createElement('p', null, 'nothing to press'));
+    expect(document.activeElement).toBe(dialog());
   });
 });
