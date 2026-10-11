@@ -21,6 +21,7 @@ export type {
   ContextOptions,
   FormatChatOptions,
   GrammarTrigger,
+  GrammarOrder,
   FormattedChatResult,
   ParseChatOutputOptions,
   ParsedToolCall,

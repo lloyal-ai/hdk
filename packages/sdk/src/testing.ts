@@ -436,6 +436,7 @@ export class MockSessionContext implements SessionContext {
   _branchSetSamplerParams(_handle: number, _params: SamplingParams): void {}
   _branchSetGrammar(_handle: number, _grammar: string): void {}
   _branchSetGrammarLazy(_handle: number, _grammar: string, _patterns: string[], _tokens: number[]): void {}
+  _branchSetGrammarOrder(_handle: number, _sampleFirst: boolean): void {}
   _branchSetLogitBias(_handle: number, _biases: Array<{ token: number; bias: number }>): void {}
   _branchClearLogitBias(_handle: number): void {}
   _branchSteer(_handle: number, _biases: Array<{ token: number; bias: number }>): void {}

@@ -445,6 +445,21 @@ export interface FormatChatOptions {
  *
  * @category Chat
  */
+/**
+ * How a branch consults its grammar on each sample.
+ *
+ * `'maskFirst'` (the default) tests every vocabulary entry against the grammar before the sampler chain
+ * runs: exact under top-k/top-p/min-p, at the cost of a walk over the whole vocabulary per token.
+ * `'sampleFirst'` lets the chain pick a token from the raw candidates and asks the grammar about that
+ * one token, masking the whole vocabulary only when it is refused. Inside a free-text span the pick is
+ * almost always legal, so the mask is almost never built; at a structural token the two orders can
+ * weight legal tokens differently, because truncation ran before the grammar. The order resets to
+ * `'maskFirst'` whenever a grammar is attached.
+ *
+ * @see {@link Branch.setGrammarOrder}
+ */
+export type GrammarOrder = 'maskFirst' | 'sampleFirst';
+
 export interface GrammarTrigger {
   /** Trigger type */
   type: GrammarTriggerType;
@@ -1601,6 +1616,9 @@ export interface SessionContext {
 
   /** @internal */
   _branchSetGrammarLazy(handle: number, grammar: string, patterns: string[], tokens: number[]): void;
+
+  /** @internal */
+  _branchSetGrammarOrder(handle: number, sampleFirst: boolean): void;
 
   /** @internal */
   _branchModelEntropy(handle: number, base?: string): number;

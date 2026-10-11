@@ -251,7 +251,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
       ctx, store, tools, emit, tw, pending, agents, forged, spawns, inflight,
       permits: makePermits(opts.maxConcurrentTools ?? DEFAULT_MAX_CONCURRENT_TOOLS),
       completed, wake, progress, scorer: opts.scorer, toolIndexMap, toolkitSize: tools.size,
-      terminalGrammar, eagerGrammar, enableThinking, spine, runNow, counters, totals, policy, frame,
+      terminalGrammar, terminalToolName: terminalToolName ?? null, eagerGrammar, enableThinking, spine, runNow, counters, totals, policy, frame,
       pressureOpts, ingress, attachments, available, ladder, trace,
     });
 

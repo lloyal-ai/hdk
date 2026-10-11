@@ -1,4 +1,4 @@
-import type { SessionContext, SamplingParams, Produced, GrammarTrigger, MultimodalPrefillResult, MultimodalInput, AudioLimits } from './types';
+import type { SessionContext, SamplingParams, Produced, GrammarTrigger, GrammarOrder, MultimodalPrefillResult, MultimodalInput, AudioLimits } from './types';
 import { GrammarTriggerType } from './types';
 import { splitCompleteUtf8, concatBytes } from './utf8';
 
@@ -551,6 +551,22 @@ export class Branch {
       }
     }
     this._ctx._branchSetGrammarLazy(this._handle, grammar, patterns, tokens);
+  }
+
+  /**
+   * Choose how the attached grammar is consulted on each sample
+   *
+   * Call after {@link setGrammar} or {@link setGrammarLazy}: attaching a grammar
+   * resets the order to `'maskFirst'`. A lazy grammar still awaiting its trigger
+   * is unaffected by the order; it costs nothing either way until it fires.
+   *
+   * @param order - `'maskFirst'` (exact, whole-vocabulary mask per token) or
+   *   `'sampleFirst'` (check the chain's pick, mask only when refused)
+   * @see {@link GrammarOrder} for what the orders trade
+   */
+  setGrammarOrder(order: GrammarOrder): void {
+    this._ensureNotDisposed();
+    this._ctx._branchSetGrammarOrder(this._handle, order === 'sampleFirst');
   }
 
   /**

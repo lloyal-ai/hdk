@@ -204,6 +204,10 @@ export interface ExecDeps {
   toolIndexMap: Map<string, number>;
   toolkitSize: number;
   terminalGrammar: string | null;
+  /** The tool whose call ends an agent's work. Its body is the one long free-text span the pool
+   *  samples under a grammar, so a branch found to be calling it samples first and asks the grammar
+   *  after; every other call keeps the exact mask-first order. */
+  terminalToolName: string | null;
   eagerGrammar?: string;
   enableThinking: boolean;
   spine: Branch;
@@ -271,11 +275,11 @@ export class Executor {
         const entropy = a.branch.modelEntropy();
         const surprisal = a.branch.modelSurprisal(token);
         a.accumulateTokenWithTrace(text, entropy, surprisal);
-        a.observe(d.ctx);
+        this.observe(a);
         yield* d.emit.emit({ kind: 'produced', agent: a, text, entropy, surprisal });
       } else {
         a.accumulateToken(text);
-        a.observe(d.ctx);
+        this.observe(a);
         yield* d.emit.emit({ kind: 'produced', agent: a, text });
       }
     }
@@ -405,8 +409,10 @@ export class Executor {
       for (const a of admitted) {
         a.transition('active');
         a.resetTurn();
-        if (a.extracting && d.terminalGrammar) a.branch.setGrammar(d.terminalGrammar);
-        else this.applyLazyGrammar(a);
+        if (a.extracting && d.terminalGrammar) {
+          a.branch.setGrammar(d.terminalGrammar);
+          a.branch.setGrammarOrder('sampleFirst');
+        } else this.applyLazyGrammar(a);
       }
     }
     return admitted;
@@ -528,6 +534,16 @@ export class Executor {
   /** Eager grammar (schema agents) beats the lazy tool-call grammar; with no
    *  tools the template's tool grammar is deliberately NOT installed, so a
    *  no-tool agent is free to wander back to prose. */
+  /** Read the turn so far. The moment the call is identified as the terminal tool, the branch samples
+   *  first and asks the grammar after: the envelope and the name were masked, the document is not. */
+  private observe(a: Agent): void {
+    const known = a.currentTool !== null;
+    a.observe(this.d.ctx);
+    if (!known && a.currentTool !== null && a.currentTool === this.d.terminalToolName) {
+      a.branch.setGrammarOrder('sampleFirst');
+    }
+  }
+
   applyLazyGrammar(a: Agent): void {
     const d = this.d;
     if (d.eagerGrammar) {
