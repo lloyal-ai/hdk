@@ -5,8 +5,15 @@
     "rootDir": "src",
     "baseUrl": ".",
     "paths": {
-      "@lloyal-labs/sdk": ["src/index.ts"]
+      "@lloyal-labs/sdk": [
+        "src/index.ts"
+      ],
+      "@lloyal-labs/lloyal.node": [
+        "src/native.d.ts"
+      ]
     }
   },
-  "include": ["src/**/*.ts"]
+  "include": [
+    "src/**/*.ts"
+  ]
 }
