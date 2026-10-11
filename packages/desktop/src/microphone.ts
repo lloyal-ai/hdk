@@ -91,7 +91,9 @@ export function allowMicrophone(
   owns: (contents: WebContents | null) => boolean,
   consent: (contents: WebContents | null) => Promise<boolean> = microphoneConsent,
 ): void {
-  ses.setPermissionCheckHandler((contents, permission) => permission === 'media' && owns(contents));
+  // The check is consulted on its own, so it draws the same line the request does: audio, for an owned window.
+  ses.setPermissionCheckHandler((contents, permission, _origin, details) =>
+    permission === 'media' && details.mediaType === 'audio' && owns(contents));
   ses.setPermissionRequestHandler((contents, permission, callback, details) => {
     const wantsVideo = 'mediaTypes' in details && (details.mediaTypes ?? []).includes('video');
     if (permission !== 'media' || wantsVideo || !owns(contents)) { callback(false); return; }

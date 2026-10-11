@@ -10,8 +10,10 @@ import { Popover } from '../src/popover';
 function Host({ child = createElement('button', { 'aria-label': 'web' }, 'web') }: { child?: ReactElement }): ReactElement {
   const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
   const [open, setOpen] = useState(false);
+  const [ticks, tick] = useState(0);
   return createElement('div', null,
     createElement('button', { ref: setAnchor, 'aria-label': 'Abilities', onClick: () => setOpen(true) }, 'abilities'),
+    createElement('button', { 'aria-label': 'tick', onClick: () => tick(ticks + 1) }, String(ticks)),
     createElement('p', { id: 'outside' }, 'elsewhere'),
     createElement(Popover, {
       anchor, open, onClose: () => setOpen(false), label: 'Abilities',
@@ -33,6 +35,8 @@ describe('a popover over the page', () => {
     root = createRoot(container);
     await act(async () => root.render(createElement(Host)));
     const anchor = container.querySelector<HTMLButtonElement>('[aria-label="Abilities"]')!;
+    // jsdom lays nothing out; an anchor well below the top is what a composer's control looks like.
+    anchor.getBoundingClientRect = () => ({ top: 500, bottom: 520, left: 40, right: 100, width: 60, height: 20, x: 40, y: 500, toJSON: () => ({}) });
     expect(dialog()).toBeNull();
     await act(async () => anchor.click());
     const panel = dialog() as HTMLElement;
@@ -71,5 +75,25 @@ describe('a popover over the page', () => {
       createElement('button', { 'aria-label': 'on' }, 'on'),
     ));
     expect(document.activeElement?.getAttribute('aria-label')).toBe('on');
+  });
+
+  it('keeps the reader\'s focus through a rerender of its owner, and drops below an anchor near the top', async () => {
+    container = document.createElement('div'); document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => root.render(createElement(Host, {
+      child: createElement('div', null,
+        createElement('button', { 'aria-label': 'first' }, 'first'),
+        createElement('input', { 'aria-label': 'field' })),
+    })));
+    const anchor = container.querySelector<HTMLButtonElement>('[aria-label="Abilities"]')!;
+    anchor.getBoundingClientRect = () => ({ top: 10, bottom: 30, left: 40, right: 100, width: 60, height: 20, x: 40, y: 10, toJSON: () => ({}) });
+    await act(async () => anchor.click());
+    const panel = dialog() as HTMLElement;
+    expect(panel.style.top).not.toBe('');
+    expect(panel.style.bottom).toBe('');
+    panel.querySelector<HTMLInputElement>('input')!.focus();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="tick"]')!.click());
+    expect(dialog()).toBe(panel);
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('field');
   });
 });

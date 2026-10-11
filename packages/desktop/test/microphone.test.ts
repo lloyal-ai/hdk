@@ -75,9 +75,11 @@ describe('the microphone from a desktop window', () => {
     expect(await ask(handlers, theirs, 'media', { mediaTypes: ['audio'] })).toBe(false);
     expect(await ask(handlers, ours, 'geolocation')).toBe(false);
     expect(consent).toHaveBeenCalledOnce();
-    expect(handlers.check!(ours, 'media', 'file://', {} as never)).toBe(true);
-    expect(handlers.check!(theirs, 'media', 'file://', {} as never)).toBe(false);
-    expect(handlers.check!(null, 'media', 'file://', {} as never)).toBe(false);
+    expect(handlers.check!(ours, 'media', 'file://', { mediaType: 'audio' } as never)).toBe(true);
+    expect(handlers.check!(ours, 'media', 'file://', { mediaType: 'video' } as never)).toBe(false);
+    expect(handlers.check!(ours, 'media', 'file://', {} as never)).toBe(false);
+    expect(handlers.check!(theirs, 'media', 'file://', { mediaType: 'audio' } as never)).toBe(false);
+    expect(handlers.check!(null, 'media', 'file://', { mediaType: 'audio' } as never)).toBe(false);
     expect(handlers.check!(ours, 'notifications', 'file://', {} as never)).toBe(false);
   });
 

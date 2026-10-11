@@ -38,29 +38,35 @@ const surface: CSSProperties = {
   font: '13px var(--harness-font, system-ui, sans-serif)',
 };
 
-/** Where the surface sits: above the anchor, left-aligned with it, pulled in from the viewport's right edge. */
-function place(anchor: HTMLElement, width: number): CSSProperties {
+/** Where the surface sits: above the anchor when it fits there, otherwise below it; left-aligned with it, pulled
+ *  in from the viewport's right edge. */
+function place(anchor: HTMLElement, width: number, height: number): CSSProperties {
   const rect = anchor.getBoundingClientRect();
   const left = Math.max(MARGIN, Math.min(rect.left, window.innerWidth - width - MARGIN));
-  return { left, bottom: window.innerHeight - rect.top + MARGIN };
+  const fitsAbove = rect.top - MARGIN - height >= MARGIN;
+  return fitsAbove ? { left, bottom: window.innerHeight - rect.top + MARGIN } : { left, top: rect.bottom + MARGIN };
 }
 
 export function Popover({ anchor, open, onClose, label, children, style }: PopoverProps): ReactElement | null {
   const panel = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<CSSProperties>({ left: MARGIN, bottom: MARGIN });
+  // The caller's close is usually an inline function; reading it through a ref keeps a rerender of the caller
+  // from tearing the surface down and up, which would pull focus from whatever the reader was using.
+  const close = useRef(onClose);
+  close.current = onClose;
 
   useLayoutEffect(() => {
     if (!open || !anchor) return;
     const node = panel.current;
-    const measure = (): void => setPosition(place(anchor, node?.offsetWidth ?? 0));
+    const measure = (): void => setPosition(place(anchor, node?.offsetWidth ?? 0, node?.offsetHeight ?? 0));
     measure();
     window.addEventListener('resize', measure);
     window.addEventListener('scroll', measure, true);
-    const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') onClose(); };
+    const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') close.current(); };
     const onPress = (e: PointerEvent): void => {
       const target = e.target as Node | null;
       if (target && (node?.contains(target) || anchor.contains(target))) return;
-      onClose();
+      close.current();
     };
     window.addEventListener('keydown', onKey);
     document.addEventListener('pointerdown', onPress);
@@ -73,7 +79,7 @@ export function Popover({ anchor, open, onClose, label, children, style }: Popov
       document.removeEventListener('pointerdown', onPress);
       anchor.focus();
     };
-  }, [open, anchor, onClose]);
+  }, [open, anchor]);
 
   if (!open || !anchor) return null;
   return createPortal(
