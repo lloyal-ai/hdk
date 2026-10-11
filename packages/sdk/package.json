@@ -59,10 +59,10 @@
     "LICENSE-FAQ.md"
   ],
   "devDependencies": {
-    "@lloyal-labs/lloyal.node": "^3.3.0"
+    "@lloyal-labs/lloyal.node": "^3.4.0"
   },
   "peerDependencies": {
-    "@lloyal-labs/lloyal.node": "^3.3.0"
+    "@lloyal-labs/lloyal.node": "^3.4.0"
   },
   "peerDependenciesMeta": {
     "@lloyal-labs/lloyal.node": {
