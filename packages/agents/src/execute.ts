@@ -204,6 +204,8 @@ export interface ExecDeps {
   toolIndexMap: Map<string, number>;
   toolkitSize: number;
   terminalGrammar: string | null;
+  /** The tool whose call ends an agent's work; an extracting agent is given its grammar alone. */
+  terminalToolName: string | null;
   eagerGrammar?: string;
   enableThinking: boolean;
   spine: Branch;
@@ -271,11 +273,11 @@ export class Executor {
         const entropy = a.branch.modelEntropy();
         const surprisal = a.branch.modelSurprisal(token);
         a.accumulateTokenWithTrace(text, entropy, surprisal);
-        a.observe(d.ctx);
+        this.observe(a);
         yield* d.emit.emit({ kind: 'produced', agent: a, text, entropy, surprisal });
       } else {
         a.accumulateToken(text);
-        a.observe(d.ctx);
+        this.observe(a);
         yield* d.emit.emit({ kind: 'produced', agent: a, text });
       }
     }
@@ -405,8 +407,11 @@ export class Executor {
       for (const a of admitted) {
         a.transition('active');
         a.resetTurn();
-        if (a.extracting && d.terminalGrammar) a.branch.setGrammar(d.terminalGrammar);
-        else this.applyLazyGrammar(a);
+        if (a.extracting && d.terminalGrammar) {
+          a.branch.setGrammar(d.terminalGrammar);
+          const terminal = d.terminalToolName === null ? undefined : d.tools.get(d.terminalToolName);
+          if (terminal?.grammarOrder === 'sampleFirst') a.branch.setGrammarOrder('sampleFirst');
+        } else this.applyLazyGrammar(a);
       }
     }
     return admitted;
@@ -523,6 +528,15 @@ export class Executor {
     a.transition('active');
     yield* d.emit.emit({ kind: 'spawned', agent: a, after: s.task.after, key: s.key });
     return true;
+  }
+
+  /** Read the turn so far. The moment the call is identified as a tool that samples first, the branch
+   *  does: the envelope and the name were masked, the arguments are not. */
+  private observe(a: Agent): void {
+    const known = a.currentTool !== null;
+    a.observe(this.d.ctx);
+    if (known || a.currentTool === null) return;
+    if (this.d.tools.get(a.currentTool)?.grammarOrder === 'sampleFirst') a.branch.setGrammarOrder('sampleFirst');
   }
 
   /** Eager grammar (schema agents) beats the lazy tool-call grammar; with no

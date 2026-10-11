@@ -24,6 +24,13 @@ const agentWith = (thinkingEndTag: string) => ({ fmt: { thinkingEndTag } }) as u
 const agent = agentWith('');
 
 describe('defineOutput', () => {
+  it('samples mask-first unless the output says otherwise, and carries the order it is given', () => {
+    const exact = defineOutput('submit', columns, { description: 'Submit the row.' });
+    expect(exact.tool.grammarOrder).toBeUndefined();
+    const prose = defineOutput('draft', z.object({ text: z.string() }), { grammarOrder: 'sampleFirst' });
+    expect(prose.tool.grammarOrder).toBe('sampleFirst');
+  });
+
   it('is a terminal tool whose parameters are the schema, and whose execute refuses: it ends the turn', async () => {
     const submit = defineOutput('submit', columns, { description: 'Submit the row.' });
     expect(submit.tool.name).toBe('submit');
@@ -111,6 +118,10 @@ describe('defineOutput', () => {
 });
 
 describe('citedReport', () => {
+  it('declares sample-first for its grammar: the findings are prose, and only the envelope and sources are structure', () => {
+    expect(citedReport.tool.grammarOrder).toBe('sampleFirst');
+  });
+
   it('is the `report` terminal whose capture weaves the grammar-forced sources into the findings', () => {
     expect(citedReport.tool.name).toBe('report');
     const args = { result: 'Oslo sits on the fjord, see https://a.io/oslo and https://a.io.', sources: [{ title: 'A', url: 'https://a.io' }, { title: 'Oslo', url: 'https://a.io/oslo' }] };

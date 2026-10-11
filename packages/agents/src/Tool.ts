@@ -1,5 +1,6 @@
 import type { Operation } from 'effection';
 import type { JsonSchema, ToolSchema, ToolContext } from './types';
+import type { GrammarOrder } from '@lloyal-labs/sdk';
 import type { Agent } from './Agent';
 import type { ContextPressure } from './pressure';
 import { asAttachment } from '@lloyal-labs/media';
@@ -102,6 +103,30 @@ export abstract class Tool<TArgs = any> {
    * — so the default is deliberately the safe one.
    */
   readonly fanout?: boolean;
+
+  /**
+   * How a branch samples under this tool's grammar once the model is calling it.
+   *
+   * **Mask first** (unset): every vocabulary entry is tested against the grammar
+   * before the sampler picks, so the pick is exact under top-k, top-p and min-p.
+   * It costs a walk over the whole vocabulary per token, in series across
+   * agents. Right for a call whose arguments are structure: a query, a plan,
+   * extracted JSON.
+   *
+   * **Sample first** (`'sampleFirst'`): the sampler picks from the raw candidates
+   * and the grammar checks that one token, masking only when it is refused.
+   * Inside free text the orders agree and the cost is the unconstrained cost;
+   * at a token the model wants that the grammar forbids, truncation has already
+   * run, so a legal token that is popular overall is favoured over one popular
+   * only among legal tokens. Right for a call whose arguments are mostly prose:
+   * a report, a draft, a long explanation. The envelope, the field names and any
+   * structured fields are still guaranteed.
+   *
+   * The pool switches the branch the moment it identifies the call as this
+   * tool, so the envelope and the name are always sampled mask first. Declared
+   * where `protected` and `fanout` are, so a subclass inherits it.
+   */
+  readonly grammarOrder?: GrammarOrder;
 
   /**
    * What this tool says about the life of its own calls: its gates, its view of

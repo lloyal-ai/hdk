@@ -40,6 +40,8 @@ export interface PoolRun {
   traceEvents: TraceEvent[];
   channelEvents: AgentEvent[];
   nativeCalls: NativeCall[];
+  /** See {@link GrammarEvent}. */
+  grammarEvents: GrammarEvent[];
   ctx: InstrumentedMockSessionContext;
   /** The root branch the pool was given; the one handle that may outlive the pool. */
   rootHandle: number;
@@ -47,6 +49,13 @@ export interface PoolRun {
    *  captured `traceEvents`/`channelEvents` still reflect everything up to the throw. */
   error?: unknown;
 }
+
+/** What the pool told a branch about its grammar, in order: an attach (which resets the order to mask
+ *  first), a request to sample first, or a sample under whatever is attached. */
+export type GrammarEvent =
+  | { seq: number; kind: 'attach'; handle: number; lazy: boolean }
+  | { seq: number; kind: 'order'; handle: number; sampleFirst: boolean }
+  | { seq: number; kind: 'sample'; handle: number };
 
 /**
  * MockSessionContext wrapper that records every native entry point
@@ -56,7 +65,29 @@ export interface PoolRun {
  */
 export class InstrumentedMockSessionContext extends MockSessionContext {
   readonly nativeCalls: NativeCall[] = [];
+  /** Every grammar attach, order request and sample, in the order the pool issued them. */
+  readonly grammarEvents: GrammarEvent[] = [];
   private _seq = 0;
+  private _grammarSeq = 0;
+
+  noteGrammar(ev: GrammarEvent extends infer E ? E extends GrammarEvent ? Omit<E, 'seq'> : never : never): void {
+    this.grammarEvents.push({ ...ev, seq: this._grammarSeq++ } as GrammarEvent);
+  }
+
+  override _branchSetGrammar(handle: number, grammar: string): void {
+    this.noteGrammar({ kind: 'attach', handle, lazy: false });
+    super._branchSetGrammar(handle, grammar);
+  }
+
+  override _branchSetGrammarLazy(handle: number, grammar: string, patterns: string[], tokens: number[]): void {
+    this.noteGrammar({ kind: 'attach', handle, lazy: true });
+    super._branchSetGrammarLazy(handle, grammar, patterns, tokens);
+  }
+
+  override _branchSetGrammarOrder(handle: number, sampleFirst: boolean): void {
+    this.noteGrammar({ kind: 'order', handle, sampleFirst });
+    super._branchSetGrammarOrder(handle, sampleFirst);
+  }
   /** Simulate a decode OOM: throw from `_storeCommit` the first time this token is
    *  in the committed batch (deterministic — tie it to a report-turn sentinel token). */
   throwOnCommitToken: number | null = null;
@@ -277,6 +308,7 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
   const turnText = new Map<number, string>();
   const lastTurnText = new Map<number, string>();
   ctx._branchSample = (handle: number): number => {
+    ctx.noteGrammar({ kind: 'sample', handle });
     lastSampledHandle = handle;
     const fi = branchForkIndex.get(handle) ?? -1;
     const script = fi >= 0 ? spec.scripts[fi] : undefined;
@@ -457,6 +489,7 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
     traceEvents: trace.events,
     channelEvents,
     nativeCalls: ctx.nativeCalls,
+    grammarEvents: ctx.grammarEvents,
     ctx,
     rootHandle: root.handle,
   };
