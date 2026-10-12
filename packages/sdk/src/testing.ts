@@ -47,6 +47,7 @@ import type {
   SamplingParams,
   ChatFormat,
   FormattedChatResult,
+  ChatParser,
   FormatChatOptions,
   ParseChatOutputResult,
   ParseChatOutputOptions,
@@ -482,7 +483,7 @@ export class MockSessionContext implements SessionContext {
       format: 2 as ChatFormat, // >1 to pass tool-calling support check
       reasoningFormat: 0,
       generationPrompt: '',
-      parser: 'default',
+      parser: {} as ChatParser,
       grammar: '',
       grammarLazy: false,
       grammarTriggers: [],

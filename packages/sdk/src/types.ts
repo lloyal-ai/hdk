@@ -120,7 +120,7 @@ export const CHAT_FORMAT_GENERIC: ChatFormat = 1;
  * Controls how `<think>` blocks are handled during formatting and parsing.
  *
  * @see {@link FormatChatOptions.reasoningFormat} for input-side usage; how reasoning is parsed is
- * decided when the parser is built, so {@link SessionContext.parseChatOutput} takes the parser key instead
+ * decided when the parser is built, so {@link SessionContext.parseChatOutput} takes the parser handle instead
  *
  * @category Chat
  */
@@ -517,12 +517,12 @@ export interface FormattedChatResult {
   reasoningFormat: ReasoningFormat;
 
   /**
-   * The key of the parser this format built, to pass to {@link SessionContext.parseChatOutput}. The parser
-   * itself stays native: it is a function of the tools, tool choice, schema, grammar, reasoning and thinking
-   * settings (never the messages), so two formats with the same options on one context share one key. A key
-   * is valid only on the context that produced it.
+   * The parser this format built, to pass to {@link SessionContext.parseChatOutput}. It is an opaque native
+   * handle that owns the parser: copy it wherever the format's fields are kept and the parser lives as long as
+   * any copy does. A parser is rendered for its whole conversation (the generation prompt is a literal inside
+   * it), so every format carries its own handle, and a handle outlives the context that produced it.
    */
-  parser: string;
+  parser: ChatParser;
   /** Grammar trigger conditions for lazy grammar activation */
   grammarTriggers: GrammarTrigger[];
   /** Token strings preserved from grammar masking */
@@ -541,6 +541,17 @@ export interface FormattedChatResult {
    */
   thinkingStartTag: string;
   thinkingEndTags: string[];
+}
+
+/**
+ * The native parser a format built, as {@link FormattedChatResult.parser} carries it. Opaque: it is made by
+ * {@link SessionContext.formatChat} and read by {@link SessionContext.parseChatOutput}, and nothing in it is
+ * for a consumer to inspect.
+ *
+ * @category Chat
+ */
+export interface ChatParser {
+  readonly __chatParser: never;
 }
 
 /**
@@ -566,10 +577,10 @@ export interface ParseChatOutputOptions {
   generationPrompt?: string;
 
   /**
-   * The parser key from {@link FormattedChatResult.parser}, resolved on this context. Pass it for every
-   * output that came from a formatted prompt; without it the output is parsed as plain content.
+   * The parser handle from {@link FormattedChatResult.parser}. Pass it for every output that came from a
+   * formatted prompt; without it the output is parsed as plain content. Anything but a handle is refused.
    */
-  parser?: string;
+  parser?: ChatParser;
 }
 
 /**

@@ -21,7 +21,7 @@ import { GrammarTriggerType } from '@lloyal-labs/sdk';
 import type { GrammarOrder } from '@lloyal-labs/sdk';
 import { runPool, STOP } from '../harness';
 import type { InstrumentedMockSessionContext } from '../harness';
-import { I44_sampleFirstFollowsIdentification, I45_parseHandsBackAMintedKey } from '../predicates';
+import { I44_sampleFirstFollowsIdentification, I45_parseHandsBackAMintedParser } from '../predicates';
 
 class Declared extends Tool<Record<string, unknown>> {
   readonly parameters = { type: 'object', properties: {} };
@@ -72,7 +72,7 @@ describe('scenario: the tool declares how its grammar is sampled', () => {
     expect(attach).toBeLessThan(firstSample);
     expect(firstSample).toBeLessThan(flip);
     expect(I44_sampleFirstFollowsIdentification(run).ok).toBe(true);
-    expect(I45_parseHandsBackAMintedKey(run)).toEqual({ ok: true, violations: [] });
+    expect(I45_parseHandsBackAMintedParser(run)).toEqual({ ok: true, violations: [] });
   });
 
   it('never flips for a tool that declares nothing, terminal or not', async () => {
@@ -83,7 +83,7 @@ describe('scenario: the tool declares how its grammar is sampled', () => {
     expect(orders(run.grammarEvents)).toHaveLength(0);
     expect(run.grammarEvents.some(e => e.kind === 'attach')).toBe(true);
     expect(I44_sampleFirstFollowsIdentification(run).ok).toBe(true);
-    expect(I45_parseHandsBackAMintedKey(run)).toEqual({ ok: true, violations: [] });
+    expect(I45_parseHandsBackAMintedParser(run)).toEqual({ ok: true, violations: [] });
   });
 
   it("gives an extracting agent the terminal tool's order with its grammar", async () => {
@@ -106,6 +106,6 @@ describe('scenario: the tool declares how its grammar is sampled', () => {
     expect(eager).toBeGreaterThan(-1);
     expect(events[eager + 1]).toMatchObject({ kind: 'order', sampleFirst: true, handle: (events[eager] as { handle: number }).handle });
     expect(I44_sampleFirstFollowsIdentification(run).ok).toBe(true);
-    expect(I45_parseHandsBackAMintedKey(run)).toEqual({ ok: true, violations: [] });
+    expect(I45_parseHandsBackAMintedParser(run)).toEqual({ ok: true, violations: [] });
   });
 });

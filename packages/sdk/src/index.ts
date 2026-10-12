@@ -23,6 +23,7 @@ export type {
   GrammarTrigger,
   GrammarOrder,
   FormattedChatResult,
+  ChatParser,
   ParseChatOutputOptions,
   ParsedToolCall,
   ParseChatOutputResult,

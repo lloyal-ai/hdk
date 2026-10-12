@@ -1,5 +1,5 @@
 import type { Branch, SessionContext, ParseChatOutputResult } from '@lloyal-labs/sdk';
-import type { GrammarTrigger } from '@lloyal-labs/sdk';
+import type { GrammarTrigger, ChatParser } from '@lloyal-labs/sdk';
 import { withResolvers } from 'effection';
 import type { Operation } from 'effection';
 import type { TraceToken, AgentExitReason, AgentTaskSpec } from './types';
@@ -47,8 +47,8 @@ export type ResultSource =
 export interface FormatConfig {
   format: number;
   generationPrompt: string;
-  /** The key of the native parser this format built; valid on the context that produced it. */
-  parser: string;
+  /** The native parser this format built; a copy of the handle keeps it alive. */
+  parser: ChatParser;
   grammar: string;
   grammarLazy: boolean;
   grammarTriggers: GrammarTrigger[];

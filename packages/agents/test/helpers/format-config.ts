@@ -1,4 +1,5 @@
 import type { FormatConfig } from '../../src/Agent';
+import type { ChatParser } from '@lloyal-labs/sdk';
 
 /**
  * A neutral `FormatConfig` for tests that need one but do not care about it.
@@ -17,7 +18,7 @@ import type { FormatConfig } from '../../src/Agent';
 export const FMT: FormatConfig = {
   format: 0,
   generationPrompt: '',
-  parser: '',
+  parser: {} as unknown as ChatParser,
   grammar: '',
   grammarLazy: false,
   grammarTriggers: [],
