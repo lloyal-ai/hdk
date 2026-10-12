@@ -78,3 +78,64 @@ describe('extractTerminalResult', () => {
     expect(extractTerminalResult('{"result": "the findings so far, cut')).toBe('the findings so far, cut');
   });
 });
+
+/**
+ * A salvage that stops inside a fenced block hands the settling pass an open
+ * fence, and a model continues what it is handed. The frame closes it at the
+ * capture, beside the envelope strip, and only for its own captures.
+ */
+import { closeOpenFence, repairCapture } from '../src/capture';
+
+describe('closeOpenFence', () => {
+  it('leaves prose and balanced fences alone', () => {
+    expect(closeOpenFence('Plain finding.')).toBe('Plain finding.');
+    const balanced = 'Before\n\n```ts\nconst a = 1;\n```\n\nAfter';
+    expect(closeOpenFence(balanced)).toBe(balanced);
+  });
+
+  it('closes a fence the cut left open, on its own line', () => {
+    expect(closeOpenFence('Before\n\n```ts\nconst a = ')).toBe('Before\n\n```ts\nconst a = \n```');
+    expect(closeOpenFence('Before\n\n~~~\nraw\n')).toBe('Before\n\n~~~\nraw\n~~~');
+  });
+
+  it('a fence marker inside a line is not a fence', () => {
+    const inline = 'Use ``` to open a block, like `a```b`.';
+    expect(closeOpenFence(inline)).toBe(inline);
+  });
+
+  it('closes with the opener\'s own marker when fences are mixed', () => {
+    expect(closeOpenFence('```\nfirst\n```\n\n~~~py\nx = ')).toBe('```\nfirst\n```\n\n~~~py\nx = \n~~~');
+  });
+});
+
+describe('repairCapture', () => {
+  it('strips the dangling envelope first, then closes an open fence', () => {
+    const cut = 'Finding:\n\n```json\n{"a": 1' + '\n' + QWEN + '\n<tool_call>\n<function=report>';
+    expect(repairCapture(cut, [QWEN])).toBe('Finding:\n\n```json\n{"a": 1\n```');
+  });
+});
+
+/**
+ * A salvage of a call cut before its result began has nothing to keep. The raw
+ * arguments are a value only when they are a WHOLE call (a typed terminal with
+ * no `result` field); a truncated call that never opened its result is empty,
+ * so the salvage fails as `empty_terminal_result` instead of settling a brace.
+ */
+import { salvageTerminalResult } from '../src/capture';
+
+describe('salvageTerminalResult', () => {
+  it('a whole call: the result field, or the whole arguments for a typed terminal', () => {
+    expect(salvageTerminalResult('{"result":"The finding"}')).toBe('The finding');
+    expect(salvageTerminalResult('{"answer":42,"sources":[]}')).toBe('{"answer":42,"sources":[]}');
+  });
+
+  it('a call cut inside its result keeps the partial string', () => {
+    expect(salvageTerminalResult('{"result":"The first finding, and mo')).toBe('The first finding, and mo');
+  });
+
+  it('a call cut before its result began keeps nothing', () => {
+    expect(salvageTerminalResult('{')).toBe('');
+    expect(salvageTerminalResult('')).toBe('');
+    expect(salvageTerminalResult('{"resu')).toBe('');
+  });
+});

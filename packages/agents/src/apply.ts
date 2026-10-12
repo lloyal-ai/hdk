@@ -8,7 +8,7 @@ import type { Tool } from './Tool';
 import { TOOL_IMAGE_ERROR_KEY } from './Tool';
 import type { Emitter } from './emit';
 import { decideBeforeDispatch, decideOnReturn, AUTH_REJECT_GUARD, type Frame, type Resolved } from './hooks';
-import { stripDanglingToolCall, extractTerminalResult } from './capture';
+import { repairCapture, salvageTerminalResult } from './capture';
 import { ContextPressure } from './pressure';
 import { recoveryFor, nudgeItem } from './scheduler';
 import {
@@ -51,7 +51,7 @@ export interface ApplyDeps {
   totals: { toolCalls: number; steps: number };
 }
 
-export { stripDanglingToolCall, extractTerminalResult } from './capture';
+export { stripDanglingToolCall, closeOpenFence, repairCapture, extractTerminalResult, salvageTerminalResult } from './capture';
 
 export class Applier {
   constructor(private readonly d: ApplyDeps) {}
@@ -192,7 +192,7 @@ export class Applier {
     const terminal = this.d.terminalToolName;
     const call = terminal ? parsed.toolCalls.find(c => c.name === terminal) : parsed.toolCalls[0];
     const returned = call ? decideOnReturn(
-        { agent: a, tool: call.name, args: parseHistoryArgs(call.arguments), raw: call.arguments, result: extractTerminalResult(call.arguments) },
+        { agent: a, tool: call.name, args: parseHistoryArgs(call.arguments), raw: call.arguments, result: salvageTerminalResult(call.arguments) },
         { frame: this.d.frame, tool: this.d.tools.get(call.name), policy: this.d.policy },
         { mayReject: false },
       ) : null;
@@ -200,7 +200,7 @@ export class Applier {
       : !terminal && parsed.content ? parsed.content : '';
     if (result) {
       // As at the voluntary return: the framework's own capture is repaired, a contributor's is kept whole.
-      a.setResult(!returned || returned.by === 'frame' ? stripDanglingToolCall(result, a.fmt.thinkingEndTags) : result, 'recovery');
+      a.setResult(!returned || returned.by === 'frame' ? repairCapture(result, a.fmt.thinkingEndTags) : result, 'recovery');
       yield* this.d.emit.emit({ kind: 'recovered', agent: a, result: a.result! });
       return true;
     }
@@ -271,7 +271,7 @@ export class Applier {
     const action = this.d.policy.onProduced(a, parsed, S.pressure, this.d.config);
     switch (action.type) {
       case 'free_text_return':
-        a.setResult(stripDanglingToolCall(action.content, a.fmt.thinkingEndTags), 'free_text');
+        a.setResult(repairCapture(action.content, a.fmt.thinkingEndTags), 'free_text');
         a.transition('idle');
         yield* this.d.emit.emit({ kind: 'returned', agent: a, via: 'free_text' });
         return;
@@ -313,7 +313,7 @@ export class Applier {
         // The framework repairs only what it captured itself — the default's free text, where a truncated
         // call may trail. A contributor's capture (a tool's, a harness's) is its own bytes: typed data may
         // legitimately contain the marker, and only the capture knows which of its strings is prose.
-        a.setResult(by === 'frame' ? stripDanglingToolCall(decision.result, a.fmt.thinkingEndTags) : decision.result, 'voluntary_return');
+        a.setResult(by === 'frame' ? repairCapture(decision.result, a.fmt.thinkingEndTags) : decision.result, 'voluntary_return');
         a.transition('idle');
         a.incrementToolCalls();
         this.d.totals.toolCalls++;

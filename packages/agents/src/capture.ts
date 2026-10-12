@@ -44,9 +44,49 @@ export function extractTerminalResult(args: string): string {
     const r = JSON.parse(args).result;
     if (typeof r === 'string') return r;
   } catch { /* truncated or non-JSON — salvage the partial below */ }
+  const m = partialResult(args);
+  return m ?? args;
+}
+
+/** The capture of a call the POOL ended: a salvage, or a report token-stopped
+ *  at its share. A whole call reads as a voluntary one does; a call cut inside
+ *  its result keeps the partial string; a call cut before its result began has
+ *  nothing to keep and says so with the empty string, so the salvage fails as
+ *  `empty_terminal_result` instead of settling a brace as the result. */
+export function salvageTerminalResult(args: string): string {
+  try {
+    const r = JSON.parse(args).result;
+    return typeof r === 'string' ? r : args;
+  } catch { /* truncated — the partial result or nothing */ }
+  return partialResult(args) ?? '';
+}
+
+/** The `result` string of a call cut mid-argument, unescaped; null when it never began. */
+function partialResult(args: string): string | null {
   const m = args.match(/"result"\s*:\s*"((?:[^"\\]|\\.)*)/);
-  if (m) {
-    try { return JSON.parse(`"${m[1].replace(/\\+$/, '')}"`); } catch { /* fall through to raw */ }
+  if (!m) return null;
+  try { return JSON.parse(`"${m[1].replace(/\\+$/, '')}"`); } catch { return null; }
+}
+
+/** Close a fenced block the cut left open. A salvage can stop inside a fence,
+ *  and a settling pass handed an open fence continues it as code; the frame
+ *  closes it with the opener's own marker, on its own line. Only a line that
+ *  BEGINS with the marker opens or closes a fence; a marker mid-line is prose. */
+export function closeOpenFence(text: string): string {
+  let open: string | null = null;
+  for (const line of text.split('\n')) {
+    const m = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (!m) continue;
+    const marker = m[1];
+    if (open === null) open = marker;
+    else if (marker[0] === open[0] && marker.length >= open.length) open = null;
   }
-  return args;
+  if (open === null) return text;
+  return `${text}${text.endsWith('\n') ? '' : '\n'}${open}`;
+}
+
+/** The frame's whole repair of a capture it made itself: the dangling envelope
+ *  goes first, so a fence the restart began is not what gets closed. */
+export function repairCapture(text: string, thinkingEndTags: readonly string[] = []): string {
+  return closeOpenFence(stripDanglingToolCall(text, thinkingEndTags));
 }
