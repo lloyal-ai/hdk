@@ -2,7 +2,7 @@ import type { SessionContext } from '@lloyal-labs/sdk';
 import type { PressureThresholds } from './types';
 
 /** What the store reports: `{ nCtx, cellsUsed, remaining }`, `remaining = nCtx - cellsUsed`. */
-type KvReading = { nCtx: number; cellsUsed: number; remaining: number };
+type KvReading = { nCtx: number; cellsUsed: number; remaining: number; nBatch?: number };
 
 /**
  * Immutable KV budget snapshot — a VALUE the scheduler decides against.
@@ -61,10 +61,11 @@ export class ContextPressure {
    */
   static readonly DEFAULT_HARD_LIMIT = 512;
   /**
-   * Assumed `nBatch` when the native binding doesn't expose it: the decode
-   * workspace the next batch needs, and so the one physical line in the
-   * cache. Pool startup validates `pressureThresholds.hardLimit >= this`, so
-   * the kill line for working turns never sits below it.
+   * The batch size assumed when the context does not report one (an older
+   * binding, a reading taken without one): llama.cpp's default. The floor is
+   * the context's own `nBatch` wherever it is known. Pool startup validates
+   * `pressureThresholds.hardLimit >= floor`, so the kill line for working
+   * turns never sits below the decode workspace the next batch needs.
    */
   static readonly ASSUMED_N_BATCH = 512;
 
@@ -76,6 +77,8 @@ export class ContextPressure {
    *  position would under-count an image by that factor. Every number on this
    *  class is cells, and `cellsUsed` is what the cache actually reports. */
   readonly nCtx: number;
+  /** The decode workspace the next batch needs: the context's batch size. */
+  readonly nBatch: number;
   /** KV cells currently in use: grows on every prefill and commit, shrinks
    *  when a branch is released (the prune pass, a discarded fork, teardown). */
   readonly cellsUsed: number;
@@ -91,10 +94,11 @@ export class ContextPressure {
 
   /** Sample the store now (`ctx`), or freeze a reading that was already taken. */
   constructor(source: SessionContext | KvReading, opts?: PressureThresholds) {
-    const p = typeof (source as SessionContext)._storeKvPressure === 'function'
+    const p: KvReading = typeof (source as SessionContext)._storeKvPressure === 'function'
       ? (source as SessionContext)._storeKvPressure()
       : (source as KvReading);
     this.nCtx = p.nCtx;
+    this.nBatch = (source as SessionContext).nBatch ?? p.nBatch ?? ContextPressure.ASSUMED_N_BATCH;
     this.cellsUsed = p.cellsUsed;
     this.remaining = p.nCtx <= 0 ? Infinity : p.remaining;
     this.softLimit = opts?.softLimit ?? ContextPressure.DEFAULT_SOFT_LIMIT;
@@ -113,7 +117,7 @@ export class ContextPressure {
     if (!(cells >= 0)) throw new Error(`ContextPressure.minus: cells must be non-negative, got ${cells}`);
     const cellsUsed = this.cellsUsed + cells;
     return new ContextPressure(
-      { nCtx: this.nCtx, cellsUsed, remaining: Math.max(0, this.nCtx - cellsUsed) },
+      { nCtx: this.nCtx, cellsUsed, remaining: Math.max(0, this.nCtx - cellsUsed), nBatch: this.nBatch },
       { softLimit: this.softLimit, hardLimit: this.hardLimit },
     );
   }
@@ -129,7 +133,7 @@ export class ContextPressure {
   get critical(): boolean { return this.remaining < this.hardLimit; }
 
   /** The decode workspace the next batch needs: the one physical line. */
-  get floor(): number { return ContextPressure.ASSUMED_N_BATCH; }
+  get floor(): number { return this.nBatch; }
 
   /**
    * Cells a recovery report may spend: `remaining - floor`. The hard reserve

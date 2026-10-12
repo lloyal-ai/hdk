@@ -75,6 +75,8 @@ interface BranchState {
 export interface MockSessionContextOpts {
   /** Total KV cache capacity. Default: 16384 */
   nCtx?: number;
+  /** The batch size the mock context reports; llama.cpp's default. @default 512 */
+  nBatch?: number;
   /** Initial cells used. Default: 0 */
   cellsUsed?: number;
   /** Token ID treated as stop token. Default: 999 */
@@ -121,10 +123,12 @@ export class MockSessionContext implements SessionContext {
 
   // ── Properties ────────────────────────────────────────────────
   readonly vocabSize = 32000;
+  readonly nBatch: number;
   readonly memorySize = 0;
 
   constructor(opts?: MockSessionContextOpts) {
     this.nCtx = opts?.nCtx ?? 16384;
+    this.nBatch = opts?.nBatch ?? 512;
     this.cellsUsed = opts?.cellsUsed ?? 0;
     this.stopToken = opts?.stopToken ?? 999;
     this.nSeqMax = opts?.nSeqMax;

@@ -103,6 +103,11 @@ describe('closeOpenFence', () => {
     expect(closeOpenFence(inline)).toBe(inline);
   });
 
+  it('a marker-led line with text after it is content, not a close', () => {
+    const balanced = '```text\n```not-a-closing-fence\n```';
+    expect(closeOpenFence(balanced)).toBe(balanced);
+  });
+
   it('closes with the opener\'s own marker when fences are mixed', () => {
     expect(closeOpenFence('```\nfirst\n```\n\n~~~py\nx = ')).toBe('```\nfirst\n```\n\n~~~py\nx = \n~~~');
   });
@@ -131,6 +136,12 @@ describe('salvageTerminalResult', () => {
 
   it('a call cut inside its result keeps the partial string', () => {
     expect(salvageTerminalResult('{"result":"The first finding, and mo')).toBe('The first finding, and mo');
+  });
+
+  it('a call cut inside an escape keeps the text before the escape', () => {
+    expect(salvageTerminalResult('{"result":"The finding \\u20')).toBe('The finding ');
+    expect(salvageTerminalResult('{"result":"The finding \\')).toBe('The finding ');
+    expect(salvageTerminalResult('{"result":"Line one\\nLine tw')).toBe('Line one\nLine tw');
   });
 
   it('a call cut before its result began keeps nothing', () => {

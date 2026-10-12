@@ -150,7 +150,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     const pressureOpts: PressureThresholds = {
       softLimit: requireInteger('softLimit', policy.pressureThresholds?.softLimit ?? ContextPressure.DEFAULT_SOFT_LIMIT, 0),
       hardLimit: requireInteger('hardLimit', policy.pressureThresholds?.hardLimit ?? ContextPressure.DEFAULT_HARD_LIMIT,
-        ContextPressure.ASSUMED_N_BATCH, ' (nBatch: the kill line for working turns never sits below the decode workspace the next batch needs)'),
+        ctx.nBatch ?? ContextPressure.ASSUMED_N_BATCH, ' (nBatch: the kill line for working turns never sits below the decode workspace the next batch needs)'),
     };
 
     // The authorization gate's inputs, resolved once: protected names and the session's grants.

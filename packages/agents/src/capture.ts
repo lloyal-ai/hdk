@@ -61,11 +61,13 @@ export function salvageTerminalResult(args: string): string {
   return partialResult(args) ?? '';
 }
 
-/** The `result` string of a call cut mid-argument, unescaped; null when it never began. */
+/** The `result` string of a call cut mid-argument, unescaped; null when it never began.
+ *  A cut inside an escape (`\u20`, a lone backslash) drops the fragment, not the text before it. */
 function partialResult(args: string): string | null {
   const m = args.match(/"result"\s*:\s*"((?:[^"\\]|\\.)*)/);
   if (!m) return null;
-  try { return JSON.parse(`"${m[1].replace(/\\+$/, '')}"`); } catch { return null; }
+  const body = m[1].replace(/\\u[0-9a-fA-F]{0,3}$/, '').replace(/\\+$/, '');
+  try { return JSON.parse(`"${body}"`); } catch { return null; }
 }
 
 /** Close a fenced block the cut left open. A salvage can stop inside a fence,
@@ -75,11 +77,12 @@ function partialResult(args: string): string | null {
 export function closeOpenFence(text: string): string {
   let open: string | null = null;
   for (const line of text.split('\n')) {
-    const m = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
     if (!m) continue;
-    const marker = m[1];
+    const [, marker, rest] = m;
+    // An opener may carry an info string; a closer is the marker and nothing but whitespace.
     if (open === null) open = marker;
-    else if (marker[0] === open[0] && marker.length >= open.length) open = null;
+    else if (marker[0] === open[0] && marker.length >= open.length && rest.trim() === '') open = null;
   }
   if (open === null) return text;
   return `${text}${text.endsWith('\n') ? '' : '\n'}${open}`;

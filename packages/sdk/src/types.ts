@@ -119,8 +119,8 @@ export const CHAT_FORMAT_GENERIC: ChatFormat = 1;
  *
  * Controls how `<think>` blocks are handled during formatting and parsing.
  *
- * @see {@link FormatChatOptions.reasoningFormat} for input-side usage
- * @see {@link ParseChatOutputOptions.reasoningFormat} for output-side usage
+ * @see {@link FormatChatOptions.reasoningFormat} for input-side usage; how reasoning is parsed is
+ * decided when the parser is built, so {@link SessionContext.parseChatOutput} takes the parser key instead
  *
  * @category Chat
  */
@@ -473,7 +473,7 @@ export type GrammarOrder = 'maskFirst' | 'sampleFirst';
  * Result from chat template formatting
  *
  * Includes format-awareness fields for proper output parsing.
- * Pass `format` and `reasoningFormat` directly to
+ * Pass `format` and `parser` to
  * {@link SessionContext.parseChatOutput | parseChatOutput()} to decode
  * the model's response.
  *
@@ -1245,7 +1245,7 @@ export interface SessionContext {
    * Converts [{role, content}] -> formatted prompt string with full format awareness.
    * Uses model's built-in template (ChatML, Llama, Mistral, etc.).
    *
-   * The returned `format` and `reasoningFormat` fields should be passed to
+   * The returned `format` and `parser` fields should be passed to
    * `parseChatOutput()` after generation to correctly decode the response.
    *
    * Cost: ~1-5ms depending on message count
@@ -1521,6 +1521,12 @@ export interface SessionContext {
   hasPooling(): boolean;
 
   // ===== PROPERTIES =====
+
+  /**
+   * The context's batch size: the decode workspace the next batch needs, so
+   * the one physical line a scheduler must keep free in the cache.
+   */
+  readonly nBatch: number;
 
   /**
    * Model vocabulary size (number of possible tokens)
