@@ -1542,7 +1542,7 @@ describe('no-tool agent seams', () => {
       mutateCtx: (ctx) => {
         const orig = ctx.formatChatSync.bind(ctx);
         ctx.formatChatSync = (msgs: string, opts?: Parameters<typeof orig>[1]) =>
-          ({ ...orig(msgs, opts), supportsThinking: true, thinkingStartTag: '<think>', thinkingEndTag: '</think>' });
+          ({ ...orig(msgs, opts), supportsThinking: true, thinkingStartTag: '<think>', thinkingEndTags: ['</think>'] });
       },
       parseChatOutputFn: () => ({ content: dirty, reasoningContent: '', toolCalls: [] }),
       policy: freeTextPolicy(),
@@ -2883,7 +2883,7 @@ describe('recovery parses its own turn', () => {
             generationPrompt: o.enableThinking === false
               ? '<|im_start|>assistant\n<think>\n\n</think>\n\n'
               : '<|im_start|>assistant\n<think>\n',
-            supportsThinking: true, thinkingStartTag: '<think>', thinkingEndTag: '</think>',
+            supportsThinking: true, thinkingStartTag: '<think>', thinkingEndTags: ['</think>'],
           };
         };
         const origText = ctx.tokenToText.bind(ctx);

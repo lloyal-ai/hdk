@@ -46,8 +46,8 @@ export type ResultSource =
  */
 export interface FormatConfig {
   format: number;
-  reasoningFormat: number;
   generationPrompt: string;
+  /** The key of the native parser this format built; valid on the context that produced it. */
   parser: string;
   grammar: string;
   grammarLazy: boolean;
@@ -61,9 +61,9 @@ export interface FormatConfig {
    * Captured once at agent setup from the pool's `enableThinking` option.
    */
   enableThinking: boolean;
-  /** The template's reasoning close — Qwen `</think>`, Magistral `[/THINK]`; empty when it does not think.
+  /** The template's reasoning closes — Qwen `</think>`, Magistral `[/THINK]`; empty when it does not think.
    *  Read when repairing a capture of our own, so no marker literal lives in this package. */
-  thinkingEndTag: string;
+  thinkingEndTags: string[];
 }
 
 // ── Tool history ────────────────────────────────────────────
@@ -378,7 +378,6 @@ export class Agent {
   observe(ctx: SessionContext): void {
     if (this._toolObserved) return;
     this._parsed = ctx.parseChatOutput(this._rawOutput, this.fmt.format, {
-      reasoningFormat: this.fmt.reasoningFormat,
       generationPrompt: this.fmt.generationPrompt,
       parser: this.fmt.parser,
       isPartial: true,
@@ -396,7 +395,6 @@ export class Agent {
    */
   finalize(ctx: SessionContext): ParseChatOutputResult {
     this._parsed = ctx.parseChatOutput(this._rawOutput, this.fmt.format, {
-      reasoningFormat: this.fmt.reasoningFormat,
       generationPrompt: this.fmt.generationPrompt,
       parser: this.fmt.parser,
     });

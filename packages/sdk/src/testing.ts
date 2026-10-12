@@ -488,7 +488,7 @@ export class MockSessionContext implements SessionContext {
       // hands them back as content. A scenario that needs reasoning tags overrides this.
       supportsThinking: false,
       thinkingStartTag: '',
-      thinkingEndTag: '',
+      thinkingEndTags: [],
     };
   }
 

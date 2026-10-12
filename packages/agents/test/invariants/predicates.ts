@@ -483,3 +483,20 @@ export function I44_sampleFirstFollowsIdentification(run: PoolRun): PredicateRes
   }
   return ok();
 }
+
+/**
+ * I45 Parse-hands-back-a-minted-key: the chat parser lives in the native context and crosses the boundary
+ * only as the key the context minted when it formatted. So every parse the pool issues names a key, and
+ * that key is one a format on this context produced; a parse that names none is parsed as plain content,
+ * and one that names a key the context never minted is refused by the addon. In shared mode every agent
+ * parses with the spine's key, which is one of the minted keys like any other.
+ */
+export function I45_parseHandsBackAMintedKey(run: PoolRun): PredicateResult {
+  const minted = new Set(run.parserKeys.formatted);
+  for (let i = 0; i < run.parserKeys.parsed.length; i++) {
+    const key = run.parserKeys.parsed[i];
+    if (key === undefined || key === '') return fail('I45', `parse ${i}: no parser key; the format's key was dropped on the way to the parse`, i);
+    if (!minted.has(key)) return fail('I45', `parse ${i}: parser key ${key} was never minted by this context`, i);
+  }
+  return ok();
+}

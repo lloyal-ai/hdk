@@ -12,9 +12,9 @@
  *  envelope again inside the string it was writing — closing reasoning, then
  *  opening a fresh call — so the fragment at the tail is `<close><tool_call>…`.
  *  Removing the call alone publishes the close as the last characters a reader
- *  sees. `thinkingEndTag` is the template's own close, carried on the agent's
+ *  sees. `thinkingEndTags` are the template's own closes, carried on the agent's
  *  format (Qwen `</think>`, Magistral `[/THINK]`); empty when it does not think.
- *  Only a TRAILING close goes — prose that mentions the tag mid-body is prose.
+ *  Only a TRAILING close goes — prose that mentions a tag mid-body is prose.
  *
  *  Who strips: the framework repairs only what it captured ITSELF — the
  *  frame's default capture of a terminal call, a free-text return, the salvage
@@ -23,14 +23,15 @@
  *  and only the capture knows which of its strings is prose. A capture that
  *  appends to prose (a citation trailer) strips first, itself, or the
  *  fragment is buried where this end-anchored match cannot see it. */
-export function stripDanglingToolCall(text: string, thinkingEndTag = ''): string {
+export function stripDanglingToolCall(text: string, thinkingEndTags: readonly string[] = []): string {
   const open = text.search(/<tool_call>(?:(?!<\/tool_call>)[\s\S])*$/);
   if (open === -1) return text.trimEnd();
   const kept = text.slice(0, open).trimEnd();
   // The close goes only when it is the text IMMEDIATELY before the fragment — that is the
   // restart. A close anywhere else is prose the model wrote (a finding may well name the
   // tag), and a result that is nothing but a close is not evidence of a restart at all.
-  if (thinkingEndTag && kept.endsWith(thinkingEndTag)) return kept.slice(0, -thinkingEndTag.length).trimEnd();
+  const close = thinkingEndTags.find((tag) => tag !== '' && kept.endsWith(tag));
+  if (close !== undefined) return kept.slice(0, -close.length).trimEnd();
   return kept;
 }
 

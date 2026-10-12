@@ -16,14 +16,13 @@ import type { FormatConfig } from '../../src/Agent';
  */
 export const FMT: FormatConfig = {
   format: 0,
-  reasoningFormat: 0,
   generationPrompt: '',
   parser: '',
   grammar: '',
   grammarLazy: false,
   grammarTriggers: [],
   enableThinking: false,
-  thinkingEndTag: '',
+  thinkingEndTags: [],
 };
 
 /** The same fixture with fields overridden — for the few tests that vary one. */

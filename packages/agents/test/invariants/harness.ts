@@ -3,7 +3,7 @@ import type { Channel } from 'effection';
 import { MockSessionContext } from '../../../sdk/src/testing.js';
 import { Branch } from '../../../sdk/src/Branch';
 import { BranchStore } from '../../../sdk/src/BranchStore';
-import type { ChatFormat, ParseChatOutputOptions, ParseChatOutputResult, MultimodalPrefillResult, MultimodalInput, AudioLimits } from '@lloyal-labs/sdk';
+import type { ChatFormat, FormatChatOptions, FormattedChatResult, ParseChatOutputOptions, ParseChatOutputResult, MultimodalPrefillResult, MultimodalInput, AudioLimits } from '@lloyal-labs/sdk';
 import { useAgentPool } from '../../src/agent-pool';
 import type { Orchestrator } from '../../src/orchestrators';
 import { parallel, chain } from '../../src/orchestrators';
@@ -42,6 +42,8 @@ export interface PoolRun {
   nativeCalls: NativeCall[];
   /** See {@link GrammarEvent}. */
   grammarEvents: GrammarEvent[];
+  /** The parser keys the context minted on format, and the key every parse handed back, in order. */
+  parserKeys: { formatted: string[]; parsed: (string | undefined)[] };
   ctx: InstrumentedMockSessionContext;
   /** The root branch the pool was given; the one handle that may outlive the pool. */
   rootHandle: number;
@@ -67,8 +69,26 @@ export class InstrumentedMockSessionContext extends MockSessionContext {
   readonly nativeCalls: NativeCall[] = [];
   /** Every grammar attach, order request and sample, in the order the pool issued them. */
   readonly grammarEvents: GrammarEvent[] = [];
+  /** The parser keys this context minted, one per distinct set of format options. */
+  readonly parserKeysFormatted: string[] = [];
+  /** The `parser` option of every parse, in order; `undefined` when a caller passed none. */
+  readonly parserKeysParsed: (string | undefined)[] = [];
   private _seq = 0;
   private _grammarSeq = 0;
+
+  /**
+   * The native context keys a parser by the options that shape it (tools, tool choice, schema, grammar,
+   * reasoning and thinking settings) and never by the messages, so the same options give the same key. The
+   * mock does the same, so a scenario can tell a parse that hands back the key its format minted from one that
+   * hands back nothing or something invented.
+   */
+  override formatChatSync(msgs: string, opts?: FormatChatOptions | string): FormattedChatResult {
+    const result = super.formatChatSync(msgs, opts);
+    const shaping = typeof opts === 'object' && opts !== null ? opts : {};
+    const key = `parser:${JSON.stringify(shaping, Object.keys(shaping).sort())}`;
+    if (!this.parserKeysFormatted.includes(key)) this.parserKeysFormatted.push(key);
+    return { ...result, parser: key };
+  }
 
   noteGrammar(ev: GrammarEvent extends infer E ? E extends GrammarEvent ? Omit<E, 'seq'> : never : never): void {
     this.grammarEvents.push({ ...ev, seq: this._grammarSeq++ } as GrammarEvent);
@@ -369,6 +389,14 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
   // unaffected, which is why nothing noticed.
   spec.instrument?.(ctx);
 
+  // Record the key every parse hands back, whoever answers the parse: the harness's default above or a
+  // scenario's own override. The recording wraps the final function, so an override cannot drop it.
+  const answerParse = ctx.parseChatOutput.bind(ctx);
+  ctx.parseChatOutput = (output: string, format: ChatFormat, opts?: ParseChatOutputOptions): ParseChatOutputResult => {
+    ctx.parserKeysParsed.push(opts?.parser);
+    return answerParse(output, format, opts);
+  };
+
   const trace = new CapturingTraceWriter();
   const channelEvents: AgentEvent[] = [];
 
@@ -490,6 +518,7 @@ export async function runPool(spec: PoolSpec): Promise<PoolRun> {
     channelEvents,
     nativeCalls: ctx.nativeCalls,
     grammarEvents: ctx.grammarEvents,
+    parserKeys: { formatted: ctx.parserKeysFormatted, parsed: ctx.parserKeysParsed },
     ctx,
     rootHandle: root.handle,
   };

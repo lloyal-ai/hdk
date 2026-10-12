@@ -482,7 +482,6 @@ export type GrammarOrder = 'maskFirst' | 'sampleFirst';
  * const fmt = await ctx.formatChat(messagesJson, { tools: toolsJson });
  * // ... generate tokens using fmt.prompt and fmt.grammar ...
  * const parsed = ctx.parseChatOutput(output, fmt.format, {
- *   reasoningFormat: fmt.reasoningFormat,
  *   generationPrompt: fmt.generationPrompt,
  *   parser: fmt.parser,
  * });
@@ -512,12 +511,17 @@ export interface FormattedChatResult {
   generationPrompt: string;
 
   /**
-   * Reasoning format (pass to parseChatOutput options)
-   * @see {@link ParseChatOutputOptions.reasoningFormat}
+   * The reasoning format this prompt was formatted with. Informational: how reasoning is parsed was decided
+   * when the parser was built, so {@link SessionContext.parseChatOutput} takes no reasoning option.
    */
   reasoningFormat: ReasoningFormat;
 
-  /** PEG parser definition for PEG format models (pass to parseChatOutput options) */
+  /**
+   * The key of the parser this format built, to pass to {@link SessionContext.parseChatOutput}. The parser
+   * itself stays native: it is a function of the tools, tool choice, schema, grammar, reasoning and thinking
+   * settings (never the messages), so two formats with the same options on one context share one key. A key
+   * is valid only on the context that produced it.
+   */
   parser: string;
   /** Grammar trigger conditions for lazy grammar activation */
   grammarTriggers: GrammarTrigger[];
@@ -529,13 +533,14 @@ export interface FormattedChatResult {
    */
   supportsThinking: boolean;
   /**
-   * The tags this TEMPLATE opens and closes reasoning with — `<think>`/`</think>` for Qwen, `[THINK]`/`[/THINK]`
-   * for Magistral, a channel marker for gpt-oss; both empty when {@link supportsThinking} is false. Read them
-   * rather than assuming one model's tags: a view showing a raw token stream is the one reader that sees the
-   * markers, since {@link SessionContext.parseChatOutput} hands back reasoning and content already apart.
+   * The tag this TEMPLATE opens reasoning with and the tags it may close it with — `<think>` and `</think>`
+   * for Qwen, `[THINK]` and `[/THINK]` for Magistral, a channel marker for gpt-oss; empty when
+   * {@link supportsThinking} is false. A template may declare more than one close. Read them rather than
+   * assuming one model's tags: a view showing a raw token stream is the one reader that sees the markers, since
+   * {@link SessionContext.parseChatOutput} hands back reasoning and content already apart.
    */
   thinkingStartTag: string;
-  thinkingEndTag: string;
+  thinkingEndTags: string[];
 }
 
 /**
@@ -550,11 +555,6 @@ export interface FormattedChatResult {
  */
 export interface ParseChatOutputOptions {
   /**
-   * Reasoning format (from {@link FormattedChatResult.reasoningFormat})
-   */
-  reasoningFormat?: ReasoningFormat;
-
-  /**
    * True if output is incomplete (streaming).
    * When true, the parser tolerates unterminated tool calls and open
    * thinking blocks, returning partial content as-is rather than
@@ -565,7 +565,10 @@ export interface ParseChatOutputOptions {
   /** Generation prompt prefill (from {@link FormattedChatResult.generationPrompt}) */
   generationPrompt?: string;
 
-  /** PEG parser definition for PEG format models (from {@link FormattedChatResult.parser}) */
+  /**
+   * The parser key from {@link FormattedChatResult.parser}, resolved on this context. Pass it for every
+   * output that came from a formatted prompt; without it the output is parsed as plain content.
+   */
   parser?: string;
 }
 
@@ -1306,7 +1309,6 @@ export interface SessionContext {
    * const fmt = await ctx.formatChat(JSON.stringify(messages), { tools: toolsJson });
    * // ... generate tokens ...
    * const parsed = ctx.parseChatOutput(generatedText, fmt.format, {
-   *   reasoningFormat: fmt.reasoningFormat,
    *   generationPrompt: fmt.generationPrompt,
    *   parser: fmt.parser
    * });
@@ -1358,7 +1360,6 @@ export interface SessionContext {
    *
    *   // Parse output: separates reasoning from content
    *   const parsed = ctx.parseChatOutput(rawOutput, fmt.format, {
-   *     reasoningFormat: fmt.reasoningFormat,
    *     generationPrompt: fmt.generationPrompt,
    *     parser: fmt.parser
    *   });

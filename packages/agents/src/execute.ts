@@ -135,14 +135,14 @@ export function* priceSpawn(task: AgentTaskSpec, ctx: SessionContext, enableThin
   const suffixTokens = [...ctx.getTurnSeparator(), ...ctx.tokenizeSync(fmt.prompt, false)];
   const src = sharedFmt ?? fmt;
   const fmtConfig: FormatConfig = {
-    format: src.format, reasoningFormat: src.reasoningFormat, generationPrompt: src.generationPrompt,
+    format: src.format, generationPrompt: src.generationPrompt,
     parser: src.parser, grammar: src.grammar, grammarLazy: src.grammarLazy, grammarTriggers: src.grammarTriggers,
     // The reasoning tag describes the MODEL'S TEMPLATE, not the shared header. A spine is
     // formatted from a system turn alone, which a template may refuse (Qwen does) — and the
     // retry that rescues it can report no declaration at all, leaving a format that claims not
     // to think beside a generation prompt that opens a reasoning block. The agent's own suffix
     // is formatted from a conversation the template accepts, so it carries the declaration.
-    enableThinking, thinkingEndTag: src.thinkingEndTag || fmt.thinkingEndTag,
+    enableThinking, thinkingEndTags: src.thinkingEndTags.length > 0 ? src.thinkingEndTags : fmt.thinkingEndTags,
   };
   return { suffixTokens, formattedPrompt: fmt.prompt, fmt: fmtConfig };
 }
