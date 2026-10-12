@@ -170,7 +170,8 @@ export class Applier {
 
   /** Parse a recovery output, set the result (source `recovery`), announce. */
   *finishRecovery(a: Agent, output: string, producedTokens: number): Operation<boolean> {
-    yield* this.d.emit.emit({ kind: 'recoveryProduce', agent: a, tokenCount: producedTokens, outputLength: output.length });
+    // The raw output rides on the trace: a salvage or a token-stopped report is reproducible after the fact.
+    yield* this.d.emit.emit({ kind: 'recoveryProduce', agent: a, tokenCount: producedTokens, outputLength: output.length, rawOutput: output });
     // Parse the turn that was actually BUILT. A salvage reads the agent's own report turn, so
     // the agent's prompt is right; an `extract` turn was built from a different prompt, and
     // parsing it against the agent's makes the parser read the whole answer — a complete

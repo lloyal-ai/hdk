@@ -50,7 +50,7 @@ export type Transition =
   | { kind: 'turn'; agent: Agent; parsed: ParseChatOutputResult }
   | { kind: 'produced'; agent: Agent; text: string; entropy?: number; surprisal?: number }
   // ── recovery ──
-  | { kind: 'recoveryProduce'; agent: Agent; tokenCount: number; outputLength: number }
+  | { kind: 'recoveryProduce'; agent: Agent; tokenCount: number; outputLength: number; rawOutput: string }
   | { kind: 'recovered'; agent: Agent; result: string }
   | { kind: 'recoveryFailed'; agent: Agent; reason: string; outputExcerpt: string }
   // ── admission and the ladder ──
@@ -156,7 +156,7 @@ export function project(t: Transition): Emission[] {
         ...(t.entropy !== undefined ? { entropy: t.entropy, surprisal: t.surprisal } : {}),
       } }];
     case 'recoveryProduce':
-      return [{ trace: { type: 'pool:recoveryProduce', agentId: t.agent.id, tokenCount: t.tokenCount, outputLength: t.outputLength } }];
+      return [{ trace: { type: 'pool:recoveryProduce', agentId: t.agent.id, tokenCount: t.tokenCount, outputLength: t.outputLength, rawOutput: t.rawOutput } }];
     case 'recovered':
       return [
         { bus: { type: 'agent:recovered', agentId: t.agent.id, result: t.result } },

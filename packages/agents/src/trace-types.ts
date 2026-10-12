@@ -219,6 +219,9 @@ export type TraceEvent =
       agentId: number;
       tokenCount: number;
       outputLength: number;
+      /** The turn's raw text as the pool parsed it: a salvage or a token-stopped
+       *  report can be read back from the trace, not only measured. */
+      rawOutput: string;
     }
   | TraceEventBase & {
       type: 'pool:recoveryReturn';
