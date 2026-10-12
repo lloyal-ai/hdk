@@ -42,9 +42,10 @@ export interface SchedulerOptions {
    */
   recovery: 'serial' | 'cohort';
   /** Explicit token cap for cohort recovery turns and for a voluntary terminal
-   *  report in either shape (absent: adaptive for cohort, `MAX_RECOVERY_BUDGET`
-   *  for the report). Serial forced recovery has no configured cap; it ends at
-   *  its stop token or when the room above the floor is gone. */
+   *  report in either shape. Absent: cohort shares are adaptive, clamped to
+   *  `MAX_RECOVERY_BUDGET`, and a voluntary report is NOT capped; it runs to
+   *  its stop token or the hard line. Serial forced recovery has no configured
+   *  cap; it ends at its stop token or when the room above the floor is gone. */
   recoveryBudget?: number;
   terminalToolName?: string;
   /** How many agents the pool seats at once; spawns beyond it wait in request order. Absent: unbounded. */

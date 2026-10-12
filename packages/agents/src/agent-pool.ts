@@ -118,6 +118,13 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
     const poolScopeId = yield* useTraceScope(tw, poolParentTraceId, 'pool', { maxTurns, terminalToolName });
     const emit = new Emitter(tw, poolChannel, poolScopeId);
 
+    // The addon's contract since lloyal.node 4: the context reports its batch size, the parser
+    // crosses as a key and the template's thinking closes as a list. An older addon has none of
+    // them; the first is free to read here, so the mismatch is named at open, not at the first
+    // format a spawn makes inside the orchestrator.
+    if (typeof ctx.nBatch !== 'number') {
+      throw new Error('useAgentPool: lloyal.node 4 or later is required; this context reports no batch size, parser key or thinking closes');
+    }
     const terminalTool = terminalToolName ? tools.get(terminalToolName) : undefined;
     const terminalGrammar = terminalTool ? buildTerminalGrammar(ctx, terminalTool) : null;
     // One policy per pool: the caller's own, or the one its budget row derives —
