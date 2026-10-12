@@ -344,11 +344,13 @@ describe('DefaultScheduler.schedule', () => {
     S = scheduler({ recoveryBudget: 3000 }).schedule(state([reporting], 8000), quiet);
     expect(S.drops.map(d => d.reason)).toEqual(['terminal_cap']);
 
-    // Without a configured budget the adaptive ceiling caps the report.
-    const adaptive = emitting(agent(2), 'report');
-    for (let i = 0; i < 2048; i++) adaptive.accumulateToken('x');
-    S = scheduler().schedule(state([adaptive], 8000), quiet);
-    expect(S.drops.map(d => d.reason)).toEqual(['terminal_cap']);
+    // Without a configured budget a voluntary report is never capped: the model was
+    // told no number, so none ends a report the room can hold.
+    const uncapped = emitting(agent(2), 'report');
+    for (let i = 0; i < 4096; i++) uncapped.accumulateToken('x');
+    S = scheduler().schedule(state([uncapped], 8000), quiet);
+    expect(S.drops).toEqual([]);
+    expect(S.decode).toEqual([uncapped]);
   });
 
   it('the adaptive cohort budget is shared among agents that will still hold KV — agents cancelled this schedule are not among them', () => {

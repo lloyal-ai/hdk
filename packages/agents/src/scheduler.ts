@@ -26,9 +26,9 @@ import {
 
 /** Adaptive per-recovery budget bounds for cohort recovery when no explicit
  *  `recoveryBudget` is set: a fair share of the room above the floor across
- *  the live agents, clamped to [MIN, MAX]. MAX is also the default cap on a
- *  voluntary terminal report when no budget is configured; an explicit budget
- *  replaces it. */
+ *  the live agents, clamped to [MIN, MAX]. A voluntary report is capped only
+ *  by an explicit budget: a number the model was never told must not end a
+ *  report the room can hold. */
 export const MIN_RECOVERY_BUDGET = 128;
 export const MAX_RECOVERY_BUDGET = 2048;
 
@@ -238,7 +238,11 @@ export class DefaultScheduler implements Scheduler {
     S.alive = state.agents.filter(a => alive(a) && !dropped.has(a)).length + S.spawns.length;
     // One configured number for both capped paths: an explicit budget caps a
     // voluntary report as it caps a cohort turn, above the adaptive ceiling too.
-    const cap = this.opts.recoveryBudget ?? MAX_RECOVERY_BUDGET;
+    // With none configured a voluntary report runs to its stop token; the hard
+    // line, a pressure fact, is what ends a runaway. Reports were slow enough
+    // to make a default cap unreachable until sample-first; the day they got
+    // fast it cut whole reports with a third of the context free.
+    const cap = this.opts.recoveryBudget ?? Infinity;
     for (const a of state.agents) {
       if (a.status !== 'active' || dropped.has(a)) continue;
       if (signals.windDown && !a.extracting && !emittingTerminal(a, terminal)) {

@@ -278,11 +278,13 @@ export interface AgentPolicy {
    *   and salvaged once it has run this many tokens.
    *
    * Serial (`'staggered'`) forced recovery has no configured cap: it ends at its
-   * stop token or when the pressure turns critical.
+   * stop token or when the room above the floor is gone.
    *
-   * Absent → adaptive for cohort turns (a fair share of current headroom across
-   * the agents that will still hold context, clamped to a [min, max]) and 2048
-   * for a voluntary report.
+   * Absent → adaptive for cohort turns (a fair share of the room above the
+   * floor across the agents that will still hold context, clamped to a
+   * [min, max]) and NO cap for a voluntary report, which runs to its stop
+   * token or the hard line. A harness that sets a number should tell the
+   * model the same number in its report instructions.
    */
   readonly recoveryBudget?: number;
 }
