@@ -19,7 +19,7 @@ type KvReading = { nCtx: number; cellsUsed: number; remaining: number };
  * `position - fork_head` (unique cells above the fork point), reset on
  * bulk ops like `retainOnly` and `drain`.
  *
- * Two thresholds partition `remaining` into three zones:
+ * Two policy lines and one physical line partition `remaining`:
  *
  * ```
  * ┌──────────────────────────────────────────────────────┐
@@ -30,16 +30,23 @@ type KvReading = { nCtx: number; cellsUsed: number; remaining: number };
  * │  └──────────┴───────────────────┴──────────────────┘ │
  * │              ◄── remaining ──►  │                    │
  * │                                 │                    │
- * │  headroom = remaining - softLimit                    │
- * │  critical = remaining < hardLimit                    │
+ * │  headroom = remaining - softLimit   (working: nudge)│
+ * │  critical = remaining < hardLimit   (working: kill) │
+ * │  room     = remaining - floor       (a report's room)│
  * └──────────────────────────────────────────────────────┘
  * ```
+ *
+ * Working turns live above the two policy lines; a report lives above the
+ * floor. The lines are the policy's; the floor is the context's.
  *
  * - **headroom > 0** — room for new work (tool results, generation)
  * - **headroom ≤ 0** — over budget. Admission defers tool results, the
  *   policy hard-cuts non-terminal tool calls. Terminal tools still pass.
- * - **critical** — remaining below hardLimit. Agents are dropped before they
- *   sample again, to prevent llama_decode crashes.
+ * - **critical** — remaining below hardLimit. A working turn is dropped
+ *   before it samples again; its report is written from the room.
+ * - **room** — what a recovery report may spend: everything above the
+ *   decode workspace the next batch needs. A report is admitted, sized and
+ *   finished against it; no policy line enters that arithmetic.
  *
  * @category Agents
  */
@@ -54,8 +61,10 @@ export class ContextPressure {
    */
   static readonly DEFAULT_HARD_LIMIT = 512;
   /**
-   * Assumed `nBatch` when the native binding doesn't expose it.
-   * Pool startup validates `pressureThresholds.hardLimit >= this`.
+   * Assumed `nBatch` when the native binding doesn't expose it: the decode
+   * workspace the next batch needs, and so the one physical line in the
+   * cache. Pool startup validates `pressureThresholds.hardLimit >= this`, so
+   * the kill line for working turns never sits below it.
    */
   static readonly ASSUMED_N_BATCH = 512;
 
@@ -116,8 +125,18 @@ export class ContextPressure {
    */
   get headroom(): number { return this.remaining - this.softLimit; }
 
-  /** `remaining < hardLimit` — the agent must not sample again. */
+  /** `remaining < hardLimit` — a working turn must not sample again. */
   get critical(): boolean { return this.remaining < this.hardLimit; }
+
+  /** The decode workspace the next batch needs: the one physical line. */
+  get floor(): number { return ContextPressure.ASSUMED_N_BATCH; }
+
+  /**
+   * Cells a recovery report may spend: `remaining - floor`. The hard reserve
+   * is the report's to write into; only the floor is not. Infinity without a
+   * context limit; negative once the cache is below the floor.
+   */
+  get room(): number { return this.remaining - this.floor; }
 
   /** Can `tokenCount` tokens fit while staying above softLimit? */
   canFit(tokenCount: number): boolean { return tokenCount <= this.headroom; }

@@ -21,6 +21,7 @@
 import { describe, it, expect } from 'vitest';
 import type { AgentPolicy } from '../../../src/AgentPolicy';
 import { runPool, STOP } from '../harness';
+import { BATCH_BUFFER } from '../../../src/AgentPolicy';
 
 const policy: AgentPolicy = {
   onProduced: () => ({ type: 'idle', reason: 'free_text_stop' }),
@@ -29,8 +30,8 @@ const policy: AgentPolicy = {
   recoveryShape: 'staggered',
 };
 
-describe('scenario: a report that never stops is finished at the hard reserve', () => {
-  it('no commit below hardLimit; the report is salvaged; the run closes normally', async () => {
+describe('scenario: a report that never stops is finished at the floor', () => {
+  it('no commit below the floor; the report is salvaged; the run closes normally', async () => {
     const run = await runPool({
       // Room for the prompt and a few hundred tokens of report, then the reserve.
       nCtx: 1200, cellsUsed: 0,
@@ -57,15 +58,16 @@ describe('scenario: a report that never stops is finished at the hard reserve', 
     const outcomes = run.traceEvents.filter(e => e.type === 'pool:recoveryReturn' || e.type === 'pool:recoveryFailed');
     expect(outcomes).toHaveLength(1);
     expect(run.traceEvents.some(e => e.type === 'pool:recoveryProduce')).toBe(true);
-    // No extractor decode was scheduled below the reserve: with one agent,
-    // every commit landed with at least hardLimit − 1 remaining. (`remaining`
-    // clamps at 0, so a bound of 0 would say nothing.)
-    const HARD_LIMIT = 512;
+    // No extractor decode was scheduled below the floor: with one agent,
+    // every commit landed with at least floor − 1 remaining. (`remaining`
+    // clamps at 0, so a bound of 0 would say nothing.) The hard line is the
+    // research kill line and plays no part in where a report ends.
+    const FLOOR = BATCH_BUFFER;
     const ticks = run.traceEvents.filter(e => e.type === 'pool:tick') as { pressure: { remaining: number } }[];
     expect(ticks.length).toBeGreaterThan(0);
     const floor = Math.min(...ticks.map(t => t.pressure.remaining));
-    expect(floor, `a decode was scheduled below the hard reserve (lowest landing: ${floor})`).toBeGreaterThanOrEqual(HARD_LIMIT - 1);
-    expect(floor, 'the report was cut long before the reserve').toBeLessThan(HARD_LIMIT + 8);
+    expect(floor, `a decode was scheduled below the floor (lowest landing: ${floor})`).toBeGreaterThanOrEqual(FLOOR - 1);
+    expect(floor, 'the report was cut long before the floor').toBeLessThan(FLOOR + 8);
     expect(run.result.agents[0].agent.status).toBe('disposed');
   });
 });

@@ -11,7 +11,8 @@ import { extractTerminalResult } from './capture';
 // the decoder's batch workspace. Used to compute the budget communicated to
 // the model in its recovery prompt.
 export const RECOVERY_PROMPT_OVERHEAD = 150;
-export const BATCH_BUFFER = 512;
+/** The decode workspace: the floor on {@link ContextPressure}, by its one name. */
+export const BATCH_BUFFER = ContextPressure.ASSUMED_N_BATCH;
 
 
 /**
@@ -422,15 +423,13 @@ export interface DefaultAgentPolicyOpts {
    *  Same naming pattern for both resource types.
    *  time budget is global across nesting levels (ms since policy creation). */
   budget?: {
-    /** Context budget (tokens remaining). softLimit = nudge floor, hardLimit = kill floor.
-     *  COUPLING (non-obvious): RECOVERY budgets from the `hardLimit` RESERVE, not `softLimit`.
-     *  The recovery budget `b` and the admission of an extracting agent's recovery turn draw
-     *  from `remaining − hardLimit` (see {@link AgentPolicy.onRecovery} + the scheduler's
-     *  `recoveryFor`), so recovery may decode the soft reserve down to `hardLimit`. `softLimit`
-     *  is the model NUDGE floor, reserved for downstream work (a later pool on the same spine) — raising it nudges
-     *  EARLIER but does NOT shorten recovery reports. (`softLimit` is advisory: it gates the
-     *  wrap-up nudge + tool-result deferral, never a kill; `hardLimit` is the only mechanical
-     *  floor.) */
+    /** Context budget (tokens remaining) for WORKING turns: softLimit = nudge line, hardLimit
+     *  = kill line. Neither enters a recovery report's arithmetic: a report is sized, admitted
+     *  and finished against `ContextPressure.room`, everything above the decode workspace, so
+     *  the hard reserve is the report's to write into. `softLimit` is advisory (the wrap-up
+     *  nudge and tool-result deferral, never a kill) and is reserved for downstream work on the
+     *  same spine; `hardLimit` is where a working turn stops sampling. Raising either nudges or
+     *  kills EARLIER and does not shorten a report. */
     context?: { softLimit?: number; hardLimit?: number };
     /** Wall-time budget (ms since policy creation). */
     time?: { softLimit?: number; hardLimit?: number };
@@ -698,16 +697,15 @@ export class DefaultAgentPolicy implements AgentPolicy {
     if (agent.tokenCount < minTokens || agent.toolCallCount < minToolCalls) {
       return { type: 'skip' };
     }
-    // Budget recovery's generation can consume: hardLimit reserve minus the
-    // recovery prompt's own cost and the decoder's batch workspace. Expressed
-    // as words (not tokens) and under-advertised so the model has slack —
-    // tokenizers vary across models but words are universal. The one thing the
-    // app's prompt is given. In-loop recovery overrides this with its
-    // per-recovery budget `b` (a headroom share across live agents) so the
-    // advisory matches the pool's token-stop (graceful self-conclusion, not a
-    // guillotine).
+    // Budget recovery's generation can consume: the room above the floor minus
+    // the recovery prompt's own cost. Expressed as words (not tokens) and
+    // under-advertised so the model has slack — tokenizers vary across models
+    // but words are universal. The one thing the app's prompt is given. In-loop
+    // recovery overrides this with its per-recovery budget `b` (a share of the
+    // room across live agents) so the advisory matches the pool's token-stop
+    // (graceful self-conclusion, not a guillotine).
     const budgetTokens = budgetTokensOverride
-      ?? Math.max(50, pressure.remaining - RECOVERY_PROMPT_OVERHEAD - BATCH_BUFFER);
+      ?? Math.max(50, pressure.room - RECOVERY_PROMPT_OVERHEAD);
     const budget = tokenBudgetAsWords(budgetTokens);
     return { type: 'extract', prompt: this._recovery.prompt({ budget }) };
   }

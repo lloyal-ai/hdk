@@ -112,7 +112,7 @@ describe('DefaultScheduler.schedule', () => {
     expect(S.drops[0]).toMatchObject({ reason: 'terminal_cap', exitReason: 'terminal_cap', recovery: { type: 'salvage' } });
   });
 
-  it('an extracting agent is exempt from the kill: never dropped, finished at its token-stop or when the pressure is critical', () => {
+  it('an extracting agent is exempt from the kill: never dropped, finished at its token-stop or when the room above the floor is gone', () => {
     const a = agent(1);
     a.markExtracting(3);
     // Room above the reserve, budget left, a policy that wants it gone: it decodes.
@@ -124,8 +124,13 @@ describe('DefaultScheduler.schedule', () => {
     S = scheduler().schedule(state([a], 2000), { ...quiet, shouldExit: () => true });
     expect(S.finishes).toEqual([a]);
     expect(S.decode).toEqual([]);
-    // Below the reserve with budget left: finished, still never dropped.
+    // Below the hard line with budget left: still decodes — the reserve is the report's to spend.
     const b = agent(2); b.markExtracting(1000);
+    const belowHard = new ContextPressure({ nCtx: 16384, cellsUsed: 16384 - 1000, remaining: 1000 }, { softLimit: 4096, hardLimit: 2048 });
+    S = scheduler().schedule(state([b], 1000, { pressure: belowHard }), { ...quiet, shouldExit: () => true });
+    expect(S.drops).toEqual([]);
+    expect(S.decode).toEqual([b]);
+    // Below the floor with budget left: finished, still never dropped.
     S = scheduler().schedule(state([b], 100), { ...quiet, shouldExit: () => true });
     expect(S.drops).toEqual([]);
     expect(S.finishes).toEqual([b]);
@@ -305,21 +310,21 @@ describe('DefaultScheduler.schedule', () => {
     expect(S.rejectedExtends).toEqual([ext]);
   });
 
-  it('an extracting agent is finished when the post-admission pressure turns critical, not only when its budget is spent', () => {
-    // Serial: an infinite budget never finishes by itself; the hard reserve must.
+  it('an extracting agent is finished when the room above the floor is gone, not only when its budget is spent', () => {
+    // Serial: an infinite budget never finishes by itself; the floor must.
     const serial = agent(1); serial.markExtracting(Infinity, true);
-    let S = scheduler({ recovery: 'serial' }).schedule(state([serial], 100), quiet);      // remaining 100 < hardLimit 512
-    expect(S.decode, 'a report decoded into a cache below the hard reserve').toEqual([]);
+    let S = scheduler({ recovery: 'serial' }).schedule(state([serial], 100), quiet);      // remaining 100 < floor 512
+    expect(S.decode, 'a report decoded into a cache below the floor').toEqual([]);
     expect(S.finishes).toEqual([serial]);
     expect(S.drops).toEqual([]);
 
-    // Cohort: budget left, but the cache is already below the reserve — the
+    // Cohort: budget left, but the cache is already below the floor — the
     // reservation lived only in the tick that admitted the turn.
     const cohort = agent(2); cohort.markExtracting(1000);
     S = scheduler().schedule(state([cohort], 100), quiet);
     expect(S.finishes).toEqual([cohort]);
 
-    // Above the reserve, with budget left: decodes.
+    // Above the floor, with budget left: decodes.
     const fine = agent(4); fine.markExtracting(1000);
     S = scheduler().schedule(state([fine], 2000), quiet);
     expect(S.decode).toEqual([fine]);
