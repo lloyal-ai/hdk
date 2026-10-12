@@ -31,6 +31,9 @@ jobs:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Verify licensing documents
+        run: npm run license:check
+
       - run: npm install
       - run: npm run build
 

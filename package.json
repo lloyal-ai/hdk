@@ -26,7 +26,10 @@
     "test": "npm run build && vitest run",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
-    "verify:oci": "bash scripts/verify-oci-conformance.sh"
+    "verify:oci": "bash scripts/verify-oci-conformance.sh",
+    "license:sync": "node scripts/sync-licensing.mjs",
+    "license:check": "node scripts/sync-licensing.mjs --check",
+    "license:test": "node --test scripts/sync-licensing.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^25.3.0",
