@@ -79,6 +79,12 @@ export interface AgentRuntime {
   recovering: boolean;
   /** Set when the agent ended without a result: the terminal failure's reason. */
   failReason: string | null;
+  /** What the buffer held when `agent:done` ended the span early: a report the model was writing, or the
+   *  call it was mid-way through. Kept so a view can show a stopped report as stopped, beside what was kept,
+   *  instead of wiping it. Null when the buffer was empty, and for an agent that returned on its own. */
+  draft: string | null;
+  /** Why the span ended early, as `agent:done` said (a drop reason); null for a return, or a done that named none. */
+  stopReason: string | null;
   /** Think blocks, tool rows, the report — or null for an agent tracked by its numbers only. */
   timeline: TimelineItem[] | null;
 }
@@ -103,7 +109,7 @@ export type AgentEvent =
   | { type: 'agent:return'; agentId: number; result: string }
   | { type: 'agent:recovered'; agentId: number; result: string }
   | { type: 'agent:failed'; agentId: number; reason: string }
-  | { type: 'agent:done'; agentId: number };
+  | { type: 'agent:done'; agentId: number; reason?: string };
 
 /** What the application decides at a spawn — two facts, not one: whether the agent keeps a timeline, and which
  *  task of the plan it works (null: none — a settling pass keeps a timeline and works no task; a helper the view
@@ -267,7 +273,7 @@ function createAgent(r: AgentRoster, id: number, now: number, patch: Partial<Age
   const base: AgentRuntime = {
     id, label: `A${r.nextLabelIdx}`, phase: 'idle', startedAt: now, endedAt: null, tokenCount: 0, toolCallCount: 0,
     taskIndex: null, taskDescription: null, dependencyHint: null, currentThinkId: null, pendingToolCallId: null,
-    retry: null, contentBuffer: '', recovering: false, failReason: null, timeline: null,
+    retry: null, contentBuffer: '', recovering: false, failReason: null, draft: null, stopReason: null, timeline: null,
     ...patch,
   };
   const agents = new Map(r.agents);
@@ -428,10 +434,15 @@ export function foldAgents(r: AgentRoster, ev: AgentEvent, opts: FoldAgentsOptio
     case 'agent:done': {
       // Not `done` yet: in the stall-break path this precedes the forced recovery's produce stream and
       // `agent:recovered`. Close any live think, step back to idle, and route what follows into the buffer.
+      // The buffer still clears for the recovery stream; what it held is kept as the draft, with the reason,
+      // for the view to show the stop where the text was. One span ends once: a second done changes nothing.
       const agent = r.agents.get(ev.agentId);
-      if (!agent || agent.phase === 'done' || agent.phase === 'failed') return r;   // terminal either way
+      if (!agent || agent.phase === 'done' || agent.phase === 'failed' || agent.recovering) return r;   // terminal either way
       const working = closeLiveThink(r, ev.agentId, now);
-      return replaceAgent(working, ev.agentId, (a) => ({ ...a, phase: 'idle', contentBuffer: '', recovering: true }));
+      return replaceAgent(working, ev.agentId, (a) => ({
+        ...a, phase: 'idle', contentBuffer: '', recovering: true,
+        draft: a.contentBuffer || null, stopReason: ev.reason ?? null,
+      }));
     }
 
     default:

@@ -467,7 +467,9 @@ export type AgentEvent =
   | { type: 'agent:return'; agentId: number; result: string }
   | { type: 'agent:recovered'; agentId: number; result: string }
   | { type: 'agent:failed'; agentId: number; reason: string }
-  | { type: 'agent:done'; agentId: number }
+  /** The span ended. `reason` is the drop that ended it, so a view can say why where the text is
+   *  (out of room, out of time, closed early); absent when the agent returned on its own. */
+  | { type: 'agent:done'; agentId: number; reason?: Extract<TraceEvent, { type: 'pool:agentDrop' }>['reason'] }
   | { type: 'agent:tick'; cellsUsed: number; nCtx: number }
   /** The run held at a tick boundary (the {@link Pause} signal). Nothing
    *  decodes until `run:resumed`; branches stay resident. */

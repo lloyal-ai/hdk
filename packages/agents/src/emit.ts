@@ -85,11 +85,13 @@ export type Transition =
   | { kind: 'resumed'; pausedMs: number }
   | { kind: 'windingDown' };
 
-const agentDone = (agent: Agent): Emission[] => [
+const agentDone = (agent: Agent, reason?: DropReason | null): Emission[] => [
   // Trace before the suspending bus send: the send waits on subscriber
   // backpressure, which must not inflate the span-end ts.
   { trace: { type: 'agent:done', agentId: agent.id } },
-  { bus: { type: 'agent:done', agentId: agent.id } },
+  // The drop's reason rides with the done: the one fact a view needs to name
+  // the stop where the text is. A return has none.
+  { bus: { type: 'agent:done', agentId: agent.id, ...(reason ? { reason } : {}) } },
 ];
 
 /** Branch metrics for the close record: the pre-prune harvest once the branch is gone. */
@@ -100,7 +102,7 @@ export function project(t: Transition): Emission[] {
     case 'drop': {
       const out: Emission[] = [];
       if (t.reason) out.push({ trace: { type: 'pool:agentDrop', agentId: t.agent.id, reason: t.reason } });
-      if (t.done) out.push(...agentDone(t.agent));
+      if (t.done) out.push(...agentDone(t.agent, t.reason));
       return out;
     }
     case 'returned': {
