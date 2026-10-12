@@ -144,6 +144,16 @@ describe('salvageTerminalResult', () => {
     expect(salvageTerminalResult('{"result":"Line one\\nLine tw')).toBe('Line one\nLine tw');
   });
 
+  it('an escaped backslash at the cut is text, not an unfinished escape', () => {
+    // `\\u20` in the JSON is an escaped backslash followed by "u20": complete, kept whole.
+    expect(salvageTerminalResult('{"result":"Use the regex \\\\u20')).toBe('Use the regex \\u20');
+    expect(extractTerminalResult('{"result":"Use the regex \\\\u20')).toBe('Use the regex \\u20');
+    // A path ending in an escaped backslash keeps it.
+    expect(salvageTerminalResult('{"result":"path C:\\\\')).toBe('path C:\\');
+    // An escaped backslash right before a genuine unfinished escape: the backslash stays, the fragment goes.
+    expect(salvageTerminalResult('{"result":"snow \\\\\\u20')).toBe('snow \\');
+  });
+
   it('a call cut before its result began keeps nothing', () => {
     expect(salvageTerminalResult('{')).toBe('');
     expect(salvageTerminalResult('')).toBe('');

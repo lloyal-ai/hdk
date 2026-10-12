@@ -62,11 +62,13 @@ export function salvageTerminalResult(args: string): string {
 }
 
 /** The `result` string of a call cut mid-argument, unescaped; null when it never began.
- *  A cut inside an escape (`\u20`, a lone backslash) drops the fragment, not the text before it. */
+ *  The match consumes escapes whole, so the body can end in an unfinished `\u` escape and in nothing else
+ *  unfinished; that fragment goes, the text before it stays. Only an escape begun by an odd run of
+ *  backslashes is one: `\\u20` is an escaped backslash followed by text, and is kept. */
 function partialResult(args: string): string | null {
   const m = args.match(/"result"\s*:\s*"((?:[^"\\]|\\.)*)/);
   if (!m) return null;
-  const body = m[1].replace(/\\u[0-9a-fA-F]{0,3}$/, '').replace(/\\+$/, '');
+  const body = m[1].replace(/(^|[^\\])((?:\\\\)*)\\u[0-9a-fA-F]{0,3}$/, '$1$2');
   try { return JSON.parse(`"${body}"`); } catch { return null; }
 }
 
