@@ -2,8 +2,8 @@ import { strict as assert } from 'node:assert';
 import { after, before, test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { Branch, BranchStore, Session, buildUserDeltaMultimodal, deltaCells } from '@lloyal-labs/sdk';
-import type { SessionContext } from '@lloyal-labs/sdk';
+import { Branch, BranchStore, Session, buildToolResultDeltaMultimodal, buildUserDeltaMultimodal, deltaCells } from '@lloyal-labs/sdk';
+import type { MultimodalInput, SessionContext } from '@lloyal-labs/sdk';
 import { createLocalContext, nativeRepo } from './local-native';
 
 const image = readFileSync(resolve(nativeRepo, 'test/fixtures/red-square-blue-circle.png'));
@@ -62,4 +62,65 @@ test('the image session call still creates an attended cold trunk', async () => 
     assert.match(await answer(session.trunk), /circle/i);
   } finally { await session.dispose(); }
   assert.equal(ctx._storeKvPressure().cellsUsed, 0);
+});
+
+// A video is one typed input: its sampled frames, their times and the
+// timestamp interval. liblloyal lays it out as llama.cpp's video helper does.
+const videoDir = resolve(nativeRepo, 'liblloyal/tests/fixtures/video');
+const clipFrames = Array.from({ length: 16 }, (_, i) =>
+  readFileSync(resolve(videoDir, `frame-${String(i).padStart(2, '0')}.png`)));
+const clip = (): MultimodalInput => ({
+  kind: 'video', frames: clipFrames, timestampsMs: clipFrames.map((_, i) => i * 250), timestampIntervalMs: 5000,
+});
+const DIRECTION = 'Which direction does the red square move? Answer in a few words.';
+
+test('a video costs what it lands, keeps M-RoPE accounting and answers on motion', async () => {
+  const delta = { ...buildUserDeltaMultimodal(ctx, DIRECTION, [clip()], { enableThinking: false }), sep: [] };
+  const cells = await deltaCells(ctx, delta);
+  const branch = Branch.create(ctx, 0, { temperature: 0 });
+  try {
+    const result = await branch.prefillMultimodal(delta.prompt, delta.bitmaps, delta.sep);
+    assert.equal(result.tokensDecoded, cells);
+    assert.ok(result.positionAdvance < cells, 'fused frames retain M-RoPE accounting');
+    assert.match(await answer(branch), /right/i);
+  } finally { branch.pruneSync(); }
+  assert.equal(ctx._storeKvPressure().cellsUsed, 0);
+});
+
+test('a video reaches the store cohort and the session trunk unchanged', async () => {
+  const delta = { ...buildUserDeltaMultimodal(ctx, DIRECTION, [clip()], { enableThinking: false }), sep: [] };
+  const branch = Branch.create(ctx, 0, { temperature: 0 });
+  try {
+    const [result] = await new BranchStore(ctx).prefillMultimodal([[branch, delta]]);
+    assert.equal(result.error, undefined);
+    assert.match(await answer(branch), /right/i);
+  } finally { branch.pruneSync(); }
+
+  const session = new Session({ ctx, store: new BranchStore(ctx) });
+  try {
+    await session.prefillUserMultimodal(DIRECTION, [clip()], { enableThinking: false });
+    assert.ok(session.trunk);
+    // The cold trunk samples with defaults; a grounded check needs it greedy.
+    session.trunk.setSamplerParams({ temperature: 0 });
+    assert.match(await answer(session.trunk), /right/i);
+  } finally { await session.dispose(); }
+  assert.equal(ctx._storeKvPressure().cellsUsed, 0);
+});
+
+test('a video delta owns its frames: caller mutation after building changes nothing admitted', async () => {
+  const frames = clipFrames.map(f => new Uint8Array(f));
+  const times = frames.map((_, i) => i * 250);
+  const input: MultimodalInput = { kind: 'video', frames, timestampsMs: times };
+  const delta = { ...buildUserDeltaMultimodal(ctx, DIRECTION, [input], { enableThinking: false }), sep: [] };
+  const before = await deltaCells(ctx, delta);
+  frames[0].fill(0);
+  frames.pop();
+  times.reverse();
+  assert.equal(await deltaCells(ctx, delta), before);
+});
+
+test('a tool result can carry a video', async () => {
+  const delta = buildToolResultDeltaMultimodal(ctx, 'The clip you asked for.', 'call-1', [clip()], { enableThinking: false });
+  assert.equal(delta.prompt.split('<__media__>').length - 1, 1, 'one marker for the whole video');
+  assert.ok(await deltaCells(ctx, delta) > 0);
 });

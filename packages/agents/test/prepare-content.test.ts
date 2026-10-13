@@ -33,7 +33,7 @@ describe('prepareBatch', () => {
       },
     };
     const prepared = await run(function* () { return yield* prepareBatch(ingress, store, img(4)); });
-    expect(prepared.bitmaps).toHaveLength(4);
+    expect(prepared.inputs).toHaveLength(4);
     expect(peak).toBeGreaterThan(1);
   });
 });

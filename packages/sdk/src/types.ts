@@ -273,10 +273,32 @@ export interface ContextOptions {
   imageMaxTokens?: number;
 }
 
-/** Encoded media in marker order. Audio accepts PCM WAV; bare bytes are images. */
+/** Text placed on a video's timeline, such as a transcript segment. */
+export interface VideoNote {
+  /** Milliseconds from the clip's start; the note joins the first timestamp at or after it. */
+  atMs: number;
+  text: string;
+}
+
+/**
+ * Encoded media in marker order. Audio accepts PCM WAV; bare bytes are images.
+ *
+ * A video is one input behind one marker: the sampled frames of one clip, each
+ * an encoded image of one shared size, with the time each was sampled. It is
+ * laid out as llama.cpp's video helper lays out a clip (`"Video:"`, frames,
+ * a timestamp after each `timestampIntervalMs`, 5000 by default), so
+ * projectors with temporal merge fuse adjacent frames in pairs. Decoding a
+ * video file into frames is the caller's job.
+ */
 export type MultimodalInput = Uint8Array | {
   kind: 'image' | 'audio';
   bytes: Uint8Array;
+} | {
+  kind: 'video';
+  frames: Uint8Array[];
+  timestampsMs: number[];
+  timestampIntervalMs?: number;
+  notes?: VideoNote[];
 };
 
 /** Aggregate admission budgets for one prompt's audio inputs. */

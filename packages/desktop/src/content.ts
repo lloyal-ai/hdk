@@ -11,9 +11,10 @@
  * @category Desktop
  */
 import { protocol } from 'electron';
-import { createProjectMediaStore, resolveContent } from '@lloyal-labs/rig/node';
+import { BlobUploads, createProjectMediaStore, isDistributionPath, MAX_UPLOAD_CHUNK_BYTES, resolveContent } from '@lloyal-labs/rig/node';
+import type { ContentReply } from '@lloyal-labs/rig/node';
 import { MAX_DOCUMENT_BYTES, DOCUMENT_UPLOAD_TIMEOUT_MS } from '@lloyal-labs/media/node';
-import type { Descriptor } from '@lloyal-labs/media';
+import type { AttachmentStore, Descriptor } from '@lloyal-labs/media';
 import { readBounded, TooLarge, TooSlow } from './read-bounded';
 
 /** The scheme's authority: `standard` schemes require one. Every route lives under the path, as on HTTP. */
@@ -35,8 +36,11 @@ export function registerContentScheme(): void {
 
 /**
  * Serve reads from the project store; hand an upload to `ingest`. Reading needs
- * no lock: OCI blobs are content-addressed and immutable. Writing is not ours —
- * `ingest` belongs to whichever process owns the store, and takes a signal so a
+ * no lock: OCI blobs are content-addressed and immutable. A staged upload is
+ * the same: adopting one writes a content-addressed blob by atomic rename and
+ * touches no manifest or index, so the scheme stages originals over its own
+ * view of the store. Ingest is not ours — it normalizes and commits manifests,
+ * so it belongs to whichever process owns the store, and takes a signal so a
  * deadline here can actually stop it.
  */
 export function serveContentScheme(
@@ -44,13 +48,33 @@ export function serveContentScheme(
   ingest: (bytes: Uint8Array, signal: AbortSignal) => Promise<Descriptor>,
 ): void {
   const media = createProjectMediaStore(projectRoot);
+  const handle = contentHandler({ store: media, uploads: new BlobUploads(media, media), ingest });
+  protocol.handle('attachment', handle);
+}
+
+/**
+ * The scheme's answer to one request, as a plain `Request` → `Response`: the
+ * content plane's route table, its one single-payload write, and the blob
+ * upload surface, each under the same bounds the served host applies.
+ *
+ * @category Desktop
+ */
+export function contentHandler(deps: {
+  store: AttachmentStore;
+  uploads: BlobUploads;
+  ingest: (bytes: Uint8Array, signal: AbortSignal) => Promise<Descriptor>;
+}): (request: Request) => Promise<Response> {
+  const { store, uploads, ingest } = deps;
   // The renderer is cross-origin to this scheme — a dev server in development,
   // `file://` in a build — so it has no origin to echo. `*` grants nothing
   // further: only this app's own renderers can address the scheme.
-  const cors = { 'Access-Control-Allow-Origin': '*' };
+  const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Expose-Headers': EXPOSED_HEADERS };
+  const respond = (reply: ContentReply): Response =>
+    new Response((reply.stream ?? reply.body ?? null) as BodyInit | null, { status: reply.status, headers: { ...reply.headers, ...cors } });
 
-  protocol.handle('attachment', async (request) => {
-    const path = new URL(request.url).pathname;
+  return async (request) => {
+    const url = new URL(request.url);
+    const path = url.pathname;
 
     // The plane's one WRITE, and the only route not answerable from the store.
     if (request.method === 'POST' && path === '/v1/media/ingress') {
@@ -77,8 +101,39 @@ export function serveContentScheme(
       }
     }
 
-    const reply = resolveContent({ method: request.method, path, ifNoneMatch: request.headers.get('if-none-match') ?? undefined }, media);
+    // An original's chunks: each read under the chunk bound and the upload deadline, then the session table.
+    if (isDistributionPath(path)) {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), DOCUMENT_UPLOAD_TIMEOUT_MS);
+      try {
+        const carriesBody = request.method === 'POST' || request.method === 'PATCH' || request.method === 'PUT';
+        const body = carriesBody ? await readBounded(request.body, MAX_UPLOAD_CHUNK_BYTES, ctrl.signal) : undefined;
+        const contentRange = request.headers.get('content-range');
+        const range = request.headers.get('range');
+        return respond(uploads.resolve({
+          method: request.method, path, query: url.searchParams,
+          ...(contentRange ? { contentRange } : {}),
+          ...(range ? { range } : {}),
+          ...(body && body.byteLength > 0 ? { body } : {}),
+        })!);
+      } catch (err) {
+        const status = err instanceof TooLarge ? 413 : err instanceof TooSlow || ctrl.signal.aborted ? 408 : 400;
+        return Response.json({ error: err instanceof Error ? err.message : 'upload failed' }, { status, headers: cors });
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    const range = request.headers.get('range');
+    const reply = resolveContent({
+      method: request.method, path,
+      ifNoneMatch: request.headers.get('if-none-match') ?? undefined,
+      ...(range ? { range } : {}),
+    }, store);
     if (!reply) return new Response(null, { status: 404 });
-    return new Response((reply.body as unknown as BodyInit | undefined) ?? null, { status: reply.status, headers: { ...reply.headers, ...cors } });
-  });
+    return respond(reply);
+  };
 }
+
+/** Headers a renderer must be allowed to read: where its upload went, how far it got, and which part of a blob it was sent. */
+const EXPOSED_HEADERS = 'Location, Range, Content-Range, Accept-Ranges, Docker-Upload-UUID, Docker-Content-Digest';

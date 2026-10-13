@@ -24,7 +24,49 @@ const SIGNATURES: ReadonlyArray<{ mediaType: string; magic: readonly number[]; a
   // to the document ingress; the image normalizer refuses it as it refuses any
   // format it cannot decode.
   { mediaType: 'application/pdf', magic: [0x25, 0x50, 0x44, 0x46, 0x2d] },
+  // Video containers, identified so the single-payload ingress can refuse them
+  // by name: a clip is decoded on the page and arrives as frames. ISO BMFF
+  // carries `ftyp` at offset 4; QuickTime's brand is `qt  `, so it goes first.
+  { mediaType: 'video/quicktime', magic: [], at: { offset: 4, magic: [0x66, 0x74, 0x79, 0x70, 0x71, 0x74, 0x20, 0x20] } },
+  { mediaType: 'video/mp4', magic: [], at: { offset: 4, magic: [0x66, 0x74, 0x79, 0x70] } },
+  { mediaType: 'video/webm', magic: [0x1a, 0x45, 0xdf, 0xa3] },
 ];
+
+/**
+ * The video containers {@link sniffMediaType} identifies. None is a projector
+ * format: a video reaches the model as its decoded frames.
+ *
+ * @category Media
+ */
+export const VIDEO_CONTAINER_TYPES: readonly string[] = ['video/mp4', 'video/quicktime', 'video/webm'];
+
+/**
+ * Pixel dimensions read from a PNG or JPEG header, or null for any other
+ * format or a header too short to say. Pure, so a composer that must check
+ * frames share one size can do it without a decoder.
+ *
+ * @category Media
+ */
+export function imageSize(bytes: Uint8Array): { width: number; height: number } | null {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const type = sniffMediaType(bytes);
+  if (type === 'image/png') {
+    return bytes.length >= 24 ? { width: view.getUint32(16), height: view.getUint32(20) } : null;
+  }
+  if (type !== 'image/jpeg') return null;
+  // Walk the marker segments to the first start-of-frame; its header carries
+  // the size. SOF markers are C0–CF except C4 (DHT), C8 (JPG) and CC (DAC).
+  for (let at = 2; at + 9 <= bytes.length;) {
+    if (bytes[at] !== 0xff) return null;
+    const marker = bytes[at + 1];
+    if (marker === 0xff) { at += 1; continue; }
+    const length = view.getUint16(at + 2);
+    const isFrame = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+    if (isFrame) return { width: view.getUint16(at + 7), height: view.getUint16(at + 5) };
+    at += 2 + length;
+  }
+  return null;
+}
 
 /**
  * Best-effort media type from leading bytes, for a caller that has none.

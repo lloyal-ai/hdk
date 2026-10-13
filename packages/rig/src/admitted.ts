@@ -22,12 +22,14 @@ import { Attachments } from '@lloyal-labs/lloyal-agents';
 import { service } from './services';
 import { asAttachment, materialize } from '@lloyal-labs/media';
 import type { Attachment, Descriptor } from '@lloyal-labs/media';
+import type { MultimodalInput } from '@lloyal-labs/sdk';
 
-/** What the claims came to: the roots the run may read from, the bitmaps that
- *  will reach the projector, and the roots those bitmaps belong to (what the
- *  trunk records as projected); or the one sentence to say instead. */
+/** What the claims came to: the roots the run may read from, the projector
+ *  inputs they make (`bitmaps`: one per marker, an image's bytes or a whole
+ *  video), and the roots those inputs belong to (what the trunk records as
+ *  projected); or the one sentence to say instead. */
 export type Admitted =
-  | { roots: Attachment[]; bitmaps: Uint8Array[]; projected: Attachment[] }
+  | { roots: Attachment[]; bitmaps: MultimodalInput[]; projected: Attachment[] }
   | { refused: string };
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
@@ -43,11 +45,11 @@ export function* admitted(descriptors: readonly Descriptor[] = []): Operation<Ad
   }
 
   const store = yield* Attachments.expect();
-  const bitmaps: Uint8Array[] = [];
+  const bitmaps: MultimodalInput[] = [];
   const projected: Attachment[] = [];
   try {
     for (const root of roots) {
-      const own = materialize(store, [root]).bitmaps;
+      const own = materialize(store, [root]).inputs;
       if (own.length > 0) projected.push(root);
       bitmaps.push(...own);
     }

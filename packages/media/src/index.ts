@@ -25,9 +25,16 @@ export { NullAttachmentStore } from './store';
 export type { AttachmentStore } from './store';
 
 export { materialize, NoContentIngress } from './ingress';
-export type { ContentIngress, PreparedContent } from './ingress';
+export type { ContentIngress, PreparedContent, ProjectorInput } from './ingress';
 
-export { PROJECTOR_FORMATS, sniffMediaType, UNKNOWN_MEDIA_TYPE } from './media-type';
+export { imageSize, PROJECTOR_FORMATS, sniffMediaType, UNKNOWN_MEDIA_TYPE, VIDEO_CONTAINER_TYPES } from './media-type';
+
+// A video: frames composed by the host into one attachment, its transcript
+// beside them, its timeline in the config slot.
+export {
+  asTranscript, asVideoMeta, composeVideo, isVideoContainer, resolveVideo, TRANSCRIPT_MEDIA_TYPE, VIDEO_CONFIG_TYPE,
+} from './video';
+export type { Transcript, VideoInput, VideoMeta, VideoSampling } from './video';
 
 // The document sidecar — facts about a document, kept in its manifest's config
 // slot. Pure data and a guard; a reader branches on DOCUMENT_CONFIG_TYPE.
@@ -40,5 +47,5 @@ export type { AdmittedAudio, AudioAdmission, AudioMeta } from './audio';
 // The client half of the content plane: every door derived from the one origin a
 // bridge reports, and the citation grammar a view resolves against its own roots.
 export {
-  configUrl, ingestMedia, ingressUrl, manifestUrl, parseAttachmentHref, representationUrl, resolvePrefix, sourceUrl,
+  blobUploadsUrl, configUrl, ingestMedia, ingressUrl, manifestUrl, parseAttachmentHref, pushBlob, representationUrl, resolvePrefix, sourceUrl,
 } from './content-urls';

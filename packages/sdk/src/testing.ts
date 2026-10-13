@@ -59,7 +59,19 @@ import { Branch } from './Branch.js';
 import { BranchStore } from './BranchStore.js';
 import { Session } from './Session.js';
 
-const isAudio = (input: MultimodalInput): boolean => !(input instanceof Uint8Array) && input.kind === 'audio';
+type MediaKind = 'image' | 'audio' | 'video';
+const kindOf = (input: MultimodalInput): MediaKind => input instanceof Uint8Array ? 'image' : input.kind;
+const isAudio = (input: MultimodalInput): boolean => kindOf(input) === 'audio';
+
+/** The kernel's refusal for a video it cannot lay out, or null. Same words as `MtmdSource`. */
+function videoRefusal(input: MultimodalInput): string | null {
+  if (input instanceof Uint8Array || input.kind !== 'video') return null;
+  const t = input.timestampsMs;
+  if (input.frames.length === 0) return 'MtmdSource - a video needs at least one frame';
+  if (t.length !== input.frames.length) return 'MtmdSource - a video needs one timestamp per frame';
+  if (t[0] < 0 || t.some((ms, i) => i > 0 && ms <= t[i - 1])) return 'MtmdSource - video timestamps must increase';
+  return null;
+}
 
 /** Internal branch state tracked by the mock */
 interface BranchState {
@@ -269,7 +281,7 @@ export class MockSessionContext implements SessionContext {
     sepTokens: number[][];
     prompts: string[];
     bitmapCounts: number[];
-    inputKinds: Array<Array<'image' | 'audio'>>;
+    inputKinds: Array<Array<MediaKind>>;
     audioLimits: Array<AudioLimits | undefined>;
     /** What the call reported back — the counts a caller must not re-derive. */
     results: MultimodalPrefillResult[];
@@ -298,7 +310,7 @@ export class MockSessionContext implements SessionContext {
       sepTokens: sepTokens.map((s) => [...s]),
       prompts: [...prompts],
       bitmapCounts: inputs.map(batch => batch.filter(input => !isAudio(input)).length),
-      inputKinds: inputs.map(batch => batch.map(input => isAudio(input) ? 'audio' : 'image')),
+      inputKinds: inputs.map(batch => batch.map(kindOf)),
       audioLimits: handles.map((_, i) => audioLimits[i] ? { ...audioLimits[i]! } : undefined),
       results: out,
     });
@@ -306,7 +318,7 @@ export class MockSessionContext implements SessionContext {
     for (let i = 0; i < handles.length; i++) {
       // Per-entry failure, the property the native worker guarantees: a bad
       // image reports on ITS OWN result and the cohort keeps going.
-      const failure = this.mockMultimodalError?.(prompts[i], inputs[i]) ?? null;
+      const failure = inputs[i].map(videoRefusal).find(Boolean) ?? this.mockMultimodalError?.(prompts[i], inputs[i]) ?? null;
       if (failure) {
         const f = typeof failure === 'string' ? { message: failure } : failure;
         out.push({
@@ -345,8 +357,19 @@ export class MockSessionContext implements SessionContext {
    *  `MtmdSource::cells()` guarantees by counting before it encodes. */
   private _mockCost(sep: number[], prompt: string, inputs: MultimodalInput[], imageCost: number): number {
     const textCells = Math.ceil(prompt.replace(/<__media__>/g, '').length / 4);
-    const mediaCells = inputs.reduce((sum, input) => sum + (isAudio(input) ? this.mockAudioCells : imageCost), 0);
+    const mediaCells = inputs.reduce((sum, input) => sum + this._mockMediaCost(input, imageCost), 0);
     return sep.length + textCells + mediaCells;
+  }
+
+  /** Frames fused per chunk in a video; 2 stands in for a Qwen-VL projector, 1 for one without temporal merge. */
+  mockVideoFrameMerge = 2;
+
+  /** A video's first frame stands alone before its first timestamp; the rest fuse in groups. */
+  private _mockMediaCost(input: MultimodalInput, imageCost: number): number {
+    if (isAudio(input)) return this.mockAudioCells;
+    if (input instanceof Uint8Array || input.kind !== 'video') return imageCost;
+    const rest = Math.max(0, input.frames.length - 1);
+    return imageCost * (Math.min(1, input.frames.length) + Math.ceil(rest / this.mockVideoFrameMerge));
   }
 
   async _cellsMultimodal(

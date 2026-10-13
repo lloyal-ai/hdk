@@ -63,7 +63,7 @@ describe('typed audio through the SDK', () => {
       : buildToolResultDeltaMultimodal(ctx, 'literal <__media__>', 'call_1', inputs, opts);
     const measure = vi.spyOn(ctx, '_cellsMultimodal');
     const prefill = vi.spyOn(ctx, '_storePrefillMultimodal');
-    const sourceAudio = inputs[0] as Exclude<MultimodalInput, Uint8Array>;
+    const sourceAudio = inputs[0] as Extract<MultimodalInput, { kind: 'image' | 'audio' }>;
     sourceAudio.bytes.fill(9);
     sourceAudio.kind = 'image';
     (inputs[1] as Uint8Array).fill(9);

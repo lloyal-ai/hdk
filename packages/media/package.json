@@ -67,5 +67,8 @@
     "@embedpdf/pdfium": {
       "optional": true
     }
+  },
+  "dependencies": {
+    "@noble/hashes": "^2.4.0"
   }
 }

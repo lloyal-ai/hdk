@@ -8,6 +8,7 @@
  * moves rarely; where a project puts its files is template vocabulary.
  */
 import { FileAttachmentStore } from '@lloyal-labs/media/node';
+import type { BlobStaging } from '@lloyal-labs/media/node';
 import type { AttachmentStore } from '@lloyal-labs/media';
 import { join } from 'node:path';
 
@@ -43,6 +44,6 @@ export const MEDIA_DIR = 'media';
  *
  * @category Runtime
  */
-export function createProjectMediaStore(projectRoot: string): AttachmentStore {
+export function createProjectMediaStore(projectRoot: string): AttachmentStore & BlobStaging {
   return new FileAttachmentStore(join(projectRoot, MEDIA_DIR));
 }

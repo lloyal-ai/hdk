@@ -34,7 +34,7 @@ export type {
   AdvancedSamplingParams,
   SamplingParams,
   SessionContext,
-  MultimodalInput, AudioLimits, MultimodalPrefillResult, DecodeError,
+  MultimodalInput, VideoNote, AudioLimits, MultimodalPrefillResult, DecodeError,
   Produced,
   RerankOptions,
   RerankResult,

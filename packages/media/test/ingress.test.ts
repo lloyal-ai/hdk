@@ -49,12 +49,12 @@ describe('createImageIngress', () => {
   });
 });
 
-describe('materialize — bitmaps are the projector-decodable representations', () => {
+describe('materialize — inputs are the projector-decodable representations', () => {
   // A document's one representation is text. It reaches the model through
   // retrieval and the spine outline, never through the projector, so a
-  // document root contributes NO bitmaps: feeding its bytes to the image
+  // document root contributes NO inputs: feeding its bytes to the image
   // decoder would poison the branch it was prefilled on.
-  it('yields no bitmaps for a root whose only representation is text/markdown', async () => {
+  it('yields no inputs for a root whose only representation is text/markdown', async () => {
     const store = new FileAttachmentStore(mkdtempSync(join(tmpdir(), 'materialize-')));
     const md = store.putBlob(new TextEncoder().encode('# Title\n\nBody.\n'), 'text/markdown');
     const root = store.putAttachment({ representations: [md] });
@@ -62,10 +62,10 @@ describe('materialize — bitmaps are the projector-decodable representations', 
     const prepared = materialize(store, [root]);
 
     expect(prepared.attachments).toEqual([root]);
-    expect(prepared.bitmaps).toEqual([]);
+    expect(prepared.inputs).toEqual([]);
   });
 
-  it('yields exactly the image bitmaps for a mixed batch, in root order', async () => {
+  it('yields exactly the image inputs for a mixed batch, in root order', async () => {
     const store = new FileAttachmentStore(mkdtempSync(join(tmpdir(), 'materialize-')));
     const bytes = await png();
     const image = await createImageIngress(store).ingest(bytes);
@@ -75,7 +75,7 @@ describe('materialize — bitmaps are the projector-decodable representations', 
     const prepared = materialize(store, [doc, image]);
 
     expect(prepared.attachments).toEqual([doc, image]);
-    expect(prepared.bitmaps).toHaveLength(1);
-    expect(prepared.bitmaps[0]).toEqual(bytes);
+    expect(prepared.inputs).toHaveLength(1);
+    expect(prepared.inputs[0]).toEqual(bytes);
   });
 });

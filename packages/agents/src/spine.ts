@@ -204,8 +204,8 @@ export function* withSpine<T>(
       const raw = opts.bitmaps ?? [];
       const prepared = raw.length > 0
         ? yield* prepareBatch(ingress, attachments, raw)
-        : { attachments: [], bitmaps: [] };
-      const bitmaps = prepared.bitmaps as Uint8Array[];
+        : { attachments: [], inputs: [] };
+      const bitmaps = [...prepared.inputs];
       // Marker injection goes through the SDK's `mediaContent` — the one place
       // media_marker parts are emitted — so the spine header, a user turn and a
       // tool result cannot drift apart in how they mark media. It returns the

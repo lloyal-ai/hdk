@@ -90,6 +90,14 @@ export interface AttachmentStore {
    *  through {@link get}), unparsable, or not an artifact type this build
    *  understands. */
   getManifest(digest: string): AttachmentManifest | null;
+  /** A stored blob's size in bytes, or `null` when it is not stored. Reads no
+   *  content, so it does not verify it: a question about existence, not bytes. */
+  size(digest: string): number | null;
+  /** Stream part of a blob, `start` to `end` inclusive, or `null` when it is
+   *  not stored. **Not verified:** a range cannot be checked against a digest
+   *  of the whole. Playback seeks through this; whatever reaches the model or
+   *  replay goes through {@link get}, which verifies every byte. */
+  readRange(digest: string, range: { start: number; end: number }): ReadableStream<Uint8Array> | null;
 }
 
 /**
@@ -131,4 +139,6 @@ export class NullAttachmentStore implements AttachmentStore {
   }
   get(_digest?: string): Uint8Array | null { return null; }
   getManifest(_digest?: string): AttachmentManifest | null { return null; }
+  size(_digest?: string): number | null { return null; }
+  readRange(_digest?: string, _range?: { start: number; end: number }): ReadableStream<Uint8Array> | null { return null; }
 }

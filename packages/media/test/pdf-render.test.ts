@@ -37,8 +37,8 @@ describe('the archive', () => {
     expect(meta.pages.map((p) => !!p.render)).toEqual([true, true, true]);
     for (const p of meta.pages) {
       const prepared = materialize(store, [p.render!] as never);
-      expect(prepared.bitmaps).toHaveLength(1);
-      const png = prepared.bitmaps[0];
+      expect(prepared.inputs).toHaveLength(1);
+      const png = prepared.inputs[0] as Uint8Array;
       const norm = await normalizeImage(png, {});
       expect(norm.derived).toBe(false);
       expect(norm.bytes).toBe(png);
@@ -93,7 +93,7 @@ describe('the tagged path', () => {
     const fig = meta.figures[0];
     expect(fig.page).toBe(3);
     expect(fig.caption).toMatch(/^Figure 1\./);
-    const png = materialize(store, [fig.root] as never).bitmaps[0];
+    const png = materialize(store, [fig.root] as never).inputs[0] as Uint8Array;
     const stats = await sharp(Buffer.from(png)).stats();
     const [r, g, b] = stats.channels.map((c) => c.mean);
     // #0a7 is rgb(0, 170, 119): green dominant, red near zero.
@@ -137,7 +137,7 @@ describe('the bounds on figures', () => {
     // The crop is the visible page, so it is no larger than the page render.
     const page = store.getManifest(meta.pages[0].render!.digest)!.layers[0].annotations ?? {};
     expect(width).toBeLessThanOrEqual(Number(page['ai.lloyal.derive.width']));
-    const png = materialize(store, [meta.figures[0].root] as never).bitmaps[0];
+    const png = materialize(store, [meta.figures[0].root] as never).inputs[0] as Uint8Array;
     const [r, g] = (await sharp(Buffer.from(png)).stats()).channels.map((c) => c.mean);
     expect(r).toBeGreaterThan(200);
     expect(g).toBeLessThan(40);
@@ -152,7 +152,7 @@ describe('the bounds on figures', () => {
     const [x0, y0, x1, y1] = meta.figures[0].bbox;
     expect(x0).toBeCloseTo(50, 0); expect(y0).toBeCloseTo(50, 0);
     expect(x1).toBeCloseTo(150, 0); expect(y1).toBeCloseTo(150, 0);
-    const png = materialize(store, [meta.figures[0].root] as never).bitmaps[0];
+    const png = materialize(store, [meta.figures[0].root] as never).inputs[0] as Uint8Array;
     const [r, g, b] = (await sharp(Buffer.from(png)).stats()).channels.map((c) => c.mean);
     expect(g).toBeGreaterThan(120);
     expect(r).toBeLessThan(60);

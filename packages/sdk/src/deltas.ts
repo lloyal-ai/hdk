@@ -70,9 +70,17 @@ export interface MultimodalDelta {
 }
 
 /** Own both bytes and descriptors so caller mutations cannot change admitted content. */
-const snapshotInput = (input: MultimodalInput): MultimodalInput => input instanceof Uint8Array
-  ? snapshotBytes(input)
-  : { kind: input.kind, bytes: snapshotBytes(input.bytes) };
+const snapshotInput = (input: MultimodalInput): MultimodalInput => {
+  if (input instanceof Uint8Array) return snapshotBytes(input);
+  if (input.kind !== 'video') return { kind: input.kind, bytes: snapshotBytes(input.bytes) };
+  return {
+    kind: 'video',
+    frames: input.frames.map(snapshotBytes),
+    timestampsMs: [...input.timestampsMs],
+    ...(input.timestampIntervalMs !== undefined ? { timestampIntervalMs: input.timestampIntervalMs } : {}),
+    ...(input.notes ? { notes: input.notes.map(({ atMs, text }) => ({ atMs, text })) } : {}),
+  };
+};
 
 function snapshotBytes(bytes: Uint8Array): Uint8Array {
   if (!(bytes instanceof Uint8Array)) throw new TypeError('Media bytes must be a Uint8Array or Buffer');
@@ -81,7 +89,7 @@ function snapshotBytes(bytes: Uint8Array): Uint8Array {
 
 function multimodalDelta(sep: number[], prompt: string, inputs: readonly MultimodalInput[], audioLimits?: AudioLimits): MultimodalDelta {
   // Bound the owned copy here; decoded-sample admission remains native.
-  const audioBytes = inputs.flatMap(input => input instanceof Uint8Array || input.kind !== 'audio' ? [] : [input.bytes]);
+  const audioBytes = inputs.flatMap(input => !(input instanceof Uint8Array) && input.kind === 'audio' ? [input.bytes] : []);
   if (audioBytes.length > 0) {
     if (!audioLimits || !Number.isSafeInteger(audioLimits.maxBytes) || audioLimits.maxBytes <= 0) {
       throw new RangeError('Audio requires a positive safe-integer byte limit');

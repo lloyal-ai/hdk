@@ -1,6 +1,10 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { Readable } from 'node:stream';
+import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
 import { representationsOf, sourceOf, DIGEST_PATTERN, MANIFEST_TYPE, type Attachment } from '@lloyal-labs/media';
 import type { AttachmentStore, Descriptor } from '@lloyal-labs/media';
+import { isDistributionPath, MAX_UPLOAD_CHUNK_BYTES } from './distribution';
+import type { BlobUploads } from './distribution';
 
 // ─────────────────────────────────────────────────────────────────
 // The route table — what a path MEANS, resolved against the store.
@@ -32,6 +36,9 @@ export interface ContentRequest {
   path: string;
   /** The `If-None-Match` header verbatim, when the client sent one. */
   ifNoneMatch?: string;
+  /** The `Range` header verbatim, when the client sent one. Honoured where a
+   *  player seeks: a retained original. */
+  range?: string;
 }
 
 /**
@@ -55,6 +62,9 @@ export interface ContentReply {
   status: number;
   headers: Record<string, string>;
   body?: Uint8Array;
+  /** A body too large to hold, streamed from the store instead: a range of a
+   *  retained original. Each adapter writes it out. */
+  stream?: ReadableStream<Uint8Array>;
 }
 
 /**
@@ -120,6 +130,53 @@ const serveBlob = (
   };
 };
 
+/** A whole blob, declared seekable: a media element treats a 200 without
+ *  `Accept-Ranges` as unseekable. */
+const serveSeekable = (store: AttachmentStore, req: ContentRequest, d: Descriptor): ContentReply => {
+  const reply = serveBlob(store, req, d);
+  return reply.status === 200 || reply.status === 304
+    ? { ...reply, headers: { ...reply.headers, 'Accept-Ranges': 'bytes' } }
+    : reply;
+};
+
+/** `bytes=<start>-<end>`, `bytes=<start>-` or `bytes=-<suffix>` against a size, or null when unsatisfiable. */
+export function parseByteRange(header: string, size: number): { start: number; end: number } | null {
+  const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!m || (m[1] === '' && m[2] === '') || size === 0) return null;
+  const [start, end] = m[1] === ''
+    ? [Math.max(0, size - Number(m[2])), size - 1]
+    : [Number(m[1]), m[2] === '' ? size - 1 : Math.min(Number(m[2]), size - 1)];
+  return start <= end && start < size ? { start, end } : null;
+}
+
+/**
+ * Part of a blob, streamed: how a player seeks a retained original without the
+ * whole of it in memory. Not verified against the digest — a range cannot be —
+ * which is the store's documented contract for ranged reads; what reaches the
+ * model is always read whole and verified.
+ */
+const serveRange = (store: AttachmentStore, header: string, d: Descriptor): ContentReply => {
+  const size = store.size(d.digest);
+  if (size === null) return contentError(404, 'blob not in store');
+  const range = parseByteRange(header, size);
+  if (!range) {
+    const refusal = contentError(416, 'range not satisfiable');
+    return { ...refusal, headers: { ...refusal.headers, 'Content-Range': `bytes */${size}` } };
+  }
+  const stream = store.readRange(d.digest, range);
+  if (!stream) return contentError(404, 'blob not in store');
+  return {
+    status: 206,
+    headers: contentHeaders(d.digest, {
+      'Content-Type': d.mediaType,
+      'Content-Length': String(range.end - range.start + 1),
+      'Content-Range': `bytes ${range.start}-${range.end}/${size}`,
+      'Accept-Ranges': 'bytes',
+    }),
+    stream,
+  };
+};
+
 /**
  * The content plane's read routes: HTTP carries bytes, the WebSocket carries
  * references.
@@ -127,7 +184,7 @@ const serveBlob = (
  * ```
  * GET  /v1/media/<manifest>                     the manifest itself, by digest
  * GET  /v1/media/<manifest>/config              its typed config blob (a document's sidecar; OCI's empty blob for an image)
- * GET  /v1/media/<manifest>/source              the original as supplied, when the ingest retained it
+ * GET  /v1/media/<manifest>/source              the original as supplied, when the ingest retained it (Range: 206)
  * GET  /v1/media/<manifest>/representations/<i> the bytes the model actually saw
  * HEAD /v1/content/<digest>                     existence, for pre-flight dedupe
  * ```
@@ -171,7 +228,8 @@ export function resolveContent(req: ContentRequest, store: AttachmentStore): Con
   // branch can forget, and so an adapter that builds a real response object
   // (a desktop `Response`) cannot expose what an HTTP server would have
   // silently dropped for it.
-  return req.method === 'HEAD' && reply.body ? { ...reply, body: undefined } : reply;
+  if (req.method === 'HEAD' && reply.stream) void reply.stream.cancel();
+  return req.method === 'HEAD' && (reply.body || reply.stream) ? { ...reply, body: undefined, stream: undefined } : reply;
 }
 
 /** The routes themselves. Throwing is allowed — {@link resolveContent} contains
@@ -193,14 +251,11 @@ function route(req: ContentRequest, store: AttachmentStore): ContentReply {
   if (exists && method === 'HEAD') {
     const digest = decodeURISegment(exists[1]);
     if (digest === null || !DIGEST_PATTERN.test(digest)) return contentError(400, 'malformed digest');
-    // Reads the WHOLE blob to answer a yes/no question, because
-    // `AttachmentStore` offers no `size`/`has`. On the one route whose
-    // purpose is to AVOID moving bytes, a dedupe pre-flight against an
-    // 8 MiB image costs 8 MiB resident. Adding `size(digest)` beside `get`
-    // belongs with the store-contract phase, not here.
-    const bytes = store.get(digest);
-    if (!bytes) return contentError(404, 'not found');
-    return { status: 200, headers: contentHeaders(digest, { 'Content-Length': String(bytes.byteLength) }) };
+    // A yes/no question about a digest answered from the store's size, without
+    // reading the bytes — the point of a dedupe pre-flight.
+    const size = store.size(digest);
+    if (size === null) return contentError(404, 'not found');
+    return { status: 200, headers: contentHeaders(digest, { 'Content-Length': String(size) }) };
   }
 
   // GET /v1/media/<manifest>/representations/<index> — the bytes the model
@@ -256,7 +311,7 @@ function route(req: ContentRequest, store: AttachmentStore): ContentReply {
     if (!manifest) return contentError(404, 'no such attachment manifest');
     const source = sourceOf(manifest);
     if (!source) return contentError(404, 'no source retained for this attachment');
-    return serveBlob(store, req, source);
+    return req.range ? serveRange(store, req.range, source) : serveSeekable(store, req, source);
   }
 
   return contentError(405, 'unsupported method or path');
@@ -339,7 +394,14 @@ export interface ContentRoutesOpts {
    * default anyone should inherit.
    */
   allowedOrigin?: string;
+  /** The OCI blob upload surface (`/v2/...`) over this store, for originals too
+   *  large for the single-payload ingress. Absent ⇒ those paths are not ours. */
+  uploads?: BlobUploads;
 }
+
+/** Headers a cross-origin client must be allowed to read: where its upload
+ *  went, how far it got, and which part of a blob it was sent. */
+const EXPOSED_HEADERS = 'Location, Range, Content-Range, Accept-Ranges, Docker-Upload-UUID, Docker-Content-Digest';
 
 /**
  * Read a request body bounded in BOTH bytes and time, settling exactly once.
@@ -426,12 +488,19 @@ export function createContentRoutes(
   /** CORS headers, added only when an origin is configured. See `allowedOrigin`. */
   const cors = (h: Record<string, string>): Record<string, string> =>
     opts.allowedOrigin
-      ? { ...h, 'Access-Control-Allow-Origin': opts.allowedOrigin, 'Vary': 'Origin' }
+      ? { ...h, 'Access-Control-Allow-Origin': opts.allowedOrigin, 'Access-Control-Expose-Headers': EXPOSED_HEADERS, 'Vary': 'Origin' }
       : h;
 
   const send = (res: ServerResponse, reply: ContentReply): void => {
     if (res.headersSent) { res.end(); return; }
     res.writeHead(reply.status, cors(reply.headers));
+    if (reply.stream) {
+      const body = Readable.fromWeb(reply.stream as NodeReadableStream<Uint8Array>);
+      body.on('error', () => res.destroy());
+      res.on('close', () => body.destroy());
+      body.pipe(res);
+      return;
+    }
     if (reply.body) res.end(Buffer.from(reply.body)); else res.end();
   };
 
@@ -439,8 +508,9 @@ export function createContentRoutes(
     send(res, contentError(code, message));
 
   return (req, res) => {
-    const path = (req.url ?? '').split('?')[0];
-    if (!isContentPath(path)) return false;
+    const [path, search = ''] = (req.url ?? '').split('?');
+    const distribution = opts.uploads !== undefined && isDistributionPath(path);
+    if (!isContentPath(path) && !distribution) return false;
 
     // Contained here so a route failure cannot reach the server's `request`
     // emit and kill the process. `resolveContent` keeps its own; this covers
@@ -452,9 +522,30 @@ export function createContentRoutes(
       // scheme negotiates it in the browser, with no preflight to answer.
       if (method === 'OPTIONS') {
         send(res, { status: 204, headers: {
-          'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type',
+          'Access-Control-Allow-Methods': 'GET, HEAD, POST, PATCH, PUT, DELETE, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type, Content-Range, Range',
         } });
+        return true;
+      }
+
+      // The blob upload surface: each chunk read under the same deadline as an
+      // upload and a per-request byte bound, then handed to the session table.
+      if (distribution) {
+        const carriesBody = method === 'POST' || method === 'PATCH' || method === 'PUT';
+        const body = carriesBody
+          ? readBounded(req, { maxBytes: MAX_UPLOAD_CHUNK_BYTES, timeoutMs: uploadTimeout })
+          : Promise.resolve(undefined);
+        body
+          .then((bytes) => send(res, opts.uploads!.resolve({
+            method, path, query: new URLSearchParams(search),
+            ...(typeof req.headers['content-range'] === 'string' ? { contentRange: req.headers['content-range'] } : {}),
+            ...(typeof req.headers.range === 'string' ? { range: req.headers.range } : {}),
+            ...(bytes && bytes.byteLength > 0 ? { body: bytes } : {}),
+          })!))
+          .catch((e: unknown) => {
+            fail(res, e instanceof TooLarge ? 413 : e instanceof TooSlow ? 408 : 400, e instanceof Error ? e.message : 'upload failed');
+            if (e instanceof TooLarge || e instanceof TooSlow) req.destroy();
+          });
         return true;
       }
 
@@ -521,6 +612,7 @@ export function createContentRoutes(
         method,
         path,
         ifNoneMatch: req.headers['if-none-match'],
+        ...(typeof req.headers.range === 'string' ? { range: req.headers.range } : {}),
       }, opts.store)!);
       return true;
     } catch (e) {

@@ -5,7 +5,7 @@ import {
   Branch, buildAssistantDelta, buildToolResultDelta,
   buildToolResultDeltaMultimodal, buildTurnDelta, MEDIA_MARKER,
 } from '@lloyal-labs/sdk';
-import type { MultimodalDelta } from '@lloyal-labs/sdk';
+import type { MultimodalDelta, MultimodalInput } from '@lloyal-labs/sdk';
 import { Ctx, Store, Attachments } from './context';
 import type { TraceEvent } from './trace-types';
 import type { Attachment } from '@lloyal-labs/media';
@@ -172,7 +172,7 @@ export function* reconstructBranch(checkpoint: BranchCheckpoint): Operation<Bran
   // never do, because the result looks like a successful replay.
   const markers = checkpoint.seedPrompt.split(MEDIA_MARKER).length - 1;
 
-  let bitmaps: Uint8Array[] = [];
+  let bitmaps: MultimodalInput[] = [];
   if (markers > 0) {
     const refs = checkpoint.seedAttachments ?? [];
     if (refs.length === 0) {
@@ -198,19 +198,20 @@ export function* reconstructBranch(checkpoint: BranchCheckpoint): Operation<Bran
     // reimplementing it by hand is how the two silently drift. A batch that
     // materializes at ingress is one that can be rebuilt here, by construction
     // rather than by assertion.
-    bitmaps = [...materialize(attachments, refs).bitmaps];
+    bitmaps = [...materialize(attachments, refs).inputs];
 
-    // The count that must match is REPRESENTATIONS, not attachments. One
-    // manifest is one image (1 representation) but also one video (N sampled
-    // frames) or one live capture — so comparing attachment count would reject
-    // every media type except a plain image. Checked AFTER resolution because
-    // only expanding the manifests reveals how many the seed actually holds.
+    // The count that must match is INPUTS, one per marker: an image
+    // representation is one, and a whole video is one however many frames it
+    // carries. Neither attachments nor representations is that count — a
+    // document root has a representation and no marker, a video has many
+    // representations and one marker — so it is checked AFTER resolution,
+    // because only expanding the manifests reveals how many inputs they make.
     if (bitmaps.length !== markers) {
       throw new Error(
         `reconstructBranch: the seed prompt has ${markers} media marker(s), ` +
           `but its ${refs.length} attachment(s) expand to ${bitmaps.length} ` +
-          'representation(s). Rebuilding would put a different number of ' +
-          'images into the cache than the prompt marks — a different KV state ' +
+          'input(s). Rebuilding would put a different number of images or ' +
+          'videos into the cache than the prompt marks — a different KV state ' +
           'wearing the same prompt.',
       );
     }
@@ -315,13 +316,13 @@ export function* prepareReplay(
       tokenStep(ctx.tokenizeSync(r.text, false));
     } else if (r.attachments && r.attachments.length > 0) {
       // Rail by what the roots MATERIALIZE to: a document root expands to no
-      // bitmaps and replays as the tool text it was.
-      const { bitmaps } = materialize(attachments, r.attachments);
-      if (bitmaps.length === 0) {
+      // inputs and replays as the tool text it was.
+      const { inputs } = materialize(attachments, r.attachments);
+      if (inputs.length === 0) {
         tokenStep(buildToolResultDelta(ctx, r.resultStr, r.callId, opts));
         continue;
       }
-      const delta = buildToolResultDeltaMultimodal(ctx, r.resultStr, r.callId, [...bitmaps], opts);
+      const delta = buildToolResultDeltaMultimodal(ctx, r.resultStr, r.callId, [...inputs], opts);
       const priced = yield* measureCells(ctx, delta);
       steps.push({ kind: 'media', delta, cells: priced });
       cells += priced;

@@ -10,10 +10,55 @@ import { ATTACHMENT_ARTIFACT_TYPE, commitManifest, DIGEST_PATTERN } from './atta
 import type { Attachment, AttachmentManifest, Descriptor } from './attachment';
 import type { AttachmentStore } from './store';
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import type { Hash } from 'node:crypto';
+import { appendFileSync, closeSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 
 const LAYOUT_VERSION = '1.0.0';
+
+/**
+ * An upload in progress: bytes appended in order, hashed as they arrive, and
+ * addressed only when adopted under the digest its sender claims.
+ *
+ * @category Media
+ */
+export interface StagedBlob {
+  readonly id: string;
+  /** Bytes received so far — where the next chunk must begin. */
+  readonly size: number;
+  /** Append the next chunk. Throws on a full disk, carrying the reason. */
+  append(bytes: Uint8Array): void;
+  /** Admit the staged bytes under `digest`: verified, inspected, then renamed
+   *  into place. On any refusal nothing is admitted and the staging is gone. */
+  adopt(digest: string, mediaType: string, inspect?: (head: Uint8Array, size: number) => void): Descriptor;
+  /** Cancel: remove the staging. */
+  discard(): void;
+}
+
+/**
+ * Where uploads too large to hold in memory are staged: the filesystem store,
+ * never the browser-safe contract, because staging is a file.
+ *
+ * @category Media
+ */
+export interface BlobStaging {
+  stage(): StagedBlob;
+}
+
+/** How many leading bytes `adopt` hands an inspection: enough for any container signature. */
+const INSPECT_BYTES = 64;
+
+/** The first bytes of a file, without reading the rest of it. */
+function readHead(file: string): Uint8Array {
+  const head = new Uint8Array(INSPECT_BYTES);
+  const fd = openSync(file, 'r');
+  try {
+    return head.subarray(0, readSync(fd, head, 0, INSPECT_BYTES, 0));
+  } finally {
+    closeSync(fd);
+  }
+}
 const INDEX_TYPE = 'application/vnd.oci.image.index.v1+json';
 
 /**
@@ -36,7 +81,7 @@ const INDEX_TYPE = 'application/vnd.oci.image.index.v1+json';
  *
  * @category Media
  */
-export class FileAttachmentStore implements AttachmentStore {
+export class FileAttachmentStore implements AttachmentStore, BlobStaging {
   private _dir: string;
   private _ready = false;
 
@@ -162,6 +207,68 @@ export class FileAttachmentStore implements AttachmentStore {
     } catch {
       return null;
     }
+  }
+
+  size(digest: string): number | null {
+    try {
+      const file = this._pathFor(digest);
+      return file ? statSync(file).size : null;
+    } catch {
+      return null;
+    }
+  }
+
+  readRange(digest: string, range: { start: number; end: number }): ReadableStream<Uint8Array> | null {
+    const size = this.size(digest);
+    if (size === null || range.start < 0 || range.end < range.start || range.end >= size) return null;
+    const stream = createReadStream(this._pathFor(digest)!, { start: range.start, end: range.end });
+    return Readable.toWeb(stream) as ReadableStream<Uint8Array>;
+  }
+
+  /**
+   * Begin a staged upload. The staging file sits in `.tmp`, outside the blob
+   * directory, so a crash leaves no malformed blob; the same rename that
+   * `putBlob` uses admits it. A staging that is never adopted or discarded
+   * stays in `.tmp`: the store deletes nothing on its own.
+   */
+  stage(): StagedBlob {
+    this._ensureLayout();
+    const id = randomBytes(16).toString('hex');
+    const tmp = join(this._dir, '.tmp', `upload.${id}`);
+    writeFileSync(tmp, new Uint8Array(0), { flag: 'wx' });
+    const hash: Hash = createHash('sha256');
+    let size = 0;
+    let open = true;
+    const close = (): void => {
+      open = false;
+      try { rmSync(tmp, { force: true }); } catch { /* best effort */ }
+    };
+    const pathFor = (d: string): string | null => this._pathFor(d);
+    return {
+      id,
+      get size() { return size; },
+      append(bytes) {
+        if (!open) throw new Error('this upload is closed');
+        appendFileSync(tmp, bytes);
+        hash.update(bytes);
+        size += bytes.byteLength;
+      },
+      adopt(digest, mediaType, inspect) {
+        if (!open) throw new Error('this upload is closed');
+        try {
+          const actual = 'sha256:' + hash.digest('hex');
+          if (actual !== digest) throw new Error(`upload digest mismatch: the bytes hash to ${actual}`);
+          inspect?.(readHead(tmp), size);
+          renameSync(tmp, pathFor(digest)!);
+          open = false;
+          return { mediaType, digest, size };
+        } catch (e) {
+          close();
+          throw e;
+        }
+      },
+      discard: close,
+    };
   }
 
   getManifest(digest: string): AttachmentManifest | null {
