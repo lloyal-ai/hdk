@@ -119,8 +119,8 @@ export const CHAT_FORMAT_GENERIC: ChatFormat = 1;
  *
  * Controls how `<think>` blocks are handled during formatting and parsing.
  *
- * @see {@link FormatChatOptions.reasoningFormat} for input-side usage
- * @see {@link ParseChatOutputOptions.reasoningFormat} for output-side usage
+ * @see {@link FormatChatOptions.reasoningFormat} for input-side usage; how reasoning is parsed is
+ * decided when the parser is built, so {@link SessionContext.parseChatOutput} takes the parser handle instead
  *
  * @category Chat
  */
@@ -473,7 +473,7 @@ export type GrammarOrder = 'maskFirst' | 'sampleFirst';
  * Result from chat template formatting
  *
  * Includes format-awareness fields for proper output parsing.
- * Pass `format` and `reasoningFormat` directly to
+ * Pass `format` and `parser` to
  * {@link SessionContext.parseChatOutput | parseChatOutput()} to decode
  * the model's response.
  *
@@ -482,7 +482,6 @@ export type GrammarOrder = 'maskFirst' | 'sampleFirst';
  * const fmt = await ctx.formatChat(messagesJson, { tools: toolsJson });
  * // ... generate tokens using fmt.prompt and fmt.grammar ...
  * const parsed = ctx.parseChatOutput(output, fmt.format, {
- *   reasoningFormat: fmt.reasoningFormat,
  *   generationPrompt: fmt.generationPrompt,
  *   parser: fmt.parser,
  * });
@@ -512,13 +511,18 @@ export interface FormattedChatResult {
   generationPrompt: string;
 
   /**
-   * Reasoning format (pass to parseChatOutput options)
-   * @see {@link ParseChatOutputOptions.reasoningFormat}
+   * The reasoning format this prompt was formatted with. Informational: how reasoning is parsed was decided
+   * when the parser was built, so {@link SessionContext.parseChatOutput} takes no reasoning option.
    */
   reasoningFormat: ReasoningFormat;
 
-  /** PEG parser definition for PEG format models (pass to parseChatOutput options) */
-  parser: string;
+  /**
+   * The parser this format built, to pass to {@link SessionContext.parseChatOutput}. It is an opaque native
+   * handle that owns the parser: copy it wherever the format's fields are kept and the parser lives as long as
+   * any copy does. A parser is rendered for its whole conversation (the generation prompt is a literal inside
+   * it), so every format carries its own handle, and a handle outlives the context that produced it.
+   */
+  parser: ChatParser;
   /** Grammar trigger conditions for lazy grammar activation */
   grammarTriggers: GrammarTrigger[];
   /** Token strings preserved from grammar masking */
@@ -529,13 +533,25 @@ export interface FormattedChatResult {
    */
   supportsThinking: boolean;
   /**
-   * The tags this TEMPLATE opens and closes reasoning with — `<think>`/`</think>` for Qwen, `[THINK]`/`[/THINK]`
-   * for Magistral, a channel marker for gpt-oss; both empty when {@link supportsThinking} is false. Read them
-   * rather than assuming one model's tags: a view showing a raw token stream is the one reader that sees the
-   * markers, since {@link SessionContext.parseChatOutput} hands back reasoning and content already apart.
+   * The tag this TEMPLATE opens reasoning with and the tags it may close it with — `<think>` and `</think>`
+   * for Qwen, `[THINK]` and `[/THINK]` for Magistral, a channel marker for gpt-oss; empty when
+   * {@link supportsThinking} is false. A template may declare more than one close. Read them rather than
+   * assuming one model's tags: a view showing a raw token stream is the one reader that sees the markers, since
+   * {@link SessionContext.parseChatOutput} hands back reasoning and content already apart.
    */
   thinkingStartTag: string;
-  thinkingEndTag: string;
+  thinkingEndTags: string[];
+}
+
+/**
+ * The native parser a format built, as {@link FormattedChatResult.parser} carries it. Opaque: it is made by
+ * {@link SessionContext.formatChat} and read by {@link SessionContext.parseChatOutput}, and nothing in it is
+ * for a consumer to inspect.
+ *
+ * @category Chat
+ */
+export interface ChatParser {
+  readonly __chatParser: never;
 }
 
 /**
@@ -550,11 +566,6 @@ export interface FormattedChatResult {
  */
 export interface ParseChatOutputOptions {
   /**
-   * Reasoning format (from {@link FormattedChatResult.reasoningFormat})
-   */
-  reasoningFormat?: ReasoningFormat;
-
-  /**
    * True if output is incomplete (streaming).
    * When true, the parser tolerates unterminated tool calls and open
    * thinking blocks, returning partial content as-is rather than
@@ -565,8 +576,11 @@ export interface ParseChatOutputOptions {
   /** Generation prompt prefill (from {@link FormattedChatResult.generationPrompt}) */
   generationPrompt?: string;
 
-  /** PEG parser definition for PEG format models (from {@link FormattedChatResult.parser}) */
-  parser?: string;
+  /**
+   * The parser handle from {@link FormattedChatResult.parser}. Pass it for every output that came from a
+   * formatted prompt; without it the output is parsed as plain content. Anything but a handle is refused.
+   */
+  parser?: ChatParser;
 }
 
 /**
@@ -1242,7 +1256,7 @@ export interface SessionContext {
    * Converts [{role, content}] -> formatted prompt string with full format awareness.
    * Uses model's built-in template (ChatML, Llama, Mistral, etc.).
    *
-   * The returned `format` and `reasoningFormat` fields should be passed to
+   * The returned `format` and `parser` fields should be passed to
    * `parseChatOutput()` after generation to correctly decode the response.
    *
    * Cost: ~1-5ms depending on message count
@@ -1306,7 +1320,6 @@ export interface SessionContext {
    * const fmt = await ctx.formatChat(JSON.stringify(messages), { tools: toolsJson });
    * // ... generate tokens ...
    * const parsed = ctx.parseChatOutput(generatedText, fmt.format, {
-   *   reasoningFormat: fmt.reasoningFormat,
    *   generationPrompt: fmt.generationPrompt,
    *   parser: fmt.parser
    * });
@@ -1358,7 +1371,6 @@ export interface SessionContext {
    *
    *   // Parse output: separates reasoning from content
    *   const parsed = ctx.parseChatOutput(rawOutput, fmt.format, {
-   *     reasoningFormat: fmt.reasoningFormat,
    *     generationPrompt: fmt.generationPrompt,
    *     parser: fmt.parser
    *   });
@@ -1520,6 +1532,12 @@ export interface SessionContext {
   hasPooling(): boolean;
 
   // ===== PROPERTIES =====
+
+  /**
+   * The context's batch size: the decode workspace the next batch needs, so
+   * the one physical line a scheduler must keep free in the cache.
+   */
+  readonly nBatch: number;
 
   /**
    * Model vocabulary size (number of possible tokens)

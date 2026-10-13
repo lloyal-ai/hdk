@@ -195,3 +195,90 @@ describe('foldAgents', () => {
     expect(summarizeResult('unknown', 'plain').summary).toBe('5b');
   });
 });
+
+/**
+ * The draft (LLO-44): at `agent:done` the fold still clears the buffer for the
+ * recovery stream, and keeps what it held as `draft` with the drop's reason,
+ * so a section can show a stopped report as stopped rather than wiping it.
+ * Nothing in the fold reads the draft; the application's selector does.
+ */
+describe('foldAgents keeps the draft at done', () => {
+  const REPORT = '<tool_call>\n<function=report>\n<parameter=result>\nThe first finding, and more that was cut';
+  const reporting = (id: number): AgentEvent[] => [spawn(id), produce(id, 'x</think>', 1), produce(id, REPORT, 40)];
+
+  it('a salvage: the draft is the streamed report, the reason rides along, the buffer clears, recovered files the kept text beside it', () => {
+    const atDone = fold(emptyRoster(), [...reporting(1), { type: 'agent:done', agentId: 1, reason: 'pressure_critical' }]).agents.get(1)!;
+    expect(atDone.draft).toBe(REPORT);
+    expect(atDone.stopReason).toBe('pressure_critical');
+    expect(atDone.contentBuffer).toBe('');
+    expect(atDone.recovering).toBe(true);
+    const settled = fold(emptyRoster(), [...reporting(1), { type: 'agent:done', agentId: 1, reason: 'pressure_critical' }, { type: 'agent:recovered', agentId: 1, result: 'The first finding' }]).agents.get(1)!;
+    expect(settled.draft).toBe(REPORT);
+    expect(settled.stopReason).toBe('pressure_critical');
+    expect(settled.phase).toBe('done');
+    expect(settled.timeline!.at(-1)).toMatchObject({ kind: 'report', body: 'The first finding' });
+  });
+
+  it('a salvage whose parse failed: the draft survives the failure', () => {
+    const a = fold(emptyRoster(), [...reporting(1), { type: 'agent:done', agentId: 1, reason: 'terminal_cap' }, { type: 'agent:failed', agentId: 1, reason: 'no_terminal_call' }]).agents.get(1)!;
+    expect(a.draft).toBe(REPORT);
+    expect(a.stopReason).toBe('terminal_cap');
+    expect(a.phase).toBe('failed');
+    expect(a.failReason).toBe('no_terminal_call');
+  });
+
+  it('an extract of a working turn: nothing streamed as content, so there is no draft, and the recovery streams as before', () => {
+    const a = fold(emptyRoster(), [spawn(1), produce(1, 'thinking', 1), { type: 'agent:done', agentId: 1, reason: 'policy_exit' }, produce(1, 'What I found', 3)]).agents.get(1)!;
+    expect(a.draft).toBeNull();
+    expect(a.stopReason).toBe('policy_exit');
+    expect(a.recovering).toBe(true);
+    expect(a.contentBuffer).toBe('What I found');
+  });
+
+  it('a working turn cut mid tool call keeps its JSON as the draft; a done without a reason keeps none', () => {
+    const a = fold(emptyRoster(), [spawn(1), produce(1, 'x</think>', 1), produce(1, '<tool_call>{"name":"web_search"', 5), { type: 'agent:done', agentId: 1, reason: 'pressure_settle_reject' }]).agents.get(1)!;
+    expect(a.draft).toBe('<tool_call>{"name":"web_search"');
+    const bare = fold(emptyRoster(), [...reporting(2), { type: 'agent:done', agentId: 2 }]).agents.get(2)!;
+    expect(bare.draft).toBe(REPORT);
+    expect(bare.stopReason).toBeNull();
+  });
+
+  it('a voluntary return leaves no draft and no reason', () => {
+    const a = fold(emptyRoster(), [
+      ...reporting(1),
+      { type: 'agent:tool_call', agentId: 1, tool: 'report', args: '{"result":"The first finding, and more"}' },
+      { type: 'agent:return', agentId: 1, result: 'The first finding, and more' },
+      { type: 'agent:done', agentId: 1 },
+    ]).agents.get(1)!;
+    expect(a.draft).toBeNull();
+    expect(a.stopReason).toBeNull();
+    expect(a.phase).toBe('done');
+  });
+
+  it('a second done changes nothing: the draft and the reason are the first stop\'s', () => {
+    const a = fold(emptyRoster(), [
+      ...reporting(1),
+      { type: 'agent:done', agentId: 1, reason: 'pressure_critical' },
+      produce(1, 'recovery prose', 44),
+      { type: 'agent:done', agentId: 1, reason: 'wind_down' },
+    ]).agents.get(1)!;
+    expect(a.draft).toBe(REPORT);
+    expect(a.stopReason).toBe('pressure_critical');
+    expect(a.contentBuffer).toBe('recovery prose');
+  });
+
+  it('a cancel has no done and keeps no draft; the settling pass keeps its free prose', () => {
+    const cancelled = fold(emptyRoster(), [...reporting(1), { type: 'agent:failed', agentId: 1, reason: 'user_cancel' }]).agents.get(1)!;
+    expect(cancelled.draft).toBeNull();
+    expect(cancelled.stopReason).toBeNull();
+    const settling = { spawn: () => ({ timeline: true, taskIndex: null }), terminal: 'report', now };
+    const synth = fold(emptyRoster(), [spawn(1), produce(1, 'x</think>The brief so far', 9), { type: 'agent:done', agentId: 1, reason: 'pressure_critical' }], settling).agents.get(1)!;
+    expect(synth.draft).toBe('The brief so far');
+  });
+
+  it('an agent tracked by its numbers only keeps the reason and no draft', () => {
+    const a = fold(emptyRoster(), [spawn(3), produce(3, 'x', 2), { type: 'agent:done', agentId: 3, reason: 'maxTurns' }], { now }).agents.get(3)!;
+    expect(a.draft).toBeNull();
+    expect(a.stopReason).toBe('maxTurns');
+  });
+});

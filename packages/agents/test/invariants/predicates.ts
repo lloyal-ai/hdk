@@ -483,3 +483,20 @@ export function I44_sampleFirstFollowsIdentification(run: PoolRun): PredicateRes
   }
   return ok();
 }
+
+/**
+ * I45 Parse-hands-back-a-minted-parser: the chat parser stays native and crosses the boundary only as the
+ * handle the context minted when it formatted. So every parse the pool issues hands a handle back, and that
+ * handle is one a format on this context produced; a parse that hands none is parsed as plain content, and
+ * one that hands something the context never minted is refused by the addon. In shared mode every agent
+ * parses with the spine's handle, which is one of the minted handles like any other.
+ */
+export function I45_parseHandsBackAMintedParser(run: PoolRun): PredicateResult {
+  const minted = new Set(run.parsers.formatted);
+  for (let i = 0; i < run.parsers.parsed.length; i++) {
+    const parser = run.parsers.parsed[i];
+    if (parser === undefined) return fail('I45', `parse ${i}: no parser; the format's handle was dropped on the way to the parse`, i);
+    if (!minted.has(parser)) return fail('I45', `parse ${i}: a parser this context never minted`, i);
+  }
+  return ok();
+}

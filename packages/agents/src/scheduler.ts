@@ -3,7 +3,7 @@ import { buildToolResultDelta } from '@lloyal-labs/sdk';
 import type { Agent } from './Agent';
 import { parseHistoryArgs } from './Agent';
 import type { AgentPolicy } from './AgentPolicy';
-import { RECOVERY_PROMPT_OVERHEAD, BATCH_BUFFER } from './AgentPolicy';
+import { RECOVERY_PROMPT_OVERHEAD } from './AgentPolicy';
 import type { Tool } from './Tool';
 import { decideBeforeAdmit, type Frame } from './hooks';
 import { type ContextPressure } from './pressure';
@@ -25,25 +25,27 @@ import {
  */
 
 /** Adaptive per-recovery budget bounds for cohort recovery when no explicit
- *  `recoveryBudget` is set: a fair share of headroom across the live agents,
- *  clamped to [MIN, MAX]. MAX is also the default cap on a voluntary terminal
- *  report when no budget is configured; an explicit budget replaces it. */
+ *  `recoveryBudget` is set: a fair share of the room above the floor across
+ *  the live agents, clamped to [MIN, MAX]. A voluntary report is capped only
+ *  by an explicit budget: a number the model was never told must not end a
+ *  report the room can hold. */
 export const MIN_RECOVERY_BUDGET = 128;
 export const MAX_RECOVERY_BUDGET = 2048;
 
 export interface SchedulerOptions {
   /**
    * How reaped agents recover. `serial` (the high-effort path): one at a
-   * time, exempt from the soft reserve, uncapped — each report owns the freed
-   * headroom. `cohort`: every reap's recovery turn is admitted against the
-   * recovery reserve and decodes bin-packed with live siblings under a
-   * per-recovery budget. Wind-down forces `cohort`.
+   * time, uncapped — each report owns the whole room above the floor. `cohort`:
+   * every reap's recovery turn is admitted against that room and decodes
+   * bin-packed with live siblings under a per-recovery share of it. Wind-down
+   * forces `cohort`.
    */
   recovery: 'serial' | 'cohort';
   /** Explicit token cap for cohort recovery turns and for a voluntary terminal
-   *  report in either shape (absent: adaptive for cohort, `MAX_RECOVERY_BUDGET`
-   *  for the report). Serial forced recovery has no configured cap; it ends at
-   *  its stop token or when the pressure turns critical. */
+   *  report in either shape. Absent: cohort shares are adaptive, clamped to
+   *  `MAX_RECOVERY_BUDGET`, and a voluntary report is NOT capped; it runs to
+   *  its stop token or the hard line. Serial forced recovery has no configured
+   *  cap; it ends at its stop token or when the room above the floor is gone. */
   recoveryBudget?: number;
   terminalToolName?: string;
   /** How many agents the pool seats at once; spawns beyond it wait in request order. Absent: unbounded. */
@@ -64,10 +66,11 @@ export function emittingTerminal(a: Agent, terminalToolName: string | undefined)
  * How a dropped agent recovers — the ONE place the per-recovery budget `b` is
  * sized, shared by every drop site (schedule-time and produce-time alike).
  *
- * Cohort: `aliveCount·(OVERHEAD + b) ≤ (remaining − hardLimit) − BATCH_BUFFER`,
- * so the whole cohort's prefill+decode fits the recovery reserve in one tick;
- * an explicit `recoveryBudget` is clamped DOWN to that ceiling. Serial: the
- * policy derives its own full-headroom advisory and nothing caps the report.
+ * Cohort: `aliveCount·(OVERHEAD + b) ≤ room`, so the whole cohort's prefill
+ * and decode fits what physically remains above the floor in one tick; an
+ * explicit `recoveryBudget` is clamped DOWN to that ceiling. Serial: the
+ * policy derives its own advisory from the same room and nothing caps the
+ * report. No policy line enters here: the hard reserve is the report's.
  */
 export function recoveryFor(
   a: Agent, policy: AgentPolicy, pressure: ContextPressure, aliveCount: number,
@@ -76,7 +79,7 @@ export function recoveryFor(
   let budget: number;
   let action;
   if (mode === 'cohort') {
-    const fits = Math.floor((pressure.remaining - pressure.hardLimit - BATCH_BUFFER) / Math.max(1, aliveCount)) - RECOVERY_PROMPT_OVERHEAD;
+    const fits = Math.floor(pressure.room / Math.max(1, aliveCount)) - RECOVERY_PROMPT_OVERHEAD;
     budget = recoveryBudget != null
       ? (fits > 0 ? Math.min(recoveryBudget, fits) : recoveryBudget)
       : Math.min(MAX_RECOVERY_BUDGET, Math.max(MIN_RECOVERY_BUDGET, fits));
@@ -161,8 +164,11 @@ export class DefaultScheduler implements Scheduler {
     //    something can still free what it needs, refused when nothing can. A
     //    spawn waiting on capacity is always carried — the seats' holders are
     //    alive, and an alive agent finishes or is decided here.
+    // Two views of one ledger: a working turn is admitted against the headroom
+    // above the soft line, a report against the room above the floor. Every
+    // admission spends from both, since both are the same cells.
     let headroom = P0.headroom;
-    const band = P0.softLimit - P0.hardLimit;
+    let room = P0.room;
     let spent = 0;
     let sequences = state.sequences;
     let seated = state.agents.filter(alive).length;
@@ -173,7 +179,7 @@ export class DefaultScheduler implements Scheduler {
       if (cost > headroom) { waitingSpawns.push({ req, on: 'pressure_init' }); continue; }
       if (sequences <= 0) { waitingSpawns.push({ req, on: 'no_sequence' }); continue; }
       if (this.opts.capacity !== undefined && seated >= this.opts.capacity) { waitingSpawns.push({ req, on: 'capacity' }); continue; }
-      S.spawns.push(req); headroom -= cost; spent += cost; sequences--; seated++;
+      S.spawns.push(req); headroom -= cost; room -= cost; spent += cost; sequences--; seated++;
     }
     // An extend is admitted like everything else: against headroom. The spine
     // is the one branch that cannot be pruned and replayed, so it is never
@@ -183,7 +189,7 @@ export class DefaultScheduler implements Scheduler {
     for (const e of pending.extends) {
       if (e.discarded) continue;
       if (e.tokens.length <= headroom) {
-        S.extends.push(e); headroom -= e.tokens.length; spent += e.tokens.length;
+        S.extends.push(e); headroom -= e.tokens.length; room -= e.tokens.length; spent += e.tokens.length;
       } else {
         deferredExtends.push(e);
       }
@@ -192,10 +198,9 @@ export class DefaultScheduler implements Scheduler {
     // A serial report already DECODING (active) blocks the next; one that is
     // merely awaiting its turn is the candidate this pass admits.
     let serialInFlight = state.agents.some(a => a.extracting && a.recoverySerial && a.status === 'active');
-    // Serial recovery is exempt from the soft reserve, not from the cache: the
-    // prompt must fit what physically remains after this tick's earlier
-    // admissions, minus the hardLimit reserve its own decode needs.
-    const fitsSerial = (cells: number): boolean => cells <= P0.remaining - spent - P0.hardLimit;
+    // A serial report owns the whole room: its prompt must fit what physically
+    // remains above the floor after this tick's earlier admissions.
+    const fitsSerial = (cells: number): boolean => cells <= room;
     const deferred: PrefillItem[] = [];
     for (const it of pending.items) {
       const a = it.agent;
@@ -207,16 +212,16 @@ export class DefaultScheduler implements Scheduler {
         // after it.
         if (serialInFlight) { remaining.items.push(it); continue; }
         if (!fitsSerial(cells)) { deferred.push(it); continue; }
-        S.prefills.push(it); headroom -= cells; spent += cells; serialInFlight = true;
+        S.prefills.push(it); headroom -= cells; room -= cells; spent += cells; serialInFlight = true;
         continue;
       }
-      // A recovery item reserves the REPORT room too (prompt + b) and may spend
-      // the softLimit reserve down to hardLimit — the documented recovery band.
-      // A plain result reserves only its own cells and stays above softLimit.
+      // A recovery item reserves the REPORT room too (prompt + b), against the
+      // room above the floor. A plain result reserves only its own cells and
+      // stays above the soft line.
       const cost = a.extracting ? cells + a.recoveryBudget : cells;
-      const budget = a.extracting ? headroom + band : headroom;
+      const budget = a.extracting ? room : headroom;
       if (cost > budget) { deferred.push(it); continue; }
-      S.prefills.push(it); headroom -= cost; spent += cells;
+      S.prefills.push(it); headroom -= cost; room -= cost; spent += cells;
     }
     // The post-admission value every produce-phase decision reads.
     const Pd = P0.minus(spent);
@@ -234,7 +239,11 @@ export class DefaultScheduler implements Scheduler {
     S.alive = state.agents.filter(a => alive(a) && !dropped.has(a)).length + S.spawns.length;
     // One configured number for both capped paths: an explicit budget caps a
     // voluntary report as it caps a cohort turn, above the adaptive ceiling too.
-    const cap = this.opts.recoveryBudget ?? MAX_RECOVERY_BUDGET;
+    // With none configured a voluntary report runs to its stop token; the hard
+    // line, a pressure fact, is what ends a runaway. Reports were slow enough
+    // to make a default cap unreachable until sample-first; the day they got
+    // fast it cut whole reports with a third of the context free.
+    const cap = this.opts.recoveryBudget ?? Infinity;
     for (const a of state.agents) {
       if (a.status !== 'active' || dropped.has(a)) continue;
       if (signals.windDown && !a.extracting && !emittingTerminal(a, terminal)) {
@@ -251,13 +260,14 @@ export class DefaultScheduler implements Scheduler {
         });
         continue;
       }
-      // A report owns the room it was granted, not the hard reserve: it ends
-      // when its budget is spent OR the post-admission pressure is critical
-      // (a serial budget is infinite; a cohort's reservation lives only in the
-      // tick that admitted it, and later admissions can eat it). Finishing
-      // salvages what it produced, the way the terminal cap does, instead of
-      // committing into a cache that cannot hold the next batch.
-      if (a.extracting && (a.recoveryTokens >= a.recoveryBudget || Pd.critical)) { S.finishes.push(a); continue; }
+      // A report owns the room above the floor: it ends when its budget is
+      // spent OR the post-admission room is gone (a serial budget is infinite;
+      // a cohort's reservation lives only in the tick that admitted it, and
+      // later admissions can eat it). Finishing salvages what it produced, the
+      // way the terminal cap does, instead of committing into a cache that
+      // cannot hold the next batch. The hard line is a working-turn line and plays
+      // no part here.
+      if (a.extracting && (a.recoveryTokens >= a.recoveryBudget || Pd.room <= 0)) { S.finishes.push(a); continue; }
       if (!a.extracting && emittingTerminal(a, terminal) && a.turnTokens >= cap) {
         decide({ agent: a, reason: 'terminal_cap', done: true, exitReason: 'terminal_cap', recovery: { type: 'salvage' } });
         continue;

@@ -78,6 +78,7 @@ Implemented as predicates in `predicates.ts`, each wired into at least one test:
 - I42 (no-leaked-branches) — `scenarios/spawn-batch-failure-leaves-no-fork.scenario.test.ts`
 - I43 (attended-is-admitted) — `scenarios/nudge-not-counted-as-received.scenario.test.ts`, `predicates.test.ts`
 - I44 (sample-first-follows-identification) — `scenarios/grammar-order.scenario.test.ts`
+- I45 (parse-hands-back-a-minted-key) — `scenarios/grammar-order.scenario.test.ts`, `scenarios/parser-key.scenario.test.ts`
 
 The stall-break reason distinction (once "I25") is asserted directly by
 `scenarios/pressure-exit-via-stall-break.scenario.test.ts` and

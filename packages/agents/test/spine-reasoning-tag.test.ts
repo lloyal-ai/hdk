@@ -36,7 +36,7 @@ function templateRefusingSystemOnly(ctx: MockSessionContext): void {
       generationPrompt: '<|im_start|>assistant\n<think>\n',
       supportsThinking: hasUser,
       thinkingStartTag: hasUser ? '<think>' : '',
-      thinkingEndTag: hasUser ? '</think>' : '',
+      thinkingEndTags: hasUser ? ['</think>'] : [],
     };
   };
 }
@@ -50,11 +50,11 @@ describe('an agent inherits the reasoning tag its template declares', () => {
 
     const priced = await run(function* () {
       // What a system-only spine format yields under that template.
-      yield* SpineFmt.set(fmtWith({ thinkingEndTag: '', generationPrompt: '<|im_start|>assistant\n<think>\n' }));
+      yield* SpineFmt.set(fmtWith({ thinkingEndTags: [], generationPrompt: '<|im_start|>assistant\n<think>\n' }));
       return yield* priceSpawn(TASK, ctx as unknown as Parameters<typeof priceSpawn>[1], true);
     });
 
-    expect(priced.fmt.thinkingEndTag).toBe('</think>');
+    expect(priced.fmt.thinkingEndTags).toEqual(['</think>']);
   });
 
   it('takes it from its own format outside shared mode too', async () => {
@@ -63,13 +63,13 @@ describe('an agent inherits the reasoning tag its template declares', () => {
 
     const priced = await run(() => priceSpawn(TASK, ctx as unknown as Parameters<typeof priceSpawn>[1], true));
 
-    expect(priced.fmt.thinkingEndTag).toBe('</think>');
+    expect(priced.fmt.thinkingEndTags).toEqual(['</think>']);
   });
 
   it('stays empty for a template that genuinely does not think', async () => {
     const { ctx } = createMockSdk({ nCtx: 8192 });
     const priced = await run(() => priceSpawn(TASK, ctx as unknown as Parameters<typeof priceSpawn>[1], true));
 
-    expect(priced.fmt.thinkingEndTag).toBe('');
+    expect(priced.fmt.thinkingEndTags).toEqual([]);
   });
 });

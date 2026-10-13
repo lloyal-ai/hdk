@@ -259,13 +259,22 @@ describe('the abilities admit the set', () => {
     // publish stamps latest), so its pending base is 0.2.0 whatever the manifest says; without this row
     // a stable 0.2.0 manifest would read as shipped and the next cut would plan 0.3.0-alpha.N, which no
     // range written today can admit (a prerelease needs a comparator naming its own triple).
+    // The registry as it stood when the engine-pin arc (release 2026.10.3) began, and that arc's
+    // levels: sdk, agents, rig and the addon move a major, so an alpha cut of it would stamp
+    // 5.0.0, 7.0.0, 6.0.0 and 4.0.0 prereleases, and every ability's floor must admit them.
     const registry: Record<string, string> = {
-      '@lloyal-labs/sdk': '3.1.0', '@lloyal-labs/lloyal-agents': '5.5.1', '@lloyal-labs/rig': '5.5.0',
-      '@lloyal-labs/dev-tools': '0.4.3', '@lloyal-labs/lloyal.node': '3.1.1', '@lloyal-labs/binding': '0.1.0',
-      '@lloyal-labs/media': '0.2.0-alpha.0',
+      '@lloyal-labs/sdk': '4.2.0', '@lloyal-labs/lloyal-agents': '6.2.0', '@lloyal-labs/rig': '5.9.0',
+      '@lloyal-labs/dev-tools': '0.5.0', '@lloyal-labs/lloyal.node': '3.4.0', '@lloyal-labs/binding': '0.2.1',
+      '@lloyal-labs/media': '0.2.1', '@lloyal-labs/host': '0.2.0', '@lloyal-labs/relay': '0.2.0',
+      '@lloyal-labs/ui': '0.1.1', '@lloyal-labs/desktop': '0.2.1',
     };
+    const enginePinCuts: Record<string, 'major' | 'minor'> = {
+      'packages/sdk': 'major', 'packages/agents': 'major', 'packages/rig': 'major',
+      'packages/host': 'minor', 'packages/dev-tools': 'minor', 'packages/ui': 'minor', 'packages/desktop': 'minor',
+    };
+    const enginePinExternal = { '@lloyal-labs/lloyal.node': 'major' as const };
     const view = (name: string) => { if (name in registry) return registry[name]; throw e404; };
-    const stamped = planAlphas({ cut: 99, packages: arcPackages(CUTS, EXTERNAL, manifestOf), view });
+    const stamped = planAlphas({ cut: 99, packages: arcPackages(enginePinCuts, enginePinExternal, manifestOf), view });
     for (const dir of ['packages/abilities/web', 'packages/abilities/corpus', 'packages/abilities/wikipedia', 'packages/abilities/documents']) {
       const peers = manifestOf(dir).peerDependencies ?? {};
       for (const [name, range] of Object.entries(peers)) {

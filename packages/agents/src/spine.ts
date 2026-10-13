@@ -299,14 +299,13 @@ export function* withSpine<T>(
       }
       spineFmt = {
         format: formatted.format,
-        reasoningFormat: formatted.reasoningFormat,
         generationPrompt: formatted.generationPrompt,
         parser: formatted.parser,
         grammar: formatted.grammar,
         grammarLazy: formatted.grammarLazy,
         grammarTriggers: formatted.grammarTriggers,
         enableThinking,
-        thinkingEndTag: formatted.thinkingEndTag,
+        thinkingEndTags: formatted.thinkingEndTags,
       };
     }
     // The format is this spine's agents', for the body's lifetime: `with` restores what the caller had when the

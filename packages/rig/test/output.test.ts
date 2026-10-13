@@ -20,8 +20,8 @@ const columns = z.object({
   evidence: z.array(z.object({ field: z.string(), url: z.string() })),
 }).strict();
 /** A capture is handed the template's reasoning close; a template that does not think reports ''. */
-const agentWith = (thinkingEndTag: string) => ({ fmt: { thinkingEndTag } }) as unknown as Agent;
-const agent = agentWith('');
+const agentWith = (thinkingEndTags: string[]) => ({ fmt: { thinkingEndTags } }) as unknown as Agent;
+const agent = agentWith([]);
 
 describe('defineOutput', () => {
   it('samples mask-first unless the output says otherwise, and carries the order it is given', () => {
@@ -141,7 +141,7 @@ describe('citedReport', () => {
     };
     const call = { tool: 'report', args, raw: JSON.stringify(args), result: args.result };
 
-    const repaired = citedReport.tool.hooks!.onReturn!({ agent: agentWith('</think>'), ...call });
+    const repaired = citedReport.tool.hooks!.onReturn!({ agent: agentWith(['</think>']), ...call });
     const text = (repaired as { result: string }).result;
     expect(text).not.toContain('</think>');
     expect(text).not.toContain('<tool_call>');
@@ -150,7 +150,7 @@ describe('citedReport', () => {
 
     // A template that declares no close leaves it alone — the tag is the template's fact,
     // never a literal this package assumes.
-    const untagged = citedReport.tool.hooks!.onReturn!({ agent: agentWith(''), ...call });
+    const untagged = citedReport.tool.hooks!.onReturn!({ agent: agentWith([]), ...call });
     expect((untagged as { result: string }).result).toContain('</think>');
   });
 

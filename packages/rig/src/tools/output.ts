@@ -42,10 +42,10 @@ export interface OutputOptions<T> {
    *  prose (a report) declares `'sampleFirst'`; one whose value is structure keeps the exact default. */
   grammarOrder?: GrammarOrder;
   /** Make the result text from the validated value (a report's citation weave). The output then reads as text.
-   *  The third argument is the template's reasoning close (empty when it does not think) — a capture that
-   *  repairs prose needs it, because the framework's own repair cannot see a fragment once text is appended
+   *  The third argument is the template's reasoning closes (empty when it does not think) — a capture that
+   *  repairs prose needs them, because the framework's own repair cannot see a fragment once text is appended
    *  after it. */
-  capture?: (value: T, raw: string, thinkingEndTag: string) => string;
+  capture?: (value: T, raw: string, thinkingEndTags: string[]) => string;
 }
 
 class OutputTool<S extends ZodType> extends Tool<Record<string, unknown>> {
@@ -55,7 +55,7 @@ class OutputTool<S extends ZodType> extends Tool<Record<string, unknown>> {
     readonly name: string,
     readonly description: string,
     schema: S,
-    capture?: (value: z.output<S>, raw: string, thinkingEndTag: string) => string,
+    capture?: (value: z.output<S>, raw: string, thinkingEndTags: string[]) => string,
     readonly grammarOrder?: GrammarOrder,
   ) {
     super();
@@ -74,7 +74,7 @@ class OutputTool<S extends ZodType> extends Tool<Record<string, unknown>> {
         }
         // A capture-less output's result is the RAW arguments, so `read` validates the model's own bytes once —
         // a schema's transforms run one time, at read, never twice.
-        return { type: 'accept', result: capture ? capture(parsed.data, raw, agent.fmt.thinkingEndTag) : raw };
+        return { type: 'accept', result: capture ? capture(parsed.data, raw, agent.fmt.thinkingEndTags) : raw };
       },
     };
   }
@@ -88,7 +88,7 @@ class OutputTool<S extends ZodType> extends Tool<Record<string, unknown>> {
 export function defineOutput<S extends ZodType>(
   name: string,
   schema: S,
-  opts: { description?: string; grammarOrder?: GrammarOrder; capture: (value: z.output<S>, raw: string, thinkingEndTag: string) => string },
+  opts: { description?: string; grammarOrder?: GrammarOrder; capture: (value: z.output<S>, raw: string, thinkingEndTags: string[]) => string },
 ): Output<string>;
 export function defineOutput<S extends ZodType>(
   name: string,
@@ -159,7 +159,7 @@ export const citedReport: Output<string> = defineOutput(
     // is appended, where the framework's end-anchored strip could no longer see it. A reaped agent restarts
     // its envelope inside the argument it was writing, so the close that opens that restart goes with it —
     // which needs the template's own tag, since this capture, not the framework, is the one repairing here.
-    capture: ({ result, sources }, _raw, thinkingEndTag) =>
-      weaveSourcesIntoResult(stripDanglingToolCall(result, thinkingEndTag), sources),
+    capture: ({ result, sources }, _raw, thinkingEndTags) =>
+      weaveSourcesIntoResult(stripDanglingToolCall(result, thinkingEndTags), sources),
   },
 );

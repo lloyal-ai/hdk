@@ -10,7 +10,7 @@
  *
  * What this locks: a serial recovery turn is admitted only when its cells fit
  * what physically remains after this tick's earlier admissions, minus the
- * `hardLimit` reserve its own decode needs. One that cannot fit waits while a
+ * floor its own decode needs (the batch workspace). One that cannot fit waits while a
  * sibling can still free KV and is otherwise skipped at the stall-break —
  * `pool:recoveryFailed(recovery_skipped)`, no second `agent:done`, and no
  * prefill ever issued for it.
