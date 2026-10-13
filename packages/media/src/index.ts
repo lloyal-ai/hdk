@@ -47,5 +47,5 @@ export type { AdmittedAudio, AudioAdmission, AudioMeta } from './audio';
 // The client half of the content plane: every door derived from the one origin a
 // bridge reports, and the citation grammar a view resolves against its own roots.
 export {
-  blobUploadsUrl, configUrl, ingestMedia, ingressUrl, manifestUrl, parseAttachmentHref, pushBlob, representationUrl, resolvePrefix, sourceUrl,
+  blobUploadsUrl, configUrl, ingestMedia, ingressUrl, manifestUrl, parseAttachmentHref, parseAttachmentMoment, pushBlob, representationUrl, resolvePrefix, sourceUrl,
 } from './content-urls';

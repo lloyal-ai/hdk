@@ -25,6 +25,8 @@ export interface LightboxProps {
     src?: string;
     frames: { src: string; tMs: number }[];
     transcript?: { startMs: number; endMs: number; text: string }[];
+    /** Where to start: a cited moment. */
+    atMs?: number;
   };
   /** The representation's true pixel size, when the caller read it off the loaded element. */
   dims?: string;
@@ -80,7 +82,8 @@ export function Lightbox({ digest, pdf, video, dims, label, onClose, styles = {}
         {video.src !== undefined && (
           <>
             {/* CORS mode: the content plane answers every read with Access-Control-Allow-Origin. */}
-            <video ref={player} src={video.src} controls crossOrigin="anonymous" style={s.full} onClick={(e) => e.stopPropagation()} />
+            <video ref={player} src={video.src} controls crossOrigin="anonymous" style={s.full} onClick={(e) => e.stopPropagation()}
+              onLoadedMetadata={(e) => { if (video.atMs !== undefined) e.currentTarget.currentTime = video.atMs / 1000; }} />
             <p style={s.caption}>{label ?? 'the attached video'} · the file as attached</p>
           </>
         )}

@@ -29,13 +29,13 @@ import type { MultimodalInput } from '@lloyal-labs/sdk';
  *  video), and the roots those inputs belong to (what the trunk records as
  *  projected); or the one sentence to say instead. */
 export type Admitted =
-  | { roots: Attachment[]; bitmaps: MultimodalInput[]; projected: Attachment[] }
+  | { roots: Attachment[]; bitmaps: MultimodalInput[]; projected: Attachment[]; /** The projected roots that are videos. */ videos: Attachment[] }
   | { refused: string };
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 export function* admitted(descriptors: readonly Descriptor[] = []): Operation<Admitted> {
-  if (descriptors.length === 0) return { roots: [], bitmaps: [], projected: [] };
+  if (descriptors.length === 0) return { roots: [], bitmaps: [], projected: [], videos: [] };
 
   const roots: Attachment[] = [];
   for (const d of descriptors) {
@@ -47,10 +47,12 @@ export function* admitted(descriptors: readonly Descriptor[] = []): Operation<Ad
   const store = yield* Attachments.expect();
   const bitmaps: MultimodalInput[] = [];
   const projected: Attachment[] = [];
+  const videos: Attachment[] = [];
   try {
     for (const root of roots) {
       const own = materialize(store, [root]).inputs;
       if (own.length > 0) projected.push(root);
+      if (own.some((input) => !(input instanceof Uint8Array) && input.kind === 'video')) videos.push(root);
       bitmaps.push(...own);
     }
   } catch (err) {
@@ -64,5 +66,5 @@ export function* admitted(descriptors: readonly Descriptor[] = []): Operation<Ad
       return { refused: message(err) };
     }
   }
-  return { roots, bitmaps, projected };
+  return { roots, bitmaps, projected, videos };
 }

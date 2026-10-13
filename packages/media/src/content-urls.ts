@@ -145,6 +145,12 @@ export function parseAttachmentHref(href: string): { prefix: string; page: numbe
   return m ? { prefix: m[1].toLowerCase(), page: Number(m[2]) } : null;
 }
 
+/** A moment in a video, in the same grammar: `attachment://<digest prefix>/t/<milliseconds>`. */
+export function parseAttachmentMoment(href: string): { prefix: string; tMs: number } | null {
+  const m = /^attachment:\/\/([0-9a-f]{6,64})\/t\/(\d+)$/i.exec(href);
+  return m ? { prefix: m[1].toLowerCase(), tMs: Number(m[2]) } : null;
+}
+
 /** Exactly one digest may answer to a prefix; zero or several is no answer. */
 export function resolvePrefix(prefix: string, digests: readonly string[]): string | null {
   const hits = digests.filter((d) => d.replace(/^sha256:/, '').startsWith(prefix));

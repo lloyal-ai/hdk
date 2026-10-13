@@ -17,7 +17,7 @@ import { useEffect, useState } from 'react';
 import { ALL_FORMATS, AudioBufferSink, BlobSource, CanvasSink, Input } from 'mediabunny';
 import { ingestMedia, pushBlob } from '@lloyal-labs/media';
 import type { Attachment, Descriptor } from '@lloyal-labs/media';
-import type { Bridge, UntranscribedWindow, VideoCapabilities, VideoCommand, VideoEvent, VideoFrameRef, VideoAudioRef } from '@lloyal-labs/binding';
+import type { UntranscribedWindow, VideoCapabilities, VideoCommand, VideoEvent, VideoFrameRef, VideoAudioRef } from '@lloyal-labs/binding';
 import { useAvailability, useContentOrigin, useHarness } from './provider.js';
 
 type Sampling = VideoCapabilities['sampling'];
@@ -263,7 +263,8 @@ export interface AttachedVideo {
  */
 export async function ingestVideo(opts: {
   origin: string;
-  bridge: Pick<Bridge<VideoEvent, VideoCommand, unknown>, 'onEvent' | 'send'>;
+  /** Any harness bridge: it carries the app's whole event union, of which the video events are part. */
+  bridge: { onEvent(cb: (frame: { ev: { type: string } }) => void): () => void; send(command: VideoCommand): void };
   file: Blob;
   capabilities: VideoCapabilities;
   signal?: AbortSignal;
@@ -293,8 +294,9 @@ export async function ingestVideo(opts: {
   const requestId = crypto.randomUUID();
   onProgress?.({ phase: 'composing' });
   return new Promise<AttachedVideo>((resolve, reject) => {
-    const stop = bridge.onEvent(({ ev }) => {
-      if (!('requestId' in ev) || ev.requestId !== requestId) return;
+    const stop = bridge.onEvent(({ ev: event }) => {
+      if (!isVideoEvent(event) || !('requestId' in event) || event.requestId !== requestId) return;
+      const ev = event;
       if (ev.type === 'video:progress') onProgress?.({ phase: 'transcribing', done: ev.done, total: ev.total });
       if (ev.type === 'video:composed') { stop(); resolve({ root: ev.root, untranscribed: ev.untranscribed }); }
       if (ev.type === 'video:error') { stop(); reject(new Error(ev.message)); }
@@ -308,6 +310,8 @@ export async function ingestVideo(opts: {
     });
   });
 }
+
+const isVideoEvent = (ev: { type: string }): ev is VideoEvent => ev.type.startsWith('video:');
 
 /**
  * The host's video capabilities, asked for once the harness is ready; null

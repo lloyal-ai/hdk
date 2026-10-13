@@ -14,7 +14,8 @@ import * as path from 'node:path';
 import { run } from 'effection';
 import { Attachments } from '@lloyal-labs/lloyal-agents';
 import { Services } from '../src/services';
-import { FileAttachmentStore } from '@lloyal-labs/media/node';
+import { FileAttachmentStore, createContentIngress } from '@lloyal-labs/media/node';
+import { composeVideo } from '@lloyal-labs/media';
 import { admitted } from '../src/admitted';
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
@@ -40,7 +41,7 @@ describe('admitted', () => {
       yield* withContexts(store, true);
       return yield* admitted([]);
     });
-    expect(out).toEqual({ roots: [], bitmaps: [], projected: [] });
+    expect(out).toEqual({ roots: [], bitmaps: [], projected: [], videos: [] });
   });
 
   it('a descriptor that is not the kind of thing that can be a root is refused', async () => {
@@ -74,6 +75,24 @@ describe('admitted', () => {
     expect(out.bitmaps).toHaveLength(1);
     expect(out.bitmaps[0]).toEqual(PNG);
     expect(out.projected.map((r) => r.digest)).toEqual([image.digest]);
+  });
+
+  it('a video is one input and named among the videos, so a harness can say how to cite it', async () => {
+    const { store, image } = plant();
+    const ingress = createContentIngress(store);
+    const frames = await Promise.all(['frame-00.png', 'frame-01.png'].map(async (name, i) => ({
+      root: await ingress.ingest(new Uint8Array(fs.readFileSync(path.join(__dirname, '../../media/test/fixtures/video', name)))),
+      tMs: i * 250,
+    })));
+    const video = await composeVideo(store, { frames, sampling: { fps: 4, timestampIntervalMs: 5000, maxFrames: 64 }, durationMs: 500 });
+    const out = await run(function* () {
+      yield* withContexts(store, true);
+      return yield* admitted([image, video]);
+    });
+    if ('refused' in out) throw new Error(out.refused);
+    expect(out.bitmaps).toHaveLength(2);
+    expect(out.bitmaps[1]).toMatchObject({ kind: 'video', timestampsMs: [0, 250] });
+    expect(out.videos.map((r) => r.digest)).toEqual([video.digest]);
   });
 
   it('pixels need sight: an image is refused where vision is not configured, naming the block; a document is not', async () => {
