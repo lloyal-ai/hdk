@@ -145,10 +145,13 @@ export function parseAttachmentHref(href: string): { prefix: string; page: numbe
   return m ? { prefix: m[1].toLowerCase(), page: Number(m[2]) } : null;
 }
 
-/** A moment in a video, in the same grammar: `attachment://<digest prefix>/t/<milliseconds>`. */
+/** A moment in a video, in the same grammar: `attachment://<digest prefix>/t/<time>`, where the time is
+ *  written as the video marks it to the model (`1m5.00s`) or in milliseconds (`65000`). */
 export function parseAttachmentMoment(href: string): { prefix: string; tMs: number } | null {
-  const m = /^attachment:\/\/([0-9a-f]{6,64})\/t\/(\d+)$/i.exec(href);
-  return m ? { prefix: m[1].toLowerCase(), tMs: Number(m[2]) } : null;
+  const m = /^attachment:\/\/([0-9a-f]{6,64})\/t\/(?:(\d+)m(\d+(?:\.\d+)?)s|(\d+))$/i.exec(href);
+  if (!m) return null;
+  const tMs = m[4] !== undefined ? Number(m[4]) : Math.round((Number(m[2]) * 60 + Number(m[3])) * 1000);
+  return { prefix: m[1].toLowerCase(), tMs };
 }
 
 /** Exactly one digest may answer to a prefix; zero or several is no answer. */

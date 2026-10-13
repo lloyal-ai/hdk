@@ -266,11 +266,13 @@ export async function ingestVideo(opts: {
   /** Any harness bridge: it carries the app's whole event union, of which the video events are part. */
   bridge: { onEvent(cb: (frame: { ev: { type: string } }) => void): () => void; send(command: VideoCommand): void };
   file: Blob;
-  capabilities: VideoCapabilities;
+  /** What the host said it composes under; asked for here when the caller has not heard yet. */
+  capabilities?: VideoCapabilities | null;
   signal?: AbortSignal;
   onProgress?: (progress: VideoProgress) => void;
 }): Promise<AttachedVideo> {
-  const { origin, bridge, file, capabilities, signal, onProgress } = opts;
+  const { origin, bridge, file, signal, onProgress } = opts;
+  const capabilities = opts.capabilities ?? await describe(bridge, signal);
   const { sampling } = capabilities;
   const source: Descriptor = await pushBlob(origin, file, {
     ...(signal ? { signal } : {}),
@@ -312,6 +314,17 @@ export async function ingestVideo(opts: {
 }
 
 const isVideoEvent = (ev: { type: string }): ev is VideoEvent => ev.type.startsWith('video:');
+
+/** Ask the host how it composes a video, and wait for the answer. */
+function describe(bridge: Parameters<typeof ingestVideo>[0]['bridge'], signal?: AbortSignal): Promise<VideoCapabilities> {
+  return new Promise((resolve, reject) => {
+    const stop = bridge.onEvent(({ ev }) => {
+      if (isVideoEvent(ev) && ev.type === 'video:capabilities') { stop(); resolve(ev.capabilities); }
+    });
+    signal?.addEventListener('abort', () => { stop(); reject(signal.reason); }, { once: true });
+    bridge.send({ type: 'video:describe' });
+  });
+}
 
 /**
  * The host's video capabilities, asked for once the harness is ready; null

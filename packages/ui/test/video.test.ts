@@ -106,3 +106,24 @@ describe('ingestVideo', () => {
     expect(new Set(progress)).toEqual(new Set(['sampling', 'ingesting', 'composing']));
   });
 });
+
+describe('ingestVideo before the host has described video', () => {
+  it('asks the host how it composes a video, and goes on with the answer', async () => {
+    vi.mocked(pushBlob).mockResolvedValue({ mediaType: 'video/mp4', digest: `sha256:${'d'.repeat(64)}`, size: 2518 });
+    vi.mocked(ingestMedia).mockImplementation(async () => ({ mediaType: MANIFEST_TYPE, digest: `sha256:${'e'.repeat(64)}`, size: 1 }));
+    const listeners: Array<(f: Frame<VideoEvent>) => void> = [];
+    const sent: string[] = [];
+    const emit = (ev: VideoEvent): void => { queueMicrotask(() => [...listeners].forEach(l => l({ ev } as unknown as Frame<VideoEvent>))); };
+    const bridge = {
+      onEvent: (cb: (f: Frame<VideoEvent>) => void) => { listeners.push(cb); return () => { listeners.splice(listeners.indexOf(cb), 1); }; },
+      send: (c: VideoCommand) => {
+        sent.push(c.type);
+        if (c.type === 'video:describe') emit({ type: 'video:capabilities', capabilities: { sampling: SAMPLING, transcription: false } });
+        if (c.type === 'video:compose') emit({ type: 'video:composed', requestId: c.requestId, root: { mediaType: MANIFEST_TYPE, digest: `sha256:${'f'.repeat(64)}`, size: 1 } as never, untranscribed: [] });
+      },
+    };
+    const attached = await ingestVideo({ origin: '', bridge, file: new Blob([new Uint8Array(10)]), capabilities: null });
+    expect(sent).toEqual(['video:describe', 'video:compose']);
+    expect(attached.root.digest).toBe(`sha256:${'f'.repeat(64)}`);
+  });
+});
