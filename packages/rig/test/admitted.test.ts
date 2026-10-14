@@ -5,17 +5,21 @@
  * that can be a root (`asAttachment`); is the content really in the store
  * (`materialize`, the check no client can answer for itself); and, when any of
  * it is pixels, is the `vision` service configured — the one refusal every
- * unconfigured service gives. A refusal moves nothing.
+ * unconfigured service gives. A fourth, when the harness sets one: does the
+ * turn's media fit the share of the context it may fill. A refusal moves
+ * nothing.
  */
 import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { run } from 'effection';
-import { Attachments } from '@lloyal-labs/lloyal-agents';
+import { Attachments, Ctx } from '@lloyal-labs/lloyal-agents';
+import { MockSessionContext } from '../../sdk/src/testing.js';
 import { Services } from '../src/services';
 import { FileAttachmentStore, createContentIngress } from '@lloyal-labs/media/node';
 import { composeVideo } from '@lloyal-labs/media';
+import { buildUserDeltaMultimodal, deltaCells } from '@lloyal-labs/sdk';
 import { admitted } from '../src/admitted';
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
@@ -105,5 +109,79 @@ describe('admitted', () => {
     expect(seen.roots).toHaveLength(1);
     expect(seen.bitmaps).toEqual([]);
     expect((blind as { refused: string }).refused).toBe('`vision` is not configured — add `model.vision` to harness.yml');
+  });
+
+  describe('the share of the context attachments may fill', () => {
+    // The mock prices an image at `mockImageCells` and its prompt at a cell per character,
+    // so the fixed cost of one image's turn is measured, not assumed.
+    function* priced(store: FileAttachmentStore, ctx: MockSessionContext) {
+      yield* withContexts(store, true);
+      yield* Ctx.set(ctx);
+    }
+
+    it('a turn whose media fits within the share is admitted', async () => {
+      const { store, image } = plant();
+      const ctx = new MockSessionContext({ nCtx: 10_000 });
+      const out = await run(function* () {
+        yield* priced(store, ctx);
+        return yield* admitted([image], { context: 0.5 });
+      });
+      if ('refused' in out) throw new Error(out.refused);
+      expect(out.bitmaps).toHaveLength(1);
+    });
+
+    it('a turn whose media would fill more than the share is refused, saying what it costs and what is allowed', async () => {
+      const { store, image } = plant();
+      const ctx = new MockSessionContext({ nCtx: 10_000 });
+      ctx.mockImageCells = 6_000;
+      const out = await run(function* () {
+        yield* priced(store, ctx);
+        return yield* admitted([image], { context: 0.5 });
+      });
+      expect((out as { refused: string }).refused).toMatch(/would take 6,\d{3} of the 10,000-token context; this harness lets attachments fill up to 50% of it/);
+    });
+
+    it('the limit is inclusive: exactly the share is admitted, one cell over is not', async () => {
+      const { store, image } = plant();
+      const ctx = new MockSessionContext({ nCtx: 10_000 });
+      ctx.mockImageCells = 0;
+      const fixed = await deltaCells(ctx, buildUserDeltaMultimodal(ctx, '', [PNG]));
+      const at = (cells: number) => {
+        ctx.mockImageCells = cells;
+        return run(function* () { yield* priced(store, ctx); return yield* admitted([image], { context: 0.5 }); });
+      };
+      expect(await at(5_000 - fixed)).not.toHaveProperty('refused');
+      expect(await at(5_001 - fixed)).toHaveProperty('refused');
+    });
+
+    it('without a share, nothing is priced: no context is needed', async () => {
+      const { store, image } = plant();
+      const out = await run(function* () {
+        yield* withContexts(store, true);
+        return yield* admitted([image]);
+      });
+      expect(out).not.toHaveProperty('refused');
+    });
+
+    it('a document alone is never priced: it is not prefilled', async () => {
+      const { store, document } = plant();
+      const ctx = new MockSessionContext({ nCtx: 10 });
+      const out = await run(function* () {
+        yield* priced(store, ctx);
+        return yield* admitted([document], { context: 0.5 });
+      });
+      expect(out).not.toHaveProperty('refused');
+    });
+
+    it('a share outside (0, 1] is the developer\'s mistake, thrown rather than said to the reader', async () => {
+      const { store, image } = plant();
+      const ctx = new MockSessionContext({ nCtx: 10_000 });
+      for (const context of [0, -0.5, 1.5, Number.NaN]) {
+        await expect(run(function* () {
+          yield* priced(store, ctx);
+          return yield* admitted([image], { context });
+        })).rejects.toThrow(/context.*between 0 and 1/);
+      }
+    });
   });
 });

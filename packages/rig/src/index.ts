@@ -136,7 +136,7 @@ export { useExecution, OperationFailure } from './execution';
 export type { Execution } from './execution';
 // The wire's attachment claims, checked once for every product.
 export { admitted } from './admitted';
-export type { Admitted } from './admitted';
+export type { Admitted, AttachmentBudget } from './admitted';
 // The dispatcher: one loop, one handler per command type, the groups' handlers merged.
 export { serveCommands, serveDefaults } from './serve-commands';
 export type { CommandGroup, Handlers, Flow, ServeCommandsOptions, ServeDefaultsDeps } from './serve-commands';
