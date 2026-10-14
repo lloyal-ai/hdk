@@ -83,7 +83,7 @@ export function asVideoMeta(json: unknown): VideoMeta | null {
   const positive = (v: unknown): boolean => typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
   const frameOk = (f: unknown): boolean => isObj(f) && isMs(f.tMs) && isMs(f.frame);
   const audioOk = (a: unknown): boolean => isObj(a) && isMs(a.startMs) && isMs(a.endMs) && isDescriptor(a.root);
-  const samplingOk = isObj(sampling) && typeof sampling.fps === 'number' && sampling.fps > 0 &&
+  const samplingOk = isObj(sampling) && typeof sampling.fps === 'number' && Number.isFinite(sampling.fps) && sampling.fps > 0 &&
     isMs(sampling.timestampIntervalMs) && positive(sampling.maxFrames);
   return positive(width) && positive(height) && isMs(durationMs) && Array.isArray(frames) && frames.length > 0 &&
     frames.every(frameOk) && isMs(poster) && (audio === undefined || (Array.isArray(audio) && audio.every(audioOk))) &&

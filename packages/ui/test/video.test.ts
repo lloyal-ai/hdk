@@ -42,7 +42,7 @@ describe('ingestVideo', () => {
     });
     expect(attached.root).toEqual(root);
     const compose = sent.find(c => c.type === 'video:compose') as Extract<VideoCommand, { type: 'video:compose' }>;
-    expect(sampleVideo).toHaveBeenCalledWith(expect.any(Blob), SAMPLING);   // the host's policy, frame edge included
+    expect(sampleVideo).toHaveBeenCalledWith(expect.any(Blob), SAMPLING, {});   // the host's policy, frame edge included
     expect(compose.frames.map(f => f.tMs)).toEqual([0, 250, 500, 750, 1000, 1250, 1500, 1750]);
     expect(compose.source?.digest).toBe(`sha256:${'d'.repeat(64)}`);
     expect(compose.audio).toBeUndefined();
@@ -113,6 +113,18 @@ describe('ingestVideo, cancelled while the host composes', () => {
     abort.abort();
     await expect(attaching).rejects.toThrow();
     expect(host.sent).toEqual(['video:compose', 'video:cancel']);
+    expect(host.listeners).toEqual([]);
+  });
+
+  it('sends nothing when it is aborted as composing begins', async () => {
+    const host = silentHost(false);
+    const abort = new AbortController();
+    const attaching = ingestVideo({
+      origin: '', bridge: host.bridge, file: new Blob([new Uint8Array(10)]), capabilities, signal: abort.signal,
+      onProgress: (p) => { if (p.phase === 'composing') abort.abort(); },
+    });
+    await expect(attaching).rejects.toThrow();
+    expect(host.sent).toEqual([]);
     expect(host.listeners).toEqual([]);
   });
 

@@ -7,7 +7,8 @@ import { SoundtrackCutter, captureFrames, extractAudioWindows, fitEdge, frameTim
 import type { SampledFrame, SoundtrackWindow } from '../src/video-sampling';
 
 // Stand-in decoder: a 2-second, 320×240 clip whose frames are shown at 8 fps. A test sets the soundtrack:
-// `globalThis.soundtrack`, decoded buffers with their timestamps, and `globalThis.videoStart`.
+// `globalThis.soundtrack`, decoded buffers with their timestamps, and `globalThis.videoStart`; `globalThis.onDecode`
+// sees each frame decoded.
 vi.mock('mediabunny', () => {
   class Input {
     dispose(): void {}
@@ -24,6 +25,7 @@ vi.mock('mediabunny', () => {
   class CanvasSink {
     async *canvasesAtTimestamps(times: number[]) {
       for (const t of times) {
+        (globalThis as { onDecode?: () => void }).onDecode?.();
         const shown = Math.floor(t * 8) / 8;
         yield { timestamp: shown, duration: 0.125, canvas: { convertToBlob: async () => new Blob([new Uint8Array([0xff, 0xd8, 0xff, Math.round(shown * 8)])]) } };
       }
@@ -91,6 +93,18 @@ describe('sampleVideo', () => {
   it('keeps a frame once when a sparse source shows it at several sample times', async () => {
     const { frames } = await sampleVideo(new Blob([new Uint8Array(10)]), { ...SAMPLING, fps: 16 });
     expect(frames.map(f => f.tMs)).toEqual([0, 125, 250, 375, 500, 625, 750, 875, 1000, 1125, 1250, 1375, 1500, 1625, 1750, 1875]);
+  });
+
+  it('stops decoding as soon as it is aborted', async () => {
+    const abort = new AbortController();
+    let decoded = 0;
+    (globalThis as { onDecode?: () => void }).onDecode = () => { if (++decoded === 2) abort.abort(); };
+    try {
+      await expect(sampleVideo(new Blob([new Uint8Array(10)]), SAMPLING, { signal: abort.signal })).rejects.toThrow(/abort/i);
+      expect(decoded).toBe(2);
+    } finally {
+      delete (globalThis as { onDecode?: () => void }).onDecode;
+    }
   });
 });
 

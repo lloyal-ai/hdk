@@ -158,7 +158,7 @@ export function parseAttachmentMoment(href: string): { prefix: string; tMs: numb
   const m = /^attachment:\/\/([0-9a-f]{6,64})\/t\/(?:(\d+)m(\d+(?:\.\d+)?)s|(\d+))$/i.exec(href);
   if (!m) return null;
   const tMs = m[4] !== undefined ? Number(m[4]) : Math.round((Number(m[2]) * 60 + Number(m[3])) * 1000);
-  return { prefix: m[1].toLowerCase(), tMs };
+  return Number.isSafeInteger(tMs) ? { prefix: m[1].toLowerCase(), tMs } : null;
 }
 
 /** Exactly one digest may answer to a prefix; zero or several is no answer. */

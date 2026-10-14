@@ -30,7 +30,8 @@ export interface VideoCapabilities {
 /**
  * The page decodes a clip and ingests its frames (and soundtrack windows) one
  * by one through the content plane; this command asks the host to compose them
- * into one video attachment. References only: bytes travel over HTTP.
+ * into one video attachment. References only: bytes travel over HTTP. The host
+ * composes under its own sampling, the one it described.
  */
 export type VideoCommand =
   | { type: 'video:describe' }
@@ -39,7 +40,6 @@ export type VideoCommand =
       requestId: string;
       frames: VideoFrameRef[];
       audio?: VideoAudioRef[];
-      sampling: VideoSampling;
       durationMs: number;
       /** The original, pushed as a blob, retained as the source layer. */
       source?: Descriptor;

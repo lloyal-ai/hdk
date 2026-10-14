@@ -157,4 +157,11 @@ describe('guards', () => {
     expect(media.asTranscript({ provenance: {}, segments: [{ startMs: 0, endMs: 1 }] })).toBeNull();
     expect(media.asVideoMeta({ width: 1 })).toBeNull();
   });
+
+  it('composes no timeline that would not read back: a rate JSON cannot hold is refused', async () => {
+    const content = store();
+    const frames = await frameRoots(content);
+    await expect(media.composeVideo(content, { frames, sampling: { ...SAMPLING, fps: Infinity }, durationMs: 4000 }))
+      .rejects.toThrow(/timeline is not well formed/);
+  });
 });

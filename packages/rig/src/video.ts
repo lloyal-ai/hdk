@@ -58,11 +58,12 @@ function asBlob(d: unknown): Descriptor | null {
 }
 
 /** The command's references as admitted roots, or the sentence that refuses them. */
-function references(command: Compose):
+function references(command: Compose, maxFrames: number):
   | { frames: { root: Attachment; tMs: number }[]; audio: { root: Attachment; startMs: number; endMs: number }[]; source?: Descriptor }
   | { refused: string } {
   const frames = (Array.isArray(command.frames) ? command.frames : []).map(f => ({ root: asAttachment(f?.root), tMs: f?.tMs }));
   if (frames.some(f => !f.root || !isMs(f.tMs))) return { refused: 'A frame is not an admitted image reference.' };
+  if (frames.length > maxFrames) return { refused: `This host composes at most ${maxFrames} frames a video, not ${frames.length}.` };
   const audio = (Array.isArray(command.audio) ? command.audio : []).map(a => ({ root: asAttachment(a?.root), startMs: a?.startMs, endMs: a?.endMs }));
   if (audio.some(a => !a.root || !isMs(a.startMs) || !isMs(a.endMs) || a.endMs < a.startMs)) {
     return { refused: 'A soundtrack window is not an admitted audio reference.' };
@@ -83,6 +84,8 @@ export function useVideoCommands({ wire, sampling = DEFAULT_VIDEO_SAMPLING }: Vi
     const store = yield* Attachments.expect();
     const asr = (yield* Services.get())?.transcription;
     const composing = new Map<string, Task<void>>();
+    // What the timeline records: the policy the page was told to sample by, never one it reports back.
+    const timeline = { fps: sampling.fps, timestampIntervalMs: sampling.timestampIntervalMs, maxFrames: sampling.maxFrames };
 
     /** Transcribe each window in turn: silence is skipped, a failure is recorded and the rest go on. */
     function* transcribe(requestId: string, windows: { root: Attachment; startMs: number; endMs: number }[]) {
@@ -117,7 +120,7 @@ export function useVideoCommands({ wire, sampling = DEFAULT_VIDEO_SAMPLING }: Vi
         *'video:compose'(command) {
           if (typeof command.requestId !== 'string' || !command.requestId || command.requestId.length > 128) return;
           const { requestId } = command;
-          const refs = references(command);
+          const refs = references(command, sampling.maxFrames);
           if ('refused' in refs) {
             yield* wire.send({ type: 'video:error', requestId, message: refs.refused });
             return;
@@ -130,7 +133,7 @@ export function useVideoCommands({ wire, sampling = DEFAULT_VIDEO_SAMPLING }: Vi
               // that lands while it reads the source stops it before it writes anything.
               const signal = yield* useAbortSignal();
               const root = yield* until(composeVideo(store, {
-                frames: refs.frames, sampling: command.sampling, durationMs: command.durationMs,
+                frames: refs.frames, sampling: timeline, durationMs: command.durationMs,
                 ...(transcript ? { transcript } : {}), ...(audio.length > 0 ? { audio } : {}),
                 ...(refs.source ? { source: refs.source } : {}),
               }, signal));

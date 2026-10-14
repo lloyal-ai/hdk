@@ -65,5 +65,8 @@ describe('parseAttachmentMoment', () => {
     expect(parseAttachmentMoment('attachment://abcdef012345/t/1m2.50s')).toEqual({ prefix: 'abcdef012345', tMs: 62500 });
     expect(parseAttachmentMoment('attachment://abcdef012345/page/3')).toBeNull();
     expect(parseAttachmentMoment('attachment://abc/t/1')).toBeNull();
+    // A time no seek can reach is no moment.
+    expect(parseAttachmentMoment(`attachment://abcdef012345/t/${'9'.repeat(400)}`)).toBeNull();
+    expect(parseAttachmentMoment(`attachment://abcdef012345/t/${'9'.repeat(20)}m0.00s`)).toBeNull();
   });
 });

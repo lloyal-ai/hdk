@@ -56,7 +56,7 @@ export async function ingestVideo(opts: {
     onProgress: (done, total) => onProgress?.({ phase: 'uploading', done, total }),
   });
   onProgress?.({ phase: 'sampling' });
-  const sampled = await sampleVideo(file, sampling);
+  const sampled = await sampleVideo(file, sampling, { ...(signal ? { signal } : {}) });
   const frames: VideoFrameRef[] = [];
   for (const [i, frame] of sampled.frames.entries()) {
     frames.push({ root: await ingestMedia(origin, frame.bytes, { ...(signal ? { signal } : {}) }), tMs: frame.tMs });
@@ -68,10 +68,10 @@ export async function ingestVideo(opts: {
       audio.push({ root: await ingestMedia(origin, window.bytes, { ...(signal ? { signal } : {}) }), startMs: window.startMs, endMs: window.endMs });
     }
   }
-  signal?.throwIfAborted();
-
   const requestId = crypto.randomUUID();
   onProgress?.({ phase: 'composing' });
+  // Checked last, after every callback, so an abort can never fall between this check and the listener below.
+  signal?.throwIfAborted();
   return new Promise<AttachedVideo>((resolve, reject) => {
     // Every way this ends lets go of both listeners; an abort tells the host and does not wait for it.
     const settle = (end: () => void): void => { stop(); signal?.removeEventListener('abort', onAbort); end(); };
@@ -86,7 +86,7 @@ export async function ingestVideo(opts: {
     });
     signal?.addEventListener('abort', onAbort, { once: true });
     bridge.send({
-      type: 'video:compose', requestId, frames, sampling: { fps: sampling.fps, timestampIntervalMs: sampling.timestampIntervalMs, maxFrames: sampling.maxFrames },
+      type: 'video:compose', requestId, frames,
       durationMs: Math.max(sampled.durationMs, frames[frames.length - 1].tMs),
       ...(audio.length > 0 ? { audio } : {}), source,
     });

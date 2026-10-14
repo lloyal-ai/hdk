@@ -21,7 +21,6 @@ import type { Transcription } from '../src/transcription';
 const fixture = (name: string): Uint8Array =>
   new Uint8Array(readFileSync(join(__dirname, '../../media/test/fixtures/video', name)));
 const FRAMES = ['frame-00.png', 'frame-01.png', 'frame-02.png'].map(fixture);
-const SAMPLING = { fps: 4, timestampIntervalMs: 5000, maxFrames: 64 };
 
 /** A minimal 16 kHz mono PCM WAV of `n` samples, all `value`. */
 function wav(n: number, value = 1000): Uint8Array {
@@ -86,7 +85,7 @@ describe('video commands', () => {
         return heard(window, 'one, two, three');
       } } });
       const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } } });
-      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'v1', frames, audio, sampling: SAMPLING, durationMs: 1250 });
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'v1', frames, audio, durationMs: 1250 });
       for (let i = 0; i < 50 && !events.some(e => e.type === 'video:composed' || e.type === 'video:error'); i++) yield* sleep(5);
     });
     expect(calls).toBe(3);
@@ -110,11 +109,29 @@ describe('video commands', () => {
     await run(function* () {
       yield* Attachments.set(content);
       const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } } });
-      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'v2', frames, audio, sampling: SAMPLING, durationMs: 1250 });
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'v2', frames, audio, durationMs: 1250 });
       for (let i = 0; i < 50 && !events.some(e => e.type === 'video:composed'); i++) yield* sleep(5);
     });
     const composed = events.find(e => e.type === 'video:composed') as Extract<VideoEvent, { type: 'video:composed' }>;
     expect(composed.untranscribed.map(w => w.reason)).toEqual(Array(3).fill('transcription is not configured'));
+  });
+
+  it('composes under the host\'s own sampling, and refuses more frames than it samples', async () => {
+    const content = store();
+    const { frames } = await parts(content);
+    const events: VideoEvent[] = [];
+    const sampling = { fps: 2, timestampIntervalMs: 5000, maxFrames: 2, maxEdgePx: 320 };
+    await run(function* () {
+      yield* Attachments.set(content);
+      const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } }, sampling });
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'over', frames, durationMs: 1250 });
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'within', frames: frames.slice(0, 2), durationMs: 1250 });
+      for (let i = 0; i < 50 && events.length < 2; i++) yield* sleep(5);
+    });
+    expect(events).toContainEqual({ type: 'video:error', requestId: 'over', message: 'This host composes at most 2 frames a video, not 3.' });
+    const composed = events.find(e => e.type === 'video:composed') as Extract<VideoEvent, { type: 'video:composed' }>;
+    const config = content.getManifest(composed.root.digest)!.config;
+    expect(JSON.parse(new TextDecoder().decode(content.get(config.digest)!)).sampling).toEqual({ fps: 2, timestampIntervalMs: 5000, maxFrames: 2 });
   });
 
   it('refuses references that are not admitted roots, and an invalid composition, by name', async () => {
@@ -124,8 +141,8 @@ describe('video commands', () => {
     await run(function* () {
       yield* Attachments.set(content);
       const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } } });
-      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'bad', frames: [{ root: { mediaType: 'image/png', digest: 'x', size: 1 }, tMs: 0 }], sampling: SAMPLING, durationMs: 100 });
-      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'late', frames, sampling: SAMPLING, durationMs: 100 });
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'bad', frames: [{ root: { mediaType: 'image/png', digest: 'x', size: 1 }, tMs: 0 }], durationMs: 100 });
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'late', frames, durationMs: 100 });
       for (let i = 0; i < 50 && events.length < 2; i++) yield* sleep(5);
     });
     expect(events).toContainEqual({ type: 'video:error', requestId: 'bad', message: 'A frame is not an admitted image reference.' });
@@ -140,7 +157,7 @@ describe('video commands', () => {
       yield* Attachments.set(content);
       yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, *transcribe() { yield* suspend(); return heard(audio[0].root, ''); } } });
       const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } } });
-      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'v3', frames, audio, sampling: SAMPLING, durationMs: 1250 });
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'v3', frames, audio, durationMs: 1250 });
       yield* sleep(5);
       yield* group.handlers['video:cancel']!({ type: 'video:cancel', requestId: 'v3' });
       yield* sleep(5);

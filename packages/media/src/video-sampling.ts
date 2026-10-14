@@ -134,9 +134,15 @@ async function jpeg(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<Uint8A
  * rate, capped in count and edge length, each frame stamped with the time it
  * was actually shown.
  *
- * @throws If the file has no video track this browser can decode.
+ * @throws If the file has no video track this browser can decode, or with
+ *         the signal's reason once it aborts; no further frame is decoded.
  */
-export async function sampleVideo(file: Blob, sampling: VideoSampling & { maxEdgePx: number }): Promise<{ frames: SampledFrame[]; durationMs: number }> {
+export async function sampleVideo(
+  file: Blob,
+  sampling: VideoSampling & { maxEdgePx: number },
+  options: { signal?: AbortSignal } = {},
+): Promise<{ frames: SampledFrame[]; durationMs: number }> {
+  options.signal?.throwIfAborted();
   const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
   try {
     const track = await input.getPrimaryVideoTrack();
@@ -147,6 +153,7 @@ export async function sampleVideo(file: Blob, sampling: VideoSampling & { maxEdg
     const sink = new CanvasSink(track, { ...size, fit: 'fill' });
     const frames: SampledFrame[] = [];
     for await (const wrapped of sink.canvasesAtTimestamps(frameTimes(durationS, sampling).map(t => first + t))) {
+      options.signal?.throwIfAborted();
       if (!wrapped) continue;
       const tMs = Math.round((wrapped.timestamp - first) * 1000);
       // A sparse source repeats a frame for nearby sample times; each frame is kept once.
