@@ -1,16 +1,20 @@
 /**
  * The full-size view of one asset: a single image by its root, a PDF in the
- * browser's own viewer, or a video played from its original with the frames
- * the model saw beneath it. One enlarged view for a whole app — the figure
+ * browser's own viewer, or a video in {@link VideoPlayer}, the frames the model
+ * saw on its time slider. One enlarged view for a whole app — the figure
  * strip, a run bar's marker and a cited page in the prose all open this one,
  * so there is one that cannot drift. Escape and a click on the scrim close it.
  *
  * @category UI
  */
-import { useEffect, useRef } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import type { CSSProperties, ReactElement } from 'react';
 import { representationUrl } from '@lloyal-labs/media';
 import { useContentOrigin } from './provider.js';
+import type { VideoView } from './video-view.js';
+
+/** Loaded when a video is first opened, so a page that never plays one carries none of Video.js. */
+const VideoPlayer = lazy(() => import('./video-player.js').then((m) => ({ default: m.VideoPlayer })));
 
 const short = (digest: string): string => digest.replace(/^sha256:/, '').slice(0, 10);
 
@@ -19,22 +23,16 @@ export interface LightboxProps {
   digest?: string;
   /** Or a PDF to open in the browser's own viewer: the URL the content plane serves the original at. */
   pdf?: string;
-  /** Or a video: its original to play (seekable — the content plane answers Range), the frames the
-   *  model saw with their times, and what its soundtrack said. A frame seeks the player to its time. */
-  video?: {
-    src?: string;
-    frames: { src: string; tMs: number }[];
-    transcript?: { startMs: number; endMs: number; text: string }[];
-    /** Where to start: a cited moment. */
-    atMs?: number;
-  };
+  /** Or a video ({@link videoView}): played from its original, opened at `atMs` when it was cited.
+   *  Without an original there is nothing to play, and the frames the model saw are shown. */
+  video?: VideoView;
   /** The representation's true pixel size, when the caller read it off the loaded element. */
   dims?: string;
   /** What is being shown, when it is not simply "the attached image". */
   label?: string;
   onClose: () => void;
   /** The caller's register: the scrim, the image and the caption. */
-  styles?: { scrim?: CSSProperties; full?: CSSProperties; pdf?: CSSProperties; caption?: CSSProperties; strip?: CSSProperties; frame?: CSSProperties; seek?: CSSProperties };
+  styles?: { scrim?: CSSProperties; full?: CSSProperties; pdf?: CSSProperties; caption?: CSSProperties; player?: CSSProperties; frames?: CSSProperties; frame?: CSSProperties };
 }
 
 const S: Required<NonNullable<LightboxProps['styles']>> = {
@@ -44,10 +42,13 @@ const S: Required<NonNullable<LightboxProps['styles']>> = {
   },
   full: { maxWidth: '100%', maxHeight: 'calc(100vh - 110px)', objectFit: 'contain', borderRadius: 12, background: '#fff' },
   pdf: { width: 'min(1100px, 94vw)', height: 'calc(100vh - 110px)', border: 0, borderRadius: 12, background: '#fff' },
-  caption: { font: '12px system-ui, sans-serif', color: '#D8D8D2', margin: 0 },
-  strip: { display: 'flex', gap: 6, overflowX: 'auto', maxWidth: 'min(1100px, 94vw)', padding: '2px 0' },
-  frame: { height: 56, borderRadius: 6, flex: '0 0 auto', background: '#fff', display: 'block' },
-  seek: { padding: 0, border: 0, background: 'none', borderRadius: 6, cursor: 'pointer', flex: '0 0 auto' },
+  caption: { font: '12px var(--harness-font, system-ui, sans-serif)', color: '#D8D8D2', margin: 0 },
+  player: { width: 'min(1100px, 94vw)', maxHeight: 'calc(100vh - 110px)', aspectRatio: '16 / 9' },
+  frames: {
+    display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 8,
+    width: 'min(1100px, 94vw)', maxHeight: 'calc(100vh - 110px)', overflowY: 'auto',
+  },
+  frame: { width: '100%', borderRadius: 8, display: 'block', background: '#111' },
 };
 
 const clock = (ms: number): string => {
@@ -57,7 +58,6 @@ const clock = (ms: number): string => {
 
 export function Lightbox({ digest, pdf, video, dims, label, onClose, styles = {} }: LightboxProps): ReactElement | null {
   const origin = useContentOrigin();
-  const player = useRef<HTMLVideoElement>(null);
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') onClose();
@@ -77,28 +77,26 @@ export function Lightbox({ digest, pdf, video, dims, label, onClose, styles = {}
     );
   }
   if (video !== undefined) {
-    const said = (tMs: number): string | undefined => video.transcript?.find((t) => tMs >= t.startMs && tMs < t.endMs)?.text;
+    const { src } = video;
+    const seen = `what the model saw · ${video.frames.length} frame${video.frames.length === 1 ? '' : 's'}${video.transcript?.length ? ', and the transcript as captions' : ''}`;
+    const from = video.atMs !== undefined ? ` · from ${clock(video.atMs)}` : '';
     return (
       <div style={s.scrim} role="dialog" aria-modal="true" aria-label={label ?? 'Attached video'} onClick={onClose}>
-        {video.src !== undefined && (
-          <>
-            {/* CORS mode: the content plane answers every read with Access-Control-Allow-Origin. */}
-            <video ref={player} src={video.src} controls crossOrigin="anonymous" style={s.full} onClick={(e) => e.stopPropagation()}
-              onLoadedMetadata={(e) => { if (video.atMs !== undefined) e.currentTarget.currentTime = video.atMs / 1000; }} />
-            <p style={s.caption}>{label ?? 'the attached video'} · the file as attached</p>
-          </>
-        )}
-        <div style={s.strip} onClick={(e) => e.stopPropagation()}>
-          {video.frames.map((f) => {
-            const frame = <img src={f.src} alt={`frame at ${clock(f.tMs)}`} title={[clock(f.tMs), said(f.tMs)].filter(Boolean).join(' · ')} style={s.frame} />;
-            // With the original kept, a frame is a control that plays from its moment; without one it is only a picture.
-            return video.src === undefined
-              ? <span key={f.tMs} style={{ flex: '0 0 auto' }}>{frame}</span>
-              : <button key={f.tMs} type="button" style={s.seek} aria-label={`Play from ${clock(f.tMs)}`}
-                  onClick={() => { if (player.current) player.current.currentTime = f.tMs / 1000; }}>{frame}</button>;
-          })}
+        <div style={src !== undefined ? s.player : s.frames} onClick={(e) => e.stopPropagation()}>
+          {src !== undefined
+            ? (
+                <Suspense fallback={video.poster ? <img src={video.poster} alt="" style={s.full} /> : null}>
+                  <VideoPlayer video={{ ...video, src }} title={`${label ?? 'the attached video'}${from}`} />
+                </Suspense>
+              )
+            : video.frames.map((f) => (
+                <figure key={f.tMs} style={{ margin: 0 }}>
+                  <img src={f.src} alt={`frame at ${clock(f.tMs)}`} style={s.frame} />
+                  <figcaption style={s.caption}>{clock(f.tMs)}</figcaption>
+                </figure>
+              ))}
         </div>
-        <p style={s.caption}>what the model saw · {video.frames.length} frame{video.frames.length === 1 ? '' : 's'}{video.transcript?.length ? ' and the transcript' : ''}</p>
+        <p style={s.caption}>{label ?? 'the attached video'}{from} · {src !== undefined ? 'hover the timeline for ' : ''}{seen}</p>
       </div>
     );
   }

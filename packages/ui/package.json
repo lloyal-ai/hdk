@@ -21,7 +21,12 @@
     "./prose": {
       "types": "./dist/prose.d.ts",
       "default": "./dist/prose.js"
-    }
+    },
+    "./video-player": {
+      "types": "./dist/video-player.d.ts",
+      "default": "./dist/video-player.js"
+    },
+    "./video.css": "./video.css"
   },
   "publishConfig": {
     "access": "public"
@@ -45,6 +50,7 @@
   "license": "SEE LICENSE IN LICENSE",
   "files": [
     "dist/",
+    "video.css",
     "LICENSE"
   ],
   "scripts": {
@@ -54,6 +60,7 @@
     "@lloyal-labs/binding": "^0.2.1",
     "@lloyal-labs/media": "^0.2.1",
     "@types/mdast": "^4.0.4",
+    "@videojs/react": "^10.1.0",
     "katex": "^0.16.22",
     "marked": "^18.0.13",
     "mdast-util-to-string": "^4.0.0",

@@ -34,4 +34,8 @@ export type { RecordingWaveformProps } from './recording-waveform.js';
 export { useVoiceInput, insertTranscript, MicGlyph } from './voice-input.js';
 export { ingestVideo, useVideoCapabilities } from './video.js';
 export type { AttachedVideo, VideoProgress } from './video.js';
+export { videoTracks, videoView } from './video-view.js';
+export type { VideoTracks, VideoView } from './video-view.js';
+export { VideoCard } from './video-card.js';
+export type { VideoCardProps } from './video-card.js';
 export type { VoiceInput, VoiceInputOptions, VoicePhase } from './voice-input.js';
