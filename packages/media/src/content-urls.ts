@@ -89,19 +89,26 @@ export async function pushBlob(
   const opened = await fetch(blobUploadsUrl(origin), { method: 'POST', signal });
   if (opened.status !== 202) throw new Error(await failure(opened, 'could not open an upload'));
   const location = locationOf(origin, opened);
-  const hash = sha256.create();
-  for (let offset = 0; offset < file.size;) {
-    const end = Math.min(file.size, offset + chunkBytes);
-    const chunk = new Uint8Array(await file.slice(offset, end).arrayBuffer());
-    await sendChunk(location, chunk, offset, signal);
-    hash.update(chunk);
-    offset = end;
-    onProgress?.(offset, file.size);
+  try {
+    const hash = sha256.create();
+    for (let offset = 0; offset < file.size;) {
+      const end = Math.min(file.size, offset + chunkBytes);
+      const chunk = new Uint8Array(await file.slice(offset, end).arrayBuffer());
+      await sendChunk(location, chunk, offset, signal);
+      hash.update(chunk);
+      offset = end;
+      onProgress?.(offset, file.size);
+    }
+    const digest = `sha256:${bytesToHex(hash.digest())}`;
+    const closed = await fetch(`${location}${location.includes('?') ? '&' : '?'}digest=${encodeURIComponent(digest)}`, { method: 'PUT', signal });
+    if (closed.status !== 201) throw new Error(await failure(closed, 'the upload was not admitted'));
+    return { mediaType: file.type || 'application/octet-stream', digest, size: file.size };
+  } catch (e) {
+    // A push that stops, by failure or by cancel, gives back what the host staged for it.
+    // Unsignalled: a cancelled push still has to say so.
+    await fetch(location, { method: 'DELETE' }).catch(() => undefined);
+    throw e;
   }
-  const digest = `sha256:${bytesToHex(hash.digest())}`;
-  const closed = await fetch(`${location}${location.includes('?') ? '&' : '?'}digest=${encodeURIComponent(digest)}`, { method: 'PUT', signal });
-  if (closed.status !== 201) throw new Error(await failure(closed, 'the upload was not admitted'));
-  return { mediaType: file.type || 'application/octet-stream', digest, size: file.size };
 }
 
 /** Send one chunk, resuming from what the host reports it holds when a send fails. */

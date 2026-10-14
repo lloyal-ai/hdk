@@ -2,17 +2,23 @@
  * Reading a video in the page: what is sampled, how frames are sized, and how
  * a soundtrack is cut into windows the transcription service admits.
  */
-import { describe, expect, it, vi } from 'vitest';
-import { SoundtrackCutter, fitEdge, frameTimes, pcm16Wav, quietestCut, sampleVideo } from '../src/video-sampling';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { SoundtrackCutter, captureFrames, extractAudioWindows, fitEdge, frameTimes, pcm16Wav, quietestCut, sampleVideo } from '../src/video-sampling';
+import type { SoundtrackWindow } from '../src/video-sampling';
 
-// Stand-in decoder: a 2-second, 320×240 clip whose frames are shown at 8 fps, and a silent-free soundtrack.
+// Stand-in decoder: a 2-second, 320×240 clip whose frames are shown at 8 fps. A test sets the soundtrack:
+// `globalThis.soundtrack`, decoded buffers with their timestamps, and `globalThis.videoStart`.
 vi.mock('mediabunny', () => {
   class Input {
     dispose(): void {}
     async getPrimaryVideoTrack() {
-      return { canDecode: async () => true, getFirstTimestamp: async () => 0, displayWidth: 320, displayHeight: 240 };
+      const start = (globalThis as { videoStart?: number }).videoStart ?? 0;
+      return { canDecode: async () => true, getFirstTimestamp: async () => start, displayWidth: 320, displayHeight: 240 };
     }
-    async getPrimaryAudioTrack() { return null; }
+    async getPrimaryAudioTrack() {
+      const buffers = (globalThis as { soundtrack?: unknown[] }).soundtrack;
+      return buffers ? { canDecode: async () => true, getFirstTimestamp: async () => 0, buffers } : null;
+    }
     async computeDuration() { return 2; }
   }
   class CanvasSink {
@@ -23,7 +29,11 @@ vi.mock('mediabunny', () => {
       }
     }
   }
-  return { Input, CanvasSink, BlobSource: class {}, AudioBufferSink: class {}, ALL_FORMATS: [] };
+  class AudioBufferSink {
+    constructor(private readonly track: { buffers: unknown[] }) {}
+    async *buffers() { yield* this.track.buffers; }
+  }
+  return { Input, CanvasSink, BlobSource: class {}, AudioBufferSink, ALL_FORMATS: [] };
 });
 
 const SAMPLING = { fps: 4, timestampIntervalMs: 5000, maxFrames: 64, maxEdgePx: 640 };
@@ -81,5 +91,66 @@ describe('sampleVideo', () => {
   it('keeps a frame once when a sparse source shows it at several sample times', async () => {
     const { frames } = await sampleVideo(new Blob([new Uint8Array(10)]), { ...SAMPLING, fps: 16 });
     expect(frames.map(f => f.tMs)).toEqual([0, 125, 250, 375, 500, 625, 750, 875, 1000, 1125, 1250, 1375, 1500, 1625, 1750, 1875]);
+  });
+});
+
+describe('extractAudioWindows', () => {
+  const RATE = 1000;
+  /** A decoded buffer of one constant level, `seconds` long, presented at `timestamp`. */
+  const sound = (timestamp: number, seconds: number, level = 0.5) => {
+    const samples = new Float32Array(Math.round(seconds * RATE)).fill(level);
+    return { timestamp, buffer: { sampleRate: RATE, numberOfChannels: 1, length: samples.length, getChannelData: () => samples } };
+  };
+  /** The windows joined back into one track of samples on the clip's clock. */
+  async function heard(): Promise<Float32Array> {
+    const windows: SoundtrackWindow[] = [];
+    for await (const w of extractAudioWindows(new Blob([new Uint8Array(1)]), 1000)) windows.push(w);
+    windows.forEach((w, i) => { if (i > 0) expect(w.startMs).toBe(windows[i - 1].endMs); });
+    const pcm = windows.flatMap((w) => [...new Int16Array(w.bytes.slice(44).buffer)]);
+    return Float32Array.from(pcm, (v) => v / 32767);
+  }
+  const g = globalThis as { soundtrack?: unknown[]; videoStart?: number };
+  afterEach(() => { delete g.soundtrack; delete g.videoStart; });
+
+  it('places sound that starts late, or pauses, at its own time on the clip, the gaps silent', async () => {
+    g.soundtrack = [sound(1, 1), sound(3, 1)];
+    const track = await heard();
+    expect(track.length).toBe(4 * RATE);
+    expect(track[500]).toBe(0);
+    expect(track[1500]).toBeCloseTo(0.5, 2);
+    expect(track[2500]).toBe(0);
+    expect(track[3500]).toBeCloseTo(0.5, 2);
+  });
+
+  it('leaves out sound before the first frame, so a window starts where the picture does', async () => {
+    g.videoStart = 0.5;
+    g.soundtrack = [sound(0, 0.5, 0.9), sound(0.5, 1, 0.3)];
+    const track = await heard();
+    expect(track.length).toBe(RATE);
+    expect(track[0]).toBeCloseTo(0.3, 2);
+  });
+});
+
+describe('captureFrames', () => {
+  /** A live track whose frames arrive at these times (ms), through the processor Chromium provides. */
+  function liveTrack(arrivals: number[]) {
+    const frames = arrivals.map((ms) => ({ timestamp: ms * 1000, displayWidth: 64, displayHeight: 48, close: () => {} }));
+    (globalThis as Record<string, unknown>).MediaStreamTrackProcessor = class {
+      readable = { getReader: () => ({ read: async () => (frames.length ? { value: frames.shift(), done: false } : { done: true }), cancel: async () => {} }) };
+    };
+    (globalThis as Record<string, unknown>).OffscreenCanvas = class {
+      getContext() { return { drawImage: () => {} }; }
+      async convertToBlob() { return new Blob([new Uint8Array([0xff, 0xd8, 0xff])]); }
+    };
+    return {} as MediaStreamTrack;
+  }
+  afterEach(() => { delete (globalThis as Record<string, unknown>).MediaStreamTrackProcessor; delete (globalThis as Record<string, unknown>).OffscreenCanvas; });
+
+  it('samples at the rate, and a late frame does not let a burst through behind it', async () => {
+    const taken: number[] = [];
+    for await (const group of captureFrames(liveTrack([0, 100, 250, 1000, 1001, 1002, 1003, 1250]), { fps: 4, groupSize: 100, maxEdgePx: 640 })) {
+      taken.push(...group.map((f) => f.tMs));
+    }
+    expect(taken).toEqual([0, 250, 1000, 1250]);
   });
 });

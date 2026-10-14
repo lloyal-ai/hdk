@@ -34,7 +34,7 @@ export interface LightboxProps {
   label?: string;
   onClose: () => void;
   /** The caller's register: the scrim, the image and the caption. */
-  styles?: { scrim?: CSSProperties; full?: CSSProperties; pdf?: CSSProperties; caption?: CSSProperties; strip?: CSSProperties; frame?: CSSProperties };
+  styles?: { scrim?: CSSProperties; full?: CSSProperties; pdf?: CSSProperties; caption?: CSSProperties; strip?: CSSProperties; frame?: CSSProperties; seek?: CSSProperties };
 }
 
 const S: Required<NonNullable<LightboxProps['styles']>> = {
@@ -46,7 +46,8 @@ const S: Required<NonNullable<LightboxProps['styles']>> = {
   pdf: { width: 'min(1100px, 94vw)', height: 'calc(100vh - 110px)', border: 0, borderRadius: 12, background: '#fff' },
   caption: { font: '12px system-ui, sans-serif', color: '#D8D8D2', margin: 0 },
   strip: { display: 'flex', gap: 6, overflowX: 'auto', maxWidth: 'min(1100px, 94vw)', padding: '2px 0' },
-  frame: { height: 56, borderRadius: 6, cursor: 'pointer', flex: '0 0 auto', background: '#fff' },
+  frame: { height: 56, borderRadius: 6, flex: '0 0 auto', background: '#fff', display: 'block' },
+  seek: { padding: 0, border: 0, background: 'none', borderRadius: 6, cursor: 'pointer', flex: '0 0 auto' },
 };
 
 const clock = (ms: number): string => {
@@ -88,10 +89,14 @@ export function Lightbox({ digest, pdf, video, dims, label, onClose, styles = {}
           </>
         )}
         <div style={s.strip} onClick={(e) => e.stopPropagation()}>
-          {video.frames.map((f) => (
-            <img key={f.tMs} src={f.src} alt={`frame at ${clock(f.tMs)}`} title={[clock(f.tMs), said(f.tMs)].filter(Boolean).join(' · ')} style={s.frame}
-              onClick={() => { if (player.current) player.current.currentTime = f.tMs / 1000; }} />
-          ))}
+          {video.frames.map((f) => {
+            const frame = <img src={f.src} alt={`frame at ${clock(f.tMs)}`} title={[clock(f.tMs), said(f.tMs)].filter(Boolean).join(' · ')} style={s.frame} />;
+            // With the original kept, a frame is a control that plays from its moment; without one it is only a picture.
+            return video.src === undefined
+              ? <span key={f.tMs} style={{ flex: '0 0 auto' }}>{frame}</span>
+              : <button key={f.tMs} type="button" style={s.seek} aria-label={`Play from ${clock(f.tMs)}`}
+                  onClick={() => { if (player.current) player.current.currentTime = f.tMs / 1000; }}>{frame}</button>;
+          })}
         </div>
         <p style={s.caption}>what the model saw · {video.frames.length} frame{video.frames.length === 1 ? '' : 's'}{video.transcript?.length ? ' and the transcript' : ''}</p>
       </div>

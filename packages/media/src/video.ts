@@ -12,6 +12,7 @@ import { representationsOf } from './attachment';
 import type { Attachment, Descriptor } from './attachment';
 import type { AttachmentStore } from './store';
 import { imageSize, PROJECTOR_FORMATS, VIDEO_CONTAINER_TYPES, sniffMediaType } from './media-type';
+import { AUDIO_CONFIG_TYPE } from './audio';
 
 export const VIDEO_CONFIG_TYPE = 'application/vnd.lloyal.video.v1+json' as const;
 export const TRANSCRIPT_MEDIA_TYPE = 'application/vnd.lloyal.transcript.v1+json' as const;
@@ -101,6 +102,16 @@ function frameRepresentation(store: AttachmentStore, root: Attachment, index: nu
   return reps[0];
 }
 
+/** A soundtrack window must be an admitted recording in this store, inside the clip: refused naming the window otherwise. */
+function checkWindow(store: AttachmentStore, w: NonNullable<VideoMeta['audio']>[number], index: number, durationMs: number): void {
+  if (store.getManifest(w.root.digest)?.config.mediaType !== AUDIO_CONFIG_TYPE) {
+    throw new Error(`composeVideo: soundtrack window ${index} is not a recording in this store`);
+  }
+  if (!isMs(w.startMs) || !isMs(w.endMs) || w.endMs < w.startMs || w.endMs > durationMs) {
+    throw new Error(`composeVideo: soundtrack window ${index} must fall within the clip`);
+  }
+}
+
 /**
  * Compose one video attachment from admitted frame roots.
  *
@@ -139,6 +150,7 @@ export async function composeVideo(store: AttachmentStore, parts: {
   if (!isMs(durationMs) || frames[frames.length - 1].tMs > durationMs) {
     throw new Error('composeVideo: frame times must fall within the clip');
   }
+  audio?.forEach((w, i) => checkWindow(store, w, i, durationMs));
   if (transcript && !asTranscript(transcript)) throw new Error('composeVideo: the transcript is not well formed');
   // The source is a blob pushed by a client and stored as opaque bytes; what
   // it IS comes from its own leading bytes, never the descriptor's claim.

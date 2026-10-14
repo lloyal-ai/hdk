@@ -101,6 +101,10 @@ describe('composeVideo', () => {
     const notVideo = content.putBlob(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]), 'video/mp4');
     await expect(compose({ source: notVideo })).rejects.toThrow(/source/);
     await expect(compose({ transcript: { provenance: {}, segments: [{ startMs: 500, endMs: 100, text: 'x' }] } })).rejects.toThrow(/transcript/);
+    // A soundtrack window is a reference like a frame: it must be a recording this store admitted, inside the clip.
+    await expect(compose({ audio: [{ root: frames[0].root, startMs: 0, endMs: 500 }] })).rejects.toThrow(/window 0 is not a recording/);
+    await expect(compose({ audio: [{ root: audio, startMs: 0, endMs: 9000 }] })).rejects.toThrow(/window 0 must fall within the clip/);
+    await expect(compose({ audio: [{ root: audio, startMs: 0, endMs: 500 }] })).resolves.toBeDefined();
   });
 });
 

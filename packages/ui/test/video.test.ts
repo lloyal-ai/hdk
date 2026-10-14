@@ -71,3 +71,15 @@ describe('ingestVideo before the host has described video', () => {
     expect(attached.root.digest).toBe(`sha256:${'f'.repeat(64)}`);
   });
 });
+
+describe('ingestVideo, cancelled before it starts', () => {
+  it('rejects at once, asking the host nothing', async () => {
+    const sent: string[] = [];
+    const bridge = { onEvent: () => () => {}, send: (c: VideoCommand) => { sent.push(c.type); } };
+    const cancelled = new AbortController();
+    cancelled.abort();
+    await expect(ingestVideo({ origin: '', bridge, file: new Blob([new Uint8Array(10)]), capabilities: null, signal: cancelled.signal }))
+      .rejects.toThrow();
+    expect(sent).toEqual([]);
+  });
+});

@@ -163,28 +163,50 @@ export async function sampleVideo(file: Blob, sampling: VideoSampling & { maxEdg
 /** The highest rate the transcription service admits; higher sources are decimated to it. */
 const MAX_WINDOW_RATE = 48_000;
 
+/** Mono samples of one decoded buffer, decimated by `step`. */
+function mixDown(buffer: AudioBuffer, step: number): Float32Array {
+  const channels = Array.from({ length: buffer.numberOfChannels }, (_, c) => buffer.getChannelData(c));
+  const mono = new Float32Array(Math.floor(buffer.length / step));
+  for (let i = 0; i < mono.length; i++) {
+    let sum = 0;
+    for (const channel of channels) sum += channel[i * step];
+    mono[i] = sum / channels.length;
+  }
+  return mono;
+}
+
 /**
  * The clip's soundtrack as mono windows of about `windowMs`, decoded with the
  * browser's own audio decoder and cut at quiet points. Yields nothing for a
  * file without an audio track it can decode.
+ *
+ * Windows are timed on the clip's clock, the one {@link sampleVideo} stamps
+ * frames on (the video track's first timestamp is zero): sound that starts
+ * late, or pauses, is placed by its own timestamps, the gaps filled with
+ * silence, and sound before the first frame is left out.
  */
 export async function* extractAudioWindows(file: Blob, windowMs: number): AsyncGenerator<SoundtrackWindow> {
   const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
   try {
     const track = await input.getPrimaryAudioTrack();
     if (!track || !(await track.canDecode())) return;
+    const video = await input.getPrimaryVideoTrack();
+    const origin = video ? await video.getFirstTimestamp() : await track.getFirstTimestamp();
     let cutter: SoundtrackCutter | null = null;
-    let step = 1;
-    for await (const { buffer } of new AudioBufferSink(track).buffers()) {
-      step = Math.ceil(buffer.sampleRate / MAX_WINDOW_RATE);
-      cutter ??= new SoundtrackCutter(buffer.sampleRate / step, windowMs);
-      const channels = Array.from({ length: buffer.numberOfChannels }, (_, c) => buffer.getChannelData(c));
-      const mono = new Float32Array(Math.floor(buffer.length / step));
-      for (let i = 0; i < mono.length; i++) {
-        let sum = 0;
-        for (const channel of channels) sum += channel[i * step];
-        mono[i] = sum / channels.length;
+    let rate = 0;
+    let fed = 0;   // samples given to the cutter: the clip time it has reached
+    for await (const { buffer, timestamp } of new AudioBufferSink(track).buffers()) {
+      const step = Math.ceil(buffer.sampleRate / MAX_WINDOW_RATE);
+      rate ||= buffer.sampleRate / step;
+      cutter ??= new SoundtrackCutter(rate, windowMs);
+      const startsAt = Math.round((timestamp - origin) * rate);
+      for (let gap = startsAt - fed; gap > 0; gap -= rate) {
+        const silence = new Float32Array(Math.min(gap, rate));
+        fed += silence.length;
+        yield* cutter.push(silence);
       }
+      const mono = mixDown(buffer, step).subarray(Math.max(0, fed - startsAt));
+      fed += mono.length;
       yield* cutter.push(mono);
     }
     if (cutter) yield* cutter.flush();
@@ -217,8 +239,10 @@ export async function* captureFrames(
       if (done || !frame) break;
       try {
         first ??= frame.timestamp;
-        if (frame.timestamp - first < next) continue;
-        next += interval;
+        const elapsed = frame.timestamp - first;
+        if (elapsed < next) continue;
+        // The next sample time after this frame, so a late frame never lets a burst through behind it.
+        next = (Math.floor(elapsed / interval) + 1) * interval;
         const size = fitEdge(frame.displayWidth, frame.displayHeight, policy.maxEdgePx);
         const canvas = new OffscreenCanvas(size.width, size.height);
         canvas.getContext('2d')!.drawImage(frame, 0, 0, size.width, size.height);

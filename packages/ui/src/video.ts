@@ -95,10 +95,16 @@ const isVideoEvent = (ev: { type: string }): ev is VideoEvent => ev.type.startsW
 /** Ask the host how it composes a video, and wait for the answer. */
 function describe(bridge: Parameters<typeof ingestVideo>[0]['bridge'], signal?: AbortSignal): Promise<VideoCapabilities> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(signal.reason); return; }
+    const onAbort = (): void => { stop(); reject(signal?.reason); };
     const stop = bridge.onEvent(({ ev }) => {
-      if (isVideoEvent(ev) && ev.type === 'video:capabilities') { stop(); resolve(ev.capabilities); }
+      if (isVideoEvent(ev) && ev.type === 'video:capabilities') {
+        stop();
+        signal?.removeEventListener('abort', onAbort);
+        resolve(ev.capabilities);
+      }
     });
-    signal?.addEventListener('abort', () => { stop(); reject(signal.reason); }, { once: true });
+    signal?.addEventListener('abort', onAbort, { once: true });
     bridge.send({ type: 'video:describe' });
   });
 }

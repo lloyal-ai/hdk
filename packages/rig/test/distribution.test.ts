@@ -199,4 +199,24 @@ describe('pushBlob, the page side of the upload', () => {
       await new Promise<void>(r => server.close(() => r()));
     }
   });
+
+  it('a push that is cancelled part way gives back what the host staged for it', async () => {
+    const { content, dir } = store();
+    const routes = createContentRoutes({ store: content, uploads: new BlobUploads(content, content) });
+    const server = createServer((rq, rs) => { if (!routes(rq, rs)) { rs.writeHead(404); rs.end(); } });
+    await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const { pushBlob } = await import('@lloyal-labs/media');
+    const cancel = new AbortController();
+    try {
+      const pushed = pushBlob(base, new Blob([MP4 as BlobPart], { type: 'video/mp4' }), {
+        chunkBytes: 700, signal: cancel.signal, onProgress: () => cancel.abort(),
+      });
+      await expect(pushed).rejects.toThrow();
+      expect(readdirSync(join(dir, '.tmp'))).toEqual([]);
+      expect(content.get(digestOf(MP4))).toBeNull();
+    } finally {
+      await new Promise<void>(r => server.close(() => r()));
+    }
+  });
 });
