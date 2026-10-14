@@ -86,6 +86,10 @@ export async function pushBlob(
   options: { signal?: AbortSignal; onProgress?: (sent: number, total: number) => void; chunkBytes?: number } = {},
 ): Promise<Descriptor> {
   const { signal, onProgress, chunkBytes = PUSH_CHUNK_BYTES } = options;
+  // A chunk that is not a positive whole number of bytes never advances the upload.
+  if (!Number.isSafeInteger(chunkBytes) || chunkBytes <= 0) {
+    throw new RangeError(`pushBlob: the chunk size must be a positive whole number of bytes, not ${chunkBytes}`);
+  }
   const opened = await fetch(blobUploadsUrl(origin), { method: 'POST', signal });
   if (opened.status !== 202) throw new Error(await failure(opened, 'could not open an upload'));
   const location = locationOf(origin, opened);

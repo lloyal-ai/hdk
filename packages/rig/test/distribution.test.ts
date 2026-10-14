@@ -15,7 +15,7 @@ import { createHash } from 'node:crypto';
 import { FileAttachmentStore, createContentIngress } from '@lloyal-labs/media/node';
 import { composeVideo } from '@lloyal-labs/media';
 import { BlobUploads } from '../src/distribution';
-import { createContentRoutes, parseByteRange } from '../src/content-routes';
+import { createContentRoutes, parseByteRange, resolveContent } from '../src/content-routes';
 
 const fixture = (name: string): Uint8Array =>
   new Uint8Array(readFileSync(join(__dirname, '../../media/test/fixtures/video', name)));
@@ -34,6 +34,25 @@ const req = (method: string, path: string, extra: { query?: Record<string, strin
   method, path, query: new URLSearchParams(extra.query ?? {}),
   ...(extra.contentRange ? { contentRange: extra.contentRange } : {}),
   ...(extra.body ? { body: extra.body } : {}),
+});
+
+describe('the retained original', () => {
+  it('answers HEAD from its size, never reading the whole original', async () => {
+    const { content } = store();
+    const ingress = createContentIngress(content);
+    const source = content.putBlob(MP4, 'application/octet-stream');
+    const frames = await Promise.all(['frame-00.png', 'frame-01.png'].map(async (n, i) => ({ root: await ingress.ingest(fixture(n)), tMs: i * 250 })));
+    const root = await composeVideo(content, { frames, sampling: { fps: 4, timestampIntervalMs: 5000, maxFrames: 64 }, durationMs: 4000, source });
+    const read: string[] = [];
+    const get = content.get.bind(content);
+    content.get = (digest: string) => { read.push(digest); return get(digest); };
+
+    const head = resolveContent({ method: 'HEAD', path: `/v1/media/${root.digest}/source` }, content)!;
+    expect(head.status).toBe(200);
+    expect(head.headers).toMatchObject({ 'Content-Length': String(MP4.length), 'Content-Type': 'video/mp4', 'Accept-Ranges': 'bytes' });
+    expect(head.body).toBeUndefined();
+    expect(read).not.toContain(source.digest);
+  });
 });
 
 describe('the blob upload table', () => {
@@ -85,6 +104,26 @@ describe('the blob upload table', () => {
       expect(uploads.resolve(req('GET', location))!.headers.Range).toBe('0-0');
     }
     expect(uploads.resolve(req('PATCH', location, { contentRange: '0-99', body: MP4.subarray(0, 100) }))!.status).toBe(202);
+  });
+
+  it('lets go of a one-request upload\'s staging when writing it fails, so a full disk leaks nothing', () => {
+    const { content } = store();
+    const discarded: string[] = [];
+    const staging = {
+      stage() {
+        const real = content.stage();
+        return {
+          get id() { return real.id; }, get size() { return real.size; },
+          append() { throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' }); },
+          adopt: real.adopt.bind(real),
+          discard() { discarded.push(real.id); real.discard(); },
+        };
+      },
+    };
+    const uploads = new BlobUploads(staging, content);
+    const reply = uploads.resolve(req('POST', '/v2/r/blobs/uploads/', { query: { digest: digestOf(MP4) }, body: MP4 }))!;
+    expect(reply.status).toBe(507);
+    expect(discarded).toHaveLength(1);
   });
 
   it('uploads in one request when the digest rides the POST', () => {
@@ -186,6 +225,21 @@ describe('Range on a retained original', () => {
 });
 
 describe('pushBlob, the page side of the upload', () => {
+  it('refuses a chunk size that cannot advance, before opening a session', async () => {
+    const { pushBlob } = await import('@lloyal-labs/media');
+    const opened: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request) => { opened.push(String(url)); return new Response(null, { status: 500 }); }) as typeof fetch;
+    try {
+      for (const chunkBytes of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+        await expect(pushBlob('http://host', new Blob([MP4 as BlobPart]), { chunkBytes })).rejects.toThrow(/chunk size must be a positive whole number of bytes/);
+      }
+      expect(opened).toEqual([]);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   it('pushes in chunks, resumes after a dropped chunk, and lands the exact digest', async () => {
     const { content } = store();
     const routes = createContentRoutes({ store: content, uploads: new BlobUploads(content, content) });

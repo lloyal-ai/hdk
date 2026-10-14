@@ -182,7 +182,13 @@ export class BlobUploads {
     const session = this.staging.stage();
     const digest = req.query.get('digest');
     if (digest) {
-      if (req.body) session.append(req.body);
+      // Never registered, so nothing could cancel it later: a write that fails (a full disk) lets it go here.
+      try {
+        if (req.body) session.append(req.body);
+      } catch (e) {
+        session.discard();
+        throw e;
+      }
       return this._close(name, session.id, session, digest);
     }
     this._sessions.set(session.id, session);

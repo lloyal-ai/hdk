@@ -139,6 +139,18 @@ const serveSeekable = (store: AttachmentStore, req: ContentRequest, d: Descripto
     : reply;
 };
 
+/** A seekable blob's headers from its size alone: a HEAD needs no body, so the
+ *  original is neither read nor rehashed (a full GET still verifies it). */
+const describeSeekable = (store: AttachmentStore, req: ContentRequest, d: Descriptor): ContentReply => {
+  if (req.ifNoneMatch === `"${d.digest}"`) return { status: 304, headers: { ...contentHeaders(d.digest), 'Accept-Ranges': 'bytes' } };
+  const size = store.size(d.digest);
+  if (size === null) return contentError(404, 'blob not in store');
+  return {
+    status: 200,
+    headers: contentHeaders(d.digest, { 'Content-Type': d.mediaType, 'Content-Length': String(size), 'Accept-Ranges': 'bytes' }),
+  };
+};
+
 /** `bytes=<start>-<end>`, `bytes=<start>-` or `bytes=-<suffix>` against a size, or null when unsatisfiable. */
 export function parseByteRange(header: string, size: number): { start: number; end: number } | null {
   const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
@@ -311,7 +323,8 @@ function route(req: ContentRequest, store: AttachmentStore): ContentReply {
     if (!manifest) return contentError(404, 'no such attachment manifest');
     const source = sourceOf(manifest);
     if (!source) return contentError(404, 'no source retained for this attachment');
-    return req.range ? serveRange(store, req.range, source) : serveSeekable(store, req, source);
+    if (req.range) return serveRange(store, req.range, source);
+    return method === 'HEAD' ? describeSeekable(store, req, source) : serveSeekable(store, req, source);
   }
 
   return contentError(405, 'unsupported method or path');
