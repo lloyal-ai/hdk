@@ -16,7 +16,7 @@ import type { BlobUploads } from './distribution';
 
 /** `decodeURIComponent` throws on a malformed escape; that is the client's
  *  input, not a server fault, so the caller answers 400 on `null`. */
-const decodeURISegment = (s: string): string | null => {
+export const decodeURISegment = (s: string): string | null => {
   try { return decodeURIComponent(s); } catch { return null; }
 };
 

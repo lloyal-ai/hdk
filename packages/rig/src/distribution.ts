@@ -38,7 +38,7 @@
 import { DIGEST_PATTERN } from '@lloyal-labs/media';
 import type { AttachmentStore } from '@lloyal-labs/media';
 import type { BlobStaging, StagedBlob } from '@lloyal-labs/media/node';
-import { parseByteRange } from './content-routes';
+import { decodeURISegment, parseByteRange } from './content-routes';
 import type { ContentReply } from './content-routes';
 
 /** One distribution request, reduced to what the table reads. */
@@ -153,8 +153,8 @@ export class BlobUploads {
 
     const blob = BLOB.exec(path);
     if (blob && blob[2] !== 'uploads') {
-      const digest = decodeURIComponent(blob[2]);
-      if (!DIGEST_PATTERN.test(digest)) return ociError(400, 'DIGEST_INVALID', 'only sha256 digests are stored');
+      const digest = decodeURISegment(blob[2]);
+      if (digest === null || !DIGEST_PATTERN.test(digest)) return ociError(400, 'DIGEST_INVALID', 'only sha256 digests are stored');
       const size = this.store.size(digest);
       if (size === null) return ociError(404, 'BLOB_UNKNOWN', 'blob not in store');
       const headers = { 'Docker-Content-Digest': digest, 'Accept-Ranges': 'bytes', 'Content-Type': 'application/octet-stream' };

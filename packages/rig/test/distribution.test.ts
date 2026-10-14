@@ -126,6 +126,13 @@ describe('the blob upload table', () => {
     expect(discarded).toHaveLength(1);
   });
 
+  it('answers a malformed escape in a blob\'s digest as the client\'s mistake, not a server fault', () => {
+    const { content } = store();
+    const reply = new BlobUploads(content, content).resolve(req('GET', '/v2/r/blobs/sha256%ZZ'))!;
+    expect(reply.status).toBe(400);
+    expect(JSON.parse(new TextDecoder().decode(reply.body!)).errors[0].code).toBe('DIGEST_INVALID');
+  });
+
   it('uploads in one request when the digest rides the POST', () => {
     const { content } = store();
     const reply = new BlobUploads(content, content).resolve(req('POST', '/v2/r/blobs/uploads/', { query: { digest: digestOf(MP4) }, body: MP4 }))!;
@@ -225,6 +232,43 @@ describe('Range on a retained original', () => {
 });
 
 describe('pushBlob, the page side of the upload', () => {
+  it('resolves a one-byte first chunk whose send failed by sending it again, whether or not it had landed', async () => {
+    const { pushBlob } = await import('@lloyal-labs/media');
+    const realFetch = globalThis.fetch;
+    const one = new Uint8Array([7]);
+    // A minimal host whose first PATCH fails in transit: the byte either never arrives, or arrives and the reply is lost.
+    for (const landed of [false, true]) {
+      let held = new Uint8Array(0);
+      let patches = 0;
+      let closedWith = '';
+      globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+        const method = init?.method ?? 'GET';
+        if (method === 'POST') return new Response(null, { status: 202, headers: { Location: '/v2/r/blobs/uploads/s' } });
+        if (method === 'PATCH') {
+          patches++;
+          const start = Number(/^(\d+)-/.exec(new Headers(init!.headers).get('Content-Range')!)![1]);
+          if (patches === 1) {
+            if (landed) held = one;
+            throw new TypeError('network error');
+          }
+          if (start !== held.length) return new Response(null, { status: 416, headers: { Range: '0-0' } });
+          held = one;
+          return new Response(null, { status: 202, headers: { Range: '0-0' } });
+        }
+        if (method === 'PUT') { closedWith = String(url); return new Response(null, { status: 201 }); }
+        return new Response(null, { status: 204, headers: { Range: '0-0' } });
+      }) as typeof fetch;
+      try {
+        await pushBlob('http://host', new Blob([one]));
+      } finally {
+        globalThis.fetch = realFetch;
+      }
+      expect(held).toEqual(one);
+      expect(patches).toBe(2);
+      expect(closedWith).toContain('digest=');
+    }
+  });
+
   it('refuses a chunk size that cannot advance, before opening a session', async () => {
     const { pushBlob } = await import('@lloyal-labs/media');
     const opened: string[] = [];

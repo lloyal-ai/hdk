@@ -118,6 +118,9 @@ export async function pushBlob(
 /** Send one chunk, resuming from what the host reports it holds when a send fails. */
 async function sendChunk(location: string, chunk: Uint8Array, offset: number, signal?: AbortSignal): Promise<void> {
   const end = offset + chunk.byteLength - 1;
+  // A one-byte first chunk: `0-0` reads the same whether the host holds it or nothing, so only sending it
+  // again tells — 202 it had not landed and now has, 416 (it must start at byte 1) it already had.
+  const ambiguous = offset === 0 && end === 0;
   for (let attempt = 1; ; attempt++) {
     try {
       const res = await fetch(location, {
@@ -125,6 +128,7 @@ async function sendChunk(location: string, chunk: Uint8Array, offset: number, si
         headers: { 'Content-Range': `${offset}-${end}`, 'Content-Type': 'application/octet-stream' },
       });
       if (res.status === 202) return;
+      if (res.status === 416 && ambiguous && attempt > 1) return;
       if (res.status !== 416) throw new Error(await failure(res, 'a chunk was refused'));
     } catch (e) {
       if (signal?.aborted || attempt >= PUSH_ATTEMPTS) throw e;
@@ -132,7 +136,7 @@ async function sendChunk(location: string, chunk: Uint8Array, offset: number, si
     // The host's own account of how far it got decides: this chunk landed, or send it again.
     const held = await fetch(location, { method: 'GET', signal });
     const through = Number(/^0-(\d+)$/.exec(held.headers.get('Range') ?? '')?.[1] ?? -1);
-    if (through === end) return;
+    if (through === end && !ambiguous) return;
     // `0-0` is how a registry reports an empty session as well as a one-byte one.
     const holdsNothingNew = through === offset - 1 || (offset === 0 && through === 0);
     if (!holdsNothingNew || attempt >= PUSH_ATTEMPTS) throw new Error(`the upload cannot resume at byte ${offset}`);

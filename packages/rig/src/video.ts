@@ -115,6 +115,8 @@ export function useVideoCommands({ wire, sampling = DEFAULT_VIDEO_SAMPLING }: Vi
       const segments: Transcript['segments'] = [];
       const untranscribed: UntranscribedWindow[] = [];
       let provenance: Transcript['provenance'] = {};
+      // A video without a soundtrack has nothing to transcribe, and says nothing about it.
+      if (windows.length === 0) return { transcript: undefined, untranscribed };
       yield* wire.send({ type: 'video:progress', requestId, phase: 'transcribing', done: 0, total: windows.length });
       for (const [i, w] of windows.entries()) {
         if (!asr) {

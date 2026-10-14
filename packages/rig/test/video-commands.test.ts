@@ -102,6 +102,19 @@ describe('video commands', () => {
     expect(materialize(content, [composed.root]).inputs).toHaveLength(1);
   });
 
+  it('announces no transcription for a video without a soundtrack', async () => {
+    const content = store();
+    const { frames } = await parts(content);
+    const events: VideoEvent[] = [];
+    await run(function* () {
+      yield* Attachments.set(content);
+      const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } } });
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'silent', frames, durationMs: 1250 });
+      for (let i = 0; i < 50 && !events.some(e => e.type === 'video:composed'); i++) yield* sleep(5);
+    });
+    expect(events.map(e => e.type)).toEqual(['video:composed']);
+  });
+
   it('refuses a soundtrack window that is not an admitted recording, or runs past the clip, before transcribing anything', async () => {
     const content = store();
     const { frames, audio } = await parts(content);
