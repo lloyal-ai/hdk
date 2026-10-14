@@ -50,6 +50,12 @@ describe('videoTracks', () => {
     expect(videoTracks({ ...view, atMs: 5000 }).chapters).toBeUndefined();
   });
 
+  it('writes each frame\'s address whole, since a player reads it against the track\'s own blob: address', () => {
+    const relative = { ...view, frames: [{ src: '/v1/media/x/representations/0', tMs: 0 }] };
+    expect(videoTracks(relative, 'http://localhost:5173/').thumbnails)
+      .toContain('\nhttp://localhost:5173/v1/media/x/representations/0#xywh=0,0,320,240\n');
+  });
+
   it('writes hours, minutes and milliseconds the way WebVTT reads them', () => {
     const long = videoTracks({ ...view, durationMs: 3_725_042, frames: [{ src: 'f', tMs: 3_600_000 }], size: undefined });
     expect(long.thumbnails).toContain('01:00:00.000 --> 01:02:05.042\nf\n');

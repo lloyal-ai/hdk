@@ -31,7 +31,7 @@ const THEME = {
 function useTrackUrls(view: VideoView): { thumbnails: string; captions?: string; chapters?: string } {
   const urls = useMemo(() => {
     const url = (vtt: string): string => URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' }));
-    const tracks = videoTracks(view);
+    const tracks = videoTracks(view, document.baseURI);
     return {
       thumbnails: url(tracks.thumbnails),
       ...(tracks.captions ? { captions: url(tracks.captions) } : {}),

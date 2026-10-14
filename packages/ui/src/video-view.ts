@@ -57,14 +57,20 @@ const escape = (text: string): string => text.replace(/&/g, '&amp;').replace(/</
 const webvtt = (cues: readonly Cue[]): string =>
   ['WEBVTT', '', ...cues.flatMap((c) => [`${timestamp(c.startMs)} --> ${timestamp(c.endMs)}`, c.text, ''])].join('\n');
 
-/** The tracks for a video: thumbnails always, captions when it was transcribed, chapters when it opens at a moment. */
-export function videoTracks(view: VideoView): VideoTracks {
+/**
+ * The tracks for a video: thumbnails always, captions when it was transcribed,
+ * chapters when it opens at a moment. `base` is the page's address: a player
+ * reads a thumbnail's address against the track's own, a `blob:` URL nothing
+ * relative resolves against, so each frame is written whole.
+ */
+export function videoTracks(view: VideoView, base?: string): VideoTracks {
   const { frames, durationMs, size, transcript, atMs } = view;
   const fragment = size ? `#xywh=0,0,${size.width},${size.height}` : '';
+  const whole = (src: string): string => (base ? new URL(src, base).href : src);
   const thumbnails = frames.map((f, i) => ({
     startMs: f.tMs,
     endMs: frames[i + 1]?.tMs ?? Math.max(durationMs, f.tMs),
-    text: `${f.src}${fragment}`,
+    text: `${whole(f.src)}${fragment}`,
   }));
   const cited = atMs !== undefined && atMs > 0 && atMs < durationMs;
   return {

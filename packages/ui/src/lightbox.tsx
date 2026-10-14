@@ -7,14 +7,21 @@
  *
  * @category UI
  */
-import { lazy, Suspense, useEffect } from 'react';
-import type { CSSProperties, ReactElement } from 'react';
+import { Component, lazy, Suspense, useEffect } from 'react';
+import type { CSSProperties, ReactElement, ReactNode } from 'react';
 import { representationUrl } from '@lloyal-labs/media';
 import { useContentOrigin } from './provider.js';
 import type { VideoView } from './video-view.js';
 
 /** Loaded when a video is first opened, so a page that never plays one carries none of Video.js. */
 const VideoPlayer = lazy(() => import('./video-player.js').then((m) => ({ default: m.VideoPlayer })));
+
+/** Whatever the player throws stays in the lightbox: the fallback plays the same file, and the page stands. */
+class PlayerBoundary extends Component<{ fallback: ReactNode; children: ReactNode }, { failed: boolean }> {
+  override state = { failed: false };
+  static getDerivedStateFromError(): { failed: boolean } { return { failed: true }; }
+  override render(): ReactNode { return this.state.failed ? this.props.fallback : this.props.children; }
+}
 
 const short = (digest: string): string => digest.replace(/^sha256:/, '').slice(0, 10);
 
@@ -85,9 +92,14 @@ export function Lightbox({ digest, pdf, video, dims, label, onClose, styles = {}
         <div style={src !== undefined ? s.player : s.frames} onClick={(e) => e.stopPropagation()}>
           {src !== undefined
             ? (
-                <Suspense fallback={video.poster ? <img src={video.poster} alt="" style={s.full} /> : null}>
-                  <VideoPlayer video={{ ...video, src }} title={`${label ?? 'the attached video'}${from}`} />
-                </Suspense>
+                <PlayerBoundary fallback={
+                  <video src={src} controls crossOrigin="anonymous" style={s.full} poster={video.poster}
+                    onLoadedMetadata={(e) => { if (video.atMs !== undefined) e.currentTarget.currentTime = video.atMs / 1000; }} />
+                }>
+                  <Suspense fallback={video.poster ? <img src={video.poster} alt="" style={s.full} /> : null}>
+                    <VideoPlayer video={{ ...video, src }} title={`${label ?? 'the attached video'}${from}`} />
+                  </Suspense>
+                </PlayerBoundary>
               )
             : video.frames.map((f) => (
                 <figure key={f.tMs} style={{ margin: 0 }}>

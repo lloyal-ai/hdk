@@ -27,6 +27,20 @@ export type VideoProgress =
   | { phase: 'transcribing'; done: number; total: number }
   | { phase: 'composing' };
 
+/** A progress step as a ring and words: how far the phase is (null where it has no count), and what it is doing.
+ *  The ring shows the percentage, so the words give what a percentage cannot: the size, or the count. */
+export function describeProgress(p: VideoProgress): { fraction: number | null; text: string } {
+  const part = (done: number, total: number): number => (total > 0 ? done / total : 0);
+  const mb = (bytes: number): string => (bytes / 1_000_000).toFixed(1);
+  switch (p.phase) {
+    case 'uploading': return { fraction: part(p.done, p.total), text: `Uploading ${mb(p.done)} of ${mb(p.total)} MB` };
+    case 'sampling': return { fraction: null, text: 'Reading frames' };
+    case 'ingesting': return { fraction: part(p.done, p.total), text: `Frames ${p.done} of ${p.total}` };
+    case 'transcribing': return { fraction: part(p.done, p.total), text: `Transcribing ${p.done} of ${p.total}` };
+    case 'composing': return { fraction: null, text: 'Putting it together' };
+  }
+}
+
 export interface AttachedVideo {
   root: Attachment;
   /** Soundtrack windows the host could not transcribe; the video carries the rest. */
