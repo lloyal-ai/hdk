@@ -47,6 +47,17 @@ describe('video containers at the single-payload ingress', () => {
     expect(media.VIDEO_CONTAINER_TYPES).toEqual(['video/mp4', 'video/quicktime', 'video/webm']);
   });
 
+  it('leaves HEIF and AVIF stills on the image path, though they share the ISO BMFF box', async () => {
+    const still = (brand: string) => { const head = MP4.slice(0, 32); head.set(new TextEncoder().encode(`ftyp${brand}`), 4); return head; };
+    expect(['heic', 'heix', 'hevc', 'mif1', 'msf1', 'avif', 'avis'].map(b => media.sniffMediaType(still(b))))
+      .toEqual(['image/heic', 'image/heic', 'image/heic-sequence', 'image/heif', 'image/heif-sequence', 'image/avif', 'image/avif']);
+
+    const avif = new Uint8Array(await sharp({ create: { width: 64, height: 48, channels: 3, background: '#c00' } }).avif().toBuffer());
+    const content = store();
+    const root = await createContentIngress(content).ingest(avif);
+    expect(media.representationsOf(content.getManifest(root.digest)!)[0].mediaType).toBe('image/jpeg');
+  });
+
   it('refuses raw video bytes, naming where video is decoded, and stores nothing', async () => {
     const content = store();
     await expect(createContentIngress(content).ingest(MP4)).rejects.toThrow(/video is decoded on the page/);

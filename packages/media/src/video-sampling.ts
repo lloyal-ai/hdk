@@ -233,6 +233,9 @@ export async function* captureFrames(
   let first: number | null = null;
   let next = 0;
   let group: SampledFrame[] = [];
+  // Cancelling settles a read still waiting on the track, so an abort never waits for a frame.
+  const stop = () => { reader.cancel().catch(() => {}); };
+  policy.signal?.addEventListener('abort', stop, { once: true });
   try {
     while (!policy.signal?.aborted) {
       const { value: frame, done } = await reader.read();
@@ -254,6 +257,7 @@ export async function* captureFrames(
     }
     if (group.length > 0) yield group;
   } finally {
+    policy.signal?.removeEventListener('abort', stop);
     await reader.cancel().catch(() => {});
   }
 }

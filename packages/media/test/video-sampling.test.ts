@@ -4,7 +4,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SoundtrackCutter, captureFrames, extractAudioWindows, fitEdge, frameTimes, pcm16Wav, quietestCut, sampleVideo } from '../src/video-sampling';
-import type { SoundtrackWindow } from '../src/video-sampling';
+import type { SampledFrame, SoundtrackWindow } from '../src/video-sampling';
 
 // Stand-in decoder: a 2-second, 320×240 clip whose frames are shown at 8 fps. A test sets the soundtrack:
 // `globalThis.soundtrack`, decoded buffers with their timestamps, and `globalThis.videoStart`.
@@ -132,11 +132,12 @@ describe('extractAudioWindows', () => {
 });
 
 describe('captureFrames', () => {
-  /** A live track whose frames arrive at these times (ms), through the processor Chromium provides. */
-  function liveTrack(arrivals: number[]) {
+  /** A live track whose frames arrive at these times (ms), through the processor Chromium provides; one that
+   *  stalls delivers nothing after them, as a paused camera does. */
+  function liveTrack(arrivals: number[], { stalls = false } = {}) {
     const frames = arrivals.map((ms) => ({ timestamp: ms * 1000, displayWidth: 64, displayHeight: 48, close: () => {} }));
     (globalThis as Record<string, unknown>).MediaStreamTrackProcessor = class {
-      readable = { getReader: () => ({ read: async () => (frames.length ? { value: frames.shift(), done: false } : { done: true }), cancel: async () => {} }) };
+      readable = new ReadableStream({ start(c) { frames.forEach((f) => c.enqueue(f)); if (!stalls) c.close(); } });
     };
     (globalThis as Record<string, unknown>).OffscreenCanvas = class {
       getContext() { return { drawImage: () => {} }; }
@@ -152,5 +153,14 @@ describe('captureFrames', () => {
       taken.push(...group.map((f) => f.tMs));
     }
     expect(taken).toEqual([0, 250, 1000, 1250]);
+  });
+
+  it('stops on abort while waiting for a frame that never comes', async () => {
+    const abort = new AbortController();
+    const groups = captureFrames(liveTrack([0], { stalls: true }), { fps: 4, groupSize: 2, maxEdgePx: 640, signal: abort.signal });
+    const pending = groups.next();
+    setTimeout(() => abort.abort(), 10);
+    expect((await pending).value?.map((f: SampledFrame) => f.tMs)).toEqual([0]);
+    expect((await groups.next()).done).toBe(true);
   });
 });

@@ -83,3 +83,44 @@ describe('ingestVideo, cancelled before it starts', () => {
     expect(sent).toEqual([]);
   });
 });
+
+describe('ingestVideo, cancelled while the host composes', () => {
+  function silentHost(answer: boolean) {
+    vi.mocked(pushBlob).mockResolvedValue({ mediaType: 'video/mp4', digest: `sha256:${'d'.repeat(64)}`, size: 2518 });
+    vi.mocked(ingestMedia).mockImplementation(async () => ({ mediaType: MANIFEST_TYPE, digest: `sha256:${'e'.repeat(64)}`, size: 1 }));
+    const listeners: Array<(f: Frame<VideoEvent>) => void> = [];
+    const sent: string[] = [];
+    let composed!: () => void;
+    const composing = new Promise<void>((resolve) => { composed = resolve; });
+    const bridge = {
+      onEvent: (cb: (f: Frame<VideoEvent>) => void) => { listeners.push(cb); return () => { listeners.splice(listeners.indexOf(cb), 1); }; },
+      send: (c: VideoCommand) => {
+        sent.push(c.type);
+        if (c.type !== 'video:compose') return;
+        composed();
+        if (answer) queueMicrotask(() => [...listeners].forEach(l => l({ ev: { type: 'video:composed', requestId: c.requestId, root: { mediaType: MANIFEST_TYPE, digest: `sha256:${'f'.repeat(64)}`, size: 1 }, untranscribed: [] } } as unknown as Frame<VideoEvent>)));
+      },
+    };
+    return { bridge, sent, listeners, composing };
+  }
+  const capabilities = { sampling: SAMPLING, transcription: false };
+
+  it('rejects at once, tells the host, and keeps no listener, though the host never answers', async () => {
+    const host = silentHost(false);
+    const abort = new AbortController();
+    const attaching = ingestVideo({ origin: '', bridge: host.bridge, file: new Blob([new Uint8Array(10)]), capabilities, signal: abort.signal });
+    await host.composing;
+    abort.abort();
+    await expect(attaching).rejects.toThrow();
+    expect(host.sent).toEqual(['video:compose', 'video:cancel']);
+    expect(host.listeners).toEqual([]);
+  });
+
+  it('sends no cancel for a video already composed', async () => {
+    const host = silentHost(true);
+    const abort = new AbortController();
+    await ingestVideo({ origin: '', bridge: host.bridge, file: new Blob([new Uint8Array(10)]), capabilities, signal: abort.signal });
+    abort.abort();
+    expect(host.sent).toEqual(['video:compose']);
+  });
+});

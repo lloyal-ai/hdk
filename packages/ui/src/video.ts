@@ -73,15 +73,18 @@ export async function ingestVideo(opts: {
   const requestId = crypto.randomUUID();
   onProgress?.({ phase: 'composing' });
   return new Promise<AttachedVideo>((resolve, reject) => {
+    // Every way this ends lets go of both listeners; an abort tells the host and does not wait for it.
+    const settle = (end: () => void): void => { stop(); signal?.removeEventListener('abort', onAbort); end(); };
+    const onAbort = (): void => { bridge.send({ type: 'video:cancel', requestId }); settle(() => reject(signal?.reason)); };
     const stop = bridge.onEvent(({ ev: event }) => {
       if (!isVideoEvent(event) || !('requestId' in event) || event.requestId !== requestId) return;
       const ev = event;
       if (ev.type === 'video:progress') onProgress?.({ phase: 'transcribing', done: ev.done, total: ev.total });
-      if (ev.type === 'video:composed') { stop(); resolve({ root: ev.root, untranscribed: ev.untranscribed }); }
-      if (ev.type === 'video:error') { stop(); reject(new Error(ev.message)); }
-      if (ev.type === 'video:cancelled') { stop(); reject(new DOMException('The video was cancelled.', 'AbortError')); }
+      if (ev.type === 'video:composed') settle(() => resolve({ root: ev.root, untranscribed: ev.untranscribed }));
+      if (ev.type === 'video:error') settle(() => reject(new Error(ev.message)));
+      if (ev.type === 'video:cancelled') settle(() => reject(new DOMException('The video was cancelled.', 'AbortError')));
     });
-    signal?.addEventListener('abort', () => bridge.send({ type: 'video:cancel', requestId }), { once: true });
+    signal?.addEventListener('abort', onAbort, { once: true });
     bridge.send({
       type: 'video:compose', requestId, frames, sampling: { fps: sampling.fps, timestampIntervalMs: sampling.timestampIntervalMs, maxFrames: sampling.maxFrames },
       durationMs: Math.max(sampled.durationMs, frames[frames.length - 1].tMs),
