@@ -12,10 +12,10 @@
  *
  * @category UI
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import type { CSSProperties, ReactElement, RefObject } from 'react';
 import { Video, VideoPlayer as Player, VideoSkin } from '@videojs/react/video';
-import { videoTracks } from './video-view.js';
+import { useTrackUrls } from './track-urls.js';
 import type { VideoView } from './video-view.js';
 
 /** The skin's custom properties, read from the harness register. */
@@ -26,30 +26,6 @@ const THEME = {
   '--media-border-radius': '12px',
   '--media-font-family': 'var(--harness-font, system-ui, sans-serif)',
 } as CSSProperties;
-
-type TrackUrls = { thumbnails: string; captions?: string; chapters?: string };
-
-/**
- * Each track's WebVTT as a `blob:` URL (a page's CSP admits `blob:` media).
- * Made by the effect that lets them go, so every setup revokes only its own:
- * under StrictMode, which sets effects up, tears them down and sets them up
- * again, the tracks point at the second setup's live files. Null until then.
- */
-function useTrackUrls(view: VideoView): TrackUrls | null {
-  const [urls, setUrls] = useState<TrackUrls | null>(null);
-  useEffect(() => {
-    const url = (vtt: string): string => URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' }));
-    const tracks = videoTracks(view, document.baseURI);
-    const made: TrackUrls = {
-      thumbnails: url(tracks.thumbnails),
-      ...(tracks.captions ? { captions: url(tracks.captions) } : {}),
-      ...(tracks.chapters ? { chapters: url(tracks.chapters) } : {}),
-    };
-    setUrls(made);
-    return () => Object.values(made).forEach((u) => URL.revokeObjectURL(u));
-  }, [view]);
-  return urls;
-}
 
 export interface VideoPlayerProps {
   /** The video to play; it needs its original (`src`). */

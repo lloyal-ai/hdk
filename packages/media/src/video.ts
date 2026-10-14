@@ -192,9 +192,12 @@ async function storedContainer(store: AttachmentStore, digest: string): Promise<
   return VIDEO_CONTAINER_TYPES.includes(mediaType) ? { mediaType, digest, size } : null;
 }
 
-/** A transcript segment as the model reads it, placed at the end of its window. */
-const noteOf = (segment: Transcript['segments'][number]): { atMs: number; text: string } =>
-  ({ atMs: segment.endMs, text: ` Speech: "${segment.text}"` });
+/**
+ * A transcript segment as the model reads it, placed at the end of its window,
+ * or at the first frame for speech heard before the picture starts.
+ */
+const noteOf = (firstFrameMs: number) => (segment: Transcript['segments'][number]): { atMs: number; text: string } =>
+  ({ atMs: Math.max(segment.endMs, firstFrameMs), text: ` Speech: "${segment.text}"` });
 
 /**
  * Resolve a video root to the input the projector takes, every blob verified.
@@ -222,7 +225,7 @@ export function resolveVideo(store: AttachmentStore, root: Attachment): VideoInp
     ? asTranscript(JSON.parse(new TextDecoder().decode(read(transcriptRep, 'transcript'))))
     : null;
   if (transcriptRep && !transcript) throw new Error('resolveVideo: the stored transcript is not well formed');
-  const notes = transcript?.segments.filter(s => s.text.trim().length > 0).map(noteOf) ?? [];
+  const notes = transcript?.segments.filter(s => s.text.trim().length > 0).map(noteOf(meta.frames[0].tMs)) ?? [];
   return {
     kind: 'video',
     frames: meta.frames.map(f => {

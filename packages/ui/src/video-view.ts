@@ -40,6 +40,20 @@ export function videoView(origin: string, digest: string, asset: Extract<Asset, 
   };
 }
 
+const pad2 = (n: number): string => String(n).padStart(2, '0');
+
+/**
+ * A moment in a video as people read one: `m:ss`, `h:mm:ss` past an hour, and
+ * the fraction of a second when it has one (`0:00.25`), so nearby moments read apart.
+ */
+export function momentClock(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor(s / 60) % 60;
+  const fraction = ms % 1000 ? `.${String(ms % 1000).padStart(3, '0').replace(/0+$/, '')}` : '';
+  return `${h > 0 ? `${h}:${pad2(m)}` : m}:${pad2(s % 60)}${fraction}`;
+}
+
 /** The WebVTT text of each track a player reads; a track with nothing to say is absent. */
 export interface VideoTracks {
   thumbnails: string;
@@ -68,8 +82,9 @@ export function videoTracks(view: VideoView, base?: string): VideoTracks {
   const { frames, durationMs, size, transcript, atMs } = view;
   const fragment = size ? `#xywh=0,0,${size.width},${size.height}` : '';
   const whole = (src: string): string => (base ? new URL(src, base).href : src);
+  // The first frame previews from the clip's start: a picture can begin after its sound.
   const thumbnails = frames.map((f, i) => ({
-    startMs: f.tMs,
+    startMs: i === 0 ? 0 : f.tMs,
     endMs: frames[i + 1]?.tMs ?? Math.max(durationMs, f.tMs),
     text: `${whole(f.src)}${fragment}`,
   }));

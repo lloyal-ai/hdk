@@ -5,7 +5,7 @@
  * Once a video references it, a player seeks it through the attachment's
  * source route with Range.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -315,6 +315,28 @@ describe('pushBlob, the page side of the upload', () => {
     }
   });
 
+  it('a cancelled push rejects at once: it asks the host to let go of the staging, but does not wait to hear back', async () => {
+    const { pushBlob } = await import('@lloyal-labs/media');
+    const realFetch = globalThis.fetch;
+    const cancel = new AbortController();
+    const deletes: string[] = [];
+    // A host whose cleanup never answers.
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (method === 'POST') return new Response(null, { status: 202, headers: { Location: '/v2/r/blobs/uploads/s' } });
+      if (method === 'DELETE') { deletes.push(String(url)); return new Promise<Response>(() => {}); }
+      return new Response(null, { status: 202, headers: { Range: '0-699' } });
+    }) as typeof fetch;
+    try {
+      const pushed = pushBlob('http://host', new Blob([MP4 as BlobPart]), { chunkBytes: 700, signal: cancel.signal, onProgress: () => cancel.abort() });
+      const settled = await Promise.race([pushed.then(() => 'resolved', () => 'rejected'), new Promise((r) => setTimeout(() => r('still waiting'), 500))]);
+      expect(settled).toBe('rejected');
+      expect(deletes).toEqual(['http://host/v2/r/blobs/uploads/s']);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   it('a push that is cancelled part way gives back what the host staged for it', async () => {
     const { content, dir } = store();
     const routes = createContentRoutes({ store: content, uploads: new BlobUploads(content, content) });
@@ -328,7 +350,7 @@ describe('pushBlob, the page side of the upload', () => {
         chunkBytes: 700, signal: cancel.signal, onProgress: () => cancel.abort(),
       });
       await expect(pushed).rejects.toThrow();
-      expect(readdirSync(join(dir, '.tmp'))).toEqual([]);
+      await vi.waitFor(() => expect(readdirSync(join(dir, '.tmp'))).toEqual([]));
       expect(content.get(digestOf(MP4))).toBeNull();
     } finally {
       await new Promise<void>(r => server.close(() => r()));

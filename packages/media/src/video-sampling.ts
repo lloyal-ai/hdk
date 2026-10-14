@@ -20,7 +20,7 @@ import type { AudioAdmission } from './audio';
 // ── Pure: what to sample, and how a soundtrack is cut ────────────────────────
 
 /**
- * The times to sample, in seconds from the clip's first frame: `fps` apart, or
+ * The times to sample, in seconds from the picture's first frame: `fps` apart, or
  * spread evenly when the clip is longer than `maxFrames` allows at that rate.
  */
 export function frameTimes(durationS: number, sampling: Pick<VideoSampling, 'fps' | 'maxFrames'>): number[] {
@@ -162,6 +162,10 @@ async function jpeg(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<Uint8A
  * rate, capped in count and edge length, each frame stamped with the time it
  * was actually shown.
  *
+ * Times are on the file's own clock, from zero, the clock a player seeks on:
+ * a picture that starts after its sound has its first frame at that later
+ * time, so a frame, a caption or a cited moment plays where the model saw it.
+ *
  * @throws If the file has no video track this browser can decode, or with
  *         the signal's reason once it aborts; no further frame is decoded.
  */
@@ -179,21 +183,22 @@ export async function sampleVideo(
   try {
     const track = await input.getPrimaryVideoTrack();
     if (!track || !(await track.canDecode())) throw new Error('This browser cannot decode the video in that file.');
-    const first = await track.getFirstTimestamp();
-    const durationS = (await input.computeDuration()) - first;
+    // A picture that starts before zero (an edit list's lead-in) is shown from zero, as a player shows it.
+    const first = Math.max(0, await track.getFirstTimestamp());
+    const endS = await input.computeDuration();
     const size = fitEdge(track.displayWidth, track.displayHeight, sampling.maxEdgePx);
     const sink = new CanvasSink(track, { ...size, fit: 'fill' });
     const frames: SampledFrame[] = [];
-    for await (const wrapped of sink.canvasesAtTimestamps(frameTimes(durationS, sampling).map(t => first + t))) {
+    for await (const wrapped of sink.canvasesAtTimestamps(frameTimes(endS - first, sampling).map(t => first + t))) {
       signal?.throwIfAborted();
       if (!wrapped) continue;
-      const tMs = Math.round((wrapped.timestamp - first) * 1000);
+      const tMs = Math.max(0, Math.round(wrapped.timestamp * 1000));
       // A sparse source repeats a frame for nearby sample times; each frame is kept once.
       if (frames.length > 0 && tMs <= frames[frames.length - 1].tMs) continue;
       frames.push({ bytes: await jpeg(wrapped.canvas), tMs });
     }
     if (frames.length === 0) throw new Error('No frames could be read from that video.');
-    return { frames, durationMs: Math.round(durationS * 1000) };
+    return { frames, durationMs: Math.round(endS * 1000) };
   } catch (e) {
     // A disposed input fails its read with its own error; the caller asked to stop, so it hears why.
     signal?.throwIfAborted();
@@ -222,11 +227,10 @@ function mixDown(buffer: AudioBuffer, step: number): Float32Array {
  * browser's own audio decoder and cut at quiet points. Yields nothing for a
  * file without an audio track it can decode.
  *
- * Windows are timed on the clip's clock, the one {@link sampleVideo} stamps
- * frames on (the video track's first timestamp is zero): sound that starts
- * late, or pauses, is placed by its own timestamps, the gaps filled with
- * silence, and sound before the first frame or past the clip's end (a
- * codec's padding) is left out.
+ * Windows are timed on the file's own clock, the one {@link sampleVideo}
+ * stamps frames on: sound that starts late, or pauses, is placed by its own
+ * timestamps, the gaps filled with silence, and sound before zero or past the
+ * clip's end (a codec's priming and padding) is left out.
  *
  * @throws With the signal's reason once it aborts: the input is disposed then,
  *         so a decode still in flight stops rather than running to the end.
@@ -246,10 +250,8 @@ export async function* extractAudioWindows(
   try {
     const track = await input.getPrimaryAudioTrack();
     if (!track || !(await track.canDecode())) return;
-    const video = await input.getPrimaryVideoTrack();
-    const origin = video ? await video.getFirstTimestamp() : await track.getFirstTimestamp();
     // The clip ends where sampleVideo says it does; decoded sound past it is the codec's padding.
-    const endsAtS = (await input.computeDuration()) - origin;
+    const endsAtS = await input.computeDuration();
     let cutter: SoundtrackCutter | null = null;
     let rate = 0;
     let fed = 0;   // samples given to the cutter: the clip time it has reached
@@ -259,7 +261,7 @@ export async function* extractAudioWindows(
       rate ||= buffer.sampleRate / step;
       cutter ??= new SoundtrackCutter(rate, windowMs);
       const end = Math.round(endsAtS * rate);
-      const startsAt = Math.min(Math.round((timestamp - origin) * rate), end);
+      const startsAt = Math.min(Math.round(timestamp * rate), end);
       for (let gap = startsAt - fed; gap > 0; gap -= rate) {
         const silence = new Float32Array(Math.min(gap, rate));
         fed += silence.length;

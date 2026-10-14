@@ -4,13 +4,17 @@
  * saw on its time slider. One enlarged view for a whole app — the figure
  * strip, a run bar's marker and a cited page in the prose all open this one,
  * so there is one that cannot drift. Escape and a click on the scrim close it.
+ * It is a modal dialog: focus moves into it, Tab stays inside, the page behind
+ * is inert, and focus goes back to what opened it when it closes.
  *
  * @category UI
  */
-import { Component, lazy, Suspense, useEffect } from 'react';
+import { Component, lazy, Suspense, useLayoutEffect, useRef } from 'react';
 import type { CSSProperties, ReactElement, ReactNode } from 'react';
 import { representationUrl } from '@lloyal-labs/media';
 import { useContentOrigin } from './provider.js';
+import { useTrackUrls } from './track-urls.js';
+import { momentClock } from './video-view.js';
 import type { VideoView } from './video-view.js';
 
 /** Loaded when a video is first opened, so a page that never plays one carries none of Video.js. */
@@ -21,6 +25,41 @@ class PlayerBoundary extends Component<{ fallback: ReactNode; children: ReactNod
   override state = { failed: false };
   static getDerivedStateFromError(): { failed: boolean } { return { failed: true }; }
   override render(): ReactNode { return this.state.failed ? this.props.fallback : this.props.children; }
+}
+
+/** A modal dialog's own box, undone so the scrim fills the viewport as it always has. */
+const FILL: CSSProperties = { margin: 0, border: 0, width: '100vw', height: '100vh', maxWidth: 'none', maxHeight: 'none', boxSizing: 'border-box' };
+
+/**
+ * The browser's modal dialog, opened for as long as it is mounted. Escape asks
+ * the caller to close it, so the caller's state stays the one truth of whether
+ * it is open.
+ */
+function Modal({ label, style, onClose, children }: { label: string; style: CSSProperties; onClose: () => void; children: ReactNode }): ReactElement {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useLayoutEffect(() => {
+    const element = dialog.current!;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    element.showModal();
+    return () => { element.close(); opener?.focus(); };
+  }, []);
+  return (
+    <dialog ref={dialog} aria-label={label} style={{ ...FILL, ...style }} onClick={onClose}
+      onCancel={(e) => { e.preventDefault(); onClose(); }}>
+      {children}
+    </dialog>
+  );
+}
+
+/** The browser's own player, for when Video.js cannot run: the same file, moment and captions. */
+function NativePlayer({ video, style }: { video: VideoView & { src: string }; style: CSSProperties }): ReactElement {
+  const tracks = useTrackUrls(video);
+  return (
+    <video src={video.src} controls crossOrigin="anonymous" style={style} poster={video.poster}
+      onLoadedMetadata={(e) => { if (video.atMs !== undefined) e.currentTarget.currentTime = video.atMs / 1000; }}>
+      {tracks?.captions && <track kind="captions" label="Transcript" srcLang="und" src={tracks.captions} default />}
+    </video>
+  );
 }
 
 const short = (digest: string): string => digest.replace(/^sha256:/, '').slice(0, 10);
@@ -58,44 +97,28 @@ const S: Required<NonNullable<LightboxProps['styles']>> = {
   frame: { width: '100%', borderRadius: 8, display: 'block', background: '#111' },
 };
 
-const clock = (ms: number): string => {
-  const s = Math.floor(ms / 1000);
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-};
-
 export function Lightbox({ digest, pdf, video, dims, label, onClose, styles = {} }: LightboxProps): ReactElement | null {
   const origin = useContentOrigin();
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
   if (origin === null) return null;
   const s = { ...S, ...styles };
   if (pdf !== undefined) {
     return (
-      <div style={s.scrim} role="dialog" aria-modal="true" aria-label={label ?? 'Attached document'} onClick={onClose}>
+      <Modal label={label ?? 'Attached document'} style={s.scrim} onClose={onClose}>
         <iframe src={pdf} title={label ?? 'Attached document'} style={s.pdf} onClick={(e) => e.stopPropagation()} />
         <p style={s.caption}>{label ?? 'the attached document'} · the file as attached</p>
-      </div>
+      </Modal>
     );
   }
   if (video !== undefined) {
     const { src } = video;
     const seen = `what the model saw · ${video.frames.length} frame${video.frames.length === 1 ? '' : 's'}${video.transcript?.length ? ', and the transcript as captions' : ''}`;
-    const from = video.atMs !== undefined ? ` · from ${clock(video.atMs)}` : '';
+    const from = video.atMs !== undefined ? ` · from ${momentClock(video.atMs)}` : '';
     return (
-      <div style={s.scrim} role="dialog" aria-modal="true" aria-label={label ?? 'Attached video'} onClick={onClose}>
+      <Modal label={label ?? 'Attached video'} style={s.scrim} onClose={onClose}>
         <div style={src !== undefined ? s.player : s.frames} onClick={(e) => e.stopPropagation()}>
           {src !== undefined
             ? (
-                <PlayerBoundary fallback={
-                  <video src={src} controls crossOrigin="anonymous" style={s.full} poster={video.poster}
-                    onLoadedMetadata={(e) => { if (video.atMs !== undefined) e.currentTarget.currentTime = video.atMs / 1000; }} />
-                }>
+                <PlayerBoundary fallback={<NativePlayer video={{ ...video, src }} style={s.full} />}>
                   <Suspense fallback={video.poster ? <img src={video.poster} alt="" style={s.full} /> : null}>
                     <VideoPlayer video={{ ...video, src }} title={`${label ?? 'the attached video'}${from}`} />
                   </Suspense>
@@ -103,22 +126,22 @@ export function Lightbox({ digest, pdf, video, dims, label, onClose, styles = {}
               )
             : video.frames.map((f) => (
                 <figure key={f.tMs} style={{ margin: 0 }}>
-                  <img src={f.src} alt={`frame at ${clock(f.tMs)}`} style={s.frame} />
-                  <figcaption style={s.caption}>{clock(f.tMs)}</figcaption>
+                  <img src={f.src} alt={`frame at ${momentClock(f.tMs)}`} style={s.frame} />
+                  <figcaption style={s.caption}>{momentClock(f.tMs)}</figcaption>
                 </figure>
               ))}
         </div>
         <p style={s.caption}>{label ?? 'the attached video'}{from} · {src !== undefined ? 'hover the timeline for ' : ''}{seen}</p>
-      </div>
+      </Modal>
     );
   }
   if (digest === undefined) return null;
   return (
-    <div style={s.scrim} role="dialog" aria-modal="true" aria-label={label ?? 'Attached image, full size'} onClick={onClose}>
+    <Modal label={label ?? 'Attached image, full size'} style={s.scrim} onClose={onClose}>
       <img src={representationUrl(origin, digest)} alt={label ?? 'Attached image, as the model received it'} style={s.full} />
       <p style={s.caption}>
         {label ?? 'what the model saw'}{dims ? ` · ${dims}` : ''} · {short(digest)}
       </p>
-    </div>
+    </Modal>
   );
 }

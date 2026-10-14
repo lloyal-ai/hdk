@@ -26,6 +26,15 @@ describe('mock video', () => {
     expect(clip - one).toBe(8 * ctx.mockImageCells);
   });
 
+  it('prices a transcript as the text it is: a spoken clip costs more than the same frames in silence', async () => {
+    const ctx = new MockSessionContext();
+    const silent = video(4);
+    const spoken = { ...(silent as object), notes: [{ atMs: 500, text: ' Speech: "one, two, three"' }, { atMs: 750, text: ' Speech: "four"' }] } as MultimodalInput;
+    const extra = (await ctx._cellsMultimodal([], MEDIA_MARKER, [spoken])) - (await ctx._cellsMultimodal([], MEDIA_MARKER, [silent]));
+    // One cell per four characters, the mock's stand-in for text.
+    expect(extra).toBe(Math.ceil(' Speech: "one, two, three" Speech: "four"'.length / 4));
+  });
+
   it('charges what it quoted and refunds it on prune', async () => {
     const ctx = new MockSessionContext();
     const delta = buildUserDeltaMultimodal(ctx, 'watch', [video(5)]);

@@ -15,6 +15,11 @@ import type { VideoView } from '../src/video-view';
 
 vi.mock('../src/provider.js', () => ({ useContentOrigin: () => 'http://host' }));
 
+/** jsdom has no modal dialogs: these record what a browser does, and the browser keeps Tab inside. */
+const opened: HTMLDialogElement[] = [];
+HTMLDialogElement.prototype.showModal = function (this: HTMLDialogElement) { opened.push(this); this.setAttribute('open', ''); };
+HTMLDialogElement.prototype.close = function (this: HTMLDialogElement) { this.removeAttribute('open'); };
+
 const view: VideoView = {
   durationMs: 9000,
   poster: 'http://host/f0',
@@ -104,6 +109,11 @@ describe('the video lightbox', () => {
     expect(made).toHaveLength(0);
   });
 
+  it('says a cited moment to the fraction of a second, so nearby moments read apart', async () => {
+    await show({ ...view, src: 'http://host/source', atMs: 250 });
+    expect(container.textContent).toContain('from 0:00.25');
+  });
+
   it('without the original, shows the frames the model saw, each with its time', async () => {
     await show(view);
     expect(container.querySelector('video')).toBeNull();
@@ -125,4 +135,43 @@ describe('the video card', () => {
     expect(open).toHaveBeenCalledOnce();
     act(() => root.unmount());
   });
+});
+
+describe('the lightbox as a modal', () => {
+  beforeAll(() => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    URL.createObjectURL ??= () => 'blob:track';
+    URL.revokeObjectURL ??= () => {};
+  });
+  const kinds = {
+    image: { digest: `sha256:${'a'.repeat(64)}` },
+    document: { pdf: 'http://host/source' },
+    video: { video: { ...view, src: 'http://host/source' } },
+  };
+
+  for (const [kind, props] of Object.entries(kinds)) {
+    it(`opens ${kind === 'image' ? 'an' : 'a'} ${kind} as a modal dialog: Escape closes it, and focus goes back to what opened it`, async () => {
+      const opener = document.createElement('button');
+      document.body.append(opener);
+      opener.focus();
+      const container = document.createElement('div');
+      document.body.append(container);
+      const root = createRoot(container);
+      const onClose = vi.fn();
+      opened.length = 0;
+      await act(async () => { root.render(createElement(Lightbox, { ...props, onClose })); });
+      const dialog = container.querySelector('dialog')!;
+      expect(opened).toEqual([dialog]);
+      expect(dialog.getAttribute('aria-label')).toBeTruthy();
+      const escape = new Event('cancel', { cancelable: true });
+      act(() => { dialog.dispatchEvent(escape); });
+      expect(onClose).toHaveBeenCalledOnce();
+      // The caller closes it, by unmounting; the browser alone would leave React's tree behind.
+      expect(escape.defaultPrevented).toBe(true);
+      act(() => root.unmount());
+      expect(document.activeElement).toBe(opener);
+      container.remove();
+      opener.remove();
+    });
+  }
 });

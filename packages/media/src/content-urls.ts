@@ -109,8 +109,9 @@ export async function pushBlob(
     return { mediaType: file.type || 'application/octet-stream', digest, size: file.size };
   } catch (e) {
     // A push that stops, by failure or by cancel, gives back what the host staged for it.
-    // Unsignalled: a cancelled push still has to say so.
-    await fetch(location, { method: 'DELETE' }).catch(() => undefined);
+    // Unsignalled, so a cancelled push still says so; not awaited, so a cleanup that stalls
+    // never holds back the caller's rejection.
+    void fetch(location, { method: 'DELETE' }).catch(() => undefined);
     throw e;
   }
 }

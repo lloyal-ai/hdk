@@ -364,12 +364,15 @@ export class MockSessionContext implements SessionContext {
   /** Frames fused per chunk in a video; 2 stands in for a Qwen-VL projector, 1 for one without temporal merge. */
   mockVideoFrameMerge = 2;
 
-  /** A video's first frame stands alone before its first timestamp; the rest fuse in groups. */
+  /** A video's first frame stands alone before its first timestamp; the rest fuse in groups.
+   *  Its transcript is text, at the same one cell per 4 chars. */
   private _mockMediaCost(input: MultimodalInput, imageCost: number): number {
     if (isAudio(input)) return this.mockAudioCells;
     if (input instanceof Uint8Array || input.kind !== 'video') return imageCost;
     const rest = Math.max(0, input.frames.length - 1);
-    return imageCost * (Math.min(1, input.frames.length) + Math.ceil(rest / this.mockVideoFrameMerge));
+    const frames = imageCost * (Math.min(1, input.frames.length) + Math.ceil(rest / this.mockVideoFrameMerge));
+    const transcript = Math.ceil((input.notes ?? []).map(n => n.text).join('').length / 4);
+    return frames + transcript;
   }
 
   async _cellsMultimodal(

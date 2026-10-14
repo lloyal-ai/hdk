@@ -36,7 +36,7 @@ export { describeProgress, ingestVideo, useVideoCapabilities } from './video.js'
 export { ProgressRing } from './progress-ring.js';
 export type { ProgressRingProps } from './progress-ring.js';
 export type { AttachedVideo, VideoProgress } from './video.js';
-export { videoTracks, videoView } from './video-view.js';
+export { momentClock, videoTracks, videoView } from './video-view.js';
 export type { VideoTracks, VideoView } from './video-view.js';
 export { VideoCard } from './video-card.js';
 export type { VideoCardProps } from './video-card.js';

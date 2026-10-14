@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { representationUrl, sourceUrl } from '@lloyal-labs/media';
 import type { VideoMeta } from '@lloyal-labs/media';
-import { videoTracks, videoView } from '../src/video-view';
+import { momentClock, videoTracks, videoView } from '../src/video-view';
 
 const view = {
   src: 'http://host/v1/media/sha256:aa/source',
@@ -32,6 +32,11 @@ describe('videoTracks', () => {
       'http://host/f2.jpg#xywh=0,0,320,240',
       '',
     ].join('\n'));
+  });
+
+  it('previews the first frame from the clip\'s start when the picture starts after the sound', () => {
+    const late = { ...view, frames: [{ src: 'http://host/f0.jpg', tMs: 400 }, { src: 'http://host/f1.jpg', tMs: 900 }] };
+    expect(videoTracks(late).thumbnails).toContain('\n00:00:00.000 --> 00:00:00.900\nhttp://host/f0.jpg#xywh=0,0,320,240\n');
   });
 
   it('says the transcript as captions, escaped so a line cannot end its cue', () => {
@@ -62,7 +67,7 @@ describe('videoTracks', () => {
   });
 
   it('writes hours, minutes and milliseconds the way WebVTT reads them', () => {
-    const long = videoTracks({ ...view, durationMs: 3_725_042, frames: [{ src: 'f', tMs: 3_600_000 }], size: undefined });
+    const long = videoTracks({ ...view, durationMs: 3_725_042, frames: [{ src: 'e', tMs: 0 }, { src: 'f', tMs: 3_600_000 }], size: undefined });
     expect(long.thumbnails).toContain('01:00:00.000 --> 01:02:05.042\nf\n');
   });
 });
@@ -89,5 +94,15 @@ describe('videoView', () => {
 
   it('has nothing to play when the original was not kept', () => {
     expect(videoView('http://host', digest, { kind: 'video', meta, source: false }).src).toBeUndefined();
+  });
+});
+
+describe('momentClock', () => {
+  it('reads a moment as people do, keeping the fraction that tells nearby moments apart', () => {
+    expect(momentClock(0)).toBe('0:00');
+    expect(momentClock(5000)).toBe('0:05');
+    expect(momentClock(250)).toBe('0:00.25');
+    expect(momentClock(65_040)).toBe('1:05.04');
+    expect(momentClock(3_725_500)).toBe('1:02:05.5');
   });
 });

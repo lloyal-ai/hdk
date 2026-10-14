@@ -114,6 +114,32 @@ describe('sampleVideo', () => {
     expect(frames.map(f => f.tMs)).toEqual([0, 125, 250, 375, 500, 625, 750, 875, 1000, 1125, 1250, 1375, 1500, 1625, 1750, 1875]);
   });
 
+  it('stamps frames on the file\'s own clock, the one a player seeks on, when the picture starts after the sound', async () => {
+    // Chrome and Mediabunny agree: a clip whose picture starts at 0.5 s shows its first frame at 0.5 s.
+    const g = globalThis as { videoStart?: number };
+    g.videoStart = 0.5;
+    try {
+      const { frames, durationMs } = await sampleVideo(new Blob([new Uint8Array(10)]), SAMPLING);
+      expect(frames.map(f => f.tMs)).toEqual([500, 750, 1000, 1250, 1500, 1750]);
+      expect(durationMs).toBe(2000);
+    } finally {
+      delete g.videoStart;
+    }
+  });
+
+  it('starts the clock at zero when the picture starts before it, as a player does', async () => {
+    const g = globalThis as { videoStart?: number };
+    g.videoStart = -0.04;
+    try {
+      const { frames, durationMs } = await sampleVideo(new Blob([new Uint8Array(10)]), SAMPLING);
+      expect(frames[0].tMs).toBe(0);
+      expect(frames.every((f) => f.tMs >= 0)).toBe(true);
+      expect(durationMs).toBe(2000);
+    } finally {
+      delete g.videoStart;
+    }
+  });
+
   it('lets go of a decode still waiting when it is aborted, and says it was aborted', async () => {
     const g = globalThis as { stallAt?: number; onDispose?: () => void };
     g.stallAt = 1;
@@ -200,12 +226,20 @@ describe('extractAudioWindows', () => {
     expect(track[3500]).toBeCloseTo(0.5, 2);
   });
 
-  it('leaves out sound before the first frame, so a window starts where the picture does', async () => {
+  it('keeps sound before the first frame: windows run on the file\'s clock, the one a player seeks on', async () => {
     g.videoStart = 0.5;
     g.soundtrack = [sound(0, 0.5, 0.9), sound(0.5, 1, 0.3)];
     const track = await heard();
+    expect(track.length).toBe(1.5 * RATE);
+    expect(track[0]).toBeCloseTo(0.9, 2);
+    expect(track[1000]).toBeCloseTo(0.3, 2);
+  });
+
+  it('leaves out sound before zero, as a codec\'s priming is', async () => {
+    g.soundtrack = [sound(-0.5, 1.5)];
+    const track = await heard();
     expect(track.length).toBe(RATE);
-    expect(track[0]).toBeCloseTo(0.3, 2);
+    expect(track[0]).toBeCloseTo(0.5, 2);
   });
 });
 

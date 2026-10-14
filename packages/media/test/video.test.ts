@@ -131,6 +131,18 @@ describe('materialize and resolveVideo', () => {
     expect(media.resolveVideo(content, root)).toEqual(video);
   });
 
+  it('places speech heard before a late picture at the first frame, where the model first sees the clip', async () => {
+    // On the file's clock a picture can start after its sound; a note before the first frame has no frame to follow.
+    const content = store();
+    const late = (await frameRoots(content)).map((f) => ({ ...f, tMs: f.tMs + 6000 }));
+    const spoken = { provenance: {}, segments: [{ startMs: 0, endMs: 5000, text: 'before' }, { startMs: 5000, endMs: 7000, text: 'during' }] };
+    const root = await media.composeVideo(content, { frames: late, sampling: SAMPLING, durationMs: 7000, transcript: spoken });
+    expect(media.resolveVideo(content, root).notes).toEqual([
+      { atMs: 6000, text: ' Speech: "before"' },
+      { atMs: 7000, text: ' Speech: "during"' },
+    ]);
+  });
+
   it('keeps marker order across images, videos and documents: one input per projected root', async () => {
     const content = store();
     const image = await createContentIngress(content).ingest(FRAMES[0]);
