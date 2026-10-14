@@ -102,6 +102,23 @@ describe('video commands', () => {
     expect(materialize(content, [composed.root]).inputs).toHaveLength(1);
   });
 
+  it('names nothing in its timeline that its OCI graph leaves out, so a copy of the video is whole', async () => {
+    const content = store();
+    const { frames, audio } = await parts(content);
+    const events: VideoEvent[] = [];
+    await run(function* () {
+      yield* Attachments.set(content);
+      const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } } });
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'g1', frames, audio, durationMs: 1250 });
+      for (let i = 0; i < 50 && !events.some(e => e.type === 'video:composed'); i++) yield* sleep(5);
+    });
+    const composed = events.find(e => e.type === 'video:composed') as Extract<VideoEvent, { type: 'video:composed' }>;
+    const manifest = content.getManifest(composed.root.digest)!;
+    const graph = new Set([manifest.config.digest, ...manifest.layers.map(l => l.digest)]);
+    const named = [...new TextDecoder().decode(content.get(manifest.config.digest)!).matchAll(/sha256:[0-9a-f]{64}/g)].map(m => m[0]);
+    expect(named.filter(d => !graph.has(d))).toEqual([]);
+  });
+
   it('without a transcription service, the soundtrack is reported untranscribed and the video still composes', async () => {
     const content = store();
     const { frames, audio } = await parts(content);

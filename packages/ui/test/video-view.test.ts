@@ -41,6 +41,11 @@ describe('videoTracks', () => {
     expect(videoTracks({ ...view, transcript: undefined }).captions).toBeUndefined();
   });
 
+  it('keeps a transcript that spans lines inside its cue: a blank line would end it', () => {
+    const captions = videoTracks({ ...view, transcript: [{ startMs: 0, endMs: 1250, text: 'first line\n\nsecond\r\nthird' }] }).captions!;
+    expect(captions).toBe(['WEBVTT', '', '00:00:00.000 --> 00:00:01.250', 'first line second third', ''].join('\n'));
+  });
+
   it('starts a chapter at a cited moment, so the time slider breaks there', () => {
     expect(videoTracks({ ...view, atMs: 500 }).chapters).toBe([
       'WEBVTT', '', '00:00:00.000 --> 00:00:00.500', 'the clip', '', '00:00:00.500 --> 00:00:01.250', 'cited in the report', '',

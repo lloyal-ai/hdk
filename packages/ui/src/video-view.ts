@@ -52,8 +52,9 @@ interface Cue { startMs: number; endMs: number; text: string }
 const pad = (n: number, width = 2): string => String(n).padStart(width, '0');
 const timestamp = (ms: number): string =>
   `${pad(Math.floor(ms / 3_600_000))}:${pad(Math.floor(ms / 60_000) % 60)}:${pad(Math.floor(ms / 1000) % 60)}.${pad(ms % 1000, 3)}`;
-/** Cue text cannot hold `-->`, and `&` and `<` begin markup. */
-const escape = (text: string): string => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+/** Cue text cannot hold `-->`, `&` and `<` begin markup, and a blank line ends the cue: one line, escaped. */
+const escape = (text: string): string =>
+  text.replace(/\s*[\r\n]+\s*/g, ' ').trim().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const webvtt = (cues: readonly Cue[]): string =>
   ['WEBVTT', '', ...cues.flatMap((c) => [`${timestamp(c.startMs)} --> ${timestamp(c.endMs)}`, c.text, ''])].join('\n');
 

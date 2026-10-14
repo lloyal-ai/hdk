@@ -17,7 +17,7 @@ import { resource, until, useAbortSignal, useScope } from 'effection';
 import type { Operation, Task } from 'effection';
 import { Attachments } from '@lloyal-labs/lloyal-agents';
 import { asAttachment, composeVideo, DIGEST_PATTERN } from '@lloyal-labs/media';
-import type { Attachment, Descriptor, Transcript, VideoMeta } from '@lloyal-labs/media';
+import type { Attachment, Descriptor, Transcript } from '@lloyal-labs/media';
 import type { UntranscribedWindow, VideoCapabilities, VideoCommand, VideoEvent } from '@lloyal-labs/binding';
 import { Services } from './services';
 import type { CommandGroup } from './serve-commands';
@@ -133,13 +133,12 @@ export function useVideoCommands({ wire, sampling = DEFAULT_VIDEO_SAMPLING }: Vi
           const task = yield* owner.spawn(function* () {
             try {
               const { transcript, untranscribed } = yield* transcribe(requestId, refs.audio);
-              const audio: VideoMeta['audio'] = refs.audio.map(({ root, startMs, endMs }) => ({ root, startMs, endMs }));
               // The composition is a promise; the scope's signal reaches it as a leaf, so a cancel
               // that lands while it reads the source stops it before it writes anything.
               const signal = yield* useAbortSignal();
               const root = yield* until(composeVideo(store, {
                 frames: refs.frames, sampling: timeline, durationMs: command.durationMs,
-                ...(transcript ? { transcript } : {}), ...(audio.length > 0 ? { audio } : {}),
+                ...(transcript ? { transcript } : {}),
                 ...(refs.source ? { source: refs.source } : {}),
               }, signal));
               yield* wire.send({ type: 'video:composed', requestId, root, untranscribed });

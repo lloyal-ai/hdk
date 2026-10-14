@@ -34,7 +34,7 @@ export function ProgressRing({ fraction, label, size = 44 }: ProgressRingProps):
       {...(fraction === null ? {} : { 'aria-valuenow': Math.round(shown * 100) })}
       style={{ position: 'relative', display: 'inline-block', width: size, height: size, lineHeight: 0 }}
     >
-      <style>{'@keyframes lloyal-ring { to { transform: rotate(360deg); } } .lloyal-ring-spin { animation: lloyal-ring 1s linear infinite; transform-origin: center; } @media (prefers-reduced-motion: reduce) { .lloyal-ring-spin { animation-duration: 3s; } }'}</style>
+      <style>{'@keyframes lloyal-ring { to { transform: rotate(360deg); } } .lloyal-ring-spin { animation: lloyal-ring 1s linear infinite; transform-origin: center; } @media (prefers-reduced-motion: reduce) { .lloyal-ring-spin { animation: none; } }'}</style>
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
         <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={track} strokeWidth={stroke} />
         <g className={fraction === null ? 'lloyal-ring-spin' : undefined}>

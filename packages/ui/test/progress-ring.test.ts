@@ -42,4 +42,9 @@ describe('ProgressRing', () => {
     expect(ring.textContent).not.toContain('%');
     expect(ring.querySelector('.lloyal-ring-spin')).not.toBeNull();
   });
+
+  it('holds still for a reader who asked for reduced motion: the words carry the progress', () => {
+    const ring = render({ fraction: null, label: 'Reading frames' });
+    expect(ring.querySelector('style')!.textContent).toMatch(/prefers-reduced-motion: reduce\)\s*\{\s*\.lloyal-ring-spin\s*\{\s*animation:\s*none/);
+  });
 });

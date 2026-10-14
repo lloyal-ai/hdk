@@ -107,15 +107,15 @@ describe('composeVideo', () => {
     await expect(compose({ frames: [...frames, { root: other, tMs: 900 }] })).rejects.toThrow(/share one size/);
     await expect(compose({ frames: [frames[0], { ...frames[2], tMs: 0 }] })).rejects.toThrow(/times must increase/);
     await expect(compose({ durationMs: 400 })).rejects.toThrow(/within the clip/);
+    // The cap it records is a cap it keeps: more frames than the sampling allows is refused, not stored.
+    await expect(compose({ sampling: { ...SAMPLING, maxFrames: 2 } })).rejects.toThrow(/at most 2 frames/);
     await expect(compose({ frames: [{ root: audio, tMs: 0 }] })).rejects.toThrow(/not an image/);
     await expect(compose({ source: { mediaType: 'video/mp4', digest: `sha256:${'0'.repeat(64)}`, size: 1 } })).rejects.toThrow(/source/);
     const notVideo = content.putBlob(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]), 'video/mp4');
     await expect(compose({ source: notVideo })).rejects.toThrow(/source/);
     await expect(compose({ transcript: { provenance: {}, segments: [{ startMs: 500, endMs: 100, text: 'x' }] } })).rejects.toThrow(/transcript/);
-    // A soundtrack window is a reference like a frame: it must be a recording this store admitted, inside the clip.
-    await expect(compose({ audio: [{ root: frames[0].root, startMs: 0, endMs: 500 }] })).rejects.toThrow(/window 0 is not a recording/);
-    await expect(compose({ audio: [{ root: audio, startMs: 0, endMs: 9000 }] })).rejects.toThrow(/window 0 must fall within the clip/);
-    await expect(compose({ audio: [{ root: audio, startMs: 0, endMs: 500 }] })).resolves.toBeDefined();
+    // A segment past the clip's end would be a caption, and a note to the model, with no moment to sit at.
+    await expect(compose({ transcript: { provenance: {}, segments: [{ startMs: 3000, endMs: 9000, text: 'x' }] } })).rejects.toThrow(/transcript segment 0 must fall within the clip/);
   });
 });
 
@@ -164,8 +164,6 @@ describe('guards', () => {
     expect(media.asVideoMeta({ ...meta, frames: [{ tMs: 500, frame: 0 }, { tMs: 0, frame: 1 }] })).toBeNull();
     expect(media.asVideoMeta({ ...meta, frames: [{ tMs: 0, frame: 0 }, { tMs: 0, frame: 1 }] })).toBeNull();
     expect(media.asVideoMeta({ ...meta, frames: [{ tMs: 0, frame: 0 }, { tMs: 1500, frame: 1 }] })).toBeNull();
-    const window = { startMs: 0, endMs: 1500, root: { mediaType: 'x', digest: `sha256:${'a'.repeat(64)}`, size: 1 } };
-    expect(media.asVideoMeta({ ...meta, audio: [window] })).toBeNull();
   });
 
   it('composes no timeline that would not read back: a rate JSON cannot hold is refused', async () => {

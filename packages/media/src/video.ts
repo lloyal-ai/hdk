@@ -12,7 +12,6 @@ import { representationsOf } from './attachment';
 import type { Attachment, Descriptor } from './attachment';
 import type { AttachmentStore } from './store';
 import { imageSize, PROJECTOR_FORMATS, VIDEO_CONTAINER_TYPES, sniffMediaType } from './media-type';
-import { AUDIO_CONFIG_TYPE } from './audio';
 
 export const VIDEO_CONFIG_TYPE = 'application/vnd.lloyal.video.v1+json' as const;
 export const TRANSCRIPT_MEDIA_TYPE = 'application/vnd.lloyal.transcript.v1+json' as const;
@@ -34,8 +33,6 @@ export interface VideoMeta {
   frames: { tMs: number; frame: number }[];
   /** The representation shown before playback, a frame index. */
   poster: number;
-  /** The soundtrack windows that were transcribed, each its own audio root. */
-  audio?: { startMs: number; endMs: number; root: Descriptor }[];
   sampling: VideoSampling;
 }
 
@@ -67,9 +64,6 @@ const increasing = (times: readonly unknown[]): boolean => times.every((t, i) =>
 /** A span inside a clip of `durationMs`. */
 const withinClip = (startMs: unknown, endMs: unknown, durationMs: number): boolean =>
   isMs(startMs) && isMs(endMs) && startMs <= endMs && endMs <= durationMs;
-const isDescriptor = (v: unknown): v is Descriptor =>
-  isObj(v) && typeof v.mediaType === 'string' && typeof v.digest === 'string' && Number.isSafeInteger(v.size);
-
 /** Narrow parsed JSON to a {@link Transcript}, or refuse it. */
 export function asTranscript(json: unknown): Transcript | null {
   if (!isObj(json) || !isObj(json.provenance) || !Array.isArray(json.segments)) return null;
@@ -84,10 +78,9 @@ export function asTranscript(json: unknown): Transcript | null {
 /** Narrow parsed JSON to a {@link VideoMeta}, or refuse it. */
 export function asVideoMeta(json: unknown): VideoMeta | null {
   if (!isObj(json)) return null;
-  const { width, height, durationMs, frames, poster, audio, sampling } = json;
+  const { width, height, durationMs, frames, poster, sampling } = json;
   const positive = (v: unknown): boolean => typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
   const frameOk = (f: unknown): boolean => isObj(f) && isMs(f.tMs) && isMs(f.frame);
-  const audioOk = (a: unknown): boolean => isObj(a) && isMs(durationMs) && withinClip(a.startMs, a.endMs, durationMs) && isDescriptor(a.root);
   const timesOk = (fs: unknown[]): boolean => {
     const times = fs.map(f => (f as { tMs: unknown }).tMs);
     return increasing(times) && isMs(durationMs) && (times[times.length - 1] as number) <= durationMs;
@@ -95,7 +88,7 @@ export function asVideoMeta(json: unknown): VideoMeta | null {
   const samplingOk = isObj(sampling) && typeof sampling.fps === 'number' && Number.isFinite(sampling.fps) && sampling.fps > 0 &&
     isMs(sampling.timestampIntervalMs) && positive(sampling.maxFrames);
   return positive(width) && positive(height) && isMs(durationMs) && Array.isArray(frames) && frames.length > 0 &&
-    frames.every(frameOk) && timesOk(frames) && isMs(poster) && (audio === undefined || (Array.isArray(audio) && audio.every(audioOk))) &&
+    frames.every(frameOk) && timesOk(frames) && isMs(poster) &&
     samplingOk
     ? json as unknown as VideoMeta
     : null;
@@ -109,16 +102,6 @@ function frameRepresentation(store: AttachmentStore, root: Attachment, index: nu
     throw new Error(`composeVideo: frame ${index} is not an image root in this store`);
   }
   return reps[0];
-}
-
-/** A soundtrack window must be an admitted recording in this store, inside the clip: refused naming the window otherwise. */
-function checkWindow(store: AttachmentStore, w: NonNullable<VideoMeta['audio']>[number], index: number, durationMs: number): void {
-  if (store.getManifest(w.root.digest)?.config.mediaType !== AUDIO_CONFIG_TYPE) {
-    throw new Error(`composeVideo: soundtrack window ${index} is not a recording in this store`);
-  }
-  if (!withinClip(w.startMs, w.endMs, durationMs)) {
-    throw new Error(`composeVideo: soundtrack window ${index} must fall within the clip`);
-  }
 }
 
 /**
@@ -139,11 +122,13 @@ export async function composeVideo(store: AttachmentStore, parts: {
   sampling: VideoSampling;
   durationMs: number;
   transcript?: Transcript;
-  audio?: VideoMeta['audio'];
   source?: Descriptor;
 }, signal?: AbortSignal): Promise<Attachment> {
-  const { frames, sampling, durationMs, transcript, audio } = parts;
+  const { frames, sampling, durationMs, transcript } = parts;
   if (frames.length === 0) throw new Error('composeVideo: a video needs at least one frame');
+  if (frames.length > sampling.maxFrames) {
+    throw new Error(`composeVideo: the sampling allows at most ${sampling.maxFrames} frames, not ${frames.length}`);
+  }
   const reps = frames.map((f, i) => frameRepresentation(store, f.root, i));
   const sizes = reps.map(r => {
     const bytes = store.get(r.digest);
@@ -159,8 +144,12 @@ export async function composeVideo(store: AttachmentStore, parts: {
   if (!isMs(durationMs) || frames[frames.length - 1].tMs > durationMs) {
     throw new Error('composeVideo: frame times must fall within the clip');
   }
-  audio?.forEach((w, i) => checkWindow(store, w, i, durationMs));
   if (transcript && !asTranscript(transcript)) throw new Error('composeVideo: the transcript is not well formed');
+  transcript?.segments.forEach((segment, i) => {
+    if (!withinClip(segment.startMs, segment.endMs, durationMs)) {
+      throw new Error(`composeVideo: transcript segment ${i} must fall within the clip`);
+    }
+  });
   // The source is a blob pushed by a client and stored as opaque bytes; what
   // it IS comes from its own leading bytes, never the descriptor's claim.
   const source = parts.source ? await storedContainer(store, parts.source.digest) : undefined;
@@ -172,7 +161,6 @@ export async function composeVideo(store: AttachmentStore, parts: {
     durationMs,
     frames: frames.map((f, i) => ({ tMs: f.tMs, frame: i })),
     poster: 0,
-    ...(audio && audio.length > 0 ? { audio } : {}),
     sampling: { ...sampling },
   };
   if (!asVideoMeta(meta)) throw new Error('composeVideo: the timeline is not well formed');

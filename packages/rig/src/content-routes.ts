@@ -399,6 +399,26 @@ export interface ContentRoutesOpts {
   uploads?: BlobUploads;
 }
 
+const WRITES = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
+
+/**
+ * Whether a write may proceed, by its `Origin`. CORS only hides a response: a
+ * page on any site can still send a simple POST and fill the store. So a write
+ * that names an origin must name this host's own (its `Host`, or the
+ * `X-Forwarded-Host` a proxy in front of it sets) or the configured one. A
+ * write with no `Origin` comes from a client that is not a browser page, and
+ * proceeds.
+ */
+function writeAllowed(headers: IncomingMessage['headers'], allowedOrigin: string | undefined): boolean {
+  const origin = headers.origin;
+  if (origin === undefined) return true;
+  if (origin === allowedOrigin) return true;
+  let host: string;
+  try { host = new URL(origin).host; } catch { return false; }
+  const forwarded = typeof headers['x-forwarded-host'] === 'string' ? headers['x-forwarded-host'].split(',')[0].trim() : undefined;
+  return host === headers.host || host === forwarded;
+}
+
 /** Headers a cross-origin client must be allowed to read: where its upload
  *  went, how far it got, and which part of a blob it was sent. */
 const EXPOSED_HEADERS = 'Location, Range, Content-Range, Accept-Ranges, Docker-Upload-UUID, Docker-Content-Digest';
@@ -525,6 +545,13 @@ export function createContentRoutes(
           'Access-Control-Allow-Methods': 'GET, HEAD, POST, PATCH, PUT, DELETE, OPTIONS',
           'Access-Control-Allow-Headers': 'Content-Type, Content-Range, Range',
         } });
+        return true;
+      }
+
+      // Refused before a byte of the body is read: a write from another site.
+      if (WRITES.has(method) && !writeAllowed(req.headers, opts.allowedOrigin)) {
+        fail(res, 403, 'writes are accepted from this host\'s own pages only');
+        req.resume();
         return true;
       }
 
