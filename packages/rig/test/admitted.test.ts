@@ -152,6 +152,20 @@ describe('admitted', () => {
       expect((out as { refused: string }).refused).toMatch(/would take 3,\d{3} tokens, but only 2,000 of the 10,000-token context are free/);
     });
 
+    it('judges the quote against what is free once it is known, not before: a prefill may land meanwhile', async () => {
+      const { store, image } = plant();
+      const ctx = new MockSessionContext({ nCtx: 10_000 });
+      ctx.mockImageCells = 3_000;
+      const price = ctx._cellsMultimodal.bind(ctx);
+      // Another branch's prefill lands while this turn is being priced, leaving 2,000 cells free.
+      ctx._cellsMultimodal = async (...args) => { ctx.cellsUsed = 8_000; return price(...args); };
+      const out = await run(function* () {
+        yield* priced(store, ctx);
+        return yield* admitted([image], { context: 0.5 });
+      });
+      expect((out as { refused: string }).refused).toMatch(/but only 2,000 of the 10,000-token context are free/);
+    });
+
     it('media the kernel cannot lay out is refused when priced, never thrown into the run', async () => {
       const { store, image } = plant();
       const ctx = new MockSessionContext({ nCtx: 10_000 });

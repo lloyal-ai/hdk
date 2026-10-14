@@ -16,8 +16,8 @@
 import { resource, until, useAbortSignal, useScope } from 'effection';
 import type { Operation, Task } from 'effection';
 import { Attachments } from '@lloyal-labs/lloyal-agents';
-import { asAttachment, composeVideo, DIGEST_PATTERN } from '@lloyal-labs/media';
-import type { Attachment, Descriptor, Transcript } from '@lloyal-labs/media';
+import { asAttachment, composeVideo, DIGEST_PATTERN, resolveAudio } from '@lloyal-labs/media';
+import type { Attachment, AttachmentStore, AudioAdmission, Descriptor, Transcript } from '@lloyal-labs/media';
 import type { UntranscribedWindow, VideoCapabilities, VideoCommand, VideoEvent } from '@lloyal-labs/binding';
 import { Services } from './services';
 import type { CommandGroup } from './serve-commands';
@@ -77,6 +77,29 @@ function references(command: Compose, maxFrames: number):
   };
 }
 
+/**
+ * The sentence refusing a soundtrack window, if one is not a recording this
+ * store admitted (read back under the admission limits it will be transcribed
+ * under) or runs past the clip. Checked before any window is transcribed, with
+ * or without a transcription service, as a frame is.
+ */
+function soundtrackRefusal(
+  store: AttachmentStore,
+  windows: readonly { root: Attachment; endMs: number }[],
+  durationMs: unknown,
+  limits?: Readonly<AudioAdmission>,
+): string | undefined {
+  const refusal = (w: { root: Attachment; endMs: number }, i: number): string | undefined => {
+    try {
+      resolveAudio(store, w.root, limits);
+    } catch (e) {
+      return `Soundtrack window ${i} is not an admitted recording: ${message(e)}`;
+    }
+    return isMs(durationMs) && w.endMs <= durationMs ? undefined : `Soundtrack window ${i} runs past the end of the clip.`;
+  };
+  return windows.map(refusal).find((r) => r !== undefined);
+}
+
 /** The commands that compose a video, for a harness to serve beside its own. */
 export function useVideoCommands({ wire, sampling = DEFAULT_VIDEO_SAMPLING }: VideoCommandsOptions): Operation<CommandGroup<VideoCommand>> {
   return resource(function* (provide) {
@@ -128,6 +151,11 @@ export function useVideoCommands({ wire, sampling = DEFAULT_VIDEO_SAMPLING }: Vi
           const refs = references(command, sampling.maxFrames);
           if ('refused' in refs) {
             yield* wire.send({ type: 'video:error', requestId, message: refs.refused });
+            return;
+          }
+          const unfit = soundtrackRefusal(store, refs.audio, command.durationMs, asr?.limits);
+          if (unfit !== undefined) {
+            yield* wire.send({ type: 'video:error', requestId, message: unfit });
             return;
           }
           const task = yield* owner.spawn(function* () {

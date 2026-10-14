@@ -102,6 +102,27 @@ describe('video commands', () => {
     expect(materialize(content, [composed.root]).inputs).toHaveLength(1);
   });
 
+  it('refuses a soundtrack window that is not an admitted recording, or runs past the clip, before transcribing anything', async () => {
+    const content = store();
+    const { frames, audio } = await parts(content);
+    for (const transcribing of [false, true]) {
+      const events: VideoEvent[] = [];
+      let heardAny = 0;
+      await run(function* () {
+        yield* Attachments.set(content);
+        yield* Services.set(transcribing ? { transcription: { limits: DEFAULT_AUDIO_ADMISSION, *transcribe(a) { heardAny++; return heard(a, 'x'); } } } : {});
+        const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } } });
+        yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'forged', frames, audio: [{ root: frames[0].root, startMs: 0, endMs: 500 }], durationMs: 1250 });
+        yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'late', frames, audio: [{ ...audio[0], startMs: 1000, endMs: 2000 }], durationMs: 1250 });
+        for (let i = 0; i < 50 && events.filter(e => e.type === 'video:error').length < 2; i++) yield* sleep(5);
+      });
+      expect(events).toContainEqual(expect.objectContaining({ type: 'video:error', requestId: 'forged', message: expect.stringMatching(/^Soundtrack window 0 is not an admitted recording/) }));
+      expect(events).toContainEqual({ type: 'video:error', requestId: 'late', message: 'Soundtrack window 0 runs past the end of the clip.' });
+      expect(events.some(e => e.type === 'video:composed')).toBe(false);
+      expect(heardAny).toBe(0);
+    }
+  });
+
   it('names nothing in its timeline that its OCI graph leaves out, so a copy of the video is whole', async () => {
     const content = store();
     const { frames, audio } = await parts(content);

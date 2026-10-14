@@ -100,9 +100,11 @@ export function* admitted(descriptors: readonly Descriptor[] = [], budget: Attac
  */
 function* overBudget(bitmaps: MultimodalInput[], context: number): Operation<string | undefined> {
   const ctx = yield* Ctx.expect();
-  const { nCtx, remaining } = new ContextPressure(ctx);
+  const { nCtx } = new ContextPressure(ctx);
   if (nCtx <= 0) return undefined;
   const cells = yield* waitUntilSettled(deltaCells(ctx, buildUserDeltaMultimodal(ctx, '', bitmaps)));
+  // Read once the quote is known: another branch may have prefilled while it was priced.
+  const { remaining } = new ContextPressure(ctx);
   const what = bitmaps.length === 1 ? 'That attachment' : 'Those attachments';
   const n = (v: number): string => v.toLocaleString('en-US');
   if (cells > Math.floor(nCtx * context)) {
