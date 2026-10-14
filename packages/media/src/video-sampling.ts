@@ -78,6 +78,13 @@ export interface SoundtrackWindow { bytes: Uint8Array; startMs: number; endMs: n
  * Qwen3-ASR toolkit uses to split long audio. Fed chunk by chunk, so only
  * about two windows of samples are held at once.
  */
+/**
+ * How long each soundtrack window runs: the timestamp interval, so a window's
+ * words join the timestamp that closes it, or 5 s when timestamps are off.
+ */
+export const soundtrackWindowMs = (sampling: Pick<VideoSampling, 'timestampIntervalMs'>): number =>
+  sampling.timestampIntervalMs > 0 ? sampling.timestampIntervalMs : 5000;
+
 export class SoundtrackCutter {
   private pending = new Float32Array(0);
   private startSample = 0;
@@ -85,6 +92,7 @@ export class SoundtrackCutter {
   private readonly slack: number;
 
   constructor(private readonly rate: number, windowMs: number) {
+    if (!(windowMs > 0)) throw new RangeError(`a soundtrack window must be longer than 0 ms, not ${windowMs}`);
     this.window = Math.round(rate * windowMs / 1000);
     this.slack = Math.round(this.window / 5);
   }

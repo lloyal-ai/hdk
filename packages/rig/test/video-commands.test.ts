@@ -165,4 +165,24 @@ describe('video commands', () => {
     expect(events.at(-1)).toEqual({ type: 'video:cancelled', requestId: 'v3' });
     expect(events.some(e => e.type === 'video:composed')).toBe(false);
   });
+
+  it('a compose under an id already in flight is refused, and the first stays cancellable', async () => {
+    const content = store();
+    const { frames, audio } = await parts(content);
+    const events: VideoEvent[] = [];
+    await run(function* () {
+      yield* Attachments.set(content);
+      yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, *transcribe() { yield* suspend(); return heard(audio[0].root, ''); } } });
+      const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } } });
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'v4', frames, audio, durationMs: 1250 });
+      yield* sleep(5);
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'v4', frames, durationMs: 1250 });
+      yield* sleep(5);
+      yield* group.handlers['video:cancel']!({ type: 'video:cancel', requestId: 'v4' });
+      yield* sleep(5);
+    });
+    expect(events).toContainEqual({ type: 'video:error', requestId: 'v4', message: 'A video is already being composed under that request.' });
+    expect(events.at(-1)).toEqual({ type: 'video:cancelled', requestId: 'v4' });
+    expect(events.some(e => e.type === 'video:composed')).toBe(false);
+  });
 });

@@ -12,7 +12,7 @@
  */
 import { useEffect, useState } from 'react';
 import { ingestMedia, pushBlob } from '@lloyal-labs/media';
-import { extractAudioWindows, sampleVideo } from '@lloyal-labs/media/client';
+import { extractAudioWindows, sampleVideo, soundtrackWindowMs } from '@lloyal-labs/media/client';
 import type { Attachment, Descriptor } from '@lloyal-labs/media';
 import type { UntranscribedWindow, VideoCapabilities, VideoCommand, VideoEvent, VideoFrameRef, VideoAudioRef } from '@lloyal-labs/binding';
 import { useAvailability, useContentOrigin, useHarness } from './provider.js';
@@ -64,7 +64,7 @@ export async function ingestVideo(opts: {
   }
   const audio: VideoAudioRef[] = [];
   if (capabilities.transcription) {
-    for await (const window of extractAudioWindows(file, sampling.timestampIntervalMs, { ...(signal ? { signal } : {}) })) {
+    for await (const window of extractAudioWindows(file, soundtrackWindowMs(sampling), { ...(signal ? { signal } : {}) })) {
       audio.push({ root: await ingestMedia(origin, window.bytes, { ...(signal ? { signal } : {}) }), startMs: window.startMs, endMs: window.endMs });
     }
   }

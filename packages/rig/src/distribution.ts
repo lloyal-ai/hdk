@@ -81,10 +81,10 @@ const empty = (status: number, headers: Record<string, string> = {}): ContentRep
 /** `Range` for a session: the bytes received, inclusive. Empty is `0-0`, as registries answer it. */
 const received = (size: number): string => `0-${Math.max(0, size - 1)}`;
 
-/** `Content-Range: <start>-<end>` → the start, or null when malformed. */
-const rangeStart = (header: string): number | null => {
+/** `Content-Range: <start>-<end>` → both ends, or null when malformed. */
+const chunkRange = (header: string): { start: number; end: number } | null => {
   const m = /^(?:bytes )?(\d+)-(\d+)$/.exec(header.trim());
-  return m ? Number(m[1]) : null;
+  return m ? { start: Number(m[1]), end: Number(m[2]) } : null;
 };
 
 /**
@@ -190,11 +190,19 @@ export class BlobUploads {
     return empty(202, { Location: location, Range: '0-0', 'Docker-Upload-UUID': session.id });
   }
 
-  /** Append in order: a chunk that does not start where the last ended is refused, not reordered. */
+  /**
+   * Append in order: a chunk that does not start where the last ended is
+   * refused, not reordered, and so is one whose range does not describe its
+   * body, byte for byte.
+   */
   private _append(session: StagedBlob, req: DistributionRequest): ContentReply | null {
     if (req.contentRange !== undefined) {
-      const start = rangeStart(req.contentRange);
-      if (start === null) return ociError(400, 'BLOB_UPLOAD_INVALID', 'malformed Content-Range');
+      const range = chunkRange(req.contentRange);
+      const length = req.body?.length ?? 0;
+      if (range === null || range.end < range.start || range.end - range.start + 1 !== length) {
+        return ociError(400, 'BLOB_UPLOAD_INVALID', `Content-Range must name the ${length} bytes sent`);
+      }
+      const { start } = range;
       if (start !== session.size) {
         const refusal = ociError(416, 'BLOB_UPLOAD_INVALID', `chunk must start at ${session.size}`);
         return { ...refusal, headers: { ...refusal.headers, Range: received(session.size) } };

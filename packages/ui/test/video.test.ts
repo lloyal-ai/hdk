@@ -6,7 +6,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Frame, VideoCommand, VideoEvent } from '@lloyal-labs/binding';
 import { MANIFEST_TYPE, ingestMedia, pushBlob } from '@lloyal-labs/media';
-import { sampleVideo } from '@lloyal-labs/media/client';
+import { extractAudioWindows, sampleVideo } from '@lloyal-labs/media/client';
 import { ingestVideo } from '../src/video';
 
 vi.mock('@lloyal-labs/media', async (original) => ({ ...await original<object>(), ingestMedia: vi.fn(), pushBlob: vi.fn() }));
@@ -14,6 +14,7 @@ vi.mock('@lloyal-labs/media', async (original) => ({ ...await original<object>()
 vi.mock('@lloyal-labs/media/client', () => ({
   sampleVideo: vi.fn(async () => ({ durationMs: 2000, frames: [0, 250, 500, 750, 1000, 1250, 1500, 1750].map(tMs => ({ tMs, bytes: new Uint8Array([0xff, 0xd8, 0xff]) })) })),
   extractAudioWindows: vi.fn(async function* () {}),
+  soundtrackWindowMs: (s: { timestampIntervalMs: number }) => (s.timestampIntervalMs > 0 ? s.timestampIntervalMs : 5000),
 }));
 
 const SAMPLING = { fps: 4, timestampIntervalMs: 5000, maxFrames: 64, maxEdgePx: 640 };
@@ -134,5 +135,21 @@ describe('ingestVideo, cancelled while the host composes', () => {
     await ingestVideo({ origin: '', bridge: host.bridge, file: new Blob([new Uint8Array(10)]), capabilities, signal: abort.signal });
     abort.abort();
     expect(host.sent).toEqual(['video:compose']);
+  });
+});
+
+describe('ingestVideo with timestamps off', () => {
+  it('still cuts the soundtrack into windows the transcription service can take', async () => {
+    vi.mocked(pushBlob).mockResolvedValue({ mediaType: 'video/mp4', digest: `sha256:${'d'.repeat(64)}`, size: 2518 });
+    vi.mocked(ingestMedia).mockImplementation(async () => ({ mediaType: MANIFEST_TYPE, digest: `sha256:${'e'.repeat(64)}`, size: 1 }));
+    const listeners: Array<(f: Frame<VideoEvent>) => void> = [];
+    const bridge = {
+      onEvent: (cb: (f: Frame<VideoEvent>) => void) => { listeners.push(cb); return () => { listeners.splice(listeners.indexOf(cb), 1); }; },
+      send: (c: VideoCommand) => {
+        if (c.type === 'video:compose') queueMicrotask(() => [...listeners].forEach(l => l({ ev: { type: 'video:composed', requestId: c.requestId, root: { mediaType: MANIFEST_TYPE, digest: `sha256:${'f'.repeat(64)}`, size: 1 }, untranscribed: [] } } as unknown as Frame<VideoEvent>)));
+      },
+    };
+    await ingestVideo({ origin: '', bridge, file: new Blob([new Uint8Array(10)]), capabilities: { sampling: { ...SAMPLING, timestampIntervalMs: 0 }, transcription: true } });
+    expect(vi.mocked(extractAudioWindows).mock.calls.at(-1)?.[1]).toBe(5000);
   });
 });

@@ -378,6 +378,9 @@ export class MockSessionContext implements SessionContext {
     inputs: MultimodalInput[],
     _audioLimits?: AudioLimits,
   ): Promise<number> {
+    // The kernel prices by laying the video out, so what prefill refuses cannot be priced either.
+    const refusal = inputs.map(videoRefusal).find(Boolean);
+    if (refusal) throw new Error(refusal);
     return this._mockCost(sepTokens, prompt, inputs, this.mockImageCells);
   }
 

@@ -120,6 +120,11 @@ export function useVideoCommands({ wire, sampling = DEFAULT_VIDEO_SAMPLING }: Vi
         *'video:compose'(command) {
           if (typeof command.requestId !== 'string' || !command.requestId || command.requestId.length > 128) return;
           const { requestId } = command;
+          // One task per id: a second under the same id would take its place and leave the first uncancellable.
+          if (composing.has(requestId)) {
+            yield* wire.send({ type: 'video:error', requestId, message: 'A video is already being composed under that request.' });
+            return;
+          }
           const refs = references(command, sampling.maxFrames);
           if ('refused' in refs) {
             yield* wire.send({ type: 'video:error', requestId, message: refs.refused });

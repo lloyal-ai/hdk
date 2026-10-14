@@ -141,6 +141,28 @@ describe('admitted', () => {
       expect((out as { refused: string }).refused).toMatch(/would take 6,\d{3} of the 10,000-token context; this harness lets attachments fill up to 50% of it/);
     });
 
+    it('a turn within the share but larger than what the context has free is refused: it would overflow', async () => {
+      const { store, image } = plant();
+      const ctx = new MockSessionContext({ nCtx: 10_000, cellsUsed: 8_000 });
+      ctx.mockImageCells = 3_000;
+      const out = await run(function* () {
+        yield* priced(store, ctx);
+        return yield* admitted([image], { context: 0.5 });
+      });
+      expect((out as { refused: string }).refused).toMatch(/would take 3,\d{3} tokens, but only 2,000 of the 10,000-token context are free/);
+    });
+
+    it('media the kernel cannot lay out is refused when priced, never thrown into the run', async () => {
+      const { store, image } = plant();
+      const ctx = new MockSessionContext({ nCtx: 10_000 });
+      ctx._cellsMultimodal = async () => { throw new Error('MtmdSource - video timestamps must increase'); };
+      const out = await run(function* () {
+        yield* priced(store, ctx);
+        return yield* admitted([image], { context: 0.5 });
+      });
+      expect((out as { refused: string }).refused).toBe("That attachment can't be read in: MtmdSource - video timestamps must increase");
+    });
+
     it('the limit is inclusive: exactly the share is admitted, one cell over is not', async () => {
       const { store, image } = plant();
       const ctx = new MockSessionContext({ nCtx: 10_000 });

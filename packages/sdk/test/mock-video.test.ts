@@ -55,4 +55,11 @@ describe('mock video', () => {
     }
     expect(ctx.cellsUsed).toBe(0);
   });
+
+  it('refuses to price an invalid video, as the kernel does: a quote never admits what prefill would refuse', async () => {
+    const ctx = new MockSessionContext();
+    for (const [input, reason] of [[video(0), /at least one frame/], [video(3, [0, 500, 250]), /timestamps must increase/]] as const) {
+      await expect(deltaCells(ctx, buildUserDeltaMultimodal(ctx, '', [input]))).rejects.toThrow(reason);
+    }
+  });
 });

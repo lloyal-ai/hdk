@@ -80,22 +80,38 @@ export function* admitted(descriptors: readonly Descriptor[] = [], budget: Attac
       return { refused: message(err) };
     }
     if (context !== undefined) {
-      const refusal = yield* overBudget(bitmaps, context);
-      if (refusal) return { refused: refusal };
+      try {
+        const refusal = yield* overBudget(bitmaps, context);
+        if (refusal) return { refused: refusal };
+      } catch (err) {
+        // Pricing lays the media out as prefill would; what it cannot lay out, prefill would refuse.
+        return { refused: `That attachment can't be read in: ${message(err)}` };
+      }
     }
   }
   return { roots, bitmaps, projected, videos };
 }
 
-/** The sentence refusing media that would fill more than `context` of the context, if it would. */
+/**
+ * The sentence refusing media that would fill more than `context` of the
+ * context, or more than the context has free now, if it would. Either way the
+ * prefill would cost more than it may: past the share by policy, past what is
+ * free by overflowing.
+ */
 function* overBudget(bitmaps: MultimodalInput[], context: number): Operation<string | undefined> {
   const ctx = yield* Ctx.expect();
-  const { nCtx } = new ContextPressure(ctx);
+  const { nCtx, remaining } = new ContextPressure(ctx);
   if (nCtx <= 0) return undefined;
   const cells = yield* waitUntilSettled(deltaCells(ctx, buildUserDeltaMultimodal(ctx, '', bitmaps)));
-  const allowed = Math.floor(nCtx * context);
-  if (cells <= allowed) return undefined;
   const what = bitmaps.length === 1 ? 'That attachment' : 'Those attachments';
-  return `${what} would take ${cells.toLocaleString('en-US')} of the ${nCtx.toLocaleString('en-US')}-token context; ` +
-    `this harness lets attachments fill up to ${Math.round(context * 100)}% of it. Try a shorter clip or fewer attachments.`;
+  const n = (v: number): string => v.toLocaleString('en-US');
+  if (cells > Math.floor(nCtx * context)) {
+    return `${what} would take ${n(cells)} of the ${n(nCtx)}-token context; ` +
+      `this harness lets attachments fill up to ${Math.round(context * 100)}% of it. Try a shorter clip or fewer attachments.`;
+  }
+  if (cells > remaining) {
+    return `${what} would take ${n(cells)} tokens, but only ${n(remaining)} of the ${n(nCtx)}-token context are free now. ` +
+      'Try a shorter clip, fewer attachments, or a new brief.';
+  }
+  return undefined;
 }

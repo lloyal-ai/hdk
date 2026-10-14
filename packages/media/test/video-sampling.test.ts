@@ -3,7 +3,7 @@
  * a soundtrack is cut into windows the transcription service admits.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SoundtrackCutter, captureFrames, extractAudioWindows, fitEdge, frameTimes, pcm16Wav, quietestCut, sampleVideo } from '../src/video-sampling';
+import { SoundtrackCutter, captureFrames, extractAudioWindows, fitEdge, frameTimes, pcm16Wav, quietestCut, sampleVideo, soundtrackWindowMs } from '../src/video-sampling';
 import type { SampledFrame, SoundtrackWindow } from '../src/video-sampling';
 
 // Stand-in decoder: a 2-second, 320×240 clip whose frames are shown at 8 fps. A test sets the soundtrack:
@@ -72,6 +72,13 @@ describe('cutting a soundtrack', () => {
     expect(windows[0].startMs).toBe(0);
     for (let i = 1; i < windows.length; i++) expect(windows[i].startMs).toBe(windows[i - 1].endMs);
     expect(windows.at(-1)!.endMs).toBe(2700);
+  });
+
+  it('cuts at the timestamp interval, and at 5 s when timestamps are off; never at nothing', () => {
+    expect(soundtrackWindowMs({ timestampIntervalMs: 5000 })).toBe(5000);
+    expect(soundtrackWindowMs({ timestampIntervalMs: 2000 })).toBe(2000);
+    expect(soundtrackWindowMs({ timestampIntervalMs: 0 })).toBe(5000);
+    expect(() => new SoundtrackCutter(16000, 0)).toThrow(RangeError);
   });
 
   it('encodes mono PCM16 WAV the transcription service admits', () => {

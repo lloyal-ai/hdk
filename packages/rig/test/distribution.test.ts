@@ -70,6 +70,23 @@ describe('the blob upload table', () => {
     expect(uploads.resolve(req('HEAD', `/v2/lloyal/sources/blobs/${digestOf(MP4)}`))!.headers['Content-Length']).toBe(String(MP4.length));
   });
 
+  it('refuses a chunk whose range does not describe its body, and stages nothing from it', () => {
+    const { content } = store();
+    const uploads = new BlobUploads(content, content);
+    const location = uploads.resolve(req('POST', '/v2/r/blobs/uploads/'))!.headers.Location;
+    const claims = [
+      { contentRange: '0-0', body: MP4.subarray(0, 100) },     // claims one byte, sends a hundred
+      { contentRange: '0-99', body: MP4.subarray(0, 10) },     // claims a hundred, sends ten
+      { contentRange: '5-0', body: MP4.subarray(0, 1) },       // reversed
+    ];
+    for (const claim of claims) {
+      const reply = uploads.resolve(req('PATCH', location, claim))!;
+      expect(reply.status, claim.contentRange).toBe(400);
+      expect(uploads.resolve(req('GET', location))!.headers.Range).toBe('0-0');
+    }
+    expect(uploads.resolve(req('PATCH', location, { contentRange: '0-99', body: MP4.subarray(0, 100) }))!.status).toBe(202);
+  });
+
   it('uploads in one request when the digest rides the POST', () => {
     const { content } = store();
     const reply = new BlobUploads(content, content).resolve(req('POST', '/v2/r/blobs/uploads/', { query: { digest: digestOf(MP4) }, body: MP4 }))!;
