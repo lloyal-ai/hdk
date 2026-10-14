@@ -12,7 +12,7 @@
  *
  * @category UI
  */
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import type { CSSProperties, ReactElement } from 'react';
 import { Video, VideoPlayer as Player, VideoSkin } from '@videojs/react/video';
 import { videoTracks } from './video-view.js';
@@ -52,18 +52,28 @@ export interface VideoPlayerProps {
   className?: string;
 }
 
+/** Open at `atMs`: at once when the media already knows its length, else when it learns it. */
+function useStartAt(atMs: number | undefined, src: string) {
+  const media = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const element = media.current;
+    if (!element || atMs === undefined) return;
+    const seek = (): void => { element.currentTime = atMs / 1000; };
+    if (element.readyState >= HTMLMediaElement.HAVE_METADATA) seek();
+    else element.addEventListener('loadedmetadata', seek, { once: true });
+    return () => element.removeEventListener('loadedmetadata', seek);
+  }, [atMs, src]);
+  return media;
+}
+
 export function VideoPlayer({ video, title, style, className }: VideoPlayerProps): ReactElement {
   const tracks = useTrackUrls(video);
+  const media = useStartAt(video.atMs, video.src);
   return (
     <Player title={title} poster={video.poster}>
       <VideoSkin style={{ ...THEME, ...style }} {...(className ? { className } : {})}>
         {/* CORS mode: the content plane answers every read with Access-Control-Allow-Origin. */}
-        <Video
-          src={video.src}
-          crossOrigin="anonymous"
-          playsInline
-          onLoadedMetadata={(e) => { if (video.atMs !== undefined) e.currentTarget.currentTime = video.atMs / 1000; }}
-        >
+        <Video ref={media} src={video.src} crossOrigin="anonymous" playsInline>
           <track kind="metadata" label="thumbnails" src={tracks.thumbnails} default />
           {tracks.captions && <track kind="captions" label="Transcript" srcLang="und" src={tracks.captions} default />}
           {tracks.chapters && <track kind="chapters" label="Chapters" srcLang="und" src={tracks.chapters} default />}

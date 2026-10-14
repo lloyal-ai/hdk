@@ -55,6 +55,18 @@ describe('the video lightbox', () => {
     expect(container.textContent).toContain('from 0:05');
   });
 
+  it('opens at the cited moment even when the media had its metadata before the player looked', async () => {
+    const proto = HTMLMediaElement.prototype;
+    const ready = Object.getOwnPropertyDescriptor(proto, 'readyState')!;
+    Object.defineProperty(proto, 'readyState', { configurable: true, get: () => 1 });
+    try {
+      await show({ ...view, src: 'http://host/source', atMs: 5000 });
+      expect(container.querySelector('video')!.currentTime).toBe(5);
+    } finally {
+      Object.defineProperty(proto, 'readyState', ready);
+    }
+  });
+
   it('lets go of its track files when it closes', async () => {
     await show({ ...view, src: 'http://host/source' });
     expect(made).toHaveLength(2);
