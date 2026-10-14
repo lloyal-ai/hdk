@@ -78,7 +78,9 @@ export async function ingestVideo(opts: {
   }
   const audio: VideoAudioRef[] = [];
   if (capabilities.transcription) {
-    for await (const window of extractAudioWindows(file, soundtrackWindowMs(sampling), { ...(signal ? { signal } : {}) })) {
+    for await (const window of extractAudioWindows(file, soundtrackWindowMs(sampling, capabilities.transcription), {
+      ...(signal ? { signal } : {}), maxSampleRate: capabilities.transcription.maxSampleRate,
+    })) {
       audio.push({ root: await ingestMedia(origin, window.bytes, { ...(signal ? { signal } : {}) }), startMs: window.startMs, endMs: window.endMs });
     }
   }

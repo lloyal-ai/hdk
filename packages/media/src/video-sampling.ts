@@ -15,6 +15,7 @@
  */
 import { ALL_FORMATS, AudioBufferSink, BlobSource, CanvasSink, Input } from 'mediabunny';
 import type { VideoSampling } from './video';
+import type { AudioAdmission } from './audio';
 
 // ── Pure: what to sample, and how a soundtrack is cut ────────────────────────
 
@@ -78,12 +79,30 @@ export interface SoundtrackWindow { bytes: Uint8Array; startMs: number; endMs: n
  * Qwen3-ASR toolkit uses to split long audio. Fed chunk by chunk, so only
  * about two windows of samples are held at once.
  */
+/** The highest rate a window is written at, unless the transcription service admits less; higher sources are decimated. */
+const MAX_WINDOW_RATE = 48_000;
+/** A PCM WAV header's bytes, ahead of its samples. */
+const WAV_HEADER_BYTES = 44;
+/** How far past its nominal length the cutter may end a window: a fifth, its search slack. */
+const CUT_SLACK = 1 / 5;
+
 /**
  * How long each soundtrack window runs: the timestamp interval, so a window's
- * words join the timestamp that closes it, or 5 s when timestamps are off.
+ * words join the timestamp that closes it, or 5 s when timestamps are off. A
+ * transcription service's limits cap it, with room for the cutter, which may
+ * end a window up to a fifth past its nominal length: within the duration the
+ * service admits, and within its bytes as mono PCM16 at the rate written.
  */
-export const soundtrackWindowMs = (sampling: Pick<VideoSampling, 'timestampIntervalMs'>): number =>
-  sampling.timestampIntervalMs > 0 ? sampling.timestampIntervalMs : 5000;
+export function soundtrackWindowMs(
+  sampling: Pick<VideoSampling, 'timestampIntervalMs'>,
+  limits?: Pick<AudioAdmission, 'maxBytes' | 'maxDurationSeconds' | 'maxSampleRate'>,
+): number {
+  const wanted = sampling.timestampIntervalMs > 0 ? sampling.timestampIntervalMs : 5000;
+  if (!limits) return wanted;
+  const rate = Math.min(MAX_WINDOW_RATE, limits.maxSampleRate);
+  const admitted = Math.min(limits.maxDurationSeconds * 1000, ((limits.maxBytes - WAV_HEADER_BYTES) / 2 / rate) * 1000);
+  return Math.max(1, Math.floor(Math.min(wanted, admitted / (1 + CUT_SLACK))));
+}
 
 export class SoundtrackCutter {
   private pending = new Float32Array(0);
@@ -94,7 +113,7 @@ export class SoundtrackCutter {
   constructor(private readonly rate: number, windowMs: number) {
     if (!(windowMs > 0)) throw new RangeError(`a soundtrack window must be longer than 0 ms, not ${windowMs}`);
     this.window = Math.round(rate * windowMs / 1000);
-    this.slack = Math.round(this.window / 5);
+    this.slack = Math.round(this.window * CUT_SLACK);
   }
 
   /** Add samples; returns the windows they complete. */
@@ -151,8 +170,12 @@ export async function sampleVideo(
   sampling: VideoSampling & { maxEdgePx: number },
   options: { signal?: AbortSignal } = {},
 ): Promise<{ frames: SampledFrame[]; durationMs: number }> {
-  options.signal?.throwIfAborted();
+  const { signal } = options;
+  signal?.throwIfAborted();
   const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
+  // Disposing rejects a decode still waiting, so an abort never waits for the next frame.
+  const stop = (): void => input.dispose();
+  signal?.addEventListener('abort', stop, { once: true });
   try {
     const track = await input.getPrimaryVideoTrack();
     if (!track || !(await track.canDecode())) throw new Error('This browser cannot decode the video in that file.');
@@ -162,7 +185,7 @@ export async function sampleVideo(
     const sink = new CanvasSink(track, { ...size, fit: 'fill' });
     const frames: SampledFrame[] = [];
     for await (const wrapped of sink.canvasesAtTimestamps(frameTimes(durationS, sampling).map(t => first + t))) {
-      options.signal?.throwIfAborted();
+      signal?.throwIfAborted();
       if (!wrapped) continue;
       const tMs = Math.round((wrapped.timestamp - first) * 1000);
       // A sparse source repeats a frame for nearby sample times; each frame is kept once.
@@ -171,13 +194,16 @@ export async function sampleVideo(
     }
     if (frames.length === 0) throw new Error('No frames could be read from that video.');
     return { frames, durationMs: Math.round(durationS * 1000) };
+  } catch (e) {
+    // A disposed input fails its read with its own error; the caller asked to stop, so it hears why.
+    signal?.throwIfAborted();
+    throw e;
   } finally {
+    signal?.removeEventListener('abort', stop);
     input.dispose();
   }
 }
 
-/** The highest rate the transcription service admits; higher sources are decimated to it. */
-const MAX_WINDOW_RATE = 48_000;
 
 /** Mono samples of one decoded buffer, decimated by `step`. */
 function mixDown(buffer: AudioBuffer, step: number): Float32Array {
@@ -208,9 +234,11 @@ function mixDown(buffer: AudioBuffer, step: number): Float32Array {
 export async function* extractAudioWindows(
   file: Blob,
   windowMs: number,
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; maxSampleRate?: number } = {},
 ): AsyncGenerator<SoundtrackWindow> {
   const { signal } = options;
+  // Written no faster than the transcription service admits.
+  const ceiling = Math.min(MAX_WINDOW_RATE, options.maxSampleRate ?? MAX_WINDOW_RATE);
   signal?.throwIfAborted();
   const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
   const stop = (): void => input.dispose();
@@ -227,7 +255,7 @@ export async function* extractAudioWindows(
     let fed = 0;   // samples given to the cutter: the clip time it has reached
     for await (const { buffer, timestamp } of new AudioBufferSink(track).buffers()) {
       signal?.throwIfAborted();
-      const step = Math.ceil(buffer.sampleRate / MAX_WINDOW_RATE);
+      const step = Math.ceil(buffer.sampleRate / ceiling);
       rate ||= buffer.sampleRate / step;
       cutter ??= new SoundtrackCutter(rate, windowMs);
       const end = Math.round(endsAtS * rate);

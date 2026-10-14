@@ -12,7 +12,7 @@
  *
  * @category UI
  */
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties, ReactElement, RefObject } from 'react';
 import { Video, VideoPlayer as Player, VideoSkin } from '@videojs/react/video';
 import { videoTracks } from './video-view.js';
@@ -27,18 +27,27 @@ const THEME = {
   '--media-font-family': 'var(--harness-font, system-ui, sans-serif)',
 } as CSSProperties;
 
-/** Each track's WebVTT as a `blob:` URL (a page's CSP admits `blob:` media), let go when the view changes. */
-function useTrackUrls(view: VideoView): { thumbnails: string; captions?: string; chapters?: string } {
-  const urls = useMemo(() => {
+type TrackUrls = { thumbnails: string; captions?: string; chapters?: string };
+
+/**
+ * Each track's WebVTT as a `blob:` URL (a page's CSP admits `blob:` media).
+ * Made by the effect that lets them go, so every setup revokes only its own:
+ * under StrictMode, which sets effects up, tears them down and sets them up
+ * again, the tracks point at the second setup's live files. Null until then.
+ */
+function useTrackUrls(view: VideoView): TrackUrls | null {
+  const [urls, setUrls] = useState<TrackUrls | null>(null);
+  useEffect(() => {
     const url = (vtt: string): string => URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' }));
     const tracks = videoTracks(view, document.baseURI);
-    return {
+    const made: TrackUrls = {
       thumbnails: url(tracks.thumbnails),
       ...(tracks.captions ? { captions: url(tracks.captions) } : {}),
       ...(tracks.chapters ? { chapters: url(tracks.chapters) } : {}),
     };
+    setUrls(made);
+    return () => Object.values(made).forEach((u) => URL.revokeObjectURL(u));
   }, [view]);
-  useEffect(() => () => Object.values(urls).forEach((u) => URL.revokeObjectURL(u)), [urls]);
   return urls;
 }
 
@@ -106,9 +115,9 @@ export function VideoPlayer({ video, title, style, className }: VideoPlayerProps
       <VideoSkin style={{ ...THEME, ...style }} {...(className ? { className } : {})}>
         {/* CORS mode: the content plane answers every read with Access-Control-Allow-Origin. */}
         <Video ref={media} src={video.src} crossOrigin="anonymous" playsInline>
-          <track kind="metadata" label="thumbnails" src={tracks.thumbnails} default />
-          {tracks.captions && <track kind="captions" label="Transcript" srcLang="und" src={tracks.captions} default />}
-          {tracks.chapters && <track kind="chapters" label="Chapters" srcLang="und" src={tracks.chapters} default />}
+          {tracks && <track kind="metadata" label="thumbnails" src={tracks.thumbnails} default />}
+          {tracks?.captions && <track kind="captions" label="Transcript" srcLang="und" src={tracks.captions} default />}
+          {tracks?.chapters && <track kind="chapters" label="Chapters" srcLang="und" src={tracks.chapters} default />}
         </Video>
       </VideoSkin>
     </Player>

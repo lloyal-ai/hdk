@@ -140,7 +140,7 @@ export function useVideoCommands({ wire, sampling = DEFAULT_VIDEO_SAMPLING }: Vi
     yield* provide({
       handlers: {
         *'video:describe'() {
-          yield* wire.send({ type: 'video:capabilities', capabilities: { sampling, transcription: Boolean(asr) } });
+          yield* wire.send({ type: 'video:capabilities', capabilities: { sampling, transcription: asr?.limits ?? null } });
         },
         *'video:compose'(command) {
           if (typeof command.requestId !== 'string' || !command.requestId || command.requestId.length > 128) return;

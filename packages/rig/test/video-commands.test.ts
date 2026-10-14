@@ -61,14 +61,19 @@ const heard = (audio: Attachment, text: string, silent = false): Transcription =
 });
 
 describe('video commands', () => {
-  it('describes the sampling it composes under, and whether a soundtrack can be transcribed', async () => {
-    const events: VideoEvent[] = [];
-    await run(function* () {
-      yield* Attachments.set(store());
-      const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } } });
-      yield* group.handlers['video:describe']!({ type: 'video:describe' });
-    });
-    expect(events).toEqual([{ type: 'video:capabilities', capabilities: { sampling: DEFAULT_VIDEO_SAMPLING, transcription: false } }]);
+  it('describes the sampling it composes under, and the limits a soundtrack window must meet to be transcribed', async () => {
+    const limits = { ...DEFAULT_AUDIO_ADMISSION, maxDurationSeconds: 2 };
+    for (const bound of [false, true]) {
+      const events: VideoEvent[] = [];
+      await run(function* () {
+        yield* Attachments.set(store());
+        yield* Services.set(bound ? { transcription: { limits, *transcribe() { throw new Error('unused'); } } } : {});
+        const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } } });
+        yield* group.handlers['video:describe']!({ type: 'video:describe' });
+      });
+      // No service, no limits: the page extracts no soundtrack.
+      expect(events).toEqual([{ type: 'video:capabilities', capabilities: { sampling: DEFAULT_VIDEO_SAMPLING, transcription: bound ? limits : null } }]);
+    }
   });
 
   it('composes the frames, transcribes the soundtrack window by window, skips silence and reports failures', async () => {

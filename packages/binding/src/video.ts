@@ -1,4 +1,4 @@
-import type { Attachment, Descriptor, VideoSampling } from '@lloyal-labs/media';
+import type { Attachment, AudioAdmission, Descriptor, VideoSampling } from '@lloyal-labs/media';
 
 /** One sampled frame: an admitted image root and the time it was sampled at. */
 export interface VideoFrameRef {
@@ -23,8 +23,12 @@ export interface UntranscribedWindow {
 /** What the page needs to sample a clip the way this host will compose it. */
 export interface VideoCapabilities {
   sampling: VideoSampling & { maxEdgePx: number };
-  /** Whether a soundtrack can become a transcript here; the page extracts audio only then. */
-  transcription: boolean;
+  /**
+   * The limits each soundtrack window must meet to be transcribed here, or
+   * null when no transcription service is bound: the page extracts audio only
+   * when there are limits, and cuts its windows to meet them.
+   */
+  transcription: Readonly<AudioAdmission> | null;
 }
 
 /**

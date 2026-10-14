@@ -11,7 +11,7 @@ import type { Attachment, AttachmentManifest, Descriptor } from './attachment';
 import type { AttachmentStore } from './store';
 import { createHash, randomBytes } from 'node:crypto';
 import type { Hash } from 'node:crypto';
-import { appendFileSync, closeSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 
@@ -249,7 +249,14 @@ export class FileAttachmentStore implements AttachmentStore, BlobStaging {
       get size() { return size; },
       append(bytes) {
         if (!open) throw new Error('this upload is closed');
-        appendFileSync(tmp, bytes);
+        try {
+          appendFileSync(tmp, bytes);
+        } catch (e) {
+          // Part of the chunk may be on disk while the hash has seen none of it. Rolled back to what the
+          // hash has seen, a retry stays byte for byte with the digest; if even that fails, the upload closes.
+          try { truncateSync(tmp, size); } catch { close(); }
+          throw e;
+        }
         hash.update(bytes);
         size += bytes.byteLength;
       },

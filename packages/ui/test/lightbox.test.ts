@@ -5,7 +5,7 @@
  * moment as where it opens; without it, the frames themselves, each with its
  * time.
  */
-import { act, createElement } from 'react';
+import { StrictMode, act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -84,6 +84,17 @@ describe('the video lightbox', () => {
     act(() => { player.dispatchEvent(new Event('error')); });
     act(() => { player.dispatchEvent(new Event('loadedmetadata')); });
     expect(player.muted).toBe(true);
+  });
+
+  it('keeps its tracks pointing at live files under StrictMode, which sets effects up, tears them down, and sets them up again', async () => {
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => { root.render(createElement(StrictMode, null, createElement(Lightbox, { video: { ...view, src: 'http://host/source' }, onClose: () => {} }))); });
+    await act(async () => { await import('../src/video-player'); });
+    const sources = [...container.querySelectorAll('track')].map((t) => t.getAttribute('src'));
+    expect(sources).toHaveLength(2);
+    for (const src of sources) expect(made).toContain(src);
   });
 
   it('lets go of its track files when it closes', async () => {

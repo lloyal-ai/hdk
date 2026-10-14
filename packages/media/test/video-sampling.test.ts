@@ -8,11 +8,11 @@ import type { SampledFrame, SoundtrackWindow } from '../src/video-sampling';
 
 // Stand-in decoder: a 2-second, 320×240 clip whose frames are shown at 8 fps. A test sets the soundtrack:
 // `globalThis.soundtrack`, decoded buffers with their timestamps, `globalThis.videoStart`, `globalThis.clipSeconds`
-// (the container's duration); `globalThis.onDecode`
-// sees each frame decoded.
+// (the container's duration); `globalThis.onDecode` sees each frame decoded; `globalThis.stallAt` makes that
+// frame's decode wait until the input is disposed, which rejects it as Mediabunny rejects a pending read.
 vi.mock('mediabunny', () => {
   class Input {
-    dispose(): void {}
+    dispose(): void { (globalThis as { onDispose?: () => void }).onDispose?.(); }
     async getPrimaryVideoTrack() {
       const start = (globalThis as { videoStart?: number }).videoStart ?? 0;
       return { canDecode: async () => true, getFirstTimestamp: async () => start, displayWidth: 320, displayHeight: 240 };
@@ -25,8 +25,11 @@ vi.mock('mediabunny', () => {
   }
   class CanvasSink {
     async *canvasesAtTimestamps(times: number[]) {
-      for (const t of times) {
+      for (const [i, t] of times.entries()) {
         (globalThis as { onDecode?: () => void }).onDecode?.();
+        if ((globalThis as { stallAt?: number }).stallAt === i) {
+          await new Promise((_, reject) => { (globalThis as { onDispose?: () => void }).onDispose = () => reject(new Error('Input has been disposed')); });
+        }
         const shown = Math.floor(t * 8) / 8;
         yield { timestamp: shown, duration: 0.125, canvas: { convertToBlob: async () => new Blob([new Uint8Array([0xff, 0xd8, 0xff, Math.round(shown * 8)])]) } };
       }
@@ -79,6 +82,12 @@ describe('cutting a soundtrack', () => {
     expect(soundtrackWindowMs({ timestampIntervalMs: 5000 })).toBe(5000);
     expect(soundtrackWindowMs({ timestampIntervalMs: 2000 })).toBe(2000);
     expect(soundtrackWindowMs({ timestampIntervalMs: 0 })).toBe(5000);
+    // A service that admits less: even a window the cutter stretches by a fifth stays within its duration and bytes.
+    const limits = { maxBytes: 16 * 1024 * 1024, maxDurationSeconds: 2, maxChannels: 2, maxSampleRate: 48_000 };
+    expect(soundtrackWindowMs({ timestampIntervalMs: 5000 }, limits)).toBe(1666);
+    expect(soundtrackWindowMs({ timestampIntervalMs: 1000 }, limits)).toBe(1000);
+    const tight = { ...limits, maxDurationSeconds: 60, maxBytes: 44 + 2 * 16_000 * 3, maxSampleRate: 16_000 };
+    expect(soundtrackWindowMs({ timestampIntervalMs: 5000 }, tight)).toBe(2500);
     expect(() => new SoundtrackCutter(16000, 0)).toThrow(RangeError);
   });
 
@@ -104,6 +113,20 @@ describe('sampleVideo', () => {
     const { frames } = await sampleVideo(new Blob([new Uint8Array(10)]), { ...SAMPLING, fps: 16 });
     expect(frames.map(f => f.tMs)).toEqual([0, 125, 250, 375, 500, 625, 750, 875, 1000, 1125, 1250, 1375, 1500, 1625, 1750, 1875]);
   });
+
+  it('lets go of a decode still waiting when it is aborted, and says it was aborted', async () => {
+    const g = globalThis as { stallAt?: number; onDispose?: () => void };
+    g.stallAt = 1;
+    const abort = new AbortController();
+    try {
+      const sampling = sampleVideo(new Blob([new Uint8Array(10)]), SAMPLING, { signal: abort.signal });
+      setTimeout(() => abort.abort(), 10);
+      await expect(sampling).rejects.toThrow(/abort/i);
+    } finally {
+      delete g.stallAt;
+      delete g.onDispose;
+    }
+  }, 2000);
 
   it('stops decoding as soon as it is aborted', async () => {
     const abort = new AbortController();
@@ -153,6 +176,17 @@ describe('extractAudioWindows', () => {
     g.soundtrack = [sound(0, 2.5)];
     const track = await heard();
     expect(track.length).toBe(2 * RATE);
+  });
+
+  it('writes windows no faster than the transcription service admits', async () => {
+    g.clipSeconds = 1;
+    g.soundtrack = [{ timestamp: 0, buffer: { sampleRate: 48_000, numberOfChannels: 1, length: 48_000, getChannelData: () => new Float32Array(48_000).fill(0.25) } }];
+    const rates: number[] = [];
+    for await (const w of extractAudioWindows(new Blob([new Uint8Array(1)]), 1000, { maxSampleRate: 16_000 })) {
+      rates.push(new DataView(w.bytes.buffer, w.bytes.byteOffset).getUint32(24, true));
+    }
+    expect(rates.length).toBeGreaterThan(0);
+    expect(rates.every((r) => r <= 16_000)).toBe(true);
   });
 
   it('places sound that starts late, or pauses, at its own time on the clip, the gaps silent', async () => {
