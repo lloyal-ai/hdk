@@ -78,7 +78,7 @@ modality: a video or a rasterized page is the same manifest graph as an image.
   blobs/sha256/<64 hex>          every blob, addressed by content
 ```
 
-`npm run verify:oci` is the receipt. It builds a layout through the real
+`npm run verify:oci:layout` is the receipt. It builds a layout through the real
 ingress, drives `oras` against it with none of our code involved, then drives
 our reader against a layout `oras` itself wrote — in CI, on every push:
 

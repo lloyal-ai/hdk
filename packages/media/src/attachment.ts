@@ -220,7 +220,7 @@ export function composeManifest(parts: {
  * 1. **The config blob is WRITTEN, never merely named.** A puller fetches it
  *    like any other blob, so a manifest referencing OCI's canonical empty
  *    descriptor without storing `{}` looks correct locally and fails
- *    everywhere else. This is the conformance trap `verify:oci` gives its own
+ *    everywhere else. This is the conformance trap `verify:oci:layout` gives its own
  *    check; it is also the step with no local consequence, which is exactly
  *    why it is the one that gets dropped.
  * 2. **Blobs first, manifest second.** A crash may leave orphan blobs —

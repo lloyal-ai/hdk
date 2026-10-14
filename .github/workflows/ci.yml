@@ -84,7 +84,7 @@ jobs:
           oras version
 
       - run: npm install
-      - run: npm run verify:oci
+      - run: npm run verify:oci:layout
       # The registry ecosystem's own suite, blob push and pull, against the
       # upload surface a host mounts. Built from a pinned commit inside the script.
       - run: npm run verify:oci:distribution
