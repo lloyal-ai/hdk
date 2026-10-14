@@ -23,7 +23,8 @@ import type { VideoSampling } from './video';
  * spread evenly when the clip is longer than `maxFrames` allows at that rate.
  */
 export function frameTimes(durationS: number, sampling: Pick<VideoSampling, 'fps' | 'maxFrames'>): number[] {
-  const atRate = Math.max(1, Math.floor(durationS * sampling.fps));
+  // Each instant before the clip ends; the epsilon keeps float noise from adding one at the very end.
+  const atRate = Math.max(1, Math.ceil(durationS * sampling.fps - 1e-9));
   const n = Math.min(sampling.maxFrames, atRate);
   const step = n === atRate ? 1 / sampling.fps : durationS / n;
   return Array.from({ length: n }, (_, i) => i * step);
@@ -191,9 +192,20 @@ function mixDown(buffer: AudioBuffer, step: number): Float32Array {
  * frames on (the video track's first timestamp is zero): sound that starts
  * late, or pauses, is placed by its own timestamps, the gaps filled with
  * silence, and sound before the first frame is left out.
+ *
+ * @throws With the signal's reason once it aborts: the input is disposed then,
+ *         so a decode still in flight stops rather than running to the end.
  */
-export async function* extractAudioWindows(file: Blob, windowMs: number): AsyncGenerator<SoundtrackWindow> {
+export async function* extractAudioWindows(
+  file: Blob,
+  windowMs: number,
+  options: { signal?: AbortSignal } = {},
+): AsyncGenerator<SoundtrackWindow> {
+  const { signal } = options;
+  signal?.throwIfAborted();
   const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
+  const stop = (): void => input.dispose();
+  signal?.addEventListener('abort', stop, { once: true });
   try {
     const track = await input.getPrimaryAudioTrack();
     if (!track || !(await track.canDecode())) return;
@@ -203,6 +215,7 @@ export async function* extractAudioWindows(file: Blob, windowMs: number): AsyncG
     let rate = 0;
     let fed = 0;   // samples given to the cutter: the clip time it has reached
     for await (const { buffer, timestamp } of new AudioBufferSink(track).buffers()) {
+      signal?.throwIfAborted();
       const step = Math.ceil(buffer.sampleRate / MAX_WINDOW_RATE);
       rate ||= buffer.sampleRate / step;
       cutter ??= new SoundtrackCutter(rate, windowMs);
@@ -217,7 +230,12 @@ export async function* extractAudioWindows(file: Blob, windowMs: number): AsyncG
       yield* cutter.push(mono);
     }
     if (cutter) yield* cutter.flush();
+  } catch (e) {
+    // A disposed input fails its read with its own error; the caller asked to stop, so it hears why.
+    signal?.throwIfAborted();
+    throw e;
   } finally {
+    signal?.removeEventListener('abort', stop);
     input.dispose();
   }
 }

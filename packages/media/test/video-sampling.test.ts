@@ -43,6 +43,8 @@ const SAMPLING = { fps: 4, timestampIntervalMs: 5000, maxFrames: 64, maxEdgePx: 
 describe('what to sample', () => {
   it('samples at the rate, and spreads a clip too long for the frame cap', () => {
     expect(frameTimes(1, { fps: 4, maxFrames: 64 })).toEqual([0, 0.25, 0.5, 0.75]);
+    // Every sample instant inside the clip, the last partial interval included.
+    expect(frameTimes(0.26, { fps: 4, maxFrames: 64 })).toEqual([0, 0.25]);
     const long = frameTimes(100, { fps: 4, maxFrames: 10 });
     expect(long).toHaveLength(10);
     expect(long[1]).toBeCloseTo(10);
@@ -125,6 +127,18 @@ describe('extractAudioWindows', () => {
   }
   const g = globalThis as { soundtrack?: unknown[]; videoStart?: number };
   afterEach(() => { delete g.soundtrack; delete g.videoStart; });
+
+  it('stops decoding the soundtrack as soon as it is aborted', async () => {
+    const abort = new AbortController();
+    let decoded = 0;
+    // A track whose second buffer arrives after the abort: nothing past it is decoded.
+    g.soundtrack = { *[Symbol.iterator]() { decoded++; yield sound(0, 1); abort.abort(); decoded++; yield sound(1, 1); decoded++; yield sound(2, 1); } } as unknown as unknown[];
+    const windows: SoundtrackWindow[] = [];
+    await expect((async () => {
+      for await (const w of extractAudioWindows(new Blob([new Uint8Array(1)]), 1000, { signal: abort.signal })) windows.push(w);
+    })()).rejects.toThrow(/abort/i);
+    expect(decoded).toBe(2);
+  });
 
   it('places sound that starts late, or pauses, at its own time on the clip, the gaps silent', async () => {
     g.soundtrack = [sound(1, 1), sound(3, 1)];

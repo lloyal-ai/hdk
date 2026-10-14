@@ -158,6 +158,16 @@ describe('guards', () => {
     expect(media.asVideoMeta({ width: 1 })).toBeNull();
   });
 
+  it('asVideoMeta refuses a stored timeline the model could not take: frames out of order, or past the clip', () => {
+    const meta = { width: 320, height: 240, durationMs: 1000, poster: 0, sampling: SAMPLING, frames: [{ tMs: 0, frame: 0 }, { tMs: 500, frame: 1 }] };
+    expect(media.asVideoMeta(meta)).not.toBeNull();
+    expect(media.asVideoMeta({ ...meta, frames: [{ tMs: 500, frame: 0 }, { tMs: 0, frame: 1 }] })).toBeNull();
+    expect(media.asVideoMeta({ ...meta, frames: [{ tMs: 0, frame: 0 }, { tMs: 0, frame: 1 }] })).toBeNull();
+    expect(media.asVideoMeta({ ...meta, frames: [{ tMs: 0, frame: 0 }, { tMs: 1500, frame: 1 }] })).toBeNull();
+    const window = { startMs: 0, endMs: 1500, root: { mediaType: 'x', digest: `sha256:${'a'.repeat(64)}`, size: 1 } };
+    expect(media.asVideoMeta({ ...meta, audio: [window] })).toBeNull();
+  });
+
   it('composes no timeline that would not read back: a rate JSON cannot hold is refused', async () => {
     const content = store();
     const frames = await frameRoots(content);

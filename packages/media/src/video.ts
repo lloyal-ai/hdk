@@ -62,6 +62,11 @@ export interface VideoInput {
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
 const isMs = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+/** Strictly increasing times, the order the native video input requires. */
+const increasing = (times: readonly unknown[]): boolean => times.every((t, i) => isMs(t) && (i === 0 || t > (times[i - 1] as number)));
+/** A span inside a clip of `durationMs`. */
+const withinClip = (startMs: unknown, endMs: unknown, durationMs: number): boolean =>
+  isMs(startMs) && isMs(endMs) && startMs <= endMs && endMs <= durationMs;
 const isDescriptor = (v: unknown): v is Descriptor =>
   isObj(v) && typeof v.mediaType === 'string' && typeof v.digest === 'string' && Number.isSafeInteger(v.size);
 
@@ -82,11 +87,15 @@ export function asVideoMeta(json: unknown): VideoMeta | null {
   const { width, height, durationMs, frames, poster, audio, sampling } = json;
   const positive = (v: unknown): boolean => typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
   const frameOk = (f: unknown): boolean => isObj(f) && isMs(f.tMs) && isMs(f.frame);
-  const audioOk = (a: unknown): boolean => isObj(a) && isMs(a.startMs) && isMs(a.endMs) && isDescriptor(a.root);
+  const audioOk = (a: unknown): boolean => isObj(a) && isMs(durationMs) && withinClip(a.startMs, a.endMs, durationMs) && isDescriptor(a.root);
+  const timesOk = (fs: unknown[]): boolean => {
+    const times = fs.map(f => (f as { tMs: unknown }).tMs);
+    return increasing(times) && isMs(durationMs) && (times[times.length - 1] as number) <= durationMs;
+  };
   const samplingOk = isObj(sampling) && typeof sampling.fps === 'number' && Number.isFinite(sampling.fps) && sampling.fps > 0 &&
     isMs(sampling.timestampIntervalMs) && positive(sampling.maxFrames);
   return positive(width) && positive(height) && isMs(durationMs) && Array.isArray(frames) && frames.length > 0 &&
-    frames.every(frameOk) && isMs(poster) && (audio === undefined || (Array.isArray(audio) && audio.every(audioOk))) &&
+    frames.every(frameOk) && timesOk(frames) && isMs(poster) && (audio === undefined || (Array.isArray(audio) && audio.every(audioOk))) &&
     samplingOk
     ? json as unknown as VideoMeta
     : null;
@@ -107,7 +116,7 @@ function checkWindow(store: AttachmentStore, w: NonNullable<VideoMeta['audio']>[
   if (store.getManifest(w.root.digest)?.config.mediaType !== AUDIO_CONFIG_TYPE) {
     throw new Error(`composeVideo: soundtrack window ${index} is not a recording in this store`);
   }
-  if (!isMs(w.startMs) || !isMs(w.endMs) || w.endMs < w.startMs || w.endMs > durationMs) {
+  if (!withinClip(w.startMs, w.endMs, durationMs)) {
     throw new Error(`composeVideo: soundtrack window ${index} must fall within the clip`);
   }
 }
@@ -144,7 +153,7 @@ export async function composeVideo(store: AttachmentStore, parts: {
   if (!first || sizes.some(s => !s || s.width !== first.width || s.height !== first.height)) {
     throw new Error('composeVideo: video frames must share one size (PNG or JPEG)');
   }
-  if (frames.some((f, i) => !isMs(f.tMs) || (i > 0 && f.tMs <= frames[i - 1].tMs))) {
+  if (!increasing(frames.map(f => f.tMs))) {
     throw new Error('composeVideo: frame times must increase');
   }
   if (!isMs(durationMs) || frames[frames.length - 1].tMs > durationMs) {
