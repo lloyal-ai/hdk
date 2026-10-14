@@ -87,7 +87,7 @@ jobs:
       - run: npm run verify:oci
       # The registry ecosystem's own suite, blob push and pull, against the
       # upload surface a host mounts. Built from a pinned commit inside the script.
-      - run: npm run verify:distribution
+      - run: npm run verify:oci:distribution
 
   gpu-tests:
     name: GPU Integration Tests

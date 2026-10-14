@@ -27,7 +27,7 @@
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
     "verify:oci": "bash scripts/verify-oci-conformance.sh",
-    "verify:distribution": "bash scripts/verify-distribution-conformance.sh"
+    "verify:oci:distribution": "bash scripts/verify-distribution-conformance.sh"
   },
   "devDependencies": {
     "@types/node": "^25.3.0",
