@@ -13,7 +13,7 @@
  * @category UI
  */
 import { useEffect, useMemo, useRef } from 'react';
-import type { CSSProperties, ReactElement } from 'react';
+import type { CSSProperties, ReactElement, RefObject } from 'react';
 import { Video, VideoPlayer as Player, VideoSkin } from '@videojs/react/video';
 import { videoTracks } from './video-view.js';
 import type { VideoView } from './video-view.js';
@@ -53,8 +53,7 @@ export interface VideoPlayerProps {
 }
 
 /** Open at `atMs`: at once when the media already knows its length, else when it learns it. */
-function useStartAt(atMs: number | undefined, src: string) {
-  const media = useRef<HTMLVideoElement>(null);
+function useStartAt(media: RefObject<HTMLVideoElement | null>, atMs: number | undefined, src: string): void {
   useEffect(() => {
     const element = media.current;
     if (!element || atMs === undefined) return;
@@ -62,13 +61,46 @@ function useStartAt(atMs: number | undefined, src: string) {
     if (element.readyState >= HTMLMediaElement.HAVE_METADATA) seek();
     else element.addEventListener('loadedmetadata', seek, { once: true });
     return () => element.removeEventListener('loadedmetadata', seek);
-  }, [atMs, src]);
-  return media;
+  }, [media, atMs, src]);
+}
+
+/**
+ * Chromium fails a whole playback with AUDIO_RENDERER_ERROR when it cannot open
+ * the audio output (on macOS, around an output device change), and its pipeline
+ * stays dead. Reloading at the same moment reopens the device and plays on; a
+ * second failure in a row goes on muted, so the picture is never lost to sound.
+ */
+function useRecoverAudioOutput(media: RefObject<HTMLVideoElement | null>): void {
+  useEffect(() => {
+    const element = media.current;
+    if (!element) return;
+    let failures = 0;
+    const onError = (): void => {
+      if (!/AUDIO_RENDERER/.test(element.error?.message ?? '')) return;
+      failures += 1;
+      const at = element.currentTime;
+      element.addEventListener('loadedmetadata', () => {
+        element.currentTime = at;
+        if (failures > 1) element.muted = true;
+        element.play().catch(() => {});
+      }, { once: true });
+      element.load();
+    };
+    const onPlaying = (): void => { failures = 0; };
+    element.addEventListener('error', onError);
+    element.addEventListener('playing', onPlaying);
+    return () => {
+      element.removeEventListener('error', onError);
+      element.removeEventListener('playing', onPlaying);
+    };
+  }, [media]);
 }
 
 export function VideoPlayer({ video, title, style, className }: VideoPlayerProps): ReactElement {
   const tracks = useTrackUrls(video);
-  const media = useStartAt(video.atMs, video.src);
+  const media = useRef<HTMLVideoElement>(null);
+  useStartAt(media, video.atMs, video.src);
+  useRecoverAudioOutput(media);
   return (
     <Player title={title} poster={video.poster}>
       <VideoSkin style={{ ...THEME, ...style }} {...(className ? { className } : {})}>

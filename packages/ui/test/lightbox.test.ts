@@ -67,6 +67,25 @@ describe('the video lightbox', () => {
     }
   });
 
+  it('recovers when the browser cannot open its audio output: reloads at the same moment and plays on', async () => {
+    await show({ ...view, src: 'http://host/source' });
+    const player = container.querySelector('video')!;
+    const load = vi.spyOn(player, 'load').mockImplementation(() => {});
+    const play = vi.spyOn(player, 'play').mockResolvedValue(undefined);
+    player.currentTime = 2;
+    Object.defineProperty(player, 'error', { configurable: true, get: () => ({ code: 3, message: 'PipelineStatus::AUDIO_RENDERER_ERROR: audio render error' }) });
+    act(() => { player.dispatchEvent(new Event('error')); });
+    expect(load).toHaveBeenCalledOnce();
+    act(() => { player.dispatchEvent(new Event('loadedmetadata')); });
+    expect(player.currentTime).toBe(2);
+    expect(play).toHaveBeenCalledOnce();
+    expect(player.muted).toBe(false);
+    // A second failure in a row: the device is still unavailable, so the video goes on without sound.
+    act(() => { player.dispatchEvent(new Event('error')); });
+    act(() => { player.dispatchEvent(new Event('loadedmetadata')); });
+    expect(player.muted).toBe(true);
+  });
+
   it('lets go of its track files when it closes', async () => {
     await show({ ...view, src: 'http://host/source' });
     expect(made).toHaveLength(2);
