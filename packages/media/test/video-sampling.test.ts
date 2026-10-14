@@ -7,7 +7,8 @@ import { SoundtrackCutter, captureFrames, extractAudioWindows, fitEdge, frameTim
 import type { SampledFrame, SoundtrackWindow } from '../src/video-sampling';
 
 // Stand-in decoder: a 2-second, 320×240 clip whose frames are shown at 8 fps. A test sets the soundtrack:
-// `globalThis.soundtrack`, decoded buffers with their timestamps, and `globalThis.videoStart`; `globalThis.onDecode`
+// `globalThis.soundtrack`, decoded buffers with their timestamps, `globalThis.videoStart`, `globalThis.clipSeconds`
+// (the container's duration); `globalThis.onDecode`
 // sees each frame decoded.
 vi.mock('mediabunny', () => {
   class Input {
@@ -20,7 +21,7 @@ vi.mock('mediabunny', () => {
       const buffers = (globalThis as { soundtrack?: unknown[] }).soundtrack;
       return buffers ? { canDecode: async () => true, getFirstTimestamp: async () => 0, buffers } : null;
     }
-    async computeDuration() { return 2; }
+    async computeDuration() { return (globalThis as { clipSeconds?: number }).clipSeconds ?? 2; }
   }
   class CanvasSink {
     async *canvasesAtTimestamps(times: number[]) {
@@ -132,8 +133,8 @@ describe('extractAudioWindows', () => {
     const pcm = windows.flatMap((w) => [...new Int16Array(w.bytes.slice(44).buffer)]);
     return Float32Array.from(pcm, (v) => v / 32767);
   }
-  const g = globalThis as { soundtrack?: unknown[]; videoStart?: number };
-  afterEach(() => { delete g.soundtrack; delete g.videoStart; });
+  const g = globalThis as { soundtrack?: unknown[]; videoStart?: number; clipSeconds?: number };
+  afterEach(() => { delete g.soundtrack; delete g.videoStart; delete g.clipSeconds; });
 
   it('stops decoding the soundtrack as soon as it is aborted', async () => {
     const abort = new AbortController();
@@ -147,7 +148,15 @@ describe('extractAudioWindows', () => {
     expect(decoded).toBe(2);
   });
 
+  it('leaves out sound past the clip\'s end, as a decoder\'s padding is', async () => {
+    // The stand-in clip lasts 2 s; its soundtrack decodes 2.5 s, as AAC frames padded to 1,024 samples do.
+    g.soundtrack = [sound(0, 2.5)];
+    const track = await heard();
+    expect(track.length).toBe(2 * RATE);
+  });
+
   it('places sound that starts late, or pauses, at its own time on the clip, the gaps silent', async () => {
+    g.clipSeconds = 4;
     g.soundtrack = [sound(1, 1), sound(3, 1)];
     const track = await heard();
     expect(track.length).toBe(4 * RATE);

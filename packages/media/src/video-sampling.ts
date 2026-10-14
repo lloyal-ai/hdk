@@ -199,7 +199,8 @@ function mixDown(buffer: AudioBuffer, step: number): Float32Array {
  * Windows are timed on the clip's clock, the one {@link sampleVideo} stamps
  * frames on (the video track's first timestamp is zero): sound that starts
  * late, or pauses, is placed by its own timestamps, the gaps filled with
- * silence, and sound before the first frame is left out.
+ * silence, and sound before the first frame or past the clip's end (a
+ * codec's padding) is left out.
  *
  * @throws With the signal's reason once it aborts: the input is disposed then,
  *         so a decode still in flight stops rather than running to the end.
@@ -219,6 +220,8 @@ export async function* extractAudioWindows(
     if (!track || !(await track.canDecode())) return;
     const video = await input.getPrimaryVideoTrack();
     const origin = video ? await video.getFirstTimestamp() : await track.getFirstTimestamp();
+    // The clip ends where sampleVideo says it does; decoded sound past it is the codec's padding.
+    const endsAtS = (await input.computeDuration()) - origin;
     let cutter: SoundtrackCutter | null = null;
     let rate = 0;
     let fed = 0;   // samples given to the cutter: the clip time it has reached
@@ -227,15 +230,17 @@ export async function* extractAudioWindows(
       const step = Math.ceil(buffer.sampleRate / MAX_WINDOW_RATE);
       rate ||= buffer.sampleRate / step;
       cutter ??= new SoundtrackCutter(rate, windowMs);
-      const startsAt = Math.round((timestamp - origin) * rate);
+      const end = Math.round(endsAtS * rate);
+      const startsAt = Math.min(Math.round((timestamp - origin) * rate), end);
       for (let gap = startsAt - fed; gap > 0; gap -= rate) {
         const silence = new Float32Array(Math.min(gap, rate));
         fed += silence.length;
         yield* cutter.push(silence);
       }
-      const mono = mixDown(buffer, step).subarray(Math.max(0, fed - startsAt));
+      const mono = mixDown(buffer, step).subarray(Math.max(0, fed - startsAt), Math.max(0, end - startsAt));
       fed += mono.length;
       yield* cutter.push(mono);
+      if (fed >= end) break;
     }
     if (cutter) yield* cutter.flush();
   } catch (e) {
