@@ -32,6 +32,6 @@ export * from './prose.js';
 export { RecordingWaveform } from './recording-waveform.js';
 export type { RecordingWaveformProps } from './recording-waveform.js';
 export { useVoiceInput, insertTranscript, MicGlyph } from './voice-input.js';
-export { captureFrames, extractAudioWindows, fitEdge, frameTimes, ingestVideo, pcm16Wav, quietestCut, sampleVideo, SoundtrackCutter, useVideoCapabilities } from './video.js';
-export type { AttachedVideo, SampledFrame, SoundtrackWindow, VideoProgress } from './video.js';
+export { ingestVideo, useVideoCapabilities } from './video.js';
+export type { AttachedVideo, VideoProgress } from './video.js';
 export type { VoiceInput, VoiceInputOptions, VoicePhase } from './voice-input.js';

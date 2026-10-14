@@ -45,6 +45,7 @@
       "@lloyal-labs/rig/node": ["packages/rig/src/node.ts"],
       "@lloyal-labs/media": ["packages/media/src/index.ts"],
       "@lloyal-labs/media/node": ["packages/media/src/node.ts"],
+      "@lloyal-labs/media/client": ["packages/media/src/client.ts"],
       "@lloyal-labs/binding": ["packages/binding/src/index.ts"],
       "@lloyal-labs/binding/node": ["packages/binding/src/node.ts"],
       "@lloyal-labs/binding/web": ["packages/binding/src/web.ts"],

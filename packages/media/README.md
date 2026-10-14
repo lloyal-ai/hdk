@@ -44,12 +44,13 @@ In a lloyal harness you rarely wire this yourself: `@lloyal-labs/rig`
 constructs the project store, and the runtime carries attachments through
 trace and replay. This package is the format and the gate.
 
-## Two entry points, split by runtime
+## Three entry points, split by runtime
 
 | entry | holds | needs |
 |---|---|---|
 | `@lloyal-labs/media` | the OCI shapes, the store and ingress contracts, `materialize` | nothing — browser-safe, zero dependencies |
 | `@lloyal-labs/media/node` | `FileAttachmentStore` (the layout on disk), `createContentIngress` — `createImageIngress` (sharp) and `createDocumentIngress` (PDFium) | `node:fs`; `sharp` and `@embedpdf/pdfium` as optional peers |
+| `@lloyal-labs/media/client` | reading a video in the page: `sampleVideo` (frames sized and encoded as JPEG), `extractAudioWindows` (the soundtrack as PCM WAV windows cut at quiet points), `captureFrames` (frames from a live track) | WebCodecs and a canvas; `mediabunny` as an optional peer, loaded with the entry |
 
 The root entry never reaches `node:`, `sharp` or the codec — enforced by
 `npm run verify:packed`, which walks the packed artifact's require graph on
@@ -267,7 +268,7 @@ video's original is where that stops being true (see *Large originals*).
 ## Video
 
 A video is one attachment composed from references. The page decodes the
-clip, admits each sampled frame as an image root and each soundtrack window as
+clip with `@lloyal-labs/media/client`, admits each sampled frame as an image root and each soundtrack window as
 an audio root, and the host calls `composeVideo`, which checks they can be one
 video (images of one size, times increasing within the clip) and commits:
 

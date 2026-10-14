@@ -40,6 +40,8 @@ jobs:
           test -f packages/media/dist/index.d.ts
           test -f packages/media/dist/node.js
           test -f packages/media/dist/node.d.ts
+          test -f packages/media/dist/client.js
+          test -f packages/media/dist/client.d.ts
           test -f packages/sdk/dist/index.js
           test -f packages/sdk/dist/index.d.ts
           test -f packages/agents/dist/index.js
