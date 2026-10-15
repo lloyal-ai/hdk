@@ -89,7 +89,20 @@ interface BranchState {
   forkRevision: number;
   /** A failed prefill left the KV ahead of the books (the kernel's `poisoned`). */
   poisoned: boolean;
+  /** The sampling parameters as the kernel caches them, to tell a real change from the same ones again. */
+  sampling: string;
+  /** The grammar order (the kernel's `grammar_sample_first`). */
+  sampleFirst: boolean;
 }
+
+/** The kernel's cached parameters (`CachedSamplingParams`), its defaults filled in, as one comparable value. */
+const samplingOf = (p: SamplingParams = {}): string => JSON.stringify([
+  p.temperature ?? 0.8, p.topK ?? 40, p.topP ?? 0.95, p.minP ?? 0.05, p.seed ?? 0,
+  p.penalties?.repeat ?? 1, p.penalties?.frequency ?? 0, p.penalties?.presence ?? 0, p.penalties?.lastN ?? 64,
+]);
+
+/** A chain samples, and so has a PRNG to reseed, when its temperature is above zero. */
+const samples = (sampling: string): boolean => (JSON.parse(sampling) as number[])[0] > 0;
 
 /** The kernel's rule for a failed decode (`decode::leaves_branch_intact`). */
 const leavesBranchIntact = (rc: number, partial: boolean): boolean => (rc === 1 || rc === -1) && !partial;
@@ -170,7 +183,7 @@ export class MockSessionContext implements SessionContext {
 
   // ── Branch lifecycle ──────────────────────────────────────────
 
-  _branchCreate(position: number, _params?: SamplingParams, _nBatch?: number, _grammar?: string): number {
+  _branchCreate(position: number, params?: SamplingParams, _nBatch?: number, _grammar?: string): number {
     this._lease('create');
     const handle = this._nextHandle++;
     this._branches.set(handle, {
@@ -183,6 +196,8 @@ export class MockSessionContext implements SessionContext {
       revision: 0,
       forkRevision: 0,
       poisoned: false,
+      sampling: samplingOf(params),
+      sampleFirst: false,
     });
     return handle;
   }
@@ -210,6 +225,8 @@ export class MockSessionContext implements SessionContext {
       revision: 0,
       forkRevision: parent.revision,
       poisoned: parent.poisoned,
+      sampling: parent.sampling,
+      sampleFirst: parent.sampleFirst,
     });
     return handle;
   }
@@ -258,6 +275,8 @@ export class MockSessionContext implements SessionContext {
     if (p!.forkRevision !== a!.revision) refuse('the parent has changed since the fork');
     a!.position = p!.position;
     a!.imgSlack += p!.imgSlack;
+    a!.sampling = p!.sampling;
+    a!.sampleFirst = p!.sampleFirst;
     a!.revision++;
     p!.disposed = true;
     a!.children.delete(childHandle);
@@ -274,13 +293,18 @@ export class MockSessionContext implements SessionContext {
 
   // ── Produce/commit protocol ───────────────────────────────────
 
+  private _sampleToken: (handle: number) => number = () => this.stopToken;
+
   /**
-   * Sample next token. Override in subclass to control token production.
-   * Default: always returns stopToken (immediate stop).
+   * Sample next token. Assign a function to control token production
+   * (`ctx._branchSample = () => tokens[i++] ?? ctx.stopToken`); the default
+   * always returns stopToken (immediate stop). Every sample counts as a change,
+   * as the kernel's does: running the chain may advance its PRNG.
    */
-  _branchSample(_handle: number): number {
-    return this.stopToken;
+  get _branchSample(): (handle: number) => number {
+    return (handle) => { this._changed(handle); return this._sampleToken(handle); };
   }
+  set _branchSample(sample: (handle: number) => number) { this._sampleToken = sample; }
 
   _branchAccept(handle: number, _token: number): void { this._changed(handle); }
 
@@ -364,7 +388,8 @@ export class MockSessionContext implements SessionContext {
       if (failure) {
         const f = typeof failure === 'string' ? { message: failure } : failure;
         const failed = this._branches.get(handles[i]);
-        if (failed && f.rc !== undefined && !leavesBranchIntact(f.rc, f.partial === true)) {
+        // As the kernel's walk: a failure after something landed poisons, with or without a decode code.
+        if (failed && !leavesBranchIntact(f.rc ?? 1, f.partial === true)) {
           failed.poisoned = true;
           failed.revision++;
         }
@@ -508,17 +533,31 @@ export class MockSessionContext implements SessionContext {
     };
   }
 
-  _storeRetainOnly(_handle: number): void {}
+  _storeRetainOnly(handle: number): void { this._changed(handle); }
   /** Vacant sequences: the budget less the live branches; unbudgeted ⇒ effectively unbounded. */
   _storeAvailable(): number { return this.nSeqMax === undefined ? Number.MAX_SAFE_INTEGER : Math.max(0, this.nSeqMax - this._live()); }
 
-  // ── Sampler / grammar (no-ops) ────────────────────────────────
+  // ── Sampler / grammar: no tokens change, but each counts as a change exactly when the kernel's does ──
 
-  _branchSamplerChainReseed(handle: number, _seed: number): void { this._changed(handle); }
-  _branchSetSamplerParams(handle: number, _params: SamplingParams): void { this._changed(handle); }
+  _branchSamplerChainReseed(handle: number, _seed: number): void {
+    const b = this._branches.get(handle);
+    if (b && samples(b.sampling)) this._changed(handle);
+  }
+  _branchSetSamplerParams(handle: number, params: SamplingParams): void {
+    const b = this._branches.get(handle);
+    const next = samplingOf(params);
+    if (!b || next === b.sampling) return;   // the kernel memoizes the same parameters
+    b.sampling = next;
+    this._changed(handle);
+  }
   _branchSetGrammar(handle: number, _grammar: string): void { this._changed(handle); }
   _branchSetGrammarLazy(handle: number, _grammar: string, _patterns: string[], _tokens: number[]): void { this._changed(handle); }
-  _branchSetGrammarOrder(handle: number, _sampleFirst: boolean): void { this._changed(handle); }
+  _branchSetGrammarOrder(handle: number, sampleFirst: boolean): void {
+    const b = this._branches.get(handle);
+    if (!b || b.sampleFirst === sampleFirst) return;
+    b.sampleFirst = sampleFirst;
+    this._changed(handle);
+  }
   _branchSetLogitBias(handle: number, _biases: Array<{ token: number; bias: number }>): void { this._changed(handle); }
   _branchClearLogitBias(handle: number): void { this._changed(handle); }
   _branchSteer(_handle: number, _biases: Array<{ token: number; bias: number }>): void {}

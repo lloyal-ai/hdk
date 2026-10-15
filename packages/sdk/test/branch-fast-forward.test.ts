@@ -136,6 +136,46 @@ describe('Branch.fastForward', () => {
     expect(ctx.cellsUsed).toBe(0);
   });
 
+  it('counts as a change exactly what the kernel counts, so the mock refuses what the addon refuses', async () => {
+    const { ctx, parent } = rig();   // `{}` samples at the kernel's default temperature, 0.8
+    await parent.prefill([1, 2, 3]);
+    const keeps = async (how: string, change: () => unknown) => {
+      const child = await parent.fork();
+      await change();
+      expect(() => parent.fastForwardSync(child), how).not.toThrow();
+    };
+    const refuses = async (how: string, change: () => unknown) => {
+      const child = await parent.fork();
+      await change();
+      expect(() => parent.fastForwardSync(child), how).toThrow(/the parent has changed since the fork/);
+      child.pruneSync();
+    };
+
+    await refuses('sampling runs the chain', () => ctx._branchSample(parent.handle));
+    await keeps('the same sampling parameters', () => parent.setSamplerParams({}));
+    await refuses('new sampling parameters', () => parent.setSamplerParams({ temperature: 0.2 }));
+    await keeps('the grammar order it already has', () => parent.setGrammarOrder('maskFirst'));
+    await refuses('a new grammar order', () => parent.setGrammarOrder('sampleFirst'));
+
+    const greedy = Branch.create(ctx as never, 0, { temperature: 0 });
+    const greedyChild = await greedy.fork();
+    greedy.reseedSampler(7);
+    expect(() => greedy.fastForwardSync(greedyChild), 'a greedy chain has no PRNG to reseed').not.toThrow();
+    greedy.pruneSync();
+    parent.pruneSubtreeSync();
+  });
+
+  it('poisons a child whose failed prefill had landed something, with or without a decode code', async () => {
+    const { ctx, parent } = rig();
+    await parent.prefill([1, 2, 3]);
+    const child = await parent.fork();
+    ctx.mockMultimodalError = () => ({ message: 'the source failed mid-walk', partial: true });
+    await expect(child.prefillMultimodal(`look ${MEDIA_MARKER}`, [new Uint8Array([1])])).rejects.toThrow(/mid-walk/);
+    expect(() => parent.fastForwardSync(child)).toThrow(/the child is poisoned by a failed decode/);
+    child.pruneSync();
+    parent.pruneSync();
+  });
+
   it('refuses a disposed branch on either side before reaching the context', async () => {
     const { parent } = rig();
     const child = await parent.fork();
