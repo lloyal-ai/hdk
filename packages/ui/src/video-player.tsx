@@ -60,15 +60,18 @@ function useRecoverAudioOutput(media: RefObject<HTMLVideoElement | null>): void 
     const element = media.current;
     if (!element) return;
     let failures = 0;
+    let at = 0;
+    // Named, so the cleanup takes back a recovery still waiting on the reload: a gone player never plays.
+    const resume = (): void => {
+      element.currentTime = at;
+      if (failures > 1) element.muted = true;
+      element.play().catch(() => {});
+    };
     const onError = (): void => {
       if (!/AUDIO_RENDERER/.test(element.error?.message ?? '')) return;
       failures += 1;
-      const at = element.currentTime;
-      element.addEventListener('loadedmetadata', () => {
-        element.currentTime = at;
-        if (failures > 1) element.muted = true;
-        element.play().catch(() => {});
-      }, { once: true });
+      at = element.currentTime;
+      element.addEventListener('loadedmetadata', resume, { once: true });
       element.load();
     };
     const onPlaying = (): void => { failures = 0; };
@@ -77,6 +80,7 @@ function useRecoverAudioOutput(media: RefObject<HTMLVideoElement | null>): void 
     return () => {
       element.removeEventListener('error', onError);
       element.removeEventListener('playing', onPlaying);
+      element.removeEventListener('loadedmetadata', resume);
     };
   }, [media]);
 }
