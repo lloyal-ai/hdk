@@ -49,7 +49,7 @@
   "dependencies": {
     "@lloyal-labs/binding": "^0.2.1",
     "@lloyal-labs/channel-verify": "^0.3.1",
-    "@lloyal-labs/host": "^0.2.0",
+    "@lloyal-labs/host": "^0.3.0",
     "@lloyal-labs/lloyal-agents": "^7.0.0",
     "@lloyal-labs/media": "^0.2.1",
     "@lloyal-labs/sdk": "^5.0.0",
