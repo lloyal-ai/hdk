@@ -20,6 +20,7 @@ import type { ChatFormat, ParseChatOutputOptions, ParseChatOutputResult } from '
 import { MediaTool, PNG_BYTES } from './helpers/media';
 import type { Tool } from '../src/Tool';
 import { useAgent } from '../src/use-agent';
+import { SpawnRefused } from '../src/spawns';
 import { Ctx, Store, Events, Trace, Attachments, Ingress } from '../src/context';
 import { MemoryAttachmentStore } from './helpers/memory-store';
 import { rawIngress } from './helpers/raw-ingress';
@@ -28,8 +29,8 @@ import type { AgentEvent } from '../src/types';
 
 const STOP = 999;
 
-async function world(opts: { nSeqMax?: number } = {}): Promise<{ ctx: MockSessionContext; store: ReturnType<typeof createMockSdk>['store']; root: ReturnType<typeof createMockSdk>['root']; trace: CapturingTraceWriter }> {
-  const { ctx, store, root } = createMockSdk({ nCtx: 16384, nSeqMax: opts.nSeqMax });
+async function world(opts: { nSeqMax?: number; nCtx?: number } = {}): Promise<{ ctx: MockSessionContext; store: ReturnType<typeof createMockSdk>['store']; root: ReturnType<typeof createMockSdk>['root']; trace: CapturingTraceWriter }> {
+  const { ctx, store, root } = createMockSdk({ nCtx: opts.nCtx ?? 16384, nSeqMax: opts.nSeqMax });
   await root.prefill(ctx.tokenizeSync('system prompt'));
   ctx._branchSample = (): number => STOP;
   ctx.parseChatOutput = () => ({ content: 'an answer', reasoningContent: '', toolCalls: [] });
@@ -57,9 +58,23 @@ describe('useAgent seating', () => {
         yield* scoped(() => useAgent({ systemPrompt: 'S', content: 'T', parent: w.root, acceptFreeText: true }));
       } catch (e) { caught = e; }
     });
-    expect(caught).toBeInstanceOf(Error);
+    expect(caught).toBeInstanceOf(SpawnRefused);
+    expect((caught as SpawnRefused).reason).toBe('no_sequence');
     expect((caught as Error).message).toMatch(/no_sequence/);
     expect((caught as Error).message).not.toMatch(/undefined/);
+  });
+
+  it('an agent the context has no room for is refused as SpawnRefused (pressure_init), so a caller can tell it from a failure', async () => {
+    const w = await world({ nCtx: 2048 });
+    let caught: unknown = null;
+    await run(function* () {
+      yield* contexts(w);
+      try {
+        yield* scoped(() => useAgent({ systemPrompt: 'S', content: 'a long prompt '.repeat(2000), parent: w.root, acceptFreeText: true }));
+      } catch (e) { caught = e; }
+    });
+    expect(caught).toBeInstanceOf(SpawnRefused);
+    expect((caught as SpawnRefused).reason).toBe('pressure_init');
   });
 
   it('hands on a failure the pool recorded even though a seat was taken', async () => {
