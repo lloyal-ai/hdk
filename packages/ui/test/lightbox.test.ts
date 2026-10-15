@@ -60,6 +60,22 @@ describe('the video lightbox', () => {
     expect(container.textContent).toContain('from 0:05');
   });
 
+  it('keeps its player, playing, when the page re-renders it with an equal video every tick', async () => {
+    // A caller that builds the view as it renders (a run bar re-rendering on its clock) hands over an equal,
+    // new object each time, and a new close handler: neither is a new video.
+    const shown = { ...view, src: 'http://host/source' };
+    await show(shown);
+    const player = container.querySelector('video')!;
+    const tracks = [...player.querySelectorAll('track')].map((t) => t.getAttribute('src'));
+    const load = vi.spyOn(player, 'load');
+    for (let tick = 0; tick < 3; tick++) {
+      await act(async () => { root.render(createElement(Lightbox, { video: { ...shown }, onClose: () => {} })); });
+    }
+    expect(container.querySelector('video')).toBe(player);
+    expect([...player.querySelectorAll('track')].map((t) => t.getAttribute('src'))).toEqual(tracks);
+    expect(load).not.toHaveBeenCalled();
+  });
+
   it('opens at the cited moment even when the media had its metadata before the player looked', async () => {
     const proto = HTMLMediaElement.prototype;
     const ready = Object.getOwnPropertyDescriptor(proto, 'readyState')!;
