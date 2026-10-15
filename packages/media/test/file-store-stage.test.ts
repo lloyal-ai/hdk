@@ -89,7 +89,8 @@ describe('ranged reads', () => {
 });
 
 describe('whole reads', () => {
-  const LARGE = new Uint8Array(Array.from({ length: 1_000_000 }, (_, i) => (i * 7) % 251));
+  // Five of the file stream's 64 KiB pieces: enough to read it a piece at a time.
+  const LARGE = new Uint8Array(Array.from({ length: 300_000 }, (_, i) => (i * 7) % 251));
 
   it('streams a stored blob whole, a piece at a time, verified', async () => {
     const { content } = store();
