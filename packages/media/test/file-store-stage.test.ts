@@ -87,3 +87,35 @@ describe('ranged reads', () => {
     expect(existsSync(join(dir, 'blobs', 'sha256', d.digest.slice(7)))).toBe(true);
   });
 });
+
+describe('whole reads', () => {
+  const LARGE = new Uint8Array(Array.from({ length: 1_000_000 }, (_, i) => (i * 7) % 251));
+
+  it('streams a stored blob whole, a piece at a time, verified', async () => {
+    const { content } = store();
+    const d = content.putBlob(LARGE, 'application/octet-stream');
+    const pieces: Uint8Array[] = [];
+    for await (const piece of content.readWhole(d.digest)! as unknown as AsyncIterable<Uint8Array>) pieces.push(piece);
+    expect(pieces.length).toBeGreaterThan(1);
+    expect(new Uint8Array(Buffer.concat(pieces))).toEqual(LARGE);
+  });
+
+  it('a blob that no longer matches its digest errors before its last bytes are released', async () => {
+    const { content, dir } = store();
+    const d = content.putBlob(LARGE, 'application/octet-stream');
+    const drifted = LARGE.slice();
+    drifted[drifted.length - 1] ^= 0xff;
+    writeFileSync(join(dir, 'blobs', 'sha256', d.digest.slice(7)), drifted);
+    let released = 0;
+    const read = async (): Promise<void> => {
+      for await (const piece of content.readWhole(d.digest)! as unknown as AsyncIterable<Uint8Array>) released += piece.byteLength;
+    };
+    await expect(read()).rejects.toThrow(/no longer matches its digest/);
+    expect(released).toBeLessThan(LARGE.length);
+  });
+
+  it('answers null for a blob it does not hold', () => {
+    const { content } = store();
+    expect(content.readWhole(`sha256:${'0'.repeat(64)}`)).toBeNull();
+  });
+});

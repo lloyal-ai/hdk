@@ -52,6 +52,11 @@ export class MemoryAttachmentStore implements AttachmentStore {
     return new ReadableStream({ start(c) { c.enqueue(slice); c.close(); } });
   }
 
+  readWhole(digest: string): ReadableStream<Uint8Array> | null {
+    const bytes = this.blobs.get(digest);
+    return bytes ? new ReadableStream({ start(c) { c.enqueue(bytes); c.close(); } }) : null;
+  }
+
   getManifest(digest: string): AttachmentManifest | null {
     const bytes = this.get(digest);
     if (!bytes) return null;

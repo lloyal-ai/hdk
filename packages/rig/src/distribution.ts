@@ -21,9 +21,9 @@
  *
  * A blob is readable by its digest, as from any registry: the spec's push
  * flow verifies the returned location by reading it back, and a digest is
- * identity, never authorization. A whole read goes through the store's
- * verifying `get`; a ranged read streams from the file, which the store's
- * contract states. There is no manifest push: a caller never authors a
+ * identity, never authorization. A whole read streams through the store's
+ * verifying `readWhole`, so an original larger than memory is served; a ranged
+ * read streams from the file unverified, which the store's contract states. There is no manifest push: a caller never authors a
  * manifest, and a video's is composed by the host from references
  * (`video:compose`).
  *
@@ -170,9 +170,9 @@ export class BlobUploads {
           stream,
         };
       }
-      const bytes = this.store.get(digest);
-      if (!bytes) return ociError(404, 'BLOB_UNKNOWN', 'blob missing or no longer matches its digest');
-      return { status: 200, headers: { ...headers, 'Content-Length': String(bytes.byteLength) }, body: bytes };
+      const stream = this.store.readWhole(digest);
+      if (!stream) return ociError(404, 'BLOB_UNKNOWN', 'blob not in store');
+      return { status: 200, headers: { ...headers, 'Content-Length': String(size) }, stream };
     }
     return ociError(405, 'UNSUPPORTED', 'unsupported distribution request');
   }

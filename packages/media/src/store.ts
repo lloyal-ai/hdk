@@ -98,6 +98,12 @@ export interface AttachmentStore {
    *  of the whole. Playback seeks through this; whatever reaches the model or
    *  replay goes through {@link get}, which verifies every byte. */
   readRange(digest: string, range: { start: number; end: number }): ReadableStream<Uint8Array> | null;
+  /** Stream a whole blob in bounded memory, or `null` when it is not stored.
+   *  Verified like {@link get}, but as it goes: the last bytes are released only
+   *  once the whole hashes to its digest, and on a mismatch the stream errors
+   *  instead, so a reader never receives a complete body under the wrong name.
+   *  For blobs too large to hold, such as a retained original. */
+  readWhole(digest: string): ReadableStream<Uint8Array> | null;
 }
 
 /**
@@ -141,4 +147,5 @@ export class NullAttachmentStore implements AttachmentStore {
   getManifest(_digest?: string): AttachmentManifest | null { return null; }
   size(_digest?: string): number | null { return null; }
   readRange(_digest?: string, _range?: { start: number; end: number }): ReadableStream<Uint8Array> | null { return null; }
+  readWhole(_digest?: string): ReadableStream<Uint8Array> | null { return null; }
 }

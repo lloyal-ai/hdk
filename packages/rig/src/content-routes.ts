@@ -130,15 +130,6 @@ const serveBlob = (
   };
 };
 
-/** A whole blob, declared seekable: a media element treats a 200 without
- *  `Accept-Ranges` as unseekable. */
-const serveSeekable = (store: AttachmentStore, req: ContentRequest, d: Descriptor): ContentReply => {
-  const reply = serveBlob(store, req, d);
-  return reply.status === 200 || reply.status === 304
-    ? { ...reply, headers: { ...reply.headers, 'Accept-Ranges': 'bytes' } }
-    : reply;
-};
-
 /** A seekable blob's headers from its size alone: a HEAD needs no body, so the
  *  original is neither read nor rehashed (a full GET still verifies it). */
 const describeSeekable = (store: AttachmentStore, req: ContentRequest, d: Descriptor): ContentReply => {
@@ -149,6 +140,16 @@ const describeSeekable = (store: AttachmentStore, req: ContentRequest, d: Descri
     status: 200,
     headers: contentHeaders(d.digest, { 'Content-Type': d.mediaType, 'Content-Length': String(size), 'Accept-Ranges': 'bytes' }),
   };
+};
+
+/** A whole blob, declared seekable (a media element treats a 200 without
+ *  `Accept-Ranges` as unseekable) and streamed through the store's verifying
+ *  whole read, so an original larger than memory is served. */
+const streamSeekable = (store: AttachmentStore, req: ContentRequest, d: Descriptor): ContentReply => {
+  const described = describeSeekable(store, req, d);
+  if (described.status !== 200) return described;
+  const stream = store.readWhole(d.digest);
+  return stream ? { ...described, stream } : contentError(404, 'blob not in store');
 };
 
 /** `bytes=<start>-<end>`, `bytes=<start>-` or `bytes=-<suffix>` against a size, or null when unsatisfiable. */
@@ -324,7 +325,7 @@ function route(req: ContentRequest, store: AttachmentStore): ContentReply {
     const source = sourceOf(manifest);
     if (!source) return contentError(404, 'no source retained for this attachment');
     if (req.range) return serveRange(store, req.range, source);
-    return method === 'HEAD' ? describeSeekable(store, req, source) : serveSeekable(store, req, source);
+    return method === 'HEAD' ? describeSeekable(store, req, source) : streamSeekable(store, req, source);
   }
 
   return contentError(405, 'unsupported method or path');

@@ -30,6 +30,12 @@ function store(): { content: FileAttachmentStore; dir: string } {
 }
 afterEach(() => dirs.splice(0).forEach(dir => rmSync(dir, { recursive: true, force: true })));
 
+async function collect(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
+  const parts: Uint8Array[] = [];
+  for await (const part of stream as unknown as AsyncIterable<Uint8Array>) parts.push(part);
+  return new Uint8Array(Buffer.concat(parts));
+}
+
 const req = (method: string, path: string, extra: { query?: Record<string, string>; contentRange?: string; body?: Uint8Array } = {}) => ({
   method, path, query: new URLSearchParams(extra.query ?? {}),
   ...(extra.contentRange ? { contentRange: extra.contentRange } : {}),
@@ -51,6 +57,24 @@ describe('the retained original', () => {
     expect(head.status).toBe(200);
     expect(head.headers).toMatchObject({ 'Content-Length': String(MP4.length), 'Content-Type': 'video/mp4', 'Accept-Ranges': 'bytes' });
     expect(head.body).toBeUndefined();
+    expect(read).not.toContain(source.digest);
+  });
+
+  it('serves GET whole as a verified stream, never holding the original in memory', async () => {
+    const { content } = store();
+    const ingress = createContentIngress(content);
+    const source = content.putBlob(MP4, 'application/octet-stream');
+    const frames = await Promise.all(['frame-00.png', 'frame-01.png'].map(async (n, i) => ({ root: await ingress.ingest(fixture(n)), tMs: i * 250 })));
+    const root = await composeVideo(content, { frames, sampling: { fps: 4, timestampIntervalMs: 5000, maxFrames: 64 }, durationMs: 4000, source });
+    const read: string[] = [];
+    const get = content.get.bind(content);
+    content.get = (digest: string) => { read.push(digest); return get(digest); };
+
+    const whole = resolveContent({ method: 'GET', path: `/v1/media/${root.digest}/source` }, content)!;
+    expect(whole.status).toBe(200);
+    expect(whole.headers).toMatchObject({ 'Content-Length': String(MP4.length), 'Content-Type': 'video/mp4', 'Accept-Ranges': 'bytes' });
+    expect(whole.body).toBeUndefined();
+    expect(await collect(whole.stream!)).toEqual(MP4);
     expect(read).not.toContain(source.digest);
   });
 });
@@ -163,16 +187,18 @@ describe('the blob upload table', () => {
     const uploads = new BlobUploads(content, content);
     const whole = uploads.resolve(req('GET', `/v2/r/blobs/${d.digest}`))!;
     expect(whole.status).toBe(200);
-    expect(whole.body).toEqual(MP4);
+    expect(whole.body).toBeUndefined();
+    expect(whole.headers['Content-Length']).toBe(String(MP4.length));
+    expect(await collect(whole.stream!)).toEqual(MP4);
     const part = uploads.resolve({ ...req('GET', `/v2/r/blobs/${d.digest}`), range: 'bytes=10-19' })!;
     expect(part.status).toBe(206);
     expect(part.headers['Content-Range']).toBe(`bytes 10-19/${MP4.length}`);
     expect(uploads.resolve(req('GET', `/v2/r/blobs/sha256:${'0'.repeat(64)}`))!.status).toBe(404);
     expect(uploads.resolve(req('DELETE', `/v2/r/blobs/${d.digest}`))!.status).toBe(405);
-    // A drifted blob is refused whole, never served as though it matched.
+    // A drifted blob is never served whole as though it matched: its stream errors before the last bytes.
     const drifted = MP4.slice(); drifted[3] ^= 0xff;
     writeFileSync(join(dir, 'blobs', 'sha256', d.digest.slice(7)), drifted);
-    expect(uploads.resolve(req('GET', `/v2/r/blobs/${d.digest}`))!.status).toBe(404);
+    await expect(collect(uploads.resolve(req('GET', `/v2/r/blobs/${d.digest}`))!.stream!)).rejects.toThrow(/no longer matches its digest/);
   });
 });
 
@@ -213,6 +239,7 @@ describe('Range on a retained original', () => {
       const whole = await fetch(source);
       expect(whole.headers.get('accept-ranges')).toBe('bytes');
       expect(whole.headers.get('content-type')).toBe('video/mp4');
+      expect(new Uint8Array(await whole.arrayBuffer())).toEqual(MP4);
 
       const slice = await fetch(source, { headers: { Range: 'bytes=100-199' } });
       expect(slice.status).toBe(206);

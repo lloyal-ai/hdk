@@ -225,6 +225,37 @@ export class FileAttachmentStore implements AttachmentStore, BlobStaging {
     return Readable.toWeb(stream) as ReadableStream<Uint8Array>;
   }
 
+  readWhole(digest: string): ReadableStream<Uint8Array> | null {
+    const file = this._pathFor(digest);
+    if (!file || this.size(digest) === null) return null;
+    const pieces = createReadStream(file)[Symbol.asyncIterator]();
+    const hash = createHash('sha256');
+    // One piece is always held back, so the whole is verified before a reader has all of it.
+    let held: Uint8Array | null = null;
+    return new ReadableStream<Uint8Array>({
+      // Every pull releases a piece, closes or errors: a pull that did none would wait for another that never comes.
+      async pull(controller) {
+        for (;;) {
+          const next = await pieces.next();
+          if (next.done) break;
+          const piece = new Uint8Array(next.value as Buffer);
+          hash.update(piece);
+          const release = held;
+          held = piece;
+          if (release) return controller.enqueue(release);
+        }
+        if ('sha256:' + hash.digest('hex') !== digest) {
+          return controller.error(new Error(`blob ${digest} no longer matches its digest`));
+        }
+        if (held) controller.enqueue(held);
+        controller.close();
+      },
+      async cancel() {
+        await pieces.return?.();
+      },
+    });
+  }
+
   /**
    * Begin a staged upload. The staging file sits in `.tmp`, outside the blob
    * directory, so a crash leaves no malformed blob; the same rename that
