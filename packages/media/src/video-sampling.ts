@@ -172,6 +172,10 @@ async function jpeg(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<Uint8A
  * a picture that starts after its sound has its first frame at that later
  * time, so a frame, a caption or a cited moment plays where the model saw it.
  *
+ * A platform decoder can refuse a stream partway that another decodes (macOS's
+ * VideoToolbox rejects some H.264 frames as bad data, which Chrome raises as an
+ * `EncodingError`), so a clip it refuses is read once more in software.
+ *
  * @throws If the file has no video track this browser can decode, or with
  *         the signal's reason once it aborts; no further frame is decoded.
  */
@@ -180,7 +184,21 @@ export async function sampleVideo(
   sampling: VideoSampling & { maxEdgePx: number },
   options: { signal?: AbortSignal } = {},
 ): Promise<{ frames: SampledFrame[]; durationMs: number }> {
-  const { signal } = options;
+  try {
+    return await readFrames(file, sampling, options.signal, 'no-preference');
+  } catch (e) {
+    if (!(e instanceof DOMException && e.name === 'EncodingError')) throw e;
+    return readFrames(file, sampling, options.signal, 'prefer-software');
+  }
+}
+
+/** One pass over the clip's frames, decoded the way `decoding` prefers. */
+async function readFrames(
+  file: Blob,
+  sampling: VideoSampling & { maxEdgePx: number },
+  signal: AbortSignal | undefined,
+  decoding: 'no-preference' | 'prefer-software',
+): Promise<{ frames: SampledFrame[]; durationMs: number }> {
   signal?.throwIfAborted();
   const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
   // Disposing rejects a decode still waiting, so an abort never waits for the next frame.
@@ -193,7 +211,7 @@ export async function sampleVideo(
     const first = Math.max(0, await track.getFirstTimestamp());
     const endS = await input.computeDuration();
     const size = fitEdge(track.displayWidth, track.displayHeight, sampling.maxEdgePx);
-    const sink = new CanvasSink(track, { ...size, fit: 'fill' });
+    const sink = new CanvasSink(track, { ...size, fit: 'fill', decoderOptions: { hardwareAcceleration: decoding } });
     const frames: SampledFrame[] = [];
     for await (const wrapped of sink.canvasesAtTimestamps(frameTimes(endS - first, sampling).map(t => first + t))) {
       signal?.throwIfAborted();

@@ -9,7 +9,9 @@ import type { SampledFrame, SoundtrackWindow } from '../src/video-sampling';
 // Stand-in decoder: a 2-second, 320×240 clip whose frames are shown at 8 fps. A test sets the soundtrack:
 // `globalThis.soundtrack`, decoded buffers with their timestamps, `globalThis.videoStart`, `globalThis.clipSeconds`
 // (the container's duration); `globalThis.onDecode` sees each frame decoded; `globalThis.stallAt` makes that
-// frame's decode wait until the input is disposed, which rejects it as Mediabunny rejects a pending read.
+// frame's decode wait until the input is disposed, which rejects it as Mediabunny rejects a pending read;
+// `globalThis.refusal` thrown at frame `globalThis.refuseAt` by a sink not reading in software is a platform
+// decoder refusing the stream, and `globalThis.sinks` records each sink's decoder preference.
 vi.mock('mediabunny', () => {
   class Input {
     dispose(): void { (globalThis as { onDispose?: () => void }).onDispose?.(); }
@@ -24,9 +26,16 @@ vi.mock('mediabunny', () => {
     async computeDuration() { return (globalThis as { clipSeconds?: number }).clipSeconds ?? 2; }
   }
   class CanvasSink {
+    private readonly accel: string;
+    constructor(_track: unknown, options?: { decoderOptions?: { hardwareAcceleration?: string } }) {
+      this.accel = options?.decoderOptions?.hardwareAcceleration ?? 'no-preference';
+      (globalThis as { sinks?: string[] }).sinks?.push(this.accel);
+    }
     async *canvasesAtTimestamps(times: number[]) {
       for (const [i, t] of times.entries()) {
         (globalThis as { onDecode?: () => void }).onDecode?.();
+        const g = globalThis as { refuseAt?: number; refusal?: unknown };
+        if (g.refuseAt === i && this.accel !== 'prefer-software') throw g.refusal;
         if ((globalThis as { stallAt?: number }).stallAt === i) {
           await new Promise((_, reject) => { (globalThis as { onDispose?: () => void }).onDispose = () => reject(new Error('Input has been disposed')); });
         }
@@ -164,6 +173,40 @@ describe('sampleVideo', () => {
     } finally {
       delete (globalThis as { onDecode?: () => void }).onDecode;
     }
+  });
+});
+
+describe('a platform decoder that refuses the stream', () => {
+  const g = globalThis as { sinks?: string[]; refuseAt?: number; refusal?: unknown; onDecode?: () => void };
+  afterEach(() => { delete g.sinks; delete g.refuseAt; delete g.refusal; delete g.onDecode; });
+  // What Chrome's WebCodecs raises when VideoToolbox rejects a frame (-12909, bad data), passed through by Mediabunny.
+  const decoderRefused = () => new DOMException('Decoding error.', 'EncodingError');
+
+  it('reads the clip again in software, and gets every frame', async () => {
+    const whole = await sampleVideo(new Blob([new Uint8Array(10)]), SAMPLING);
+    g.sinks = [];
+    g.refuseAt = 3;
+    g.refusal = decoderRefused();
+    const again = await sampleVideo(new Blob([new Uint8Array(10)]), SAMPLING);
+    expect(g.sinks).toEqual(['no-preference', 'prefer-software']);
+    expect(again.frames.map((f) => f.tMs)).toEqual(whole.frames.map((f) => f.tMs));
+    expect(again.durationMs).toBe(whole.durationMs);
+  });
+
+  it('does not read again after an abort, or after a failure that is not the decoder\'s', async () => {
+    g.sinks = [];
+    g.refuseAt = 2;
+    g.refusal = new Error('the file ended early');
+    await expect(sampleVideo(new Blob([new Uint8Array(10)]), SAMPLING)).rejects.toThrow(/ended early/);
+    expect(g.sinks).toEqual(['no-preference']);
+
+    g.sinks = [];
+    g.refusal = decoderRefused();
+    const abort = new AbortController();
+    let decoded = 0;
+    g.onDecode = () => { if (++decoded === 2) abort.abort(); };
+    await expect(sampleVideo(new Blob([new Uint8Array(10)]), SAMPLING, { signal: abort.signal })).rejects.toThrow(/abort/i);
+    expect(g.sinks).toEqual(['no-preference']);
   });
 });
 
