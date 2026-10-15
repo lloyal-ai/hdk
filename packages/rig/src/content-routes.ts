@@ -259,7 +259,9 @@ function route(req: ContentRequest, store: AttachmentStore): ContentReply {
   // blobs by digest, so serving them would hand out any blob including a
   // retained SOURCE layer, defeating the reason
   // `/v1/media/<manifest>/representations/<i>` resolves through the
-  // manifest at all. Bytes have exactly one door, and it is that one.
+  // manifest at all. Bytes are served only through a manifest that names them;
+  // the blob surface (`/v2`) serves none by digest either, unless it is the
+  // full registry the conformance suite runs against (`registry: true`).
   const exists = /^\/v1\/content\/([^/]+)$/.exec(path);
   if (exists && method === 'HEAD') {
     const digest = decodeURISegment(exists[1]);
@@ -406,6 +408,9 @@ export interface ContentRoutesOpts {
    * right default: in development Vite proxies content so requests stay
    * same-origin, and `*` on a route that serves a tenant's uploads is not a
    * default anyone should inherit.
+   *
+   * It is also the one origin besides this host's own whose writes are
+   * accepted: a write naming any other origin is refused (see `writeAllowed`).
    */
   allowedOrigin?: string;
   /** The OCI blob upload surface (`/v2/...`) over this store, for originals too

@@ -21,10 +21,11 @@ import { materialize } from '@lloyal-labs/media';
  * 1. **Prepare** every item, committing each root manifest. An item that is
  *    already a root — a descriptor a tool read from the store — takes its
  *    place in order without touching the door; only bytes are ingested.
- * 2. **Materialize** every representation.
- * 3. **Flatten** preserving attachment order, then representation order within
- *    each — markers correspond to REPRESENTATIONS, so a video contributes its
- *    frames here and an image contributes one.
+ * 2. **Materialize** every root into its projector inputs.
+ * 3. **Flatten** preserving attachment order, then input order within each:
+ *    markers correspond to INPUTS, so an image contributes one per projector
+ *    representation (usually one) and a video contributes one, its frames and
+ *    timeline together.
  * 4. Only then may a caller emit markers, build a delta, and prefill.
  *
  * A failure on item N leaves the content of items 1…N−1 in the store,

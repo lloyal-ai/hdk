@@ -48,7 +48,7 @@ trace and replay. This package is the format and the gate.
 
 | entry | holds | needs |
 |---|---|---|
-| `@lloyal-labs/media` | the OCI shapes, the store and ingress contracts, `materialize` | nothing — browser-safe, zero dependencies |
+| `@lloyal-labs/media` | the OCI shapes, the store and ingress contracts, `materialize` | `@noble/hashes` (incremental SHA-256, which WebCrypto lacks); browser-safe |
 | `@lloyal-labs/media/node` | `FileAttachmentStore` (the layout on disk), `createContentIngress` — `createImageIngress` (sharp) and `createDocumentIngress` (PDFium) | `node:fs`; `sharp` and `@embedpdf/pdfium` as optional peers |
 | `@lloyal-labs/media/client` | reading a video in the page: `sampleVideo` (frames sized and encoded as JPEG), `extractAudioWindows` (the soundtrack as PCM WAV windows cut at quiet points), `captureFrames` (frames from a live track) | WebCodecs and a canvas; `mediabunny` as an optional peer, loaded with the entry |
 

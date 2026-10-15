@@ -77,14 +77,17 @@ export interface AttachmentStore {
    *  hide an attachment from OCI tooling, but it can never invalidate a
    *  recorded run.
    *
-   *  Every read rehashes what it found; bytes that no longer match the name —
+   *  Every read of a whole blob (this one and {@link readWhole}) rehashes what
+   *  it found; bytes that no longer match the name —
    *  bit rot, a torn write, a rewritten file — answer `null` exactly as an
    *  absent blob does. A property of the store, not a per-call option: replay
    *  rebuilding cells from drifted bytes under the original digest is a silent
    *  divergence, and the HTTP route serving them under that digest's ETag is
    *  the same lie one hop later. (Verification was briefly a flag that replay
    *  switched on; the manifest lookup beside it never got the flag, which left
-   *  the root-to-bytes chain unverified. One rule, no door.) */
+   *  the root-to-bytes chain unverified. One rule for every whole read; only
+   *  {@link size} and {@link readRange}, which never hold a whole blob, are
+   *  outside it, and their docs say so.) */
   get(digest: string): Uint8Array | null;
   /** Resolve and validate a manifest. `null` when absent, drifted (it is read
    *  through {@link get}), unparsable, or not an artifact type this build
