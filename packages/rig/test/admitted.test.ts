@@ -177,6 +177,54 @@ describe('admitted', () => {
       expect((out as { refused: string }).refused).toBe("That attachment can't be read in: MtmdSource - video timestamps must increase");
     });
 
+    it('a turn that fits what is free but would leave less than the run needs to work in is refused, saying so', async () => {
+      // The run that follows the turn needs room of its own: an agent pool will not start an agent without its reserve.
+      const { store, image } = plant();
+      const ctx = new MockSessionContext({ nCtx: 10_000, cellsUsed: 4_000 });
+      ctx.mockImageCells = 3_000;
+      const out = await run(function* () {
+        yield* priced(store, ctx);
+        return yield* admitted([image], { context: 0.5, reserve: 4_000 });
+      });
+      expect((out as { refused: string }).refused).toMatch(
+        /^Not enough space for work after attachments \(3,\d{3} tokens\)\. Try smaller attachments or adjust budgets \(2,000 max allowed for attachments\)\.$/);
+    });
+
+    it('the reserve is inclusive: leaving exactly the reserve free is admitted, one cell less is not', async () => {
+      const { store, image } = plant();
+      const ctx = new MockSessionContext({ nCtx: 10_000, cellsUsed: 4_000 });
+      ctx.mockImageCells = 0;
+      const fixed = await deltaCells(ctx, buildUserDeltaMultimodal(ctx, '', [PNG]));
+      const at = (cells: number) => {
+        ctx.mockImageCells = cells;
+        return run(function* () { yield* priced(store, ctx); return yield* admitted([image], { reserve: 4_000 }); });
+      };
+      expect(await at(2_000 - fixed)).not.toHaveProperty('refused');
+      expect(await at(2_001 - fixed)).toHaveProperty('refused');
+    });
+
+    it('a reserve alone prices the media: the share is not what makes room matter', async () => {
+      const { store, image } = plant();
+      const ctx = new MockSessionContext({ nCtx: 10_000, cellsUsed: 9_000 });
+      ctx.mockImageCells = 500;
+      const out = await run(function* () {
+        yield* priced(store, ctx);
+        return yield* admitted([image], { reserve: 1_000 });
+      });
+      expect(out).toHaveProperty('refused');
+    });
+
+    it('a reserve that is not a whole number of cells is the developer\'s mistake, thrown', async () => {
+      const { store, image } = plant();
+      const ctx = new MockSessionContext({ nCtx: 10_000 });
+      for (const reserve of [-1, 1.5, Number.NaN]) {
+        await expect(run(function* () {
+          yield* priced(store, ctx);
+          return yield* admitted([image], { reserve });
+        })).rejects.toThrow(/reserve/);
+      }
+    });
+
     it('the limit is inclusive: exactly the share is admitted, one cell over is not', async () => {
       const { store, image } = plant();
       const ctx = new MockSessionContext({ nCtx: 10_000 });

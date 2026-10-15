@@ -12,9 +12,11 @@
  * materializes to pixels — of the `vision` service, so the refusal is the one
  * every unconfigured service gives: a document is text the run retrieves from,
  * and needs no projector. Last, when the harness sets a share of the context
- * its attachments may fill, the media is priced exactly, before a cell is
- * spent: a prefill that overflows the context fails part-way through the run,
- * on the fork the session prepared it on, where a refusal here costs nothing.
+ * its attachments may fill, or a reserve the run after them needs, the media
+ * is priced exactly, before a cell is spent: a prefill that overflows the
+ * context fails part-way through the run, on the fork the session prepared it
+ * on, and media that leaves no room for the run starts a run that cannot work;
+ * a refusal here costs nothing.
  *
  * A refusal moves nothing; the caller says it and returns.
  *
@@ -40,14 +42,20 @@ export type Admitted =
 export interface AttachmentBudget {
   /** The largest fraction of the context, in (0, 1], the turn's projected media may fill when prefilled. Unset: no limit. */
   context?: number;
+  /** Cells that must stay free after the media lands, for the run that follows it: an agent pool's reserve, say.
+   *  Unset: none. */
+  reserve?: number;
 }
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 export function* admitted(descriptors: readonly Descriptor[] = [], budget: AttachmentBudget = {}): Operation<Admitted> {
-  const { context } = budget;
+  const { context, reserve } = budget;
   if (context !== undefined && !(context > 0 && context <= 1)) {
     throw new Error(`admitted: the attachments' context share must be between 0 and 1, not ${context}`);
+  }
+  if (reserve !== undefined && !(Number.isSafeInteger(reserve) && reserve >= 0)) {
+    throw new Error(`admitted: the reserve must be a whole number of cells, not ${reserve}`);
   }
   if (descriptors.length === 0) return { roots: [], bitmaps: [], projected: [], videos: [] };
 
@@ -79,9 +87,9 @@ export function* admitted(descriptors: readonly Descriptor[] = [], budget: Attac
     } catch (err) {
       return { refused: message(err) };
     }
-    if (context !== undefined) {
+    if (context !== undefined || reserve !== undefined) {
       try {
-        const refusal = yield* overBudget(bitmaps, context);
+        const refusal = yield* overBudget(bitmaps, context ?? 1, reserve ?? 0);
         if (refusal) return { refused: refusal };
       } catch (err) {
         // Pricing lays the media out as prefill would; what it cannot lay out, prefill would refuse.
@@ -94,11 +102,11 @@ export function* admitted(descriptors: readonly Descriptor[] = [], budget: Attac
 
 /**
  * The sentence refusing media that would fill more than `context` of the
- * context, or more than the context has free now, if it would. Either way the
- * prefill would cost more than it may: past the share by policy, past what is
- * free by overflowing.
+ * context, more than the context has free now, or so much of it that less than
+ * `reserve` stays free, if it would: past the share by policy, past what is
+ * free by overflowing, past the reserve by starting a run with no room to work.
  */
-function* overBudget(bitmaps: MultimodalInput[], context: number): Operation<string | undefined> {
+function* overBudget(bitmaps: MultimodalInput[], context: number, reserve: number): Operation<string | undefined> {
   const ctx = yield* Ctx.expect();
   const { nCtx } = new ContextPressure(ctx);
   if (nCtx <= 0) return undefined;
@@ -114,6 +122,10 @@ function* overBudget(bitmaps: MultimodalInput[], context: number): Operation<str
   if (cells > remaining) {
     return `${what} would take ${n(cells)} tokens, but only ${n(remaining)} of the ${n(nCtx)}-token context are free now. ` +
       'Try a shorter clip, fewer attachments, or a new brief.';
+  }
+  if (cells > remaining - reserve) {
+    return `Not enough space for work after attachments (${n(cells)} tokens). ` +
+      `Try smaller attachments or adjust budgets (${n(Math.max(0, remaining - reserve))} max allowed for attachments).`;
   }
   return undefined;
 }
