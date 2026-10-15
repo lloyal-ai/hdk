@@ -2,7 +2,7 @@ import { all, spawn } from 'effection';
 import type { Operation, Task } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import type { Agent } from './Agent';
-import { SpawnRefused, outcomeOfAgent } from './spawns';
+import { ExtensionRefused, SpawnRefused, outcomeOfAgent } from './spawns';
 import type { SpawnOutcome } from './types';
 
 /**
@@ -68,7 +68,7 @@ export interface PoolContext {
    * Serialize a user+assistant turn and prefill it into the spine, advancing spine.position.
    * No-op (returns 0) when assistantContent is empty. Admitted against headroom like
    * every other prefill: it waits for room while agents can still free KV, and throws
-   * once nothing can — the spine is never handed a delta that does not fit.
+   * {@link ExtensionRefused} once nothing can — the spine is never handed a delta that does not fit.
    */
   extendSpine(userContent: string, assistantContent: string): Operation<number>;
 
@@ -197,9 +197,15 @@ export const chain = <T>(
         if (!(e instanceof SpawnRefused)) throw e;
       }
       const agent = requested ? yield* ctx.waitFor(requested) : null;
-      const delta = agent?.result && step.userContent
-        ? yield* ctx.extendSpine(step.userContent, agent.result)
-        : 0;
+      // A report the spine has no room for stays off it, as a refused step does; the chain goes on.
+      let delta = 0;
+      if (agent?.result && step.userContent) {
+        try {
+          delta = yield* ctx.extendSpine(step.userContent, agent.result);
+        } catch (e) {
+          if (!(e instanceof ExtensionRefused)) throw e;
+        }
+      }
       if (step.afterExtend) yield* step.afterExtend(delta, ctx.spine.position);
     }
   };
@@ -233,8 +239,13 @@ export const fanout = (landscape: ChainStep, domains: SpawnSpec[]): Orchestrator
     } catch (e) {
       if (!(e instanceof SpawnRefused)) throw e;
     }
+    // A landscape the spine has no room for extends nothing either.
     if (l?.result && landscape.userContent) {
-      yield* ctx.extendSpine(landscape.userContent, l.result);
+      try {
+        yield* ctx.extendSpine(landscape.userContent, l.result);
+      } catch (e) {
+        if (!(e instanceof ExtensionRefused)) throw e;
+      }
     }
     yield* parallel(domains)(ctx);
   };

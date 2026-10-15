@@ -26,7 +26,7 @@ export { useAgent, agent } from './use-agent';
 export type { UseAgentOpts } from './use-agent';
 export { agentPool } from './create-agent-pool';
 export type { CreateAgentPoolOpts } from './create-agent-pool';
-export { SpawnRefused } from './spawns';
+export { ExtensionRefused, SpawnRefused } from './spawns';
 export type { ParallelOptions } from './orchestrators';
 export { useAgentPool } from './agent-pool';
 export { ContextPressure } from './pressure';

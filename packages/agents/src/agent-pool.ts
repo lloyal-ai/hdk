@@ -26,7 +26,7 @@ import type { PoolContext } from './orchestrators';
 import type { AgentTaskSpec, AgentPoolOptions, AgentPoolResult, AgentEvent, PressureThresholds } from './types';
 
 export { ContextPressure } from './pressure';
-export { SpawnRefused } from './spawns';
+export { ExtensionRefused, SpawnRefused } from './spawns';
 
 /** The grammar that forces a recovery output to be a valid call to the pool's
  *  TERMINAL tool. `toolChoice: 'auto'` — the root rule is the bare call;

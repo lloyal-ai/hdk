@@ -24,6 +24,17 @@ export class SpawnRefused extends Error {
   }
 }
 
+/** A turn the spine had no room for once nothing could free KV. Thrown from
+ *  `PoolContext.extendSpine`; the shapes treat it as they treat a refused
+ *  spawn: `chain` and `fanout` go on with that report off the spine, a `dag`
+ *  node lets it propagate. Nothing was prefilled. */
+export class ExtensionRefused extends Error {
+  constructor(readonly tokens: number) {
+    super(`useAgentPool: cannot fit spine extension (${tokens} tokens) — nothing left to free KV`);
+    this.name = 'ExtensionRefused';
+  }
+}
+
 export interface SpawnEntry {
   readonly index: number;
   readonly key?: string;

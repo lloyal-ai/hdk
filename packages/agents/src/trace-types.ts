@@ -343,6 +343,12 @@ export type TraceEvent =
       deltaTokens: number;
       positionAfter: number;
     }
+  // A turn the spine had no room for, once nothing could free KV: nothing was prefilled.
+  | TraceEventBase & {
+      type: 'spine:refused';
+      userContent: string;
+      tokens: number;
+    }
 
   // ── Tool events ─────────────────────────────
   | TraceEventBase & {
