@@ -181,10 +181,44 @@ describe('the blob upload table', () => {
     expect(uploads.resolve(req('GET', b))!.status).toBe(404);
   });
 
-  it('reads a blob back by digest, whole and verified, or by range', async () => {
+  it('admits only the original of a video by default: a pushed image, manifest or text is refused and nothing is kept', () => {
     const { content, dir } = store();
+    const uploads = new BlobUploads(content, content);
+    const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]);
+    const manifest = new TextEncoder().encode(JSON.stringify({ schemaVersion: 2, artifactType: 'application/vnd.lloyal.attachment.v1', layers: [] }));
+    const text = new TextEncoder().encode('# a document the host never read');
+    for (const bytes of [PNG, manifest, text]) {
+      const reply = uploads.resolve(req('POST', '/v2/r/blobs/uploads/', { query: { digest: digestOf(bytes) }, body: bytes }))!;
+      expect(reply.status).toBe(403);
+      expect(JSON.parse(new TextDecoder().decode(reply.body!)).errors[0].code).toBe('DENIED');
+    }
+    expect(readdirSync(join(dir, 'blobs', 'sha256'))).toEqual([]);
+    expect(readdirSync(join(dir, '.tmp')).filter(f => f.startsWith('upload.'))).toEqual([]);
+    expect(uploads.resolve(req('POST', '/v2/r/blobs/uploads/', { query: { digest: digestOf(MP4) }, body: MP4 }))!.status).toBe(201);
+  });
+
+  it('serves no blob\'s bytes by digest by default: the attachment that holds it is the one door; existence still answers', () => {
+    const { content } = store();
     const d = content.putBlob(MP4, 'video/mp4');
     const uploads = new BlobUploads(content, content);
+    const read = uploads.resolve(req('GET', `/v2/r/blobs/${d.digest}`))!;
+    expect(read.status).toBe(403);
+    expect(read.stream).toBeUndefined();
+    expect(uploads.resolve({ ...req('GET', `/v2/r/blobs/${d.digest}`), range: 'bytes=0-9' })!.status).toBe(403);
+    expect(uploads.resolve(req('HEAD', `/v2/r/blobs/${d.digest}`))!.status).toBe(200);
+  });
+
+  it('as a registry, admits any blob', () => {
+    const { content } = store();
+    const bytes = new TextEncoder().encode('any bytes at all');
+    const reply = new BlobUploads(content, content, { registry: true }).resolve(req('POST', '/v2/r/blobs/uploads/', { query: { digest: digestOf(bytes) }, body: bytes }))!;
+    expect(reply.status).toBe(201);
+  });
+
+  it('as a registry, reads a blob back by digest, whole and verified, or by range', async () => {
+    const { content, dir } = store();
+    const d = content.putBlob(MP4, 'video/mp4');
+    const uploads = new BlobUploads(content, content, { registry: true });
     const whole = uploads.resolve(req('GET', `/v2/r/blobs/${d.digest}`))!;
     expect(whole.status).toBe(200);
     expect(whole.body).toBeUndefined();

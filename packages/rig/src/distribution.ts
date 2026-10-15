@@ -16,16 +16,19 @@
  * PUT    /v2/<name>/blobs/uploads/<id>?digest=   close: verify the whole, then admit (an optional last chunk rides the body)
  * DELETE /v2/<name>/blobs/uploads/<id>            cancel
  * HEAD   /v2/<name>/blobs/<digest>                whether a blob is stored
- * GET    /v2/<name>/blobs/<digest>                the blob, whole (verified) or by Range (206)
+ * GET    /v2/<name>/blobs/<digest>                a registry's read-back: the blob, whole (verified) or by Range (206)
  * ```
  *
- * A blob is readable by its digest, as from any registry: the spec's push
- * flow verifies the returned location by reading it back, and a digest is
- * identity, never authorization. A whole read streams through the store's
- * verifying `readWhole`, so an original larger than memory is served; a ranged
- * read streams from the file unverified, which the store's contract states. There is no manifest push: a caller never authors a
- * manifest, and a video's is composed by the host from references
- * (`video:compose`).
+ * A harness host admits only the original of a video here, by its container
+ * signature, and serves no blob's bytes by digest: a pushed original is read
+ * through the attachment that holds it (`/v1/media/<root>/source`). So nothing
+ * a client pushes is ever read as a manifest, a document's text or an image:
+ * a caller never authors a manifest, and a video's is composed by the host
+ * from references (`video:compose`). As a full registry (`registry: true`,
+ * which the distribution conformance suite runs against) any blob is admitted
+ * and read back by digest: a whole read streams through the store's verifying
+ * `readWhole`, a ranged read from the file unverified, as the store's contract
+ * states.
  *
  * Every repository name addresses the one project store. A pushed blob is
  * inert until a composition references it, and the composition inspects it.
@@ -35,7 +38,7 @@
  *
  * @category Runtime
  */
-import { DIGEST_PATTERN } from '@lloyal-labs/media';
+import { DIGEST_PATTERN, isVideoContainer } from '@lloyal-labs/media';
 import type { AttachmentStore } from '@lloyal-labs/media';
 import type { BlobStaging, StagedBlob } from '@lloyal-labs/media/node';
 import { decodeURISegment, parseByteRange } from './content-routes';
@@ -87,6 +90,13 @@ const chunkRange = (header: string): { start: number; end: number } | null => {
   return m ? { start: Number(m[1]), end: Number(m[2]) } : null;
 };
 
+class NotAVideoOriginal extends Error {}
+
+/** What a harness host admits: a video's original, by its container signature. */
+const videoOriginalsOnly = (head: Uint8Array): void => {
+  if (!isVideoContainer(head)) throw new NotAVideoOriginal('this host admits only the original of a video');
+};
+
 /**
  * The upload sessions of one host: staged blobs by id, over one store.
  *
@@ -100,7 +110,8 @@ const chunkRange = (header: string): { start: number; end: number } | null => {
 export class BlobUploads {
   private readonly _sessions = new Map<string, StagedBlob>();
 
-  constructor(readonly staging: BlobStaging, readonly store: AttachmentStore) {}
+  /** @param opts.registry - Act as a full registry: admit any blob and read any back by digest. Off for a harness host. */
+  constructor(readonly staging: BlobStaging, readonly store: AttachmentStore, private readonly opts: { registry?: boolean } = {}) {}
 
   /** Answer one distribution request, or null when the path is not ours. Never throws. */
   resolve(req: DistributionRequest): ContentReply | null {
@@ -160,6 +171,7 @@ export class BlobUploads {
       const headers = { 'Docker-Content-Digest': digest, 'Accept-Ranges': 'bytes', 'Content-Type': 'application/octet-stream' };
       if (method === 'HEAD') return { status: 200, headers: { ...headers, 'Content-Length': String(size) } };
       if (method !== 'GET') return ociError(405, 'UNSUPPORTED', 'blobs are pushed through an upload session, never deleted');
+      if (!this.opts.registry) return ociError(403, 'DENIED', 'a blob is read through the attachment that holds it');
       if (req.range) {
         const range = parseByteRange(req.range, size);
         const stream = range ? this.store.readRange(digest, range) : null;
@@ -226,9 +238,10 @@ export class BlobUploads {
       return ociError(400, 'DIGEST_INVALID', 'a sha256 digest of the whole blob is required');
     }
     try {
-      const d = session.adopt(digest, 'application/octet-stream');
+      const d = session.adopt(digest, 'application/octet-stream', this.opts.registry ? undefined : videoOriginalsOnly);
       return empty(201, { Location: `/v2/${name}/blobs/${d.digest}`, 'Docker-Content-Digest': d.digest });
     } catch (e) {
+      if (e instanceof NotAVideoOriginal) return ociError(403, 'DENIED', e.message);
       if (e instanceof Error && /digest mismatch/.test(e.message)) return ociError(400, 'DIGEST_INVALID', e.message);
       throw e;
     }

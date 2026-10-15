@@ -5,6 +5,9 @@
 # the suite is the registry ecosystem's own test.
 #
 # Scope, declared to the suite rather than hidden from it:
+#   - the surface runs as a full registry (`registry: true`): the suite pushes
+#     arbitrary blobs and reads them back by digest, where a harness host admits
+#     only video originals and serves their bytes only through the attachment;
 #   - blob delete is off: the store deletes nothing on its own;
 #   - manifests are never pushed: the host composes them;
 #   - sha512 is off: the store addresses sha256 only.
@@ -37,7 +40,7 @@ node -e "
   const { FileAttachmentStore } = require('$REPO/packages/media/dist/node.js');
   const { createContentRoutes, BlobUploads } = require('$REPO/packages/rig/dist/node.js');
   const store = new FileAttachmentStore('$WORK/store');
-  const routes = createContentRoutes({ store, uploads: new BlobUploads(store, store) });
+  const routes = createContentRoutes({ store, uploads: new BlobUploads(store, store, { registry: true }) });
   createServer((req, res) => { if (!routes(req, res)) { res.writeHead(404); res.end(); } }).listen($PORT, '0.0.0.0');
 " &
 HOST_PID=$!
