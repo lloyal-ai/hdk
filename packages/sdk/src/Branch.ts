@@ -380,11 +380,14 @@ export class Branch {
    *
    * @throws unless the child was forked from this branch, this branch has
    *   neither decoded nor changed since, and the child has no children and is
-   *   not poisoned by a failed prefill. A refusal changes nothing.
+   *   not poisoned by a failed prefill, and both belong to one context. A
+   *   refusal changes nothing.
    */
   fastForwardSync(child: Branch): void {
     this._ensureNotDisposed();
     child._ensureNotDisposed();
+    // Handles are numbered per context: a matching handle in another one names a different branch.
+    if (child._ctx !== this._ctx) throw new Error('Branch.fastForward: the child belongs to another context');
     this._ctx._branchFastForward(this._handle, child._handle);
     this._held = child._held;
     child._disposed = true;

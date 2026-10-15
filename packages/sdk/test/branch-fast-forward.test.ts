@@ -117,6 +117,25 @@ describe('Branch.fastForward', () => {
     parent.pruneSync();
   });
 
+  it('refuses a child from another context, even one whose handle matches, with nothing consumed', async () => {
+    const { ctx, parent } = rig();
+    const ownChild = await parent.fork();
+    const other = rig();
+    const foreignChild = await other.parent.fork();
+    expect(foreignChild.handle).toBe(ownChild.handle);
+
+    expect(() => parent.fastForwardSync(foreignChild)).toThrow(/another context/);
+    expect(ownChild.disposed).toBe(false);
+    expect(foreignChild.disposed).toBe(false);
+    expect(parent.children).toEqual([ownChild.handle]);
+    expect(other.parent.children).toEqual([foreignChild.handle]);
+
+    parent.fastForwardSync(ownChild);
+    other.parent.pruneSubtreeSync();
+    parent.pruneSync();
+    expect(ctx.cellsUsed).toBe(0);
+  });
+
   it('refuses a disposed branch on either side before reaching the context', async () => {
     const { parent } = rig();
     const child = await parent.fork();
