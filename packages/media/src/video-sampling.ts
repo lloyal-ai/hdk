@@ -104,6 +104,12 @@ export function soundtrackWindowMs(
   return Math.max(1, Math.floor(Math.min(wanted, admitted / (1 + CUT_SLACK))));
 }
 
+/** A clip's length in whole milliseconds: the one clock its frames, its soundtrack and its composition share. */
+export const clipDurationMs = (endS: number): number => Math.round(endS * 1000);
+
+/** The soundtrack sample at the clip's end, at `rate`: never past {@link clipDurationMs}, so no window ends after it. */
+export const clipEndSample = (endS: number, rate: number): number => Math.floor(clipDurationMs(endS) * rate / 1000);
+
 export class SoundtrackCutter {
   private pending = new Float32Array(0);
   private startSample = 0;
@@ -198,7 +204,7 @@ export async function sampleVideo(
       frames.push({ bytes: await jpeg(wrapped.canvas), tMs });
     }
     if (frames.length === 0) throw new Error('No frames could be read from that video.');
-    return { frames, durationMs: Math.round(endS * 1000) };
+    return { frames, durationMs: clipDurationMs(endS) };
   } catch (e) {
     // A disposed input fails its read with its own error; the caller asked to stop, so it hears why.
     signal?.throwIfAborted();
@@ -260,7 +266,7 @@ export async function* extractAudioWindows(
       const step = Math.ceil(buffer.sampleRate / ceiling);
       rate ||= buffer.sampleRate / step;
       cutter ??= new SoundtrackCutter(rate, windowMs);
-      const end = Math.round(endsAtS * rate);
+      const end = clipEndSample(endsAtS, rate);
       const startsAt = Math.min(Math.round(timestamp * rate), end);
       for (let gap = startsAt - fed; gap > 0; gap -= rate) {
         const silence = new Float32Array(Math.min(gap, rate));

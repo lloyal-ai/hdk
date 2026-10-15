@@ -197,6 +197,18 @@ describe('extractAudioWindows', () => {
     expect(decoded).toBe(2);
   });
 
+  it('ends the last window within the clip\'s own duration, whatever the sample rate rounds to', async () => {
+    // 1.005499 s at 44.1 kHz: the clip is 1,005 ms; rounding through the sample count would end the soundtrack at 1,006.
+    g.clipSeconds = 1.005499;
+    const samples = new Float32Array(Math.round(1.1 * 44_100)).fill(0.25);
+    g.soundtrack = [{ timestamp: 0, buffer: { sampleRate: 44_100, numberOfChannels: 1, length: samples.length, getChannelData: () => samples } }];
+    const { durationMs } = await sampleVideo(new Blob([new Uint8Array(10)]), SAMPLING);
+    const windows: SoundtrackWindow[] = [];
+    for await (const w of extractAudioWindows(new Blob([new Uint8Array(1)]), 5000)) windows.push(w);
+    expect(durationMs).toBe(1005);
+    expect(windows.at(-1)!.endMs).toBeLessThanOrEqual(durationMs);
+  });
+
   it('leaves out sound past the clip\'s end, as a decoder\'s padding is', async () => {
     // The stand-in clip lasts 2 s; its soundtrack decodes 2.5 s, as AAC frames padded to 1,024 samples do.
     g.soundtrack = [sound(0, 2.5)];
