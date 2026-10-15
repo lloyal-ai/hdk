@@ -214,6 +214,35 @@ describe('admitted', () => {
       expect(out).toHaveProperty('refused');
     });
 
+    it('a turn bound for a fresh context is judged by what will be free there, not by the context it leaves', async () => {
+      // A full brief's trunk still holds 9,000 cells, but a new brief starts in an empty context.
+      const { store, image } = plant();
+      const ctx = new MockSessionContext({ nCtx: 10_000, cellsUsed: 9_000 });
+      ctx.mockImageCells = 3_000;
+      const judged = (free?: number) => run(function* () {
+        yield* priced(store, ctx);
+        return yield* admitted([image], { reserve: 4_000, ...(free !== undefined ? { free } : {}) });
+      });
+      expect(await judged()).toHaveProperty('refused');
+      expect(await judged(10_000)).not.toHaveProperty('refused');
+    });
+
+    it('what will be free bounds the turn as what is free now did', async () => {
+      const { store, image } = plant();
+      const ctx = new MockSessionContext({ nCtx: 10_000 });
+      ctx.mockImageCells = 3_000;
+      const out = await run(function* () { yield* priced(store, ctx); return yield* admitted([image], { reserve: 4_000, free: 5_000 }); });
+      expect((out as { refused: string }).refused).toMatch(/\(1,000 max allowed for attachments\)/);
+    });
+
+    it('a free count that is not a whole number of cells, or more than the context holds, is the developer\'s mistake, thrown', async () => {
+      const { store, image } = plant();
+      const ctx = new MockSessionContext({ nCtx: 10_000 });
+      for (const free of [-1, 1.5, 10_001]) {
+        await expect(run(function* () { yield* priced(store, ctx); return yield* admitted([image], { reserve: 0, free }); })).rejects.toThrow(/free/);
+      }
+    });
+
     it('a reserve that is not a whole number of cells is the developer\'s mistake, thrown', async () => {
       const { store, image } = plant();
       const ctx = new MockSessionContext({ nCtx: 10_000 });

@@ -13,10 +13,12 @@
  * every unconfigured service gives: a document is text the run retrieves from,
  * and needs no projector. Last, when the harness sets a share of the context
  * its attachments may fill, or a reserve the run after them needs, the media
- * is priced exactly, before a cell is spent: a prefill that overflows the
- * context fails part-way through the run, on the fork the session prepared it
- * on, and media that leaves no room for the run starts a run that cannot work;
- * a refusal here costs nothing.
+ * is priced exactly, before a cell is spent, against what will be free where
+ * it lands (`free`, when that is not the context as it stands): a prefill that
+ * overflows the context fails part-way through the run (on the fork the
+ * session prepared it on, when a sequence was free for one), and media that
+ * leaves no room for the run starts a run that cannot work; a refusal here
+ * costs nothing.
  *
  * A refusal moves nothing; the caller says it and returns.
  *
@@ -45,17 +47,24 @@ export interface AttachmentBudget {
   /** Cells that must stay free after the media lands, for the run that follows it: an agent pool's reserve, say.
    *  Unset: none. */
   reserve?: number;
+  /** Cells free in the context the media will land in, when that is not this one as it stands: the whole
+   *  context for a turn that starts a new conversation once the current one is let go, say. Unset: what is
+   *  free now. */
+  free?: number;
 }
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 export function* admitted(descriptors: readonly Descriptor[] = [], budget: AttachmentBudget = {}): Operation<Admitted> {
-  const { context, reserve } = budget;
+  const { context, reserve, free } = budget;
   if (context !== undefined && !(context > 0 && context <= 1)) {
     throw new Error(`admitted: the attachments' context share must be between 0 and 1, not ${context}`);
   }
   if (reserve !== undefined && !(Number.isSafeInteger(reserve) && reserve >= 0)) {
     throw new Error(`admitted: the reserve must be a whole number of cells, not ${reserve}`);
+  }
+  if (free !== undefined && !(Number.isSafeInteger(free) && free >= 0)) {
+    throw new Error(`admitted: the free count must be a whole number of cells, not ${free}`);
   }
   if (descriptors.length === 0) return { roots: [], bitmaps: [], projected: [], videos: [] };
 
@@ -88,8 +97,12 @@ export function* admitted(descriptors: readonly Descriptor[] = [], budget: Attac
       return { refused: message(err) };
     }
     if (context !== undefined || reserve !== undefined) {
+      if (free !== undefined) {
+        const { nCtx } = new ContextPressure(yield* Ctx.expect());
+        if (free > nCtx) throw new Error(`admitted: the free count ${free} is more than the ${nCtx}-cell context holds`);
+      }
       try {
-        const refusal = yield* overBudget(bitmaps, context ?? 1, reserve ?? 0);
+        const refusal = yield* overBudget(bitmaps, context ?? 1, reserve ?? 0, free);
         if (refusal) return { refused: refusal };
       } catch (err) {
         // Pricing lays the media out as prefill would; what it cannot lay out, prefill would refuse.
@@ -106,13 +119,13 @@ export function* admitted(descriptors: readonly Descriptor[] = [], budget: Attac
  * `reserve` stays free, if it would: past the share by policy, past what is
  * free by overflowing, past the reserve by starting a run with no room to work.
  */
-function* overBudget(bitmaps: MultimodalInput[], context: number, reserve: number): Operation<string | undefined> {
+function* overBudget(bitmaps: MultimodalInput[], context: number, reserve: number, free?: number): Operation<string | undefined> {
   const ctx = yield* Ctx.expect();
   const { nCtx } = new ContextPressure(ctx);
   if (nCtx <= 0) return undefined;
   const cells = yield* waitUntilSettled(deltaCells(ctx, buildUserDeltaMultimodal(ctx, '', bitmaps)));
   // Read once the quote is known: another branch may have prefilled while it was priced.
-  const { remaining } = new ContextPressure(ctx);
+  const remaining = free ?? new ContextPressure(ctx).remaining;
   const what = bitmaps.length === 1 ? 'That attachment' : 'Those attachments';
   const n = (v: number): string => v.toLocaleString('en-US');
   if (cells > Math.floor(nCtx * context)) {
