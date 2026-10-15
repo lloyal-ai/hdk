@@ -308,8 +308,20 @@ export class MockSessionContext implements SessionContext {
 
   _branchAccept(handle: number, _token: number): void { this._changed(handle); }
 
-  async _storeCommit(handles: number[], _tokens: number[]): Promise<void> {
+  async _storeCommit(handles: number[], tokens: number[]): Promise<void> {
     requireDistinctHandles(handles, '_storeCommit');
+    const failure = this.mockCommitError?.(handles, tokens) ?? null;
+    if (failure !== null) {
+      const { message, rc, partial = false } = typeof failure === 'string' ? { message: failure } : failure;
+      // As the native rollback: a failure that left the batch intact (rc 1 or -1, or no
+      // decode code) changes nothing; any other rc poisons every branch in the batch.
+      const poisons = rc !== undefined && rc !== 1 && rc !== -1;
+      for (const h of handles) {
+        const b = this._branches.get(h);
+        if (poisons && b && !b.disposed) { b.poisoned = true; b.revision++; }
+      }
+      throw Object.assign(new Error(message), rc !== undefined ? { rc, partial } : {});
+    }
     for (const h of handles) {
       const b = this._branches.get(h);
       if (b && !b.disposed) {
@@ -421,6 +433,15 @@ export class MockSessionContext implements SessionContext {
   mockMultimodalError?: (
     prompt: string,
     inputs: MultimodalInput[],
+  ) => string | { message: string; rc?: number; partial?: boolean } | null;
+
+  /** Fail a batched commit. Returns a message (optionally with the llama_decode rc, as
+   *  the native worker attaches it) to fail the whole batch, null to let it through.
+   *  A failure with rc 1 or -1 restores every branch, as the native rollback does;
+   *  any other rc poisons them. */
+  mockCommitError?: (
+    handles: number[],
+    tokens: number[],
   ) => string | { message: string; rc?: number; partial?: boolean } | null;
 
   /** Cells one multimodal prefill consumes. Text stands in at one cell per 4

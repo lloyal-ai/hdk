@@ -165,6 +165,26 @@ describe('Branch.fastForward', () => {
     parent.pruneSubtreeSync();
   });
 
+  it('counts a commit the decode refused intact as no change, and one whose failure poisoned the batch as one', async () => {
+    const { ctx, parent } = rig();
+    await parent.prefill([1, 2, 3]);
+    const failing = (rc: number) => { ctx.mockCommitError = () => ({ message: 'decode: failed to find a memory slot', rc }); };
+
+    const intact = await parent.fork();
+    failing(1);
+    await expect(parent.commit(9)).rejects.toMatchObject({ rc: 1, partial: false });
+    expect(parent.position).toBe(3);
+    expect(() => parent.fastForwardSync(intact), 'the native rollback restores the branch whole').not.toThrow();
+
+    const poisoned = await parent.fork();
+    failing(2);
+    await expect(parent.commit(9)).rejects.toMatchObject({ rc: 2 });
+    ctx.mockCommitError = undefined;
+    expect(() => parent.fastForwardSync(poisoned)).toThrow(/the parent has changed since the fork/);
+    poisoned.pruneSync();
+    parent.pruneSubtreeSync();
+  });
+
   it('poisons a child whose failed prefill had landed something, with or without a decode code', async () => {
     const { ctx, parent } = rig();
     await parent.prefill([1, 2, 3]);
