@@ -360,6 +360,37 @@ export class Branch {
   }
 
   /**
+   * Keep a child's work in this branch's place (async)
+   *
+   * @see {@link fastForwardSync}
+   */
+  async fastForward(child: Branch): Promise<void> {
+    this.fastForwardSync(child);
+  }
+
+  /**
+   * Keep a child's work in this branch's place: `git merge --ff-only` (sync)
+   *
+   * The child's state becomes this branch's: its KV, position, logits,
+   * sampler, grammar, metrics and logit bias. This branch keeps its handle,
+   * its place in the tree and its steer; the child is disposed. With
+   * {@link fork} and {@link prune} it is a checkpoint any branch can keep or
+   * discard while every other branch runs on: fork, work on the fork, then
+   * fast-forward to it or prune it. No cells move.
+   *
+   * @throws unless the child was forked from this branch, this branch has
+   *   neither decoded nor changed since, and the child has no children and is
+   *   not poisoned by a failed prefill. A refusal changes nothing.
+   */
+  fastForwardSync(child: Branch): void {
+    this._ensureNotDisposed();
+    child._ensureNotDisposed();
+    this._ctx._branchFastForward(this._handle, child._handle);
+    this._held = child._held;
+    child._disposed = true;
+  }
+
+  /**
    * Reseed the sampler's PRNG for diversity after fork()
    *
    * CRITICAL for parallel generation: Without reseeding, all forked branches

@@ -1625,6 +1625,9 @@ export interface SessionContext {
   _branchPruneSubtree(handle: number): void;
 
   /** @internal */
+  _branchFastForward(parent: number, child: number): void;
+
+  /** @internal */
   _branchParent(handle: number): number;
 
   /** @internal */

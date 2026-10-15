@@ -83,7 +83,16 @@ interface BranchState {
   /** Cells the embedding rail charged this branch above its position advance
    *  (the kernel's `img_slack_own`): refunded with the position delta on prune. */
   imgSlack: number;
+  /** Counts the changes a fast-forward would move (the kernel's `revision`). */
+  revision: number;
+  /** The parent's revision when this branch was forked. */
+  forkRevision: number;
+  /** A failed prefill left the KV ahead of the books (the kernel's `poisoned`). */
+  poisoned: boolean;
 }
+
+/** The kernel's rule for a failed decode (`decode::leaves_branch_intact`). */
+const leavesBranchIntact = (rc: number, partial: boolean): boolean => (rc === 1 || rc === -1) && !partial;
 
 export interface MockSessionContextOpts {
   /** Total KV cache capacity. Default: 16384 */
@@ -171,8 +180,17 @@ export class MockSessionContext implements SessionContext {
       children: new Set(),
       disposed: false,
       imgSlack: 0,
+      revision: 0,
+      forkRevision: 0,
+      poisoned: false,
     });
     return handle;
+  }
+
+  /** A change to state a fast-forward moves: the kernel bumps `revision` for it. */
+  private _changed(handle: number): void {
+    const b = this._branches.get(handle);
+    if (b && !b.disposed) b.revision++;
   }
 
   _branchFork(parentHandle: number): number {
@@ -189,6 +207,9 @@ export class MockSessionContext implements SessionContext {
       children: new Set(),
       disposed: false,
       imgSlack: 0,
+      revision: 0,
+      forkRevision: parent.revision,
+      poisoned: parent.poisoned,
     });
     return handle;
   }
@@ -223,6 +244,25 @@ export class MockSessionContext implements SessionContext {
     this._branchPrune(handle);
   }
 
+  /** The kernel's fast-forward: its refusals, in its order and words, then the move. */
+  _branchFastForward(parentHandle: number, childHandle: number): void {
+    const refuse = (why: string): never => { throw new Error(`_branchFastForward: fast_forward: ${why}`); };
+    const a = this._branches.get(parentHandle);
+    if (!a || a.disposed) refuse('invalid parent handle');
+    const p = this._branches.get(childHandle);
+    if (!p || p.disposed) refuse('invalid child handle');
+    if (p!.parentHandle !== parentHandle) refuse('the child was not forked from this parent');
+    if (this._branchChildren(childHandle).length > 0) refuse('the child has children of its own');
+    if (p!.poisoned) refuse('the child is poisoned by a failed decode; prune it');
+    if (p!.forkHead !== a!.position) refuse('the parent has decoded since the fork');
+    if (p!.forkRevision !== a!.revision) refuse('the parent has changed since the fork');
+    a!.position = p!.position;
+    a!.imgSlack += p!.imgSlack;
+    a!.revision++;
+    p!.disposed = true;
+    a!.children.delete(childHandle);
+  }
+
   _branchChildren(handle: number): number[] {
     const b = this._branches.get(handle);
     if (!b) return [];
@@ -242,7 +282,7 @@ export class MockSessionContext implements SessionContext {
     return this.stopToken;
   }
 
-  _branchAccept(_handle: number, _token: number): void {}
+  _branchAccept(handle: number, _token: number): void { this._changed(handle); }
 
   async _storeCommit(handles: number[], _tokens: number[]): Promise<void> {
     requireDistinctHandles(handles, '_storeCommit');
@@ -250,6 +290,7 @@ export class MockSessionContext implements SessionContext {
       const b = this._branches.get(h);
       if (b && !b.disposed) {
         b.position++;
+        b.revision++;
         this.cellsUsed++;
       }
     }
@@ -261,6 +302,7 @@ export class MockSessionContext implements SessionContext {
       const b = this._branches.get(handles[i]);
       if (b && !b.disposed) {
         b.position += tokenArrays[i].length;
+        b.revision++;
         this.cellsUsed += tokenArrays[i].length;
       }
     }
@@ -321,6 +363,11 @@ export class MockSessionContext implements SessionContext {
       const failure = inputs[i].map(videoRefusal).find(Boolean) ?? this.mockMultimodalError?.(prompts[i], inputs[i]) ?? null;
       if (failure) {
         const f = typeof failure === 'string' ? { message: failure } : failure;
+        const failed = this._branches.get(handles[i]);
+        if (failed && f.rc !== undefined && !leavesBranchIntact(f.rc, f.partial === true)) {
+          failed.poisoned = true;
+          failed.revision++;
+        }
         out.push({
           tokensDecoded: 0, positionAdvance: 0, error: f.message,
           ...(f.rc !== undefined ? { rc: f.rc, partial: f.partial === true } : {}),
@@ -334,6 +381,7 @@ export class MockSessionContext implements SessionContext {
       if (b && !b.disposed) {
         b.position += positionAdvance;
         b.imgSlack += tokensDecoded - positionAdvance;
+        b.revision++;
         this.cellsUsed += tokensDecoded;
       }
       out.push({ tokensDecoded, positionAdvance });
@@ -395,8 +443,8 @@ export class MockSessionContext implements SessionContext {
   supportsAudio(): boolean { return this.mockAudioSampleRate > 0; }
   audioSampleRate(): number { return this.mockAudioSampleRate; }
 
-  _storeMergeLogits(_dstHandle: number, _srcHandles: number[], _alpha: number): void {
-    /* mock no-op */
+  _storeMergeLogits(dstHandle: number, _srcHandles: number[], _alpha: number): void {
+    this._changed(dstHandle);
   }
 
   // ── Branch state accessors ────────────────────────────────────
@@ -431,7 +479,7 @@ export class MockSessionContext implements SessionContext {
 
   /** Every `formatChat` payload, so a test can assert what reached the prompt. */
   formatChatCalls: string[] = [];
-  _branchSetLogits(_handle: number, _logits: Float32Array): void { /* mock no-op */ }
+  _branchSetLogits(handle: number, _logits: Float32Array): void { this._changed(handle); }
 
   _branchForkHead(handle: number): number {
     return this._branches.get(handle)?.forkHead ?? 0;
@@ -466,13 +514,13 @@ export class MockSessionContext implements SessionContext {
 
   // ── Sampler / grammar (no-ops) ────────────────────────────────
 
-  _branchSamplerChainReseed(_handle: number, _seed: number): void {}
-  _branchSetSamplerParams(_handle: number, _params: SamplingParams): void {}
-  _branchSetGrammar(_handle: number, _grammar: string): void {}
-  _branchSetGrammarLazy(_handle: number, _grammar: string, _patterns: string[], _tokens: number[]): void {}
-  _branchSetGrammarOrder(_handle: number, _sampleFirst: boolean): void {}
-  _branchSetLogitBias(_handle: number, _biases: Array<{ token: number; bias: number }>): void {}
-  _branchClearLogitBias(_handle: number): void {}
+  _branchSamplerChainReseed(handle: number, _seed: number): void { this._changed(handle); }
+  _branchSetSamplerParams(handle: number, _params: SamplingParams): void { this._changed(handle); }
+  _branchSetGrammar(handle: number, _grammar: string): void { this._changed(handle); }
+  _branchSetGrammarLazy(handle: number, _grammar: string, _patterns: string[], _tokens: number[]): void { this._changed(handle); }
+  _branchSetGrammarOrder(handle: number, _sampleFirst: boolean): void { this._changed(handle); }
+  _branchSetLogitBias(handle: number, _biases: Array<{ token: number; bias: number }>): void { this._changed(handle); }
+  _branchClearLogitBias(handle: number): void { this._changed(handle); }
   _branchSteer(_handle: number, _biases: Array<{ token: number; bias: number }>): void {}
   _branchClearSteer(_handle: number): void {}
 
