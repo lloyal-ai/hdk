@@ -13,8 +13,8 @@
  * every unconfigured service gives: a document is text the run retrieves from,
  * and needs no projector. Last, when the harness sets a share of the context
  * its attachments may fill, the media is priced exactly, before a cell is
- * spent: a prefill that overflows the context loses the whole conversation,
- * where a refusal here loses nothing.
+ * spent: a prefill that overflows the context fails part-way through the run,
+ * on the fork the session prepared it on, where a refusal here costs nothing.
  *
  * A refusal moves nothing; the caller says it and returns.
  *

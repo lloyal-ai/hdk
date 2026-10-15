@@ -87,17 +87,24 @@ test('public admission rejects an invalid budget while its valid cohort sibling 
   assert.equal(ctx._storeKvPressure().cellsUsed, 0);
 });
 
-test('Session admits audio on a cold trunk and releases it after a failed warm prefill', async () => {
+test('Session admits audio on a cold trunk, and a failed warm prefill leaves the trunk as it was', async () => {
   const session = new Session({ ctx, store });
   try {
     await session.prefillUserMultimodal('', [audio()], { audioLimits: limits, enableThinking: false });
-    assert.ok(session.trunk);
-    const child = await session.trunk.fork();
+    const trunk = session.trunk;
+    assert.ok(trunk);
+    const child = await trunk.fork();
     try { grounded(await transcript(child)); } finally { child.pruneSync(); }
+    const [position, cells] = [trunk.position, ctx._storeKvPressure().cellsUsed];
     await assert.rejects(() => session.prefillUserMultimodal('', [audio()], {
       audioLimits: { ...limits, maxSamples: 10 }, enableThinking: false,
     }), /sample/i);
-    assert.equal(session.trunk, null);
+    // Refused on the fork it was prepared on: the trunk never saw it.
+    assert.equal(session.trunk, trunk);
+    assert.equal(trunk.position, position);
+    assert.equal(ctx._storeKvPressure().cellsUsed, cells);
+    const again = await trunk.fork();
+    try { grounded(await transcript(again)); } finally { again.pruneSync(); }
   } finally {
     await session.dispose();
   }

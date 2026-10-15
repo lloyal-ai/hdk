@@ -107,6 +107,39 @@ test('a video reaches the store cohort and the session trunk unchanged', async (
   assert.equal(ctx._storeKvPressure().cellsUsed, 0);
 });
 
+test('a warm media turn is kept by fast-forwarding the trunk; one that overflows costs only its fork', async () => {
+  const session = new Session({ ctx, store: new BranchStore(ctx) });
+  try {
+    await session.prefillUserMultimodal('Look at this picture.', [image], { enableThinking: false });
+    const trunk = session.trunk!;
+    trunk.setSamplerParams({ temperature: 0 });
+    await session.prefillAssistant('I see it.');
+
+    await session.prefillUserMultimodal('What color is the circle? Answer in one word.', [image], { enableThinking: false });
+    assert.equal(session.trunk, trunk, 'the trunk keeps its handle: the turn was kept, not swapped in');
+    assert.match(await answer(trunk), /blue/i);
+    await session.prefillAssistant('Blue.');
+
+    // Five clips cannot fit the context: the prefill dies part-way, on the fork.
+    const position = trunk.position;
+    const cells = ctx._storeKvPressure().cellsUsed;
+    await assert.rejects(
+      session.prefillUserMultimodal(DIRECTION, [clip(), clip(), clip(), clip(), clip()], { enableThinking: false }),
+      (e: Error & { partial?: boolean }) => e.partial === true,
+    );
+    assert.equal(session.trunk, trunk);
+    assert.equal(trunk.position, position);
+    assert.equal(ctx._storeKvPressure().cellsUsed, cells);
+    assert.equal(session.userSidePending, false);
+
+    // The conversation goes on from the trunk the failure never touched: the next turn is kept as before.
+    await session.prefillUserMultimodal('What shape is red? Answer in one word.', [image], { enableThinking: false });
+    assert.equal(session.trunk, trunk);
+    assert.match(await answer(trunk), /square/i);
+  } finally { await session.dispose(); }
+  assert.equal(ctx._storeKvPressure().cellsUsed, 0);
+});
+
 test('a video delta owns its frames: caller mutation after building changes nothing admitted', async () => {
   const frames = clipFrames.map(f => new Uint8Array(f));
   const times = frames.map((_, i) => i * 250);

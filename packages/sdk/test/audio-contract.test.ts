@@ -102,7 +102,7 @@ describe('typed audio through the SDK', () => {
     expect(ctx.cellsUsed).toBe(0);
   });
 
-  it('threads audio options through cold and warm session turns and reclaims failed trunks', async () => {
+  it('threads audio options through cold and warm session turns, and a failed turn costs only its fork', async () => {
     const ctx = new MockSessionContext({ nSeqMax: 4 });
     const prefill = vi.spyOn(ctx, '_storePrefillMultimodal');
     const format = vi.spyOn(ctx, 'formatChatSync');
@@ -121,12 +121,16 @@ describe('typed audio through the SDK', () => {
     expect(session.trunk).toBe(admittedTrunk);
     expect(prefill).toHaveBeenCalledTimes(2);
 
+    const cells = ctx.cellsUsed;
     ctx.mockMultimodalError = () => ({ message: 'partial decode', rc: -3, partial: true });
     await expect(session.prefillUserMultimodal('', [audio()], opts)).rejects.toMatchObject({ rc: -3, partial: true });
-    expect(session.trunk).toBeNull();
-    expect(ctx.cellsUsed).toBe(0);
+    expect(session.trunk).toBe(admittedTrunk);
+    expect(ctx.cellsUsed).toBe(cells);
+    // The next turn takes the warm path again, onto a fresh fork of the same trunk.
     await expect(session.prefillUserMultimodal('', [audio()], opts)).rejects.toThrow('partial decode');
-    expect(ctx._storeAvailable()).toBe(4);
+    expect(prefill.mock.calls[3][1]).toEqual([ctx.getTurnSeparator()]);
+    expect(ctx._storeAvailable(), 'the trunk holds one lease; each failed fork gave its back').toBe(3);
     await session.dispose();
+    expect(ctx._storeAvailable()).toBe(4);
   });
 });
