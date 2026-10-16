@@ -76,14 +76,18 @@ const INDEX_TYPE = 'application/vnd.oci.image.index.v1+json';
  * read-modify-write. The writes are synchronous, so concurrent Sessions inside
  * ONE host process serialize safely; two processes writing the same layout can
  * still lose an index entry. Blobs are unaffected (content-addressed, written
- * temp-then-rename), so the loss is discoverability, not data. Reachability GC
- * is deliberately absent — nothing here deletes.
+ * temp-then-rename), but the index says which blobs are manifests, so a lost
+ * entry hides that attachment from this store as well as from OCI tooling.
+ * Reachability GC is deliberately absent — nothing here deletes.
  *
  * @category Media
  */
 export class FileAttachmentStore implements AttachmentStore, BlobStaging {
   private _dir: string;
   private _ready = false;
+  /** The manifests this layout committed, as `index.json` lists them. Read when first asked, kept in step
+   *  with every commit, and read again on a miss so a manifest another writer committed is found. */
+  private _manifests: Set<string> | null = null;
 
   /** @param dir - The layout root. */
   constructor(dir: string) {
@@ -173,12 +177,12 @@ export class FileAttachmentStore implements AttachmentStore, BlobStaging {
     return ref;
   }
 
-  /** Append a manifest descriptor to `index.json`, deduped by digest. */
+  /** Append a manifest descriptor to `index.json`, deduped by digest. Throws when the entry cannot be
+   *  written: the index is what makes the blob a manifest, so without its entry nothing was committed. */
   private _index(ref: Descriptor): void {
-    try {
-      const file = join(this._dir, 'index.json');
-      const idx = JSON.parse(readFileSync(file, 'utf8')) as { manifests: Descriptor[] };
-      if (idx.manifests.some(m => m.digest === ref.digest)) return;
+    const file = join(this._dir, 'index.json');
+    const idx = JSON.parse(readFileSync(file, 'utf8')) as { manifests: Descriptor[] };
+    if (!idx.manifests.some(m => m.digest === ref.digest)) {
       idx.manifests.push(ref);
       const tmp = join(this._dir, '.tmp', `index.${randomBytes(4).toString('hex')}`);
       try {
@@ -188,11 +192,26 @@ export class FileAttachmentStore implements AttachmentStore, BlobStaging {
         try { rmSync(tmp, { force: true }); } catch { /* best effort */ }
         throw e;
       }
-    } catch {
-      // The blob landed; only its index entry did not. Our own resolution is
-      // by digest, so this costs discoverability by other OCI tooling, not
-      // replay.
     }
+    this._manifests?.add(ref.digest);
+  }
+
+  /** The digests `index.json` lists; none before the first write. */
+  private _readIndex(): Set<string> {
+    try {
+      const idx = JSON.parse(readFileSync(join(this._dir, 'index.json'), 'utf8')) as { manifests?: Descriptor[] };
+      return new Set((idx.manifests ?? []).map(m => m.digest));
+    } catch {
+      return new Set();
+    }
+  }
+
+  /** Whether this layout committed `digest` as a manifest. A miss reads the index again: another process
+   *  may have committed since this one last looked. */
+  private _committed(digest: string): boolean {
+    if (this._manifests?.has(digest)) return true;
+    this._manifests = this._readIndex();
+    return this._manifests.has(digest);
   }
 
   get(digest: string): Uint8Array | null {
@@ -310,17 +329,20 @@ export class FileAttachmentStore implements AttachmentStore, BlobStaging {
   }
 
   getManifest(digest: string): AttachmentManifest | null {
+    // Only what this layout committed is a manifest. A blob that merely parses as one may have been written
+    // by anyone who can write a blob, naming layers and types of its own choosing.
+    if (!this._committed(digest)) return null;
     const bytes = this.get(digest);
     if (!bytes) return null;
     try {
       const parsed = JSON.parse(new TextDecoder().decode(bytes)) as AttachmentManifest;
       // Check the artifact type rather than guessing: the version in it exists
       // to let a future build refuse a shape it does not understand. And
-      // validate every layer as a full descriptor — a corrupt or hand-made
-      // manifest (`layers: [null]`, a missing digest) must be refused HERE,
-      // not crash `representationsOf` or hand malformed descriptors to the
-      // HTTP routes. Role semantics stay as documented: a layer without a
-      // role annotation is a representation.
+      // validate every layer as a full descriptor — a corrupt manifest
+      // (`layers: [null]`, a missing digest) must be refused HERE, not crash
+      // `representationsOf` or hand malformed descriptors to the HTTP routes.
+      // Role semantics stay as documented: a layer without a role annotation
+      // is a representation.
       const layerOk = (l: unknown): boolean => {
         if (typeof l !== 'object' || l === null) return false;
         const { digest: d, mediaType, size } = l as Record<string, unknown>;

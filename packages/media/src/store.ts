@@ -46,13 +46,15 @@ export interface AttachmentStore {
    *
    *  @throws If the bytes could not be stored, carrying the underlying reason. */
   putBlob(bytes: Uint8Array, mediaType: string, annotations?: Record<string, string>): Descriptor;
-  /** Compose a conformant manifest from semantic parts, store it, and index
-   *  it. Callers never author a manifest themselves, so a non-conformant one
-   *  cannot reach disk.
+  /** Compose a conformant manifest from semantic parts, store it, and record
+   *  it as one of this store's manifests. Callers never author a manifest
+   *  themselves, so a non-conformant one cannot reach disk, and only what was
+   *  committed here is ever read back as a manifest ({@link getManifest}).
    *
    *  @throws If there is no representation, or the manifest could not be
-   *          stored. `layers` must hold at least one descriptor to be valid,
-   *          and an attachment where nothing reached the cache is meaningless. */
+   *          stored or recorded. `layers` must hold at least one descriptor to
+   *          be valid, and an attachment where nothing reached the cache is
+   *          meaningless. */
   putAttachment(parts: {
     representations: readonly Descriptor[];
     source?: Descriptor;
@@ -71,11 +73,10 @@ export interface AttachmentStore {
   }): Attachment;
   /** Resolve blob bytes by digest: the bytes that HASH TO IT, or `null`.
    *
-   *  Resolution goes STRAIGHT to `blobs/<algorithm>/<encoded>` and never
-   *  consults `index.json`: the index is an export and discovery catalogue,
-   *  not the runtime authority. A lost concurrent index update can therefore
-   *  hide an attachment from OCI tooling, but it can never invalidate a
-   *  recorded run.
+   *  Resolution goes STRAIGHT to `blobs/<algorithm>/<encoded>`: a blob's
+   *  identity is its digest, and nothing else is consulted. Which blobs are
+   *  manifests is a different question, answered by what the store committed
+   *  ({@link getManifest}).
    *
    *  Every read of a whole blob (this one and {@link readWhole}) rehashes what
    *  it found; bytes that no longer match the name —
@@ -89,9 +90,17 @@ export interface AttachmentStore {
    *  {@link size} and {@link readRange}, which never hold a whole blob, are
    *  outside it, and their docs say so.) */
   get(digest: string): Uint8Array | null;
-  /** Resolve and validate a manifest. `null` when absent, drifted (it is read
-   *  through {@link get}), unparsable, or not an artifact type this build
-   *  understands. */
+  /** Resolve and validate a manifest this store committed through
+   *  {@link putAttachment}. `null` when it committed none under this digest,
+   *  or the one it did is drifted (it is read through {@link get}), unparsable,
+   *  or not an artifact type this build understands.
+   *
+   *  A blob that merely parses as a manifest is not one. A manifest names the
+   *  media type each of its layers is served and decoded under; composed by
+   *  the store those types are what the host established about the bytes,
+   *  and a blob anyone could write would carry whatever its writer chose. So
+   *  the store keeps the record of what it committed, and a digest outside
+   *  that record is a blob, whatever it contains. */
   getManifest(digest: string): AttachmentManifest | null;
   /** A stored blob's size in bytes, or `null` when it is not stored. Reads no
    *  content, so it does not verify it: a question about existence, not bytes. */

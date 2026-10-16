@@ -21,10 +21,12 @@
  *
  * A harness host admits only the original of a video here, by its container
  * signature, and serves no blob's bytes by digest: a pushed original is read
- * through the attachment that holds it (`/v1/media/<root>/source`). So nothing
- * a client pushes is ever read as a manifest, a document's text or an image:
- * a caller never authors a manifest, and a video's is composed by the host
- * from references (`video:compose`). As a full registry (`registry: true`,
+ * through the attachment that holds it (`/v1/media/<root>/source`). The
+ * signature is a policy about what this host keeps, not what stands between a
+ * pushed blob and the model: the store reads as a manifest only what it
+ * committed itself, so nothing a client pushes is ever one, and a video's
+ * manifest is composed by the host from references (`video:compose`). As a
+ * full registry (`registry: true`,
  * which the distribution conformance suite runs against) any blob is admitted
  * and read back by digest: a whole read streams through the store's verifying
  * `readWhole`, a ranged read from the file unverified, as the store's contract

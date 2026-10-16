@@ -300,10 +300,12 @@ distribution blob API; `pushBlob` is its client.
 
 ## Two invariants
 
-**`index.json` is a catalogue, never the runtime authority.** Resolution goes
-straight to `blobs/<algorithm>/<encoded>`; nothing on the replay path reads
-the index. A lost concurrent index update can hide an attachment from OCI
-tooling — it can never invalidate a recorded run.
+**A blob is resolved by its digest; a manifest is one the store committed.**
+Blob resolution goes straight to `blobs/<algorithm>/<encoded>` and consults
+nothing else. Which blobs are manifests is `index.json`'s to say: a manifest
+names the media type each layer is served and decoded under, so only one the
+store composed through `putAttachment`, with the types the host established,
+is ever read back as one. A blob that merely parses as a manifest is a blob.
 
 **Write order is blobs → manifest → index.** A crash can leave orphan blobs,
 which are harmless and unreferenced. It can never leave a committed manifest
@@ -323,9 +325,10 @@ pointing at content that is not there.
 
 - **`index.json` is a mutable shared root**, updated read-modify-write.
   Writes are synchronous, so concurrent sessions inside one process serialize
-  safely; two *processes* writing one layout can lose an index entry — a loss
-  of discoverability, bounded by the first invariant above. Blobs are
-  unaffected: content-addressed, written temp-then-rename.
+  safely; two *processes* writing one layout can lose an index entry. Since
+  the index says which blobs are manifests, the attachment that lost its entry
+  is hidden from the store as well as from OCI tooling. Blobs are unaffected:
+  content-addressed, written temp-then-rename.
 - **`skopeo` is untested.** It is container-image tooling and is entitled to
   reject an artifact manifest whose config is not an image config. `oras` is
   the artifact-native tool and is the one the conformance suite drives.

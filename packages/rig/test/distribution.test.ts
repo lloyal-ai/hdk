@@ -197,6 +197,26 @@ describe('the blob upload table', () => {
     expect(uploads.resolve(req('POST', '/v2/r/blobs/uploads/', { query: { digest: digestOf(MP4) }, body: MP4 }))!.status).toBe(201);
   });
 
+  it('a pushed blob that passes the signature is never read as a manifest, so no client-authored layer is served', () => {
+    // The signature is a policy, not the boundary: bytes 4–7 spelling `ftyp` is all it asks, and JSON can
+    // spell that. What keeps a client from authoring a manifest is the store, which reads as a manifest
+    // only what it committed through `putAttachment`.
+    const { content } = store();
+    const uploads = new BlobUploads(content, content);
+    const ftyp = (text: string): Uint8Array => new Uint8Array([...new TextEncoder().encode('{"xx'), ...new TextEncoder().encode(text)]);
+    const page = ftyp('ftyp":0}<!doctype html><script>document.title="owned"</script>');
+    const pushed = (bytes: Uint8Array) => uploads.resolve(req('POST', '/v2/r/blobs/uploads/', { query: { digest: digestOf(bytes) }, body: bytes }))!.status;
+    expect(pushed(page)).toBe(201);
+    const manifest = ftyp(`ftyp":0,"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","artifactType":"application/vnd.lloyal.attachment.v1",` +
+      `"config":{"mediaType":"application/vnd.oci.empty.v1+json","digest":"sha256:${'0'.repeat(64)}","size":2},` +
+      `"layers":[{"mediaType":"text/html","digest":"${digestOf(page)}","size":${page.length}}]}`);
+    expect(pushed(manifest)).toBe(201);
+    expect(content.getManifest(digestOf(manifest))).toBeNull();
+    const served = resolveContent({ method: 'GET', path: `/v1/media/${digestOf(manifest)}/representations/0` }, content)!;
+    expect(served.status).toBe(404);
+    expect(served.headers['Content-Type']).not.toBe('text/html');
+  });
+
   it('serves no blob\'s bytes by digest by default: the attachment that holds it is the one door; existence still answers', () => {
     const { content } = store();
     const d = content.putBlob(MP4, 'video/mp4');
