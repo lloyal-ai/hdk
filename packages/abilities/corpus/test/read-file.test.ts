@@ -39,6 +39,39 @@ const read = (tool: ReadFileTool, args: { filename: string; startLine?: number; 
     return (yield* tool.execute(args, { attachments: [] } as unknown as ToolContext)) as Out;
   });
 
+describe('read_file — offset reads', () => {
+  const longFile = {
+    name: 'long.md',
+    content: Array.from({ length: 250 }, (_, i) => `line ${i + 1}`).join('\n'),
+  };
+
+  it('starts the default window at the requested offset, including beyond line 100', async () => {
+    const result = await read(new ReadFileTool([longFile]), { filename: 'long.md', startLine: 112 });
+    expect(result.lines).toEqual(['112-211']);
+    expect(result.content).toBe(longFile.content.split('\n').slice(111, 211).join('\n'));
+  });
+
+  it('clips an offset window at the end of the file', async () => {
+    const result = await read(new ReadFileTool([longFile]), { filename: 'long.md', startLine: 230 });
+    expect(result.lines).toEqual(['230-250']);
+    expect(result.content).toBe(longFile.content.split('\n').slice(229).join('\n'));
+  });
+
+  it('uses the same default window when subtracting a previously attended offset read', async () => {
+    const previous = {
+      ...attended('long.md', 112, 211),
+      args: JSON.stringify({ filename: 'long.md', startLine: 112 }),
+    };
+    const result = await read(
+      new ReadFileTool([longFile]),
+      { filename: 'long.md', startLine: 205, endLine: 220 },
+      agentAt(1, [previous]),
+    );
+    expect(result.lines).toEqual(['212-220']);
+    expect(result.content).toBe(longFile.content.split('\n').slice(211, 220).join('\n'));
+  });
+});
+
 describe('read_file — what this agent has received', () => {
   it('returns only the unread part of an overlapping range, from the agent\'s own attended calls', async () => {
     const tool = new ReadFileTool([FILE]);
