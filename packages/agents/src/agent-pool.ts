@@ -17,7 +17,7 @@ import type { PricedSpawn } from './execute';
 import { SpawnLedger } from './spawns';
 import type { SpawnEntry } from './spawns';
 import { makeFrame } from './hooks';
-import { prepareReplay } from './replay';
+import { prepareReplay, LineageLost } from './replay';
 import type { Tool } from './Tool';
 import {
   type Pending, type TickState, type ToolCompletion, type Ladder, type SpawnReplay, type Lineage, emptyPending,
@@ -279,7 +279,15 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         // Who is calling — a delegate's spawn runs inside its tool call — is read
         // here, where it is known; the fork happens later, on the loop.
         const caller = (yield* CallingAgent.get()) ?? null;
-        const priced = yield* price(task);
+        // A pricing that throws is the caller's error, not a pool condition: the entry settles as
+        // that, so the ledger never reads as if nothing happened, and the throw is the caller's.
+        let priced: PricedSpawn;
+        try {
+          priced = yield* price(task);
+        } catch (err) {
+          spawns.fail(entry, 'spawn_error');
+          throw err;
+        }
         // Post the priced request and suspend until it is admitted and forked, or
         // refused (`SpawnRefused`, with the outcome the ledger recorded).
         return yield* action<Agent>((resolve, reject) => {
@@ -329,6 +337,17 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         wake.add();
       }
     });
+    /** Stop the producer. A halt that lands as a child of the orchestrator fails — a spawn's
+     *  rejection raised inside `all` in that same turn — raises the child's error from the halt
+     *  itself, past the orchestrator's own catch; it is recorded as the orchestrator's, and the
+     *  pool goes on closing. */
+    function* haltOrchestrator(): Operation<void> {
+      try {
+        yield* orchestratorTask.halt();
+      } catch (e) {
+        orchestratorError ??= e;
+      }
+    }
 
     // ── Signals ──────────────────────────────────────────────────
     if (windDownSignal) {
@@ -338,7 +357,7 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         yield* sub.next();
         // Halt the orchestrator BEFORE flipping: a reap's idle transition would
         // otherwise resume its waitFor and let it spawn against a draining pool.
-        yield* orchestratorTask.halt();
+        yield* haltOrchestrator();
         windingDown = true;
         wake.add();
         yield* emit.emit({ kind: 'windingDown' });
@@ -388,9 +407,10 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
           // just gave one back. An original with live children is not reclaimed
           // yet; its heal is queued all the same — once, now — and admitted or
           // refused like any spawn, never held for a reclamation that may not
-          // come. A pricing that throws (lineage content gone) stands down, as
-          // does a fork whose parent is gone or has moved since: the original's
-          // failure already stands, and nothing else goes with it.
+          // come. A lineage that cannot be rebuilt (its content gone from the
+          // store here; its parent gone or moved, at the fork) stands the heal
+          // down: the original's failure already stands, and nothing else goes
+          // with it. Any other throw is the run's.
           for (const a of agents) {
             const lineage = a.heal;
             if (!lineage) continue;
@@ -409,7 +429,9 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
                 parent: a.spec.parent ?? spine, caller: a.parent,
                 resolve: () => {}, reject: () => {}, discarded: false,
               });
-            } catch { /* the heal stands down; the entry settles on the original */ }
+            } catch (err) {
+              if (!(err instanceof LineageLost)) throw err;
+            }
           }
           if (paused && !wasPaused) {
             heldAt = performance.now();
@@ -486,15 +508,16 @@ export function useAgentPool(opts: AgentPoolOptions): Operation<Subscription<Age
         // are given back — now, not at scope exit. No `pool:close` is recorded;
         // the result carries the failure.
         closed = true;
-        yield* orchestratorTask.halt();
+        yield* haltOrchestrator();
         releaseUnadmitted();
         yield* poolChannel.close(result(err instanceof Error ? err : new Error(String(err))));
       }
     });
 
-    /** The per-agent results — the same record on the normal and partial paths, the partial one naming what ended it. */
+    /** The per-agent results — the same record on the normal and partial paths, the partial one
+     *  naming what ended it. Every ledger entry settles here: one never seated reads `withdrawn`. */
     function result(failure: Error | null): AgentPoolResult {
-      spawns.settlePass();
+      spawns.close();
       return {
         failure,
         outcomes: spawns.outcomes(),

@@ -10,6 +10,7 @@ import { PROJECTOR_FORMATS } from './media-type';
 import { resolveVideo, VIDEO_CONFIG_TYPE } from './video';
 import type { VideoInput } from './video';
 import type { Attachment } from './attachment';
+import { ContentLost } from './store';
 import type { AttachmentStore } from './store';
 
 /**
@@ -52,7 +53,7 @@ export interface PreparedContent {
  * Needs only the store, so it is safe on every runtime — unlike ingest, which
  * needs a native normalizer.
  *
- * @throws If any root or blob is missing or has drifted from its digest.
+ * @throws {ContentLost} If any root or blob is missing or has drifted from its digest.
  *         Silent degradation here would rebuild a different KV state behind
  *         an identical-looking prompt.
  *
@@ -66,8 +67,8 @@ export function materialize(
   for (const root of roots) {
     const manifest = store.getManifest(root.digest);
     if (!manifest) {
-      throw new Error(
-        `materialize: attachment manifest ${root.digest.slice(0, 19)}… is not ` +
+      throw new ContentLost(
+        `attachment manifest ${root.digest.slice(0, 19)}… is not ` +
           'in the content store, or its bytes no longer hash to its digest.',
       );
     }
@@ -87,8 +88,8 @@ export function materialize(
       // or drifted — either must refuse, not decode as something else.
       const bytes = store.get(rep.digest);
       if (!bytes) {
-        throw new Error(
-          `materialize: blob ${rep.digest.slice(0, 19)}… (${rep.mediaType}) is ` +
+        throw new ContentLost(
+          `blob ${rep.digest.slice(0, 19)}… (${rep.mediaType}) is ` +
             'referenced by a manifest but missing from the content store, or its ' +
             'bytes no longer hash to its digest.',
         );

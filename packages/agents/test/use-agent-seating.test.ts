@@ -88,7 +88,7 @@ describe('useAgent seating', () => {
     let commits = 0;
     const inner = w.ctx._storeCommit.bind(w.ctx);
     w.ctx._storeCommit = async (h, t) => {
-      if (++commits >= 2) throw new Error('the commit blew up after the seat was taken');
+      if (++commits >= 2) throw new Error('a commit failure after the seat was taken');
       return inner(h, t);
     };
     let caught: unknown = null;
@@ -102,7 +102,29 @@ describe('useAgent seating', () => {
     expect(commits, 'the commit never threw — the scenario did not exercise a post-seating fatal').toBeGreaterThanOrEqual(2);
     expect(returned, 'the pool failed and an agent was handed back anyway').toBeUndefined();
     expect(caught).toBeInstanceOf(Error);
-    expect((caught as Error).message).toBe('the commit blew up after the seat was taken');
+    expect((caught as Error).message).toBe('a commit failure after the seat was taken');
+  });
+
+  it('an agent whose commit fails for room is handed back failed, as a tool error is, not thrown', async () => {
+    // rc 1 with nothing partial leaves the branch intact; the agent gives way (`commit_failed`) and
+    // the pool closes whole. The caller reads `failed`, as it does for `tool_error`.
+    const w = await world();
+    let samples = 0;
+    w.ctx._branchSample = (): number => (++samples === 1 ? 1 : samples === 2 ? 777 : STOP);
+    w.ctx.mockCommitError = (_h, t) => (t.includes(777) ? { message: 'llama_decode failed: no KV slot', rc: 1, partial: false } : null);
+    let caught: unknown = null;
+    let returned: { failed: string | null; result: string | null } | null = null;
+    await run(function* () {
+      yield* contexts(w);
+      try {
+        yield* scoped(function* () {
+          const a = yield* useAgent({ systemPrompt: 'S', content: 'T', acceptFreeText: true });
+          returned = { failed: a.failed, result: a.result };
+        });
+      } catch (e) { caught = e; }
+    });
+    expect(caught, 'a recoverable commit failure was thrown at the caller').toBeNull();
+    expect(returned).toEqual({ failed: 'commit_failed', result: null });
   });
 
   it("returns the lineage's final agent, not the disposed original a heal replaced", async () => {
