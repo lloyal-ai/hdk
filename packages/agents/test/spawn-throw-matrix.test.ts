@@ -94,13 +94,13 @@ describe.each(Object.keys(shapes))('spawn throw matrix: %s', (shape) => {
       instrument: (ctx) => {
         const inner = ctx.formatChatSync.bind(ctx);
         ctx.formatChatSync = (msgs, opts) => {
-          if (msgs.includes('Task 1')) throw new Error('pricing blew up');
+          if (msgs.includes('Task 1')) throw new Error('a throw in pricing');
           return inner(msgs, opts);
         };
       },
     });
     diag(`${shape} pricing`, run);
-    expect(run.result.failure?.message).toBe('pricing blew up');
+    expect(run.result.failure?.message).toBe('a throw in pricing');
     expect(openEntries(run), 'an entry was left open').toEqual([]);
     expect(run.result.outcomes.some(o => o.failed === 'spawn_error'), 'the throw did not settle as spawn_error').toBe(true);
     expect(formatResult('I42', I42_noLeakedBranches(run))).toBe('I42: ok');
@@ -113,13 +113,13 @@ describe.each(Object.keys(shapes))('spawn throw matrix: %s', (shape) => {
         let forks = 0;
         const inner = ctx._branchFork.bind(ctx);
         ctx._branchFork = (parent: number): number => {
-          if (++forks === 2) throw new Error('fork blew up');
+          if (++forks === 2) throw new Error('a throw at the fork');
           return inner(parent);
         };
       },
     });
     diag(`${shape} fork`, run);
-    expect(run.result.failure?.message).toBe('fork blew up');
+    expect(run.result.failure?.message).toBe('a throw at the fork');
     expect(run.traceEvents.some(e => e.type === 'pool:spawnRefused'), 'a programming error was recorded as a refusal').toBe(false);
     expect(openEntries(run), 'an entry was left open').toEqual([]);
     expect(run.result.outcomes.some(o => o.failed === 'spawn_error')).toBe(true);
@@ -208,14 +208,14 @@ describe.each(Object.keys(shapes))('spawn throw matrix: %s', (shape) => {
         let formats = 0;
         const inner = ctx.formatChatSync.bind(ctx);
         ctx.formatChatSync = (msgs, opts) => {
-          if (msgs.includes('Task 0') && ++formats === 2) throw new Error('heal pricing blew up');
+          if (msgs.includes('Task 0') && ++formats === 2) throw new Error('a throw in the heal\'s pricing');
           return inner(msgs, opts);
         };
       },
     });
     diag(`${shape} heal-pricing`, run);
     expect(mediaFailures(run.channelEvents)).toHaveLength(1);
-    expect(run.result.failure?.message).toBe('heal pricing blew up');
+    expect(run.result.failure?.message).toBe('a throw in the heal\'s pricing');
     expect(openEntries(run)).toEqual([]);
     expect(formatResult('I42', I42_noLeakedBranches(run))).toBe('I42: ok');
   });
@@ -250,10 +250,10 @@ describe.each(Object.keys(shapes))('spawn throw matrix: %s', (shape) => {
   };
 
   it('a heal whose store throws at pricing fails the run: a programming error is not a lost lineage', async () => {
-    const run = await healAfterPoison(shape, () => { throw new TypeError('the store blew up'); });
+    const run = await healAfterPoison(shape, () => { throw new TypeError('a type error from the store at pricing'); });
     diag(`${shape} heal-store-throw`, run);
     expect(mediaFailures(run.channelEvents)).toHaveLength(1);
-    expect(run.result.failure?.message).toBe('the store blew up');
+    expect(run.result.failure?.message).toBe('a type error from the store at pricing');
     expect(run.traceEvents.some(e => e.type === 'pool:agentHeal'), 'a failed heal was announced').toBe(false);
     expect(openEntries(run)).toEqual([]);
     expect(formatResult('I42', I42_noLeakedBranches(run))).toBe('I42: ok');
@@ -297,14 +297,14 @@ describe.skipIf(!process.env.MATRIX_DIAG)('spawn throw matrix: propagation exper
   it('E4 dag, one node whose pricing throws', async () => {
     const run = await runPool({ nCtx: 8192, cellsUsed: 0, scripts: plainScripts, policy: prose, orchestrate: dag([{ id: 'a', task: spec(0) }]), captureError: true, instrument: (ctx) => {
       const inner = ctx.formatChatSync.bind(ctx);
-      ctx.formatChatSync = (msgs, opts) => { if (msgs.includes('Task 0')) throw new Error('pricing blew up'); return inner(msgs, opts); };
+      ctx.formatChatSync = (msgs, opts) => { if (msgs.includes('Task 0')) throw new Error('a throw in pricing'); return inner(msgs, opts); };
     } });
     diag('E4', run);
   });
   it('E5 parallel via all, one child whose pricing throws, the other seated', async () => {
     const run = await runPool({ nCtx: 8192, cellsUsed: 0, scripts: plainScripts, policy: prose, orchestrate: parallel([spec(0), spec(1)]), captureError: true, instrument: (ctx) => {
       const inner = ctx.formatChatSync.bind(ctx);
-      ctx.formatChatSync = (msgs, opts) => { if (msgs.includes('Task 1')) throw new Error('pricing blew up'); return inner(msgs, opts); };
+      ctx.formatChatSync = (msgs, opts) => { if (msgs.includes('Task 1')) throw new Error('a throw in pricing'); return inner(msgs, opts); };
     } });
     diag('E5', run);
   });

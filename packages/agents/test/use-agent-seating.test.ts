@@ -88,7 +88,7 @@ describe('useAgent seating', () => {
     let commits = 0;
     const inner = w.ctx._storeCommit.bind(w.ctx);
     w.ctx._storeCommit = async (h, t) => {
-      if (++commits >= 2) throw new Error('the commit blew up after the seat was taken');
+      if (++commits >= 2) throw new Error('a commit failure after the seat was taken');
       return inner(h, t);
     };
     let caught: unknown = null;
@@ -102,7 +102,7 @@ describe('useAgent seating', () => {
     expect(commits, 'the commit never threw — the scenario did not exercise a post-seating fatal').toBeGreaterThanOrEqual(2);
     expect(returned, 'the pool failed and an agent was handed back anyway').toBeUndefined();
     expect(caught).toBeInstanceOf(Error);
-    expect((caught as Error).message).toBe('the commit blew up after the seat was taken');
+    expect((caught as Error).message).toBe('a commit failure after the seat was taken');
   });
 
   it('an agent whose commit fails for room is handed back failed, as a tool error is, not thrown', async () => {

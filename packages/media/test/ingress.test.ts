@@ -104,7 +104,7 @@ describe('materialize — content that is gone or has drifted is ContentLost, an
     const store = new FileAttachmentStore(mkdtempSync(join(tmpdir(), 'materialize-')));
     const md = store.putBlob(new TextEncoder().encode('text'), 'text/markdown');
     const root = store.putAttachment({ representations: [md] });
-    store.getManifest = () => { throw new TypeError('the store blew up'); };
+    store.getManifest = () => { throw new TypeError('a type error from the store'); };
     const thrown = (() => { try { materialize(store, [root]); return null; } catch (e) { return e; } })();
     expect(thrown).toBeInstanceOf(TypeError);
     expect(thrown).not.toBeInstanceOf(ContentLost);
