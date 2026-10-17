@@ -113,4 +113,25 @@ describe('scenario: a commit batch that fails for room gives way', () => {
     expect(run.channelEvents.some(e => e.type === 'agent:failed' && e.reason === 'commit_failed')).toBe(false);
     expect(run.traceEvents.some(e => e.type === 'pool:close'), 'a fatal rc closes partial: no close record').toBe(false);
   });
+
+  it('a fatal commit rethrows the store\'s own error: its type and identity reach the failure', async () => {
+    // No rc at all: the ladder calls it fatal, and what reaches the pool's failure must be the very error the
+    // store threw, not a reading of it, so a caller can tell a TypeError from a decode refusal.
+    const thrown = Object.assign(new TypeError('a type error from the store at commit'), { diagnostic: 'kept' });
+    const run = await runPool({
+      nCtx: 8192, cellsUsed: 0,
+      scripts: [{ tokens: [1, NO_ROOM] }, { tokens: [1, NO_ROOM] }],
+      policy,
+      instrument: (ctx) => {
+        const inner = ctx._storeCommit.bind(ctx);
+        ctx._storeCommit = async (handles, tokens) => {
+          if (tokens.includes(NO_ROOM)) throw thrown;
+          return inner(handles, tokens);
+        };
+      },
+    });
+
+    expect(run.result.failure).toBe(thrown);
+    expect(run.result.failure).toBeInstanceOf(TypeError);
+  });
 });

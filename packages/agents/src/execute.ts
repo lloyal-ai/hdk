@@ -293,10 +293,10 @@ export class Executor {
     if (entries.length > 0) {
       try {
         yield* commit(d.store, entries);
-        out.commit = { agents: batch, outcome: { ok: true }, pressure: new ContextPressure(d.ctx, d.pressureOpts) };
+        out.commit = { agents: batch, outcome: { ok: true }, pressure: new ContextPressure(d.ctx, d.pressureOpts), err: null };
       } catch (err) {
         const de = decodeErrorOf(err);
-        out.commit = { agents: batch, outcome: { ok: false, rc: de?.rc, partial: de?.partial, message: toError(err).message }, pressure: null };
+        out.commit = { agents: batch, outcome: { ok: false, rc: de?.rc, partial: de?.partial, message: toError(err).message }, pressure: null, err };
       }
     }
     return out;

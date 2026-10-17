@@ -252,7 +252,7 @@ export class Applier {
         yield* this.d.emit.emit({ kind: 'recoveryFailed', agent: a, reason, outputExcerpt: a.rawOutput.slice(0, 200) });
         a.failed = reason;
       }
-      throw Object.assign(new Error(o.message), { rc: o.rc, partial: o.partial });
+      throw c.err;   // the store's own error, type and stack intact: the run's, as it was before the ladder read it
     }
     for (const a of c.agents) yield* this.failSettled(a, 'commit_failed', o.message, o.rc);
   }

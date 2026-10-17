@@ -294,7 +294,14 @@ export interface Outputs {
    *  On success `pressure` is the reading taken as it landed and `steps`
    *  counts it; on failure the ladder decides, as it does for a prefill. Null
    *  when nothing was sampled. */
-  commit: { agents: Agent[]; outcome: PrefillOutcome; pressure: ContextPressure | null } | null;
+  commit: {
+    agents: Agent[];
+    outcome: PrefillOutcome;
+    pressure: ContextPressure | null;
+    /** The store's own throw when the commit did not land, rethrown as the run's when the ladder calls it
+     *  fatal: the outcome's fields are the ladder's reading of it, never a replacement for it. Null on success. */
+    err: unknown;
+  } | null;
   /** A prefill failed beyond the ladder (a fatal rc). The pool closes partial. */
   fatal: { err: unknown } | null;
 }
