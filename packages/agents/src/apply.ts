@@ -16,7 +16,7 @@ import {
   type PrefillOutcome, type Ladder, type DropReason,
   alive, classifyRc, isFatalRc, spawnCells, MAX_DEFER_ATTEMPTS, BACKEND_TRIPWIRE_N, MAX_HEAL_ATTEMPTS, MAX_RETURNS_REJECTED,
 } from './state';
-import { SpawnRefused } from './spawns';
+import { ExtensionRefused, SpawnRefused } from './spawns';
 import type { SpawnLedger } from './spawns';
 import type { PressureThresholds } from './types';
 
@@ -84,7 +84,9 @@ export class Applier {
     }
     this.refuseSpawns(S.refusedSpawns);
     for (const e of S.rejectedExtends) {
-      if (!e.discarded) e.reject(new Error(`useAgentPool: cannot fit spine extension (${e.tokens.length} tokens) — nothing left to free KV`));
+      if (e.discarded) continue;
+      this.d.emit.trace({ kind: 'extensionRefused', userContent: e.userContent, tokens: e.tokens.length });
+      e.reject(new ExtensionRefused(e.tokens.length));
     }
   }
 

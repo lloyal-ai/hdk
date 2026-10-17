@@ -59,7 +59,19 @@ import { Branch } from './Branch.js';
 import { BranchStore } from './BranchStore.js';
 import { Session } from './Session.js';
 
-const isAudio = (input: MultimodalInput): boolean => !(input instanceof Uint8Array) && input.kind === 'audio';
+type MediaKind = 'image' | 'audio' | 'video';
+const kindOf = (input: MultimodalInput): MediaKind => input instanceof Uint8Array ? 'image' : input.kind;
+const isAudio = (input: MultimodalInput): boolean => kindOf(input) === 'audio';
+
+/** The kernel's refusal for a video it cannot lay out, or null. Same words as `MtmdSource`. */
+function videoRefusal(input: MultimodalInput): string | null {
+  if (input instanceof Uint8Array || input.kind !== 'video') return null;
+  const t = input.timestampsMs;
+  if (input.frames.length === 0) return 'MtmdSource - a video needs at least one frame';
+  if (t.length !== input.frames.length) return 'MtmdSource - a video needs one timestamp per frame';
+  if (t[0] < 0 || t.some((ms, i) => i > 0 && ms <= t[i - 1])) return 'MtmdSource - video timestamps must increase';
+  return null;
+}
 
 /** Internal branch state tracked by the mock */
 interface BranchState {
@@ -71,7 +83,29 @@ interface BranchState {
   /** Cells the embedding rail charged this branch above its position advance
    *  (the kernel's `img_slack_own`): refunded with the position delta on prune. */
   imgSlack: number;
+  /** Counts the changes a fast-forward would move (the kernel's `revision`). */
+  revision: number;
+  /** The parent's revision when this branch was forked. */
+  forkRevision: number;
+  /** A failed prefill left the KV ahead of the books (the kernel's `poisoned`). */
+  poisoned: boolean;
+  /** The sampling parameters as the kernel caches them, to tell a real change from the same ones again. */
+  sampling: string;
+  /** The grammar order (the kernel's `grammar_sample_first`). */
+  sampleFirst: boolean;
 }
+
+/** The kernel's cached parameters (`CachedSamplingParams`), its defaults filled in, as one comparable value. */
+const samplingOf = (p: SamplingParams = {}): string => JSON.stringify([
+  p.temperature ?? 0.8, p.topK ?? 40, p.topP ?? 0.95, p.minP ?? 0.05, p.seed ?? 0,
+  p.penalties?.repeat ?? 1, p.penalties?.frequency ?? 0, p.penalties?.presence ?? 0, p.penalties?.lastN ?? 64,
+]);
+
+/** A chain samples, and so has a PRNG to reseed, when its temperature is above zero. */
+const samples = (sampling: string): boolean => (JSON.parse(sampling) as number[])[0] > 0;
+
+/** The kernel's rule for a failed decode (`decode::leaves_branch_intact`). */
+const leavesBranchIntact = (rc: number, partial: boolean): boolean => (rc === 1 || rc === -1) && !partial;
 
 export interface MockSessionContextOpts {
   /** Total KV cache capacity. Default: 16384 */
@@ -149,7 +183,7 @@ export class MockSessionContext implements SessionContext {
 
   // ── Branch lifecycle ──────────────────────────────────────────
 
-  _branchCreate(position: number, _params?: SamplingParams, _nBatch?: number, _grammar?: string): number {
+  _branchCreate(position: number, params?: SamplingParams, _nBatch?: number, _grammar?: string): number {
     this._lease('create');
     const handle = this._nextHandle++;
     this._branches.set(handle, {
@@ -159,8 +193,19 @@ export class MockSessionContext implements SessionContext {
       children: new Set(),
       disposed: false,
       imgSlack: 0,
+      revision: 0,
+      forkRevision: 0,
+      poisoned: false,
+      sampling: samplingOf(params),
+      sampleFirst: false,
     });
     return handle;
+  }
+
+  /** A change to state a fast-forward moves: the kernel bumps `revision` for it. */
+  private _changed(handle: number): void {
+    const b = this._branches.get(handle);
+    if (b && !b.disposed) b.revision++;
   }
 
   _branchFork(parentHandle: number): number {
@@ -177,6 +222,11 @@ export class MockSessionContext implements SessionContext {
       children: new Set(),
       disposed: false,
       imgSlack: 0,
+      revision: 0,
+      forkRevision: parent.revision,
+      poisoned: parent.poisoned,
+      sampling: parent.sampling,
+      sampleFirst: parent.sampleFirst,
     });
     return handle;
   }
@@ -211,6 +261,27 @@ export class MockSessionContext implements SessionContext {
     this._branchPrune(handle);
   }
 
+  /** The kernel's fast-forward: its refusals, in its order and words, then the move. */
+  _branchFastForward(parentHandle: number, childHandle: number): void {
+    const refuse = (why: string): never => { throw new Error(`_branchFastForward: fast_forward: ${why}`); };
+    const a = this._branches.get(parentHandle);
+    if (!a || a.disposed) refuse('invalid parent handle');
+    const p = this._branches.get(childHandle);
+    if (!p || p.disposed) refuse('invalid child handle');
+    if (p!.parentHandle !== parentHandle) refuse('the child was not forked from this parent');
+    if (this._branchChildren(childHandle).length > 0) refuse('the child has children of its own');
+    if (p!.poisoned) refuse('the child is poisoned by a failed decode; prune it');
+    if (p!.forkHead !== a!.position) refuse('the parent has decoded since the fork');
+    if (p!.forkRevision !== a!.revision) refuse('the parent has changed since the fork');
+    a!.position = p!.position;
+    a!.imgSlack += p!.imgSlack;
+    a!.sampling = p!.sampling;
+    a!.sampleFirst = p!.sampleFirst;
+    a!.revision++;
+    p!.disposed = true;
+    a!.children.delete(childHandle);
+  }
+
   _branchChildren(handle: number): number[] {
     const b = this._branches.get(handle);
     if (!b) return [];
@@ -222,22 +293,40 @@ export class MockSessionContext implements SessionContext {
 
   // ── Produce/commit protocol ───────────────────────────────────
 
+  private _sampleToken: (handle: number) => number = () => this.stopToken;
+
   /**
-   * Sample next token. Override in subclass to control token production.
-   * Default: always returns stopToken (immediate stop).
+   * Sample next token. Assign a function to control token production
+   * (`ctx._branchSample = () => tokens[i++] ?? ctx.stopToken`); the default
+   * always returns stopToken (immediate stop). Every sample counts as a change,
+   * as the kernel's does: running the chain may advance its PRNG.
    */
-  _branchSample(_handle: number): number {
-    return this.stopToken;
+  get _branchSample(): (handle: number) => number {
+    return (handle) => { this._changed(handle); return this._sampleToken(handle); };
   }
+  set _branchSample(sample: (handle: number) => number) { this._sampleToken = sample; }
 
-  _branchAccept(_handle: number, _token: number): void {}
+  _branchAccept(handle: number, _token: number): void { this._changed(handle); }
 
-  async _storeCommit(handles: number[], _tokens: number[]): Promise<void> {
+  async _storeCommit(handles: number[], tokens: number[]): Promise<void> {
     requireDistinctHandles(handles, '_storeCommit');
+    const failure = this.mockCommitError?.(handles, tokens) ?? null;
+    if (failure !== null) {
+      const { message, rc, partial = false } = typeof failure === 'string' ? { message: failure } : failure;
+      // As the native rollback: a failure that left the batch intact (rc 1 or -1, or no
+      // decode code) changes nothing; any other rc poisons every branch in the batch.
+      const poisons = rc !== undefined && rc !== 1 && rc !== -1;
+      for (const h of handles) {
+        const b = this._branches.get(h);
+        if (poisons && b && !b.disposed) { b.poisoned = true; b.revision++; }
+      }
+      throw Object.assign(new Error(message), rc !== undefined ? { rc, partial } : {});
+    }
     for (const h of handles) {
       const b = this._branches.get(h);
       if (b && !b.disposed) {
         b.position++;
+        b.revision++;
         this.cellsUsed++;
       }
     }
@@ -249,6 +338,7 @@ export class MockSessionContext implements SessionContext {
       const b = this._branches.get(handles[i]);
       if (b && !b.disposed) {
         b.position += tokenArrays[i].length;
+        b.revision++;
         this.cellsUsed += tokenArrays[i].length;
       }
     }
@@ -269,7 +359,7 @@ export class MockSessionContext implements SessionContext {
     sepTokens: number[][];
     prompts: string[];
     bitmapCounts: number[];
-    inputKinds: Array<Array<'image' | 'audio'>>;
+    inputKinds: Array<Array<MediaKind>>;
     audioLimits: Array<AudioLimits | undefined>;
     /** What the call reported back — the counts a caller must not re-derive. */
     results: MultimodalPrefillResult[];
@@ -298,7 +388,7 @@ export class MockSessionContext implements SessionContext {
       sepTokens: sepTokens.map((s) => [...s]),
       prompts: [...prompts],
       bitmapCounts: inputs.map(batch => batch.filter(input => !isAudio(input)).length),
-      inputKinds: inputs.map(batch => batch.map(input => isAudio(input) ? 'audio' : 'image')),
+      inputKinds: inputs.map(batch => batch.map(kindOf)),
       audioLimits: handles.map((_, i) => audioLimits[i] ? { ...audioLimits[i]! } : undefined),
       results: out,
     });
@@ -306,9 +396,15 @@ export class MockSessionContext implements SessionContext {
     for (let i = 0; i < handles.length; i++) {
       // Per-entry failure, the property the native worker guarantees: a bad
       // image reports on ITS OWN result and the cohort keeps going.
-      const failure = this.mockMultimodalError?.(prompts[i], inputs[i]) ?? null;
+      const failure = inputs[i].map(videoRefusal).find(Boolean) ?? this.mockMultimodalError?.(prompts[i], inputs[i]) ?? null;
       if (failure) {
         const f = typeof failure === 'string' ? { message: failure } : failure;
+        const failed = this._branches.get(handles[i]);
+        // As the kernel's walk: a failure after something landed poisons, with or without a decode code.
+        if (failed && !leavesBranchIntact(f.rc ?? 1, f.partial === true)) {
+          failed.poisoned = true;
+          failed.revision++;
+        }
         out.push({
           tokensDecoded: 0, positionAdvance: 0, error: f.message,
           ...(f.rc !== undefined ? { rc: f.rc, partial: f.partial === true } : {}),
@@ -322,6 +418,7 @@ export class MockSessionContext implements SessionContext {
       if (b && !b.disposed) {
         b.position += positionAdvance;
         b.imgSlack += tokensDecoded - positionAdvance;
+        b.revision++;
         this.cellsUsed += tokensDecoded;
       }
       out.push({ tokensDecoded, positionAdvance });
@@ -338,6 +435,15 @@ export class MockSessionContext implements SessionContext {
     inputs: MultimodalInput[],
   ) => string | { message: string; rc?: number; partial?: boolean } | null;
 
+  /** Fail a batched commit. Returns a message (optionally with the llama_decode rc, as
+   *  the native worker attaches it) to fail the whole batch, null to let it through.
+   *  A failure with rc 1 or -1 restores every branch, as the native rollback does;
+   *  any other rc poisons them. */
+  mockCommitError?: (
+    handles: number[],
+    tokens: number[],
+  ) => string | { message: string; rc?: number; partial?: boolean } | null;
+
   /** Cells one multimodal prefill consumes. Text stands in at one cell per 4
    *  chars, matching tokenizeSync, minus the markers the native walk replaces
    *  with image rows. Shared by the prefill and the cost query so the mock
@@ -345,8 +451,22 @@ export class MockSessionContext implements SessionContext {
    *  `MtmdSource::cells()` guarantees by counting before it encodes. */
   private _mockCost(sep: number[], prompt: string, inputs: MultimodalInput[], imageCost: number): number {
     const textCells = Math.ceil(prompt.replace(/<__media__>/g, '').length / 4);
-    const mediaCells = inputs.reduce((sum, input) => sum + (isAudio(input) ? this.mockAudioCells : imageCost), 0);
+    const mediaCells = inputs.reduce((sum, input) => sum + this._mockMediaCost(input, imageCost), 0);
     return sep.length + textCells + mediaCells;
+  }
+
+  /** Frames fused per chunk in a video; 2 stands in for a Qwen-VL projector, 1 for one without temporal merge. */
+  mockVideoFrameMerge = 2;
+
+  /** A video's first frame stands alone before its first timestamp; the rest fuse in groups.
+   *  Its transcript is text, at the same one cell per 4 chars. */
+  private _mockMediaCost(input: MultimodalInput, imageCost: number): number {
+    if (isAudio(input)) return this.mockAudioCells;
+    if (input instanceof Uint8Array || input.kind !== 'video') return imageCost;
+    const rest = Math.max(0, input.frames.length - 1);
+    const frames = imageCost * (Math.min(1, input.frames.length) + Math.ceil(rest / this.mockVideoFrameMerge));
+    const transcript = Math.ceil((input.notes ?? []).map(n => n.text).join('').length / 4);
+    return frames + transcript;
   }
 
   async _cellsMultimodal(
@@ -355,6 +475,9 @@ export class MockSessionContext implements SessionContext {
     inputs: MultimodalInput[],
     _audioLimits?: AudioLimits,
   ): Promise<number> {
+    // The kernel prices by laying the video out, so what prefill refuses cannot be priced either.
+    const refusal = inputs.map(videoRefusal).find(Boolean);
+    if (refusal) throw new Error(refusal);
     return this._mockCost(sepTokens, prompt, inputs, this.mockImageCells);
   }
 
@@ -366,8 +489,8 @@ export class MockSessionContext implements SessionContext {
   supportsAudio(): boolean { return this.mockAudioSampleRate > 0; }
   audioSampleRate(): number { return this.mockAudioSampleRate; }
 
-  _storeMergeLogits(_dstHandle: number, _srcHandles: number[], _alpha: number): void {
-    /* mock no-op */
+  _storeMergeLogits(dstHandle: number, _srcHandles: number[], _alpha: number): void {
+    this._changed(dstHandle);
   }
 
   // ── Branch state accessors ────────────────────────────────────
@@ -402,7 +525,7 @@ export class MockSessionContext implements SessionContext {
 
   /** Every `formatChat` payload, so a test can assert what reached the prompt. */
   formatChatCalls: string[] = [];
-  _branchSetLogits(_handle: number, _logits: Float32Array): void { /* mock no-op */ }
+  _branchSetLogits(handle: number, _logits: Float32Array): void { this._changed(handle); }
 
   _branchForkHead(handle: number): number {
     return this._branches.get(handle)?.forkHead ?? 0;
@@ -431,19 +554,33 @@ export class MockSessionContext implements SessionContext {
     };
   }
 
-  _storeRetainOnly(_handle: number): void {}
+  _storeRetainOnly(handle: number): void { this._changed(handle); }
   /** Vacant sequences: the budget less the live branches; unbudgeted ⇒ effectively unbounded. */
   _storeAvailable(): number { return this.nSeqMax === undefined ? Number.MAX_SAFE_INTEGER : Math.max(0, this.nSeqMax - this._live()); }
 
-  // ── Sampler / grammar (no-ops) ────────────────────────────────
+  // ── Sampler / grammar: no tokens change, but each counts as a change exactly when the kernel's does ──
 
-  _branchSamplerChainReseed(_handle: number, _seed: number): void {}
-  _branchSetSamplerParams(_handle: number, _params: SamplingParams): void {}
-  _branchSetGrammar(_handle: number, _grammar: string): void {}
-  _branchSetGrammarLazy(_handle: number, _grammar: string, _patterns: string[], _tokens: number[]): void {}
-  _branchSetGrammarOrder(_handle: number, _sampleFirst: boolean): void {}
-  _branchSetLogitBias(_handle: number, _biases: Array<{ token: number; bias: number }>): void {}
-  _branchClearLogitBias(_handle: number): void {}
+  _branchSamplerChainReseed(handle: number, _seed: number): void {
+    const b = this._branches.get(handle);
+    if (b && samples(b.sampling)) this._changed(handle);
+  }
+  _branchSetSamplerParams(handle: number, params: SamplingParams): void {
+    const b = this._branches.get(handle);
+    const next = samplingOf(params);
+    if (!b || next === b.sampling) return;   // the kernel memoizes the same parameters
+    b.sampling = next;
+    this._changed(handle);
+  }
+  _branchSetGrammar(handle: number, _grammar: string): void { this._changed(handle); }
+  _branchSetGrammarLazy(handle: number, _grammar: string, _patterns: string[], _tokens: number[]): void { this._changed(handle); }
+  _branchSetGrammarOrder(handle: number, sampleFirst: boolean): void {
+    const b = this._branches.get(handle);
+    if (!b || b.sampleFirst === sampleFirst) return;
+    b.sampleFirst = sampleFirst;
+    this._changed(handle);
+  }
+  _branchSetLogitBias(handle: number, _biases: Array<{ token: number; bias: number }>): void { this._changed(handle); }
+  _branchClearLogitBias(handle: number): void { this._changed(handle); }
   _branchSteer(_handle: number, _biases: Array<{ token: number; bias: number }>): void {}
   _branchClearSteer(_handle: number): void {}
 

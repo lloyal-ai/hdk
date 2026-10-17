@@ -13,6 +13,7 @@ export { createImageIngress, DEFAULT_MAX_PIXELS, normalizeImage } from './image'
 export type { NormalizedImage, NormalizeImage, NormalizeOpts } from './image';
 
 export { FileAttachmentStore } from './file-store';
+export type { BlobStaging, StagedBlob } from './file-store';
 export { createAudioIngress } from './audio-ingress';
 export type { AudioIngressOptions } from './audio-ingress';
 

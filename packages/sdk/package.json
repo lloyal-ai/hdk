@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/sdk",
-  "version": "5.0.0",
+  "version": "5.1.0",
   "engines": {
     "node": ">=24"
   },
@@ -50,8 +50,8 @@
   "type": "commonjs",
   "scripts": {
     "build": "tsc -b",
-    "test:audio": "tsx --test test/audio-integration.ts",
-    "test:images": "tsx --test test/image-integration.ts"
+    "test:audio": "tsx --tsconfig ../../tsconfig.base.json --test test/audio-integration.ts",
+    "test:images": "tsx --tsconfig ../../tsconfig.base.json --test test/image-integration.ts"
   },
   "files": [
     "dist/",
@@ -59,10 +59,10 @@
     "LICENSE-FAQ.md"
   ],
   "devDependencies": {
-    "@lloyal-labs/lloyal.node": "^4.0.0"
+    "@lloyal-labs/lloyal.node": "^4.1.0"
   },
   "peerDependencies": {
-    "@lloyal-labs/lloyal.node": "^4.0.0"
+    "@lloyal-labs/lloyal.node": "^4.1.0"
   },
   "peerDependenciesMeta": {
     "@lloyal-labs/lloyal.node": {

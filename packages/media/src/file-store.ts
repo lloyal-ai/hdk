@@ -10,10 +10,55 @@ import { ATTACHMENT_ARTIFACT_TYPE, commitManifest, DIGEST_PATTERN } from './atta
 import type { Attachment, AttachmentManifest, Descriptor } from './attachment';
 import type { AttachmentStore } from './store';
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import type { Hash } from 'node:crypto';
+import { appendFileSync, closeSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 
 const LAYOUT_VERSION = '1.0.0';
+
+/**
+ * An upload in progress: bytes appended in order, hashed as they arrive, and
+ * addressed only when adopted under the digest its sender claims.
+ *
+ * @category Media
+ */
+export interface StagedBlob {
+  readonly id: string;
+  /** Bytes received so far — where the next chunk must begin. */
+  readonly size: number;
+  /** Append the next chunk. Throws on a full disk, carrying the reason. */
+  append(bytes: Uint8Array): void;
+  /** Admit the staged bytes under `digest`: verified, inspected, then renamed
+   *  into place. On any refusal nothing is admitted and the staging is gone. */
+  adopt(digest: string, mediaType: string, inspect?: (head: Uint8Array, size: number) => void): Descriptor;
+  /** Cancel: remove the staging. */
+  discard(): void;
+}
+
+/**
+ * Where uploads too large to hold in memory are staged: the filesystem store,
+ * never the browser-safe contract, because staging is a file.
+ *
+ * @category Media
+ */
+export interface BlobStaging {
+  stage(): StagedBlob;
+}
+
+/** How many leading bytes `adopt` hands an inspection: enough for any container signature. */
+const INSPECT_BYTES = 64;
+
+/** The first bytes of a file, without reading the rest of it. */
+function readHead(file: string): Uint8Array {
+  const head = new Uint8Array(INSPECT_BYTES);
+  const fd = openSync(file, 'r');
+  try {
+    return head.subarray(0, readSync(fd, head, 0, INSPECT_BYTES, 0));
+  } finally {
+    closeSync(fd);
+  }
+}
 const INDEX_TYPE = 'application/vnd.oci.image.index.v1+json';
 
 /**
@@ -31,14 +76,18 @@ const INDEX_TYPE = 'application/vnd.oci.image.index.v1+json';
  * read-modify-write. The writes are synchronous, so concurrent Sessions inside
  * ONE host process serialize safely; two processes writing the same layout can
  * still lose an index entry. Blobs are unaffected (content-addressed, written
- * temp-then-rename), so the loss is discoverability, not data. Reachability GC
- * is deliberately absent — nothing here deletes.
+ * temp-then-rename), but the index says which blobs are manifests, so a lost
+ * entry hides that attachment from this store as well as from OCI tooling.
+ * Reachability GC is deliberately absent — nothing here deletes.
  *
  * @category Media
  */
-export class FileAttachmentStore implements AttachmentStore {
+export class FileAttachmentStore implements AttachmentStore, BlobStaging {
   private _dir: string;
   private _ready = false;
+  /** The manifests this layout committed, as `index.json` lists them. Read when first asked, kept in step
+   *  with every commit, and read again on a miss so a manifest another writer committed is found. */
+  private _manifests: Set<string> | null = null;
 
   /** @param dir - The layout root. */
   constructor(dir: string) {
@@ -128,12 +177,12 @@ export class FileAttachmentStore implements AttachmentStore {
     return ref;
   }
 
-  /** Append a manifest descriptor to `index.json`, deduped by digest. */
+  /** Append a manifest descriptor to `index.json`, deduped by digest. Throws when the entry cannot be
+   *  written: the index is what makes the blob a manifest, so without its entry nothing was committed. */
   private _index(ref: Descriptor): void {
-    try {
-      const file = join(this._dir, 'index.json');
-      const idx = JSON.parse(readFileSync(file, 'utf8')) as { manifests: Descriptor[] };
-      if (idx.manifests.some(m => m.digest === ref.digest)) return;
+    const file = join(this._dir, 'index.json');
+    const idx = JSON.parse(readFileSync(file, 'utf8')) as { manifests: Descriptor[] };
+    if (!idx.manifests.some(m => m.digest === ref.digest)) {
       idx.manifests.push(ref);
       const tmp = join(this._dir, '.tmp', `index.${randomBytes(4).toString('hex')}`);
       try {
@@ -143,11 +192,26 @@ export class FileAttachmentStore implements AttachmentStore {
         try { rmSync(tmp, { force: true }); } catch { /* best effort */ }
         throw e;
       }
-    } catch {
-      // The blob landed; only its index entry did not. Our own resolution is
-      // by digest, so this costs discoverability by other OCI tooling, not
-      // replay.
     }
+    this._manifests?.add(ref.digest);
+  }
+
+  /** The digests `index.json` lists; none before the first write. */
+  private _readIndex(): Set<string> {
+    try {
+      const idx = JSON.parse(readFileSync(join(this._dir, 'index.json'), 'utf8')) as { manifests?: Descriptor[] };
+      return new Set((idx.manifests ?? []).map(m => m.digest));
+    } catch {
+      return new Set();
+    }
+  }
+
+  /** Whether this layout committed `digest` as a manifest. A miss reads the index again: another process
+   *  may have committed since this one last looked. */
+  private _committed(digest: string): boolean {
+    if (this._manifests?.has(digest)) return true;
+    this._manifests = this._readIndex();
+    return this._manifests.has(digest);
   }
 
   get(digest: string): Uint8Array | null {
@@ -164,18 +228,121 @@ export class FileAttachmentStore implements AttachmentStore {
     }
   }
 
+  size(digest: string): number | null {
+    try {
+      const file = this._pathFor(digest);
+      return file ? statSync(file).size : null;
+    } catch {
+      return null;
+    }
+  }
+
+  readRange(digest: string, range: { start: number; end: number }): ReadableStream<Uint8Array> | null {
+    const size = this.size(digest);
+    if (size === null || range.start < 0 || range.end < range.start || range.end >= size) return null;
+    const stream = createReadStream(this._pathFor(digest)!, { start: range.start, end: range.end });
+    return Readable.toWeb(stream) as ReadableStream<Uint8Array>;
+  }
+
+  readWhole(digest: string): ReadableStream<Uint8Array> | null {
+    const file = this._pathFor(digest);
+    if (!file || this.size(digest) === null) return null;
+    const pieces = createReadStream(file)[Symbol.asyncIterator]();
+    const hash = createHash('sha256');
+    // One piece is always held back, so the whole is verified before a reader has all of it.
+    let held: Uint8Array | null = null;
+    return new ReadableStream<Uint8Array>({
+      // Every pull releases a piece, closes or errors: a pull that did none would wait for another that never comes.
+      async pull(controller) {
+        for (;;) {
+          const next = await pieces.next();
+          if (next.done) break;
+          const piece = new Uint8Array(next.value as Buffer);
+          hash.update(piece);
+          const release = held;
+          held = piece;
+          if (release) return controller.enqueue(release);
+        }
+        if ('sha256:' + hash.digest('hex') !== digest) {
+          return controller.error(new Error(`blob ${digest} no longer matches its digest`));
+        }
+        if (held) controller.enqueue(held);
+        controller.close();
+      },
+      async cancel() {
+        await pieces.return?.();
+      },
+    });
+  }
+
+  /**
+   * Begin a staged upload. The staging file sits in `.tmp`, outside the blob
+   * directory, so a crash leaves no malformed blob; the same rename that
+   * `putBlob` uses admits it. A staging that is never adopted or discarded
+   * stays in `.tmp`: the store deletes nothing on its own.
+   */
+  stage(): StagedBlob {
+    this._ensureLayout();
+    const id = randomBytes(16).toString('hex');
+    const tmp = join(this._dir, '.tmp', `upload.${id}`);
+    writeFileSync(tmp, new Uint8Array(0), { flag: 'wx' });
+    const hash: Hash = createHash('sha256');
+    let size = 0;
+    let open = true;
+    const close = (): void => {
+      open = false;
+      try { rmSync(tmp, { force: true }); } catch { /* best effort */ }
+    };
+    const pathFor = (d: string): string | null => this._pathFor(d);
+    return {
+      id,
+      get size() { return size; },
+      append(bytes) {
+        if (!open) throw new Error('this upload is closed');
+        try {
+          appendFileSync(tmp, bytes);
+        } catch (e) {
+          // Part of the chunk may be on disk while the hash has seen none of it. Rolled back to what the
+          // hash has seen, a retry stays byte for byte with the digest; if even that fails, the upload closes.
+          try { truncateSync(tmp, size); } catch { close(); }
+          throw e;
+        }
+        hash.update(bytes);
+        size += bytes.byteLength;
+      },
+      adopt(digest, mediaType, inspect) {
+        if (!open) throw new Error('this upload is closed');
+        try {
+          const actual = 'sha256:' + hash.digest('hex');
+          if (actual !== digest) throw new Error(`upload digest mismatch: the bytes hash to ${actual}`);
+          inspect?.(readHead(tmp), size);
+          renameSync(tmp, pathFor(digest)!);
+          open = false;
+          return { mediaType, digest, size };
+        } catch (e) {
+          close();
+          throw e;
+        }
+      },
+      discard: close,
+    };
+  }
+
   getManifest(digest: string): AttachmentManifest | null {
+    // Only what this layout committed is a manifest. A blob that merely parses as one may have been written
+    // by anyone who can write a blob, naming layers and types of its own choosing.
+    if (!this._committed(digest)) return null;
     const bytes = this.get(digest);
     if (!bytes) return null;
     try {
       const parsed = JSON.parse(new TextDecoder().decode(bytes)) as AttachmentManifest;
       // Check the artifact type rather than guessing: the version in it exists
       // to let a future build refuse a shape it does not understand. And
-      // validate every layer as a full descriptor — a corrupt or hand-made
-      // manifest (`layers: [null]`, a missing digest) must be refused HERE,
-      // not crash `representationsOf` or hand malformed descriptors to the
-      // HTTP routes. Role semantics stay as documented: a layer without a
-      // role annotation is a representation.
+      // validate every layer as a full descriptor — a corrupt manifest
+      // (`layers: [null]`, a missing digest) must be refused HERE, not crash
+      // `representationsOf` or hand malformed descriptors to the HTTP routes.
+      // Role semantics stay as documented: a layer without a role annotation
+      // is a representation.
       const layerOk = (l: unknown): boolean => {
         if (typeof l !== 'object' || l === null) return false;
         const { digest: d, mediaType, size } = l as Record<string, unknown>;

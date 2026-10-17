@@ -741,15 +741,15 @@ export class Executor {
     // THE BARRIER: normalized and committed before a marker exists, before
     // admission, before any KV moves. A failure here is not a tool retry.
     // A model with no projector never ingests bytes; it still resolves roots,
-    // because a root that expands to no bitmaps — a document — asks nothing
+    // because a root that expands to no inputs — a document — asks nothing
     // of sight and is admitted on the token rail.
     let prepared: PreparedContent | null = null;
     if (media.length > 0 && (vision || !hasBytes)) {
       prepared = yield* prepareBatch(d.ingress, d.attachments, media);
     }
-    if (media.length > 0 && !vision && (hasBytes || (prepared?.bitmaps.length ?? 0) > 0)) {
+    if (media.length > 0 && !vision && (hasBytes || (prepared?.inputs.length ?? 0) > 0)) {
       (told as Record<string, unknown>)[TOOL_IMAGE_ERROR_KEY] =
-        `${tc.name} returned ${media.length} image(s), but this model cannot see images. ` +
+        `${tc.name} returned ${media.length} media attachment(s), but this model cannot see images or video. ` +
         `Work from the text, or use a different source.`;
       prepared = null;
     }
@@ -761,8 +761,8 @@ export class Executor {
     // have changed under it.
     const common = { agent, toolName: tc.name, callId, args: tc.arguments, resultStr, result: JSON.parse(resultStr) as unknown };
     let item: PrefillItem;
-    if (prepared && prepared.bitmaps.length > 0) {
-      const delta = buildToolResultDeltaMultimodal(d.ctx, resultStr, callId, prepared.bitmaps as Uint8Array[], { enableThinking: agent.fmt.enableThinking });
+    if (prepared && prepared.inputs.length > 0) {
+      const delta = buildToolResultDeltaMultimodal(d.ctx, resultStr, callId, [...prepared.inputs], { enableThinking: agent.fmt.enableThinking });
       const cells = yield* measureCells(d.ctx, delta);
       item = { kind: 'toolResult', rail: 'media', ...common, media: { delta, cells, attachments: prepared.attachments } };
     } else {

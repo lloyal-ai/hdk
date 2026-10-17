@@ -7,7 +7,7 @@
  * A third store would have to reproduce the rest, and the step most easily
  * dropped is the one with no local consequence — writing the canonical empty
  * config blob. A manifest that merely NAMES it looks correct to us and fails
- * every puller, which is why `verify:oci` gives it a check of its own.
+ * every puller, which is why `verify:oci:layout` gives it a check of its own.
  */
 import { describe, it, expect } from 'vitest';
 import { asAttachment, commitManifest, EMPTY_DESCRIPTOR, MANIFEST_TYPE, representationsOf, sourceOf } from '../src/index';

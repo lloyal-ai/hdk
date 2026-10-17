@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/media",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "engines": {
     "node": ">=24"
   },
@@ -40,6 +40,10 @@
     "./node": {
       "types": "./dist/node.d.ts",
       "default": "./dist/node.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "default": "./dist/client.js"
     }
   },
   "scripts": {
@@ -54,11 +58,13 @@
   "devDependencies": {
     "@embedpdf/pdfium": "^2.15.0",
     "@types/emscripten": "^1.41.6",
-    "sharp": "^0.35.4"
+    "sharp": "^0.35.4",
+    "mediabunny": "^1.61.4"
   },
   "peerDependencies": {
     "sharp": "^0.35.4",
-    "@embedpdf/pdfium": "^2.15.0"
+    "@embedpdf/pdfium": "^2.15.0",
+    "mediabunny": "^1.61.4"
   },
   "peerDependenciesMeta": {
     "sharp": {
@@ -66,6 +72,12 @@
     },
     "@embedpdf/pdfium": {
       "optional": true
+    },
+    "mediabunny": {
+      "optional": true
     }
+  },
+  "dependencies": {
+    "@noble/hashes": "^2.4.0"
   }
 }

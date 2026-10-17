@@ -46,6 +46,7 @@ import type { InstallCommand, InstallStepEvent } from './install-protocol';
 import { useTraceWriter } from './trace-sink';
 import { createProjectMediaStore } from './media-store';
 import { createContentRoutes } from './content-routes';
+import { BlobUploads } from './distribution';
 import { makeEdgeRunner, makeServedRunner, RunnerCtx } from './runner';
 import type { ConfigPatch } from './runner';
 import { startHostResources } from './host-resources';
@@ -310,6 +311,7 @@ export function bootServed<T extends ConfigTable, E, C>(app: HarnessApp<T, E, C>
       ingest: (bytes, signal) => ingress.ingest(bytes, signal),
       maxUploadBytes: MAX_DOCUMENT_BYTES,
       uploadTimeoutMs: DOCUMENT_UPLOAD_TIMEOUT_MS,
+      uploads: new BlobUploads(media, media),
       ...(process.env.LLOYAL_CONTENT_ORIGIN ? { allowedOrigin: process.env.LLOYAL_CONTENT_ORIGIN } : {}),
     });
     const http = createServer((req, res) => {

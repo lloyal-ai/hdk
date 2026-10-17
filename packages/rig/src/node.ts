@@ -50,7 +50,9 @@ export { createProjectMediaStore, MEDIA_DIR } from './media-store';
 // not an HTTP server — a desktop `protocol.handle` — answers the same routes
 // without opening a socket; `createContentRoutes` is that table mounted beside
 // a `WebSocketServer` on one `http.Server`.
-export { createContentRoutes, resolveContent, isContentPath } from './content-routes';
+export { createContentRoutes, resolveContent, isContentPath, parseByteRange } from './content-routes';
+export { BlobUploads, isDistributionPath, MAX_UPLOAD_CHUNK_BYTES } from './distribution';
+export type { DistributionRequest } from './distribution';
 export type { ContentRoutesOpts, ContentRequest, ContentReply } from './content-routes';
 export type {
   ModelRole,

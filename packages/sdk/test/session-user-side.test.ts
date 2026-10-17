@@ -55,16 +55,17 @@ describe('Session.userSidePending', () => {
     expect(session.userSidePending).toBe(false);
   });
 
-  it('prefillUserMultimodal opens the side; a poisoned multimodal prefill leaves no trunk and no side', async () => {
+  it('prefillUserMultimodal opens the side; a failed multimodal prefill keeps the trunk and leaves the side as it was', async () => {
     const { mock, session } = makeSession();
     await session.commitTurn('q', 'a');
     await session.prefillUserMultimodal('look', [new Uint8Array([1, 2, 3])]);
     expect(session.userSidePending).toBe(true);
     await session.prefillAssistant('seen');
+    const trunk = session.trunk;
 
     mock.mockMultimodalError = () => 'bad image';
     await expect(session.prefillUserMultimodal('again', [new Uint8Array([9])])).rejects.toThrow('bad image');
-    expect(session.trunk).toBeNull();
+    expect(session.trunk).toBe(trunk);
     expect(session.userSidePending).toBe(false);
   });
 

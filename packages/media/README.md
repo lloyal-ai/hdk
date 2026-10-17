@@ -29,7 +29,7 @@ const store = new FileAttachmentStore('media');        // a valid OCI Image Layo
 const ingress = createContentIngress(store);           // sniff → admit → address → commit
 
 const attachment = await ingress.ingest(bytes);        // one root descriptor
-const { bitmaps } = materialize(store, [attachment]);  // the exact admitted pixels — none for a document
+const { inputs } = materialize(store, [attachment]);   // one projector input per root: an image's bytes, a video's frames — none for a document
 ```
 
 `ingest` admits bytes and returns a root descriptor small enough to ride any
@@ -44,12 +44,13 @@ In a lloyal harness you rarely wire this yourself: `@lloyal-labs/rig`
 constructs the project store, and the runtime carries attachments through
 trace and replay. This package is the format and the gate.
 
-## Two entry points, split by runtime
+## Three entry points, split by runtime
 
 | entry | holds | needs |
 |---|---|---|
-| `@lloyal-labs/media` | the OCI shapes, the store and ingress contracts, `materialize` | nothing — browser-safe, zero dependencies |
+| `@lloyal-labs/media` | the OCI shapes, the store and ingress contracts, `materialize` | `@noble/hashes` (incremental SHA-256, which WebCrypto lacks); browser-safe |
 | `@lloyal-labs/media/node` | `FileAttachmentStore` (the layout on disk), `createContentIngress` — `createImageIngress` (sharp) and `createDocumentIngress` (PDFium) | `node:fs`; `sharp` and `@embedpdf/pdfium` as optional peers |
+| `@lloyal-labs/media/client` | reading a video in the page: `sampleVideo` (frames sized and encoded as JPEG), `extractAudioWindows` (the soundtrack as PCM WAV windows cut at quiet points), `captureFrames` (frames from a live track) | WebCodecs and a canvas; `mediabunny` as an optional peer, loaded with the entry |
 
 The root entry never reaches `node:`, `sharp` or the codec — enforced by
 `npm run verify:packed`, which walks the packed artifact's require graph on
@@ -77,7 +78,7 @@ modality: a video or a rasterized page is the same manifest graph as an image.
   blobs/sha256/<64 hex>          every blob, addressed by content
 ```
 
-`npm run verify:oci` is the receipt. It builds a layout through the real
+`npm run verify:oci:layout` is the receipt. It builds a layout through the real
 ingress, drives `oras` against it with none of our code involved, then drives
 our reader against a layout `oras` itself wrote — in CI, on every push:
 
@@ -102,7 +103,7 @@ Specs, per requirement:
 | [image-layout.md](https://github.com/opencontainers/image-spec/blob/main/image-layout.md) | the three required entries above |
 | [descriptor.md](https://github.com/opencontainers/image-spec/blob/main/descriptor.md) | `mediaType` + `digest` + `size`, digest as `<algorithm>:<encoded>` |
 | [manifest.md](https://github.com/opencontainers/image-spec/blob/main/manifest.md) | `schemaVersion: 2`, required `config`, `layers` with ≥1 entry, `artifactType` |
-| [OCI Distribution](https://github.com/opencontainers/distribution-spec) | not implemented — see *Deferred* |
+| [OCI Distribution](https://github.com/opencontainers/distribution-spec) | blob push and pull, served by `@lloyal-labs/rig` over this store (see *Large originals*); no manifest push |
 
 ## One manifest shape, from image to video to live capture
 
@@ -187,7 +188,7 @@ replay and any OCI tool read it exactly as they read a photo:
 | `ai.lloyal.derive.bbox` | a figure crop's box on the page, in PDF user space, clipped to the page |
 
 `materialize` projects only representations in a format the projector
-decodes. A document root therefore yields no bitmaps — its text is for
+decodes. A document root therefore yields no inputs — its text is for
 retrieval, not the vision encoder — while a page root yields one. That single
 rule is what lets a document ride the same wire, trace and replay as an image
 without anything upstream learning a new kind.
@@ -261,15 +262,50 @@ interpretation — but the pixels are not converted. sharp/libvips performs no
 ICC transform (measured), and neither does anything downstream.
 
 Admission is also where content is inspected **before** it is addressed,
-which is why images need no staging area — the payload fits in memory. Video
-is exactly where that stops being true (see *Deferred*).
+which is why images need no staging area — the payload fits in memory. A
+video's original is where that stops being true (see *Large originals*).
+
+## Video
+
+A video is one attachment composed from references. The page decodes the
+clip with `@lloyal-labs/media/client`, admits each sampled frame as an image root and each soundtrack window as
+an audio root, and the host calls `composeVideo`, which checks they can be one
+video (images of one size, times increasing within the clip) and commits:
+
+- the frames' representation descriptors, reused in time order;
+- the transcript, `application/vnd.lloyal.transcript.v1+json`, as one more
+  representation, which `materialize` never hands the projector;
+- the timeline, `VideoMeta`, as the typed config
+  (`application/vnd.lloyal.video.v1+json`);
+- the original as the source layer, typed from its own leading bytes.
+
+`materialize` turns a video root into **one** input — its frames on their
+timeline, the transcript as notes — so the frames reach the projector as one
+video behind one marker and fuse where the projector fuses frames, rather than
+encoding one by one as still images. `resolveVideo` is that step on its own.
+The single-payload ingress refuses a video container by name: a clip arrives
+as frames.
+
+## Large originals
+
+`FileAttachmentStore` stages an upload too large to hold: `stage()` returns a
+`StagedBlob` that appends chunks in order, hashes them as they arrive, and on
+`adopt(digest)` verifies the whole, inspects the leading bytes and renames it
+into `blobs/`, or admits nothing. `size(digest)` answers without reading, and
+`readRange(digest, range)` streams part of a blob. A ranged read is not
+verified against the digest — a range cannot be — so playback seeks through
+it while everything that reaches the model or replay is read whole through
+`get`, which verifies every byte. `@lloyal-labs/rig` serves this as the OCI
+distribution blob API; `pushBlob` is its client.
 
 ## Two invariants
 
-**`index.json` is a catalogue, never the runtime authority.** Resolution goes
-straight to `blobs/<algorithm>/<encoded>`; nothing on the replay path reads
-the index. A lost concurrent index update can hide an attachment from OCI
-tooling — it can never invalidate a recorded run.
+**A blob is resolved by its digest; a manifest is one the store committed.**
+Blob resolution goes straight to `blobs/<algorithm>/<encoded>` and consults
+nothing else. Which blobs are manifests is `index.json`'s to say: a manifest
+names the media type each layer is served and decoded under, so only one the
+store composed through `putAttachment`, with the types the host established,
+is ever read back as one. A blob that merely parses as a manifest is a blob.
 
 **Write order is blobs → manifest → index.** A crash can leave orphan blobs,
 which are harmless and unreferenced. It can never leave a committed manifest
@@ -279,10 +315,9 @@ pointing at content that is not there.
 
 | | |
 |---|---|
-| **OCI Distribution** | The layout is already pushable by the mature Go CLIs. A client of our own waits until content must move between placements. |
-| **Resumable ingress** (tus) | Appears when a payload outgrows memory — as an adapter in front of this store, not a change to it. Untrusted bytes stage, get inspected, and only then are admitted. |
-| **Video derivation** | The manifest already has the slot: source + N frame representations. What is missing is a decoder, and that decision carries real licensing and codec-patent weight. |
-| **Live capture** | The *locator* is not addressable; every bounded frame that reaches the model still is. Attachments are per-prefill rather than per-run, so a live run is many prefills — no growing manifest. |
+| **Manifest push** | Blob push and pull are served; manifests are composed by the host, so a client never pushes one. |
+| **Abandoned uploads** | A staged upload that is never adopted or cancelled stays in `.tmp`; reclaiming it belongs with retention and deletion. |
+| **Live capture** | The *locator* is not addressable; every bounded frame that reaches the model still is. A live capture composes like a video with no source, one frame group per prefill — no growing manifest. |
 | **Reachability GC** | Nothing here deletes. Deletion needs refcounting across runs that may share a digest. |
 | **Rendering past the bound** | A page beyond `MAX_RENDERED_PAGES` has no render descriptor. Rendering on demand needs the source and a codec at read time; today a document is archived at admission only. |
 
@@ -290,9 +325,10 @@ pointing at content that is not there.
 
 - **`index.json` is a mutable shared root**, updated read-modify-write.
   Writes are synchronous, so concurrent sessions inside one process serialize
-  safely; two *processes* writing one layout can lose an index entry — a loss
-  of discoverability, bounded by the first invariant above. Blobs are
-  unaffected: content-addressed, written temp-then-rename.
+  safely; two *processes* writing one layout can lose an index entry. Since
+  the index says which blobs are manifests, the attachment that lost its entry
+  is hidden from the store as well as from OCI tooling. Blobs are unaffected:
+  content-addressed, written temp-then-rename.
 - **`skopeo` is untested.** It is container-image tooling and is entitled to
   reject an artifact manifest whose config is not an image config. `oras` is
   the artifact-native tool and is the one the conformance suite drives.

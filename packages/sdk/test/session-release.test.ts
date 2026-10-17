@@ -35,6 +35,20 @@ function makeSession() {
 }
 
 describe('Session trunk release observer', () => {
+  it('a warm multimodal turn reports the trunk\'s own handle, kept or failed, and releases nothing', async () => {
+    const { ctx, session, releases, prefills } = makeSession();
+    await session.commitTurn('q', 'a');
+    const handle = session.trunk!.handle;
+
+    await session.prefillUserMultimodal('look', [new Uint8Array([1])]);
+    expect(prefills.at(-1)).toMatchObject({ role: 'user', branchHandle: handle });
+
+    (ctx as unknown as MockSessionContext).mockMultimodalError = () => ({ message: 'partial', rc: -3, partial: true });
+    await expect(session.prefillUserMultimodal('again', [new Uint8Array([2])])).rejects.toThrow('partial');
+    expect(session.trunk!.handle).toBe(handle);
+    expect(releases).toEqual([]);
+  });
+
   it('dispose of a live trunk fires once with its handle and position', async () => {
     const { session, releases, prefills } = makeSession();
     await session.commitTurn('q1', 'a1'); // cold: creates + promotes the trunk

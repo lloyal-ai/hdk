@@ -129,7 +129,7 @@ plane grow without the layers above noticing — an image is one representation 
 source plus sampled frames, a live capture is frames with no source. Each ability brings its own door and its
 own citation grammar over this plane; the documents ability's PDF pages are one. The layout is checked in CI
 by driving `oras` against a layout this code wrote, and this reader against a layout `oras` wrote
-(`npm run verify:oci`), so the format claim holds independently of what the code believes about itself.
+(`npm run verify:oci:layout`), so the format claim holds independently of what the code believes about itself.
 
 ### Models as services
 

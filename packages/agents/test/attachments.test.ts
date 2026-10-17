@@ -31,7 +31,7 @@ import type { Attachment } from '@lloyal-labs/media';
 const attachmentRef = (digest: string, size = 9): Attachment =>
   ({ digest, mediaType: MANIFEST_TYPE, size }) as Attachment;
 import { sniffMediaType } from '@lloyal-labs/media';
-import { materialize } from '@lloyal-labs/media';
+import { composeVideo, materialize } from '@lloyal-labs/media';
 import { prepareBatch } from '../src/prepare-content';
 import { initAgents } from '../src/init';
 import { Branch } from '../../sdk/src/Branch';
@@ -56,6 +56,16 @@ const JUNK = new Uint8Array([0x00, 0x01, 0x02, 0x03]);
  *  non-normalizing ingress produces. */
 const attach = (store: AttachmentStore, bytes: Uint8Array) =>
   store.putAttachment({ representations: [store.putBlob(bytes, sniffMediaType(bytes))!] });
+
+/** A three-frame clip composed from real PNG frames: one video root. */
+const videoFrames = ['frame-00.png', 'frame-01.png', 'frame-02.png'].map(name =>
+  new Uint8Array(readFileSync(join(__dirname, '../../media/test/fixtures/video', name))));
+const video = (store: MemoryAttachmentStore): Promise<Attachment> => composeVideo(store, {
+  frames: videoFrames.map((bytes, i) => ({ root: attach(store, bytes), tMs: i * 250 })),
+  sampling: { fps: 4, timestampIntervalMs: 5000, maxFrames: 64 },
+  durationMs: 1000,
+  transcript: { provenance: {}, segments: [{ startMs: 0, endMs: 1000, text: 'one, two' }] },
+});
 
 /** How many attachment manifests a store actually committed. Reads the store
  *  through its own surface rather than its internals, so it says the same
@@ -289,7 +299,18 @@ describe('reconstructBranch', () => {
       return yield* reconstructBranch(cp({
         seedPrompt: `look ${MARKER}`, seedAttachments: [two],
       }));
-    }, store)).rejects.toThrow(/expand to 2 representation/);
+    }, store)).rejects.toThrow(/expand to 2 input/);
+  });
+
+  it('rebuilds a video-seeded spine through one typed input on the embedding rail', async () => {
+    const store = new MemoryAttachmentStore();
+    const ref = await video(store);
+    const seen = await withCtx(function*() {
+      yield* reconstructBranch(cp({ seedPrompt: `watch ${MARKER}`, seedAttachments: [ref] }));
+      return yield* Ctx.expect();
+    }, store) as MockSessionContext;
+    expect(seen.multimodalPrefills).toHaveLength(1);
+    expect(seen.multimodalPrefills[0].inputKinds).toEqual([['video']]);
   });
 
   it('replays a media-seeded spine down the embedding rail', async () => {
@@ -307,6 +328,23 @@ describe('reconstructBranch', () => {
     expect(seen.multimodalPrefills).toHaveLength(1);
     expect(seen.multimodalPrefills[0].bitmapCounts).toEqual([1]);
     expect(seen.multimodalPrefills[0].prompts[0]).toContain(MARKER);
+  });
+});
+
+describe('a video seeds and replays as ONE input', () => {
+  it('materializes a three-frame video to one input behind one marker', async () => {
+    const store = new MemoryAttachmentStore();
+    const { inputs } = materialize(store, [await video(store)]);
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0]).toMatchObject({ kind: 'video', timestampsMs: [0, 250, 500], notes: [{ atMs: 1000, text: ' Speech: "one, two"' }] });
+  });
+
+  it('a tool result carrying a video root rides the media rail as one input', async () => {
+    const store = new MemoryAttachmentStore();
+    const root = await video(store);
+    const prepared = await run(() => prepareBatch(rawIngress(store), store, [root]));
+    expect(prepared.inputs).toHaveLength(1);
+    expect((prepared.inputs[0] as { frames: Uint8Array[] }).frames).toHaveLength(3);
   });
 });
 
@@ -332,7 +370,7 @@ describe('the trunk ingress (warmDelta)', () => {
           ));
           yield* call(() => session.prefillUserMultimodal(
             'what is this?',
-            prepared.bitmaps as Uint8Array[],
+            prepared.inputs as Uint8Array[],
             { attachments: prepared.attachments },
           ));
         } else {
@@ -378,7 +416,7 @@ describe('the trunk ingress (warmDelta)', () => {
           rawIngress(store), store, [PNG],
         ));
         yield* call(() => session.prefillUserMultimodal('what is this?',
-          prepared.bitmaps as Uint8Array[], { attachments: prepared.attachments }));
+          prepared.inputs as Uint8Array[], { attachments: prepared.attachments }));
         // Fork several branches off the trunk, as a pool would, then prune
         // them the way a pool does on return — the trunk cannot dispose with
         // live children.
@@ -464,10 +502,10 @@ describe('prepareBatch — the barrier before any prefill', () => {
 
     const prepared = materialize(store, [video, image]);
     expect(prepared.attachments).toHaveLength(2);
-    expect(prepared.bitmaps).toHaveLength(3);
+    expect(prepared.inputs).toHaveLength(3);
     // Attachment order outer, representation order inner — and never the
     // source, which the model did not see.
-    expect(prepared.bitmaps.map(b => Array.from(b.slice(0, 2))))
+    expect(prepared.inputs.map(b => Array.from((b as Uint8Array).slice(0, 2))))
       .toEqual([[0x89, 0x50], [0xff, 0xd8], [0x42, 0x4d]]);
   });
 
@@ -475,7 +513,7 @@ describe('prepareBatch — the barrier before any prefill', () => {
     const store = new MemoryAttachmentStore();
     const items = [PNG, JPEG, BMP];
     const ok = await run(function*() { return yield* prepareBatch(flaky(store, -1), store, items); });
-    expect(ok.bitmaps).toHaveLength(3);
+    expect(ok.inputs).toHaveLength(3);
     expect(ok.attachments).toHaveLength(3);
   });
 
@@ -502,7 +540,7 @@ describe('prepareBatch — the barrier before any prefill', () => {
       return yield* prepareBatch(
         { ingest: () => Promise.reject(new Error('unused')) }, store, [],
       );
-    })).resolves.toEqual({ attachments: [], bitmaps: [] }); // text-only: unaffected
+    })).resolves.toEqual({ attachments: [], inputs: [] }); // text-only: unaffected
   });
 
   it('keeps the index writer serialized by staying SYNCHRONOUS', () => {

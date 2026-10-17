@@ -55,3 +55,18 @@ describe('content urls', () => {
     expect(resolvePrefix('ffffff', [DIGEST])).toBeNull();
   });
 });
+
+describe('parseAttachmentMoment', () => {
+  it('reads a moment in a video in the citation grammar, and nothing else', async () => {
+    const { parseAttachmentMoment } = await import('../src/content-urls');
+    expect(parseAttachmentMoment('attachment://ABCDEF012345/t/4250')).toEqual({ prefix: 'abcdef012345', tMs: 4250 });
+    // The form the model reads in the video's own timestamps, and so the one it cites in.
+    expect(parseAttachmentMoment('attachment://abcdef012345/t/0m5.00s')).toEqual({ prefix: 'abcdef012345', tMs: 5000 });
+    expect(parseAttachmentMoment('attachment://abcdef012345/t/1m2.50s')).toEqual({ prefix: 'abcdef012345', tMs: 62500 });
+    expect(parseAttachmentMoment('attachment://abcdef012345/page/3')).toBeNull();
+    expect(parseAttachmentMoment('attachment://abc/t/1')).toBeNull();
+    // A time no seek can reach is no moment.
+    expect(parseAttachmentMoment(`attachment://abcdef012345/t/${'9'.repeat(400)}`)).toBeNull();
+    expect(parseAttachmentMoment(`attachment://abcdef012345/t/${'9'.repeat(20)}m0.00s`)).toBeNull();
+  });
+});

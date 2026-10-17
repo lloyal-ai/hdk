@@ -154,7 +154,7 @@ const { sep, prompt, bitmaps } = buildUserDeltaMultimodal(ctx, 'Describe:', [ima
 const { tokensDecoded } = await branch.prefillMultimodal(prompt, bitmaps, sep);
 ```
 
-The image lands as an ordinary shared prefix: fork afterwards and every child attends it with zero re-encode. Several markers with several images in one prefill also works — video frames, each preceded by a timestamp, are just that.
+The image lands as an ordinary shared prefix: fork afterwards and every child attends it with zero re-encode. Several markers with several images in one prefill also works; still images never fuse. A video is one input behind one marker, `{ kind: 'video', frames, timestampsMs }`: its sampled frames, laid out as llama.cpp's video helper lays them out, so projectors with temporal merge fuse adjacent frames in pairs.
 
 Audio uses the same prefill methods with `{ kind: 'audio', bytes: pcmWav }` and a matching audio model/projector pair. Bare `Uint8Array` inputs retain image semantics. `ctx.supportsAudio()` and `ctx.audioSampleRate()` report the loaded projector's capabilities. The caller supplies `audioLimits: { maxBytes, maxSamples }`; both limits apply across all audio in the prompt, with samples counted as mono at the projector's rate, including resampling headroom.
 

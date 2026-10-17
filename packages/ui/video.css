@@ -1,0 +1,3 @@
+/* The video player's layout rules: Video.js's own skin. Import once in a page entry; the colours, font and
+   border come from the harness register through the player's style, so nothing here needs theming. */
+@import "@videojs/react/video/skin.css";

@@ -6,13 +6,14 @@
  * never saw (a source layer instead of the admitted representation).
  */
 import { describe, it, expect } from 'vitest';
-import { createServer, type Server } from 'node:http';
+import { createServer, request as httpRequest, type Server } from 'node:http';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AddressInfo } from 'node:net';
 import { FileAttachmentStore } from '@lloyal-labs/media/node';
 import { createContentRoutes } from '../src/content-routes';
+import { BlobUploads } from '../src/distribution';
 import type { Attachment } from '@lloyal-labs/media';
 
 /** A fabricated ROOT for ingress fakes — branded here, once, so a fake cannot
@@ -438,6 +439,41 @@ describe('content routes — whose fault an ingest failure is', () => {
     await withServer({ store, ingest: async () => timedOut() }, async (base) => {
       const res = await fetch(`${base}/v1/media/ingress`, { method: 'POST', body: PNG });
       expect(res.status).toBe(408);
+    });
+  });
+});
+
+describe('writes from another site', () => {
+  /** A raw request, so the Origin header is exactly what a browser would send. */
+  const send = (base: string, path: string, method: string, headers: Record<string, string>, body = PNG) =>
+    new Promise<number>((resolve, reject) => {
+      const url = new URL(path, base);
+      const req = httpRequest({ host: url.hostname, port: url.port, path: url.pathname, method, headers }, (res) => { res.resume(); resolve(res.statusCode ?? 0); });
+      req.on('error', reject);
+      req.end(body);
+    });
+
+  it('refuses a write whose Origin is neither the host itself nor the configured origin, before reading it', async () => {
+    const { store } = fixture();
+    let ingested = 0;
+    const uploads = new BlobUploads(store, store);
+    await withServer({ store, uploads, ingest: async () => { ingested++; return fakeRoot(`sha256:${'1'.repeat(64)}`, 1); }, allowedOrigin: 'http://localhost:5173' }, async (base) => {
+      const evil = { Origin: 'https://evil.example' };
+      expect(await send(base, '/v1/media/ingress', 'POST', evil)).toBe(403);
+      expect(await send(base, '/v2/r/blobs/uploads/', 'POST', evil)).toBe(403);
+      expect(ingested).toBe(0);
+      // The configured origin, the host's own origin, and a client that sends none are all writes it serves.
+      expect(await send(base, '/v1/media/ingress', 'POST', { Origin: 'http://localhost:5173' })).toBe(201);
+      expect(await send(base, '/v1/media/ingress', 'POST', { Origin: base })).toBe(201);
+      expect(await send(base, '/v1/media/ingress', 'POST', {})).toBe(201);
+      expect(await send(base, '/v2/r/blobs/uploads/', 'POST', {})).toBe(202);
+    });
+  });
+
+  it('serves a page behind a proxy that names the host it forwarded for', async () => {
+    const { store } = fixture();
+    await withServer({ store, ingest: async () => fakeRoot(`sha256:${'1'.repeat(64)}`, 1) }, async (base) => {
+      expect(await send(base, '/v1/media/ingress', 'POST', { Origin: 'https://harness.example', 'X-Forwarded-Host': 'harness.example' })).toBe(201);
     });
   });
 });

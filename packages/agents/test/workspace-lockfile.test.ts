@@ -47,6 +47,16 @@ describe('workspace lockfile', () => {
     }
   });
 
+  it('gives every workspace package the workspace copy of the others, never a published one beside it', () => {
+    // A range the workspace version does not satisfy makes npm nest the published
+    // version under the dependant, which then builds and tests against code the
+    // branch never changed: rig ran against host 0.2.0 while the workspace was 0.3.0.
+    const names = new Set(CUT.map((dir) => (JSON.parse(readFileSync(join(ROOT, dir, 'package.json'), 'utf8')) as { name: string }).name));
+    const nestedName = (path: string): string | null => /^packages\/[^/]+\/node_modules\/(@[^/]+\/[^/]+)$/.exec(path)?.[1] ?? null;
+    const shadowed = Object.keys(lock.packages).filter((path) => names.has(nestedName(path) ?? ''));
+    expect(shadowed).toEqual([]);
+  });
+
   it('resolved the binding rig pins, not a stable a devDependency range let in', () => {
     // The workspace's binding is what rig's peer names. Under an alpha cut the
     // peer is an exact prerelease and this is equality; on a stable it is a

@@ -17,6 +17,7 @@ import { createDocumentIngress } from './pdf';
 import type { DocumentOpts } from './pdf';
 import { createAudioIngress } from './audio-ingress';
 import type { AudioIngressOptions } from './audio-ingress';
+import { isVideoContainer } from './video';
 
 /**
  * How long a host should allow an upload that may be a document, end to end:
@@ -41,6 +42,12 @@ export function createContentIngress(
   const formats: Record<string, ContentIngress> = { 'application/pdf': document, 'audio/wav': audio };
   return {
     ingest(bytes: Uint8Array, signal?: AbortSignal) {
+      // A clip arrives as its frames, each an image, plus one compose command;
+      // its original travels by blob upload. Refused by name here rather than
+      // failing in the image decoder with a message about pixels.
+      if (isVideoContainer(bytes)) {
+        return Promise.reject(new Error('a video file is not ingested whole: video is decoded on the page, and its original is uploaded as a blob'));
+      }
       return (formats[sniffMediaType(bytes)] ?? image).ingest(bytes, signal);
     },
   };

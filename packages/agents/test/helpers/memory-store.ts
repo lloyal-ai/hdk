@@ -15,6 +15,8 @@ import { createHash } from 'node:crypto';
  */
 export class MemoryAttachmentStore implements AttachmentStore {
   readonly blobs = new Map<string, Uint8Array>();
+  /** What `putAttachment` committed: the only blobs that read back as manifests, as the contract says. */
+  readonly manifests = new Set<string>();
 
   putBlob(bytes: Uint8Array, mediaType: string, annotations?: Record<string, string>): Descriptor {
     const digest = 'sha256:' + createHash('sha256').update(bytes).digest('hex');
@@ -32,7 +34,9 @@ export class MemoryAttachmentStore implements AttachmentStore {
     // this double: it replaces persistence, not the format. A double that
     // reimplemented the sequence could drift into testing a shape nothing
     // writes.
-    return commitManifest((bytes, mediaType) => this.putBlob(bytes, mediaType), parts);
+    const root = commitManifest((bytes, mediaType) => this.putBlob(bytes, mediaType), parts);
+    this.manifests.add(root.digest);
+    return root;
   }
 
   // A Map cannot rot, so there is nothing to rehash: the read rule is the
@@ -41,13 +45,29 @@ export class MemoryAttachmentStore implements AttachmentStore {
     return this.blobs.get(digest) ?? null;
   }
 
+  size(digest: string): number | null {
+    return this.blobs.get(digest)?.byteLength ?? null;
+  }
+
+  readRange(digest: string, range: { start: number; end: number }): ReadableStream<Uint8Array> | null {
+    const bytes = this.blobs.get(digest);
+    if (!bytes || range.start < 0 || range.end < range.start || range.end >= bytes.byteLength) return null;
+    const slice = bytes.slice(range.start, range.end + 1);
+    return new ReadableStream({ start(c) { c.enqueue(slice); c.close(); } });
+  }
+
+  readWhole(digest: string): ReadableStream<Uint8Array> | null {
+    const bytes = this.blobs.get(digest);
+    return bytes ? new ReadableStream({ start(c) { c.enqueue(bytes); c.close(); } }) : null;
+  }
+
   getManifest(digest: string): AttachmentManifest | null {
+    // Mirrors the filesystem store: a manifest is one this store committed, and asking about any other
+    // digest is a normal question with a normal answer.
+    if (!this.manifests.has(digest)) return null;
     const bytes = this.get(digest);
     if (!bytes) return null;
     try {
-      // Every blob is a candidate — most are image bytes, not JSON. Mirrors
-      // the filesystem store: asking about a digest that is not a manifest is
-      // a normal question with a normal answer.
       const parsed = JSON.parse(new TextDecoder().decode(bytes)) as AttachmentManifest;
       return parsed?.artifactType === ATTACHMENT_ARTIFACT_TYPE && Array.isArray(parsed.layers)
         ? parsed

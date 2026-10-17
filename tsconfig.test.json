@@ -45,6 +45,7 @@
       "@lloyal-labs/rig/node": ["packages/rig/src/node.ts"],
       "@lloyal-labs/media": ["packages/media/src/index.ts"],
       "@lloyal-labs/media/node": ["packages/media/src/node.ts"],
+      "@lloyal-labs/media/client": ["packages/media/src/client.ts"],
       "@lloyal-labs/binding": ["packages/binding/src/index.ts"],
       "@lloyal-labs/binding/node": ["packages/binding/src/node.ts"],
       "@lloyal-labs/binding/web": ["packages/binding/src/web.ts"],
@@ -62,7 +63,9 @@
       // Not a workspace package: ink declares only an `exports` map, which
       // `moduleResolution: "Node"` cannot read. The ui suite renders through it
       // to reach a client reconciler, the only place `useSyncExternalStore` runs.
-      "ink": ["node_modules/ink/build/index.d.ts"]
+      "ink": ["node_modules/ink/build/index.d.ts"],
+      // The same for Video.js: ui's video player imports its video preset by subpath.
+      "@videojs/react/video": ["node_modules/@videojs/react/dist/dev/presets/video/index.d.ts"]
     }
   },
   "include": [

@@ -9,6 +9,7 @@ import { useAgentPool } from './agent-pool';
 import { createToolkit } from './toolkit';
 import { useTraceScope } from './trace-scope';
 import { parallel } from './orchestrators';
+import { SpawnRefused } from './spawns';
 import type { Tool, ToolLifecycleHooks } from './Tool';
 import type { AgentPolicy, Budget, GuardOverrides } from './AgentPolicy';
 import type { JsonSchema, SamplingParams, AgentEvent } from './types';
@@ -87,6 +88,8 @@ export interface UseAgentOpts {
  *
  * @param opts - Agent configuration
  * @returns Agent with result populated, branches alive
+ * @throws {@link SpawnRefused} when its agent cannot be seated (`pressure_init`: no room; `no_sequence`): nothing
+ *   was forked. Any other failure the pool recorded is thrown as it is.
  *
  * @example Single agent with tools
  * ```typescript
@@ -180,6 +183,11 @@ export function useAgent(opts: UseAgentOpts): Operation<Agent> {
     const outcome = pool.outcomes[0];
     const seated = pool.agents.find(a => a.agentId === outcome?.agentId) ?? pool.agents[0];
     if (!seated) {
+      // A refusal is a SpawnRefused, as it is from a pool's spawn: nothing was forked, and a caller can tell
+      // "there was no room" from a failure.
+      if (outcome && (outcome.failed === 'pressure_init' || outcome.failed === 'no_sequence')) {
+        throw new SpawnRefused(outcome.failed, outcome, 'useAgent: the agent was not seated');
+      }
       throw new Error(`useAgent: the agent was not seated (${outcome?.failed ?? 'the pool closed before it was seated'})`);
     }
 

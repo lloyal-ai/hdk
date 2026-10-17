@@ -1,6 +1,10 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { Readable } from 'node:stream';
+import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
 import { representationsOf, sourceOf, DIGEST_PATTERN, MANIFEST_TYPE, type Attachment } from '@lloyal-labs/media';
 import type { AttachmentStore, Descriptor } from '@lloyal-labs/media';
+import { isDistributionPath, MAX_UPLOAD_CHUNK_BYTES } from './distribution';
+import type { BlobUploads } from './distribution';
 
 // ─────────────────────────────────────────────────────────────────
 // The route table — what a path MEANS, resolved against the store.
@@ -12,7 +16,7 @@ import type { AttachmentStore, Descriptor } from '@lloyal-labs/media';
 
 /** `decodeURIComponent` throws on a malformed escape; that is the client's
  *  input, not a server fault, so the caller answers 400 on `null`. */
-const decodeURISegment = (s: string): string | null => {
+export const decodeURISegment = (s: string): string | null => {
   try { return decodeURIComponent(s); } catch { return null; }
 };
 
@@ -32,6 +36,9 @@ export interface ContentRequest {
   path: string;
   /** The `If-None-Match` header verbatim, when the client sent one. */
   ifNoneMatch?: string;
+  /** The `Range` header verbatim, when the client sent one. Honoured where a
+   *  player seeks: a retained original. */
+  range?: string;
 }
 
 /**
@@ -55,6 +62,9 @@ export interface ContentReply {
   status: number;
   headers: Record<string, string>;
   body?: Uint8Array;
+  /** A body too large to hold, streamed from the store instead: a range of a
+   *  retained original. Each adapter writes it out. */
+  stream?: ReadableStream<Uint8Array>;
 }
 
 /**
@@ -120,6 +130,66 @@ const serveBlob = (
   };
 };
 
+/** A seekable blob's headers from its size alone: a HEAD needs no body, so the
+ *  original is neither read nor rehashed (a full GET still verifies it). */
+const describeSeekable = (store: AttachmentStore, req: ContentRequest, d: Descriptor): ContentReply => {
+  if (req.ifNoneMatch === `"${d.digest}"`) return { status: 304, headers: { ...contentHeaders(d.digest), 'Accept-Ranges': 'bytes' } };
+  const size = store.size(d.digest);
+  if (size === null) return contentError(404, 'blob not in store');
+  return {
+    status: 200,
+    headers: contentHeaders(d.digest, { 'Content-Type': d.mediaType, 'Content-Length': String(size), 'Accept-Ranges': 'bytes' }),
+  };
+};
+
+/** A whole blob, declared seekable (a media element treats a 200 without
+ *  `Accept-Ranges` as unseekable) and streamed through the store's verifying
+ *  whole read, so an original larger than memory is served. */
+const streamSeekable = (store: AttachmentStore, req: ContentRequest, d: Descriptor): ContentReply => {
+  const described = describeSeekable(store, req, d);
+  if (described.status !== 200) return described;
+  const stream = store.readWhole(d.digest);
+  return stream ? { ...described, stream } : contentError(404, 'blob not in store');
+};
+
+/** `bytes=<start>-<end>`, `bytes=<start>-` or `bytes=-<suffix>` against a size, or null when unsatisfiable. */
+export function parseByteRange(header: string, size: number): { start: number; end: number } | null {
+  const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!m || (m[1] === '' && m[2] === '') || size === 0) return null;
+  const [start, end] = m[1] === ''
+    ? [Math.max(0, size - Number(m[2])), size - 1]
+    : [Number(m[1]), m[2] === '' ? size - 1 : Math.min(Number(m[2]), size - 1)];
+  return start <= end && start < size ? { start, end } : null;
+}
+
+/**
+ * Part of a blob, streamed: how a player seeks a retained original without the
+ * whole of it in memory. Not verified against the digest — a range cannot be —
+ * which is the store's documented contract for ranged reads; what reaches the
+ * model is always read whole and verified.
+ */
+const serveRange = (store: AttachmentStore, header: string, d: Descriptor): ContentReply => {
+  const size = store.size(d.digest);
+  if (size === null) return contentError(404, 'blob not in store');
+  const range = parseByteRange(header, size);
+  if (!range) {
+    const refusal = contentError(416, 'range not satisfiable');
+    return { ...refusal, headers: { ...refusal.headers, 'Content-Range': `bytes */${size}` } };
+  }
+  const stream = store.readRange(d.digest, range);
+  if (!stream) return contentError(404, 'blob not in store');
+  return {
+    status: 206,
+    headers: contentHeaders(d.digest, {
+      'Content-Type': d.mediaType,
+      'Content-Length': String(range.end - range.start + 1),
+      'Content-Range': `bytes ${range.start}-${range.end}/${size}`,
+      'Accept-Ranges': 'bytes',
+    }),
+    stream,
+  };
+};
+
 /**
  * The content plane's read routes: HTTP carries bytes, the WebSocket carries
  * references.
@@ -127,7 +197,7 @@ const serveBlob = (
  * ```
  * GET  /v1/media/<manifest>                     the manifest itself, by digest
  * GET  /v1/media/<manifest>/config              its typed config blob (a document's sidecar; OCI's empty blob for an image)
- * GET  /v1/media/<manifest>/source              the original as supplied, when the ingest retained it
+ * GET  /v1/media/<manifest>/source              the original as supplied, when the ingest retained it (Range: 206)
  * GET  /v1/media/<manifest>/representations/<i> the bytes the model actually saw
  * HEAD /v1/content/<digest>                     existence, for pre-flight dedupe
  * ```
@@ -171,7 +241,8 @@ export function resolveContent(req: ContentRequest, store: AttachmentStore): Con
   // branch can forget, and so an adapter that builds a real response object
   // (a desktop `Response`) cannot expose what an HTTP server would have
   // silently dropped for it.
-  return req.method === 'HEAD' && reply.body ? { ...reply, body: undefined } : reply;
+  if (req.method === 'HEAD' && reply.stream) void reply.stream.cancel();
+  return req.method === 'HEAD' && (reply.body || reply.stream) ? { ...reply, body: undefined, stream: undefined } : reply;
 }
 
 /** The routes themselves. Throwing is allowed — {@link resolveContent} contains
@@ -188,19 +259,18 @@ function route(req: ContentRequest, store: AttachmentStore): ContentReply {
   // blobs by digest, so serving them would hand out any blob including a
   // retained SOURCE layer, defeating the reason
   // `/v1/media/<manifest>/representations/<i>` resolves through the
-  // manifest at all. Bytes have exactly one door, and it is that one.
+  // manifest at all. Bytes are served only through a manifest that names them;
+  // the blob surface (`/v2`) serves none by digest either, unless it is the
+  // full registry the conformance suite runs against (`registry: true`).
   const exists = /^\/v1\/content\/([^/]+)$/.exec(path);
   if (exists && method === 'HEAD') {
     const digest = decodeURISegment(exists[1]);
     if (digest === null || !DIGEST_PATTERN.test(digest)) return contentError(400, 'malformed digest');
-    // Reads the WHOLE blob to answer a yes/no question, because
-    // `AttachmentStore` offers no `size`/`has`. On the one route whose
-    // purpose is to AVOID moving bytes, a dedupe pre-flight against an
-    // 8 MiB image costs 8 MiB resident. Adding `size(digest)` beside `get`
-    // belongs with the store-contract phase, not here.
-    const bytes = store.get(digest);
-    if (!bytes) return contentError(404, 'not found');
-    return { status: 200, headers: contentHeaders(digest, { 'Content-Length': String(bytes.byteLength) }) };
+    // A yes/no question about a digest answered from the store's size, without
+    // reading the bytes — the point of a dedupe pre-flight.
+    const size = store.size(digest);
+    if (size === null) return contentError(404, 'not found');
+    return { status: 200, headers: contentHeaders(digest, { 'Content-Length': String(size) }) };
   }
 
   // GET /v1/media/<manifest>/representations/<index> — the bytes the model
@@ -256,7 +326,8 @@ function route(req: ContentRequest, store: AttachmentStore): ContentReply {
     if (!manifest) return contentError(404, 'no such attachment manifest');
     const source = sourceOf(manifest);
     if (!source) return contentError(404, 'no source retained for this attachment');
-    return serveBlob(store, req, source);
+    if (req.range) return serveRange(store, req.range, source);
+    return method === 'HEAD' ? describeSeekable(store, req, source) : streamSeekable(store, req, source);
   }
 
   return contentError(405, 'unsupported method or path');
@@ -337,9 +408,39 @@ export interface ContentRoutesOpts {
    * right default: in development Vite proxies content so requests stay
    * same-origin, and `*` on a route that serves a tenant's uploads is not a
    * default anyone should inherit.
+   *
+   * It is also the one origin besides this host's own whose writes are
+   * accepted: a write naming any other origin is refused (see `writeAllowed`).
    */
   allowedOrigin?: string;
+  /** The OCI blob upload surface (`/v2/...`) over this store, for originals too
+   *  large for the single-payload ingress. Absent ⇒ those paths are not ours. */
+  uploads?: BlobUploads;
 }
+
+const WRITES = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
+
+/**
+ * Whether a write may proceed, by its `Origin`. CORS only hides a response: a
+ * page on any site can still send a simple POST and fill the store. So a write
+ * that names an origin must name this host's own (its `Host`, or the
+ * `X-Forwarded-Host` a proxy in front of it sets) or the configured one. A
+ * write with no `Origin` comes from a client that is not a browser page, and
+ * proceeds.
+ */
+function writeAllowed(headers: IncomingMessage['headers'], allowedOrigin: string | undefined): boolean {
+  const origin = headers.origin;
+  if (origin === undefined) return true;
+  if (origin === allowedOrigin) return true;
+  let host: string;
+  try { host = new URL(origin).host; } catch { return false; }
+  const forwarded = typeof headers['x-forwarded-host'] === 'string' ? headers['x-forwarded-host'].split(',')[0].trim() : undefined;
+  return host === headers.host || host === forwarded;
+}
+
+/** Headers a cross-origin client must be allowed to read: where its upload
+ *  went, how far it got, and which part of a blob it was sent. */
+const EXPOSED_HEADERS = 'Location, Range, Content-Range, Accept-Ranges, Docker-Upload-UUID, Docker-Content-Digest';
 
 /**
  * Read a request body bounded in BOTH bytes and time, settling exactly once.
@@ -426,12 +527,19 @@ export function createContentRoutes(
   /** CORS headers, added only when an origin is configured. See `allowedOrigin`. */
   const cors = (h: Record<string, string>): Record<string, string> =>
     opts.allowedOrigin
-      ? { ...h, 'Access-Control-Allow-Origin': opts.allowedOrigin, 'Vary': 'Origin' }
+      ? { ...h, 'Access-Control-Allow-Origin': opts.allowedOrigin, 'Access-Control-Expose-Headers': EXPOSED_HEADERS, 'Vary': 'Origin' }
       : h;
 
   const send = (res: ServerResponse, reply: ContentReply): void => {
     if (res.headersSent) { res.end(); return; }
     res.writeHead(reply.status, cors(reply.headers));
+    if (reply.stream) {
+      const body = Readable.fromWeb(reply.stream as NodeReadableStream<Uint8Array>);
+      body.on('error', () => res.destroy());
+      res.on('close', () => body.destroy());
+      body.pipe(res);
+      return;
+    }
     if (reply.body) res.end(Buffer.from(reply.body)); else res.end();
   };
 
@@ -439,8 +547,9 @@ export function createContentRoutes(
     send(res, contentError(code, message));
 
   return (req, res) => {
-    const path = (req.url ?? '').split('?')[0];
-    if (!isContentPath(path)) return false;
+    const [path, search = ''] = (req.url ?? '').split('?');
+    const distribution = opts.uploads !== undefined && isDistributionPath(path);
+    if (!isContentPath(path) && !distribution) return false;
 
     // Contained here so a route failure cannot reach the server's `request`
     // emit and kill the process. `resolveContent` keeps its own; this covers
@@ -452,9 +561,37 @@ export function createContentRoutes(
       // scheme negotiates it in the browser, with no preflight to answer.
       if (method === 'OPTIONS') {
         send(res, { status: 204, headers: {
-          'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type',
+          'Access-Control-Allow-Methods': 'GET, HEAD, POST, PATCH, PUT, DELETE, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type, Content-Range, Range',
         } });
+        return true;
+      }
+
+      // Refused before a byte of the body is read: a write from another site.
+      if (WRITES.has(method) && !writeAllowed(req.headers, opts.allowedOrigin)) {
+        fail(res, 403, 'writes are accepted from this host\'s own pages only');
+        req.resume();
+        return true;
+      }
+
+      // The blob upload surface: each chunk read under the same deadline as an
+      // upload and a per-request byte bound, then handed to the session table.
+      if (distribution) {
+        const carriesBody = method === 'POST' || method === 'PATCH' || method === 'PUT';
+        const body = carriesBody
+          ? readBounded(req, { maxBytes: MAX_UPLOAD_CHUNK_BYTES, timeoutMs: uploadTimeout })
+          : Promise.resolve(undefined);
+        body
+          .then((bytes) => send(res, opts.uploads!.resolve({
+            method, path, query: new URLSearchParams(search),
+            ...(typeof req.headers['content-range'] === 'string' ? { contentRange: req.headers['content-range'] } : {}),
+            ...(typeof req.headers.range === 'string' ? { range: req.headers.range } : {}),
+            ...(bytes && bytes.byteLength > 0 ? { body: bytes } : {}),
+          })!))
+          .catch((e: unknown) => {
+            fail(res, e instanceof TooLarge ? 413 : e instanceof TooSlow ? 408 : 400, e instanceof Error ? e.message : 'upload failed');
+            if (e instanceof TooLarge || e instanceof TooSlow) req.destroy();
+          });
         return true;
       }
 
@@ -521,6 +658,7 @@ export function createContentRoutes(
         method,
         path,
         ifNoneMatch: req.headers['if-none-match'],
+        ...(typeof req.headers.range === 'string' ? { range: req.headers.range } : {}),
       }, opts.store)!);
       return true;
     } catch (e) {

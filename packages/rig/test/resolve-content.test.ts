@@ -125,7 +125,7 @@ describe('resolveContent — the route table alone', () => {
     expect(json(reply.body)).toEqual({ error: 'EIO: disk read failed' });
   });
 
-  it('keeps the source unreachable except by role, transport or not', () => {
+  it('keeps the source unreachable except by role, transport or not', async () => {
     const { store, root, source } = fixture();
     // The source is a layer of the same manifest but never a representation.
     expect(resolveContent({ method: 'GET', path: `/v1/media/${root.digest}/representations/1` }, store)?.status).toBe(404);
@@ -137,7 +137,8 @@ describe('resolveContent — the route table alone', () => {
     const byRole = resolveContent({ method: 'GET', path: `/v1/media/${root.digest}/source` }, store)!;
     expect(byRole.status).toBe(200);
     expect(byRole.headers['Content-Type']).toBe('image/jpeg');
-    expect(byRole.body).toEqual(JPEG);
+    expect(byRole.body).toBeUndefined();
+    expect(new Uint8Array(await new Response(byRole.stream).arrayBuffer())).toEqual(JPEG);
   });
 
   it('refuses an upload: the table only reads', () => {

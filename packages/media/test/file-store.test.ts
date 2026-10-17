@@ -9,7 +9,7 @@
  * code in the path, so "close enough" is indistinguishable from broken.
  */
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FileAttachmentStore } from '../src/file-store';
@@ -177,15 +177,58 @@ describe('FileAttachmentStore — an OCI Image Layout', () => {
       .toThrow(/ENOENT|ENOTDIR|EACCES|EROFS/);
   });
 
-  it('refuses a manifest whose artifact type it does not understand', () => {
+  it('reads a manifest only when it committed one: a blob that merely parses as a manifest is not one', () => {
+    // A manifest names the type each layer is served under. Composed by the store, those types are what the
+    // host sniffed; put as a plain blob by whoever can write one, they are whatever the writer chose. So
+    // the index, which lists what `putAttachment` committed, decides what is a manifest — not the bytes.
     const dir = tmp();
     const s = new FileAttachmentStore(dir);
-    const d = s.putBlob(new TextEncoder().encode('{"artifactType":"application/vnd.other"}'),
-      'application/vnd.oci.image.manifest.v1+json');
+    const rep = s.putBlob(PNG, 'image/png');
+    const forged = s.putBlob(new TextEncoder().encode(JSON.stringify({
+      schemaVersion: 2, mediaType: 'application/vnd.oci.image.manifest.v1+json', artifactType: ATTACHMENT_ARTIFACT_TYPE,
+      config: EMPTY_DESCRIPTOR, layers: [{ ...rep, mediaType: 'text/html' }],
+    })), 'application/vnd.oci.image.manifest.v1+json');
+    expect(s.getManifest(forged.digest)).toBeNull();
+    expect(s.getManifest(s.putAttachment({ representations: [rep] }).digest)).not.toBeNull();
+  });
+
+  it('finds a manifest another writer of the same layout committed', () => {
+    const dir = tmp();
+    const rep = new FileAttachmentStore(dir).putBlob(PNG, 'image/png');
+    const reader = new FileAttachmentStore(dir);
+    expect(reader.getManifest('sha256:' + 'a'.repeat(64))).toBeNull();   // the index is read, and holds nothing yet
+    const root = new FileAttachmentStore(dir).putAttachment({ representations: [rep] });
+    expect(reader.getManifest(root.digest)).not.toBeNull();
+  });
+
+  it('a manifest whose index entry cannot be written is not committed: the write throws', () => {
+    // Writes throw. A manifest the index does not list would be unreadable, so a commit that cannot
+    // publish its entry has not happened, and says so, rather than returning a root that resolves to nothing.
+    const dir = tmp();
+    const s = new FileAttachmentStore(dir);
+    const rep = s.putBlob(PNG, 'image/png');
+    rmSync(join(dir, 'index.json'));
+    mkdirSync(join(dir, 'index.json'));   // the entry's rename has nowhere to land
+    expect(() => s.putAttachment({ representations: [rep] })).toThrow();
+  });
+
+  /** A manifest as an older build, or a hand, might have left it: in the index, with these bytes. */
+  const indexed = (dir: string, s: FileAttachmentStore, json: string) => {
+    const d = s.putBlob(new TextEncoder().encode(json), 'application/vnd.oci.image.manifest.v1+json');
+    const file = join(dir, 'index.json');
+    const idx = JSON.parse(readFileSync(file, 'utf8')) as { manifests: unknown[] };
+    writeFileSync(file, JSON.stringify({ ...idx, manifests: [...idx.manifests, d] }));
+    return d;
+  };
+
+  it('refuses an indexed manifest whose artifact type it does not understand', () => {
+    const dir = tmp();
+    const s = new FileAttachmentStore(dir);
+    const d = indexed(dir, s, '{"artifactType":"application/vnd.other"}');
     expect(s.getManifest(d.digest)).toBeNull();
   });
 
-  it('refuses a corrupt or hand-made manifest instead of serving it', () => {
+  it('refuses an indexed manifest that is corrupt instead of serving it', () => {
     // `layers: [null]` used to pass the shallow check and then crash
     // `representationsOf`; a layer without a digest would hand the HTTP
     // routes a descriptor that cannot resolve. Refused HERE, uniformly.
@@ -193,8 +236,6 @@ describe('FileAttachmentStore — an OCI Image Layout', () => {
     const s = new FileAttachmentStore(dir);
     const manifest = (layers: unknown): string =>
       JSON.stringify({ artifactType: ATTACHMENT_ARTIFACT_TYPE, layers });
-    const put = (json: string) =>
-      s.putBlob(new TextEncoder().encode(json), 'application/vnd.oci.image.manifest.v1+json');
 
     for (const layers of [
       [null],
@@ -204,12 +245,12 @@ describe('FileAttachmentStore — an OCI Image Layout', () => {
       [{ digest: 'sha256:' + 'a'.repeat(64), size: 3 }],                        // no mediaType
       [{ digest: 'sha256:' + 'a'.repeat(64), mediaType: 'image/jpeg', size: -1 }],
     ]) {
-      expect(s.getManifest(put(manifest(layers)).digest)).toBeNull();
+      expect(s.getManifest(indexed(dir, s, manifest(layers)).digest)).toBeNull();
     }
 
     // Control: a fully-formed layer passes — the validation refuses junk,
     // not foreign-but-valid manifests.
-    const ok = put(manifest([
+    const ok = indexed(dir, s, manifest([
       { digest: 'sha256:' + 'b'.repeat(64), mediaType: 'image/jpeg', size: 3 },
     ]));
     expect(s.getManifest(ok.digest)).not.toBeNull();

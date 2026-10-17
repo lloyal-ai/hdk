@@ -236,22 +236,59 @@ describe('prefillUserMultimodal — a failed prefill never leaves a poisoned tru
   const mkSession = (ctx: MockSessionContext) =>
     new Session({ ctx: ctx as never, store: new BranchStore(ctx as never) });
 
-  it('warm: prunes and clears the trunk, then rethrows', async () => {
+  it('warm: the turn is prepared on a fork, kept by fast-forwarding the trunk to it', async () => {
     const ctx = new MockSessionContext();
     const s = mkSession(ctx);
     await s.prefillUserMultimodal('first', img(1)); // establishes the trunk
-    const trunkHandle = s.trunk!.handle;
+    const trunk = s.trunk!;
+    const before = trunk.position;
+
+    await s.prefillUserMultimodal('second', img(1));
+
+    expect(s.trunk).toBe(trunk);
+    expect(trunk.position).toBeGreaterThan(before);
+    expect(ctx.multimodalPrefills[1].handles[0], 'written on a fork, never on the trunk itself').not.toBe(trunk.handle);
+    expect(trunk.children, 'the fork is gone once kept').toEqual([]);
+  });
+
+  it('warm: a failure prunes only the fork; the trunk is exactly as it was, and the call rethrows', async () => {
+    const ctx = new MockSessionContext();
+    const s = mkSession(ctx);
+    await s.prefillUserMultimodal('first', img(1));
+    await s.prefillAssistant('seen');
+    const trunk = s.trunk!;
+    const [position, cells] = [trunk.position, ctx.cellsUsed];
 
     const pruned: number[] = [];
     const origPrune = ctx._branchPrune.bind(ctx);
     ctx._branchPrune = (h: number) => { pruned.push(h); origPrune(h); };
-    ctx.mockMultimodalError = () => 'decode exploded';
+    ctx.mockMultimodalError = () => ({ message: 'decode exploded', rc: -3, partial: true });
 
     await expect(s.prefillUserMultimodal('second', img(1))).rejects.toThrow('decode exploded');
-    // The branch is poisoned (decode_segments is not atomic); leaving it
-    // installed would let the next turn resume invalid KV.
+    // The fork is poisoned (decode_segments is not atomic); the trunk never saw it.
+    expect(s.trunk).toBe(trunk);
+    expect(trunk.disposed).toBe(false);
+    expect([trunk.position, ctx.cellsUsed]).toEqual([position, cells]);
+    expect(pruned).toEqual([ctx.multimodalPrefills[1].handles[0]]);
+    expect(pruned).not.toContain(trunk.handle);
+    expect(s.userSidePending).toBe(false);
+  });
+
+  it('warm with no sequence free for a fork: written on the trunk itself, and a failure costs the trunk', async () => {
+    // The only path left when the context has no room to checkpoint: the trunk
+    // holds the one lease, so there is nothing to fork into.
+    const ctx = new MockSessionContext({ nSeqMax: 1 });
+    const s = mkSession(ctx);
+    await s.prefillUserMultimodal('first', img(1));
+    const trunk = s.trunk!;
+
+    await s.prefillUserMultimodal('second', img(1));
+    expect(ctx.multimodalPrefills[1].handles[0]).toBe(trunk.handle);
+
+    ctx.mockMultimodalError = () => ({ message: 'decode exploded', rc: -3, partial: true });
+    await expect(s.prefillUserMultimodal('third', img(1))).rejects.toThrow('decode exploded');
     expect(s.trunk).toBeNull();
-    expect(pruned).toContain(trunkHandle);
+    expect(ctx.cellsUsed).toBe(0);
   });
 
   it('cold: prunes the never-promoted branch, leaking no slot', async () => {

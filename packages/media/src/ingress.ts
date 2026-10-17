@@ -7,8 +7,18 @@
  */
 import { representationsOf } from './attachment';
 import { PROJECTOR_FORMATS } from './media-type';
+import { resolveVideo, VIDEO_CONFIG_TYPE } from './video';
+import type { VideoInput } from './video';
 import type { Attachment } from './attachment';
 import type { AttachmentStore } from './store';
+
+/**
+ * One projector input, behind one marker: an image's admitted bytes, or a
+ * video's frames on its timeline. Structurally the SDK's `MultimodalInput`.
+ *
+ * @category Media
+ */
+export type ProjectorInput = Uint8Array | VideoInput;
 
 /**
  * Admitted content, ready for a delta builder.
@@ -24,12 +34,12 @@ import type { AttachmentStore } from './store';
 export interface PreparedContent {
   /** Roots, in ingest order — what the trace and the fold carry. */
   attachments: readonly Attachment[];
-  /** Every root's PROJECTOR-DECODABLE representations, flattened in order —
-   *  the EXACT bytes to hand a builder and then the projector. One image
-   *  contributes one; a video contributes its sampled frames; a document,
-   *  whose one representation is text, contributes none: its text reaches the
-   *  model through retrieval and the spine outline, never the decoder. */
-  bitmaps: readonly Uint8Array[];
+  /** One input per marker, in root order: each image representation as its
+   *  admitted bytes, each video as ONE input of its frames on their timeline.
+   *  A document, whose representation is text, and audio, which reaches a
+   *  transcriber rather than this projector, contribute none. These are the
+   *  EXACT inputs to hand a builder and then the projector. */
+  inputs: readonly ProjectorInput[];
 }
 
 /**
@@ -52,7 +62,7 @@ export function materialize(
   store: AttachmentStore,
   roots: readonly Attachment[],
 ): PreparedContent {
-  const bitmaps: Uint8Array[] = [];
+  const inputs: ProjectorInput[] = [];
   for (const root of roots) {
     const manifest = store.getManifest(root.digest);
     if (!manifest) {
@@ -61,8 +71,14 @@ export function materialize(
           'in the content store, or its bytes no longer hash to its digest.',
       );
     }
+    // A video's frames are not still images: they reach the projector as one
+    // input, so they fuse on their timeline instead of encoding one by one.
+    if (manifest.config.mediaType === VIDEO_CONFIG_TYPE) {
+      inputs.push(resolveVideo(store, root));
+      continue;
+    }
     for (const rep of representationsOf(manifest)) {
-      // Only what the projector decodes is a bitmap. A text representation is
+      // Only what the projector decodes is an input. A text representation is
       // real content — retrieval reads it — but handing it to the image decoder
       // would poison the branch it was prefilled on.
       if (!PROJECTOR_FORMATS.includes(rep.mediaType)) continue;
@@ -77,10 +93,10 @@ export function materialize(
             'bytes no longer hash to its digest.',
         );
       }
-      bitmaps.push(bytes);
+      inputs.push(bytes);
     }
   }
-  return { attachments: roots, bitmaps };
+  return { attachments: roots, inputs };
 }
 
 /**

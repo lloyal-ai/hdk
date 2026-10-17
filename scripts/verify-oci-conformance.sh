@@ -164,9 +164,76 @@ node -e "
   const manifest = store.getManifest('$ROOT');
   if (!manifest) throw new Error('our reader could not read the oras-written manifest');
   const out = materialize(store, [{ digest: '$ROOT', mediaType: manifest.mediaType, size: 0 }]);
-  if (out.bitmaps.length !== 1) throw new Error('expected one representation, got ' + out.bitmaps.length);
-  if (out.bitmaps[0].byteLength === 0) throw new Error('materialized an empty bitmap');
-  console.log('   ok — materialize() rebuilt ' + out.bitmaps[0].byteLength + ' B from a layout oras wrote');
+  if (out.inputs.length !== 1) throw new Error('expected one input, got ' + out.inputs.length);
+  if (out.inputs[0].byteLength === 0) throw new Error('materialized an empty image');
+  console.log('   ok — materialize() rebuilt ' + out.inputs[0].byteLength + ' B from a layout oras wrote');
+"
+
+echo "8. a VIDEO through the real composition: frames, transcript, timeline and source, round-tripped by oras"
+# Frames are admitted image roots; composeVideo reuses their blobs, adds the
+# transcript as a representation, the timeline as a typed config, and the
+# original — the committed fixture clip, pushed as an opaque blob — as the
+# source. oras must read it, copy it, and our replay call must rebuild ONE
+# video input from the copy.
+node -e "
+  const sharp = require('sharp');
+  const fs = require('fs');
+  const { createImageIngress, FileAttachmentStore } = require('$REPO/packages/media/dist/node.js');
+  const { composeVideo } = require('$REPO/packages/media/dist/index.js');
+  (async () => {
+    const store = new FileAttachmentStore('$WORK/video');
+    const ingress = createImageIngress(store);
+    const frames = [];
+    for (let i = 0; i < 3; i++) {
+      const png = await sharp({ create: { width: 320, height: 240, channels: 3, background: { r: 255, g: 40 * i, b: 40 } } }).png().toBuffer();
+      frames.push({ root: await ingress.ingest(new Uint8Array(png)), tMs: i * 250 });
+    }
+    const mp4 = new Uint8Array(fs.readFileSync('$REPO/packages/media/test/fixtures/video/red-square-moves.mp4'));
+    const source = store.putBlob(mp4, 'application/octet-stream');
+    const root = await composeVideo(store, {
+      frames, sampling: { fps: 4, timestampIntervalMs: 5000, maxFrames: 64 }, durationMs: 4000, source,
+      transcript: { provenance: { model: 'probe' }, segments: [{ startMs: 0, endMs: 750, text: 'one, two, three' }] },
+    });
+    fs.writeFileSync('$WORK/video-root.txt', root.digest);
+  })().catch(e => { console.error(e); process.exit(1); });
+"
+VROOT="$(cat "$WORK/video-root.txt")"
+if ! VMAN="$(oras manifest fetch --oci-layout "$WORK/video@${VROOT}" 2>&1)"; then
+  echo "   FAILED: oras cannot read the video manifest we wrote."; echo "           oras said: $VMAN"; exit 1
+fi
+if ! VSHAPE="$(echo "$VMAN" | node -e "
+  let s=''; process.stdin.on('data',d=>s+=d).on('end',()=>{
+    const m = JSON.parse(s);
+    const roles = m.layers.map(l => (l.annotations||{})['ai.lloyal.role'] + ':' + l.mediaType).join(',');
+    const want = 'representation:image/png,representation:image/png,representation:image/png,representation:application/vnd.lloyal.transcript.v1+json,source:video/mp4';
+    if (roles !== want) { console.error('layers are [' + roles + '], expected [' + want + ']'); process.exit(1); }
+    if (m.config.mediaType !== 'application/vnd.lloyal.video.v1+json') { console.error('config is ' + m.config.mediaType); process.exit(1); }
+    console.log(m.layers.length + ' layers, video config ' + m.config.digest.slice(0,19) + '…');
+  });
+" 2>&1)"; then
+  echo "   FAILED: the video manifest is not the shape we promise."; echo "           $VSHAPE"; exit 1
+fi
+echo "$VMAN" | node -e "
+  let s=''; process.stdin.on('data',d=>s+=d).on('end',()=>{
+    const m = JSON.parse(s); [m.config, ...m.layers].forEach(l => console.log(l.digest + ' ' + l.size));
+  });
+" | while read -r DIG SIZE; do
+  N="$(oras blob fetch --oci-layout --output - "$WORK/video@${DIG}" 2>/dev/null | wc -c | tr -d ' ' || echo 0)"
+  [ "$N" = "$SIZE" ] || { echo "   FAILED: blob $DIG retrieves $N bytes, the manifest declares $SIZE."; exit 1; }
+done
+if ! VCP="$(oras cp --from-oci-layout --to-oci-layout "$WORK/video@${VROOT}" "$WORK/video-copy:probe" 2>&1)"; then
+  echo "   FAILED: oras could not copy the video."; echo "           $VCP"; exit 1
+fi
+node -e "
+  const { FileAttachmentStore } = require('$REPO/packages/media/dist/node.js');
+  const { materialize } = require('$REPO/packages/media/dist/index.js');
+  const store = new FileAttachmentStore('$WORK/video-copy');
+  const out = materialize(store, [{ digest: '$VROOT', mediaType: 'application/vnd.oci.image.manifest.v1+json', size: 0 }]);
+  const v = out.inputs[0];
+  if (out.inputs.length !== 1 || v.kind !== 'video') throw new Error('expected ONE video input, got ' + JSON.stringify(out.inputs.map(i => i.kind ?? 'image')));
+  if (v.frames.length !== 3 || v.timestampsMs.join() !== '0,250,500') throw new Error('frames or times differ after the copy');
+  if (!v.notes || v.notes[0].atMs !== 750) throw new Error('the transcript did not survive the copy');
+  console.log('   ok — $VSHAPE; oras copied it, and materialize() rebuilt one video of ' + v.frames.length + ' frames with its transcript');
 "
 
 echo

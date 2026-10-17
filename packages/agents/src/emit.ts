@@ -77,6 +77,7 @@ export type Transition =
   | { kind: 'toolError'; agent: Agent; tool: string; error: string; parentTraceId?: number }
   // ── the spine and the pool ──
   | { kind: 'extended'; userContent: string; assistantContent: string; deltaTokens: number; positionAfter: number }
+  | { kind: 'extensionRefused'; userContent: string; tokens: number }
   | { kind: 'opened'; pressure: ContextPressure }
   | { kind: 'closed'; agents: readonly Agent[]; steps: number; durationMs: number }
   | { kind: 'tick'; activeAgents: number; pressure: ContextPressure }
@@ -245,6 +246,8 @@ export function project(t: Transition): Emission[] {
       } }];
     case 'extended':
       return [{ trace: { type: 'spine:extend', userContent: t.userContent, assistantContent: t.assistantContent, deltaTokens: t.deltaTokens, positionAfter: t.positionAfter } }];
+    case 'extensionRefused':
+      return [{ trace: { type: 'spine:refused', userContent: t.userContent, tokens: t.tokens } }];
     case 'opened':
       return [{ trace: {
         type: 'pool:open', agentCount: 0, taskSuffixTokens: [],

@@ -47,8 +47,9 @@ export type TrunkPrefillObserver = (info: {
  * half of the pair with {@link TrunkPrefillObserver}: prefills report what
  * entered the trunk's KV, releases report a trunk leaving it. Fired by
  * {@link Session.dispose} (trunk pruned), by {@link Session.promote} when
- * the crown moves off a live trunk (retainOnly frees it), and by the
- * multimodal poison path (a failed prefill prunes the trunk it poisoned).
+ * the crown moves off a live trunk (retainOnly frees it), and by a failed
+ * multimodal prefill written on the trunk itself, which happens only when no
+ * sequence was free to prepare it on a fork (the trunk it poisoned is pruned).
  * Pure observability: it runs after the prune and never affects it.
  *
  * @category Branching
@@ -183,7 +184,12 @@ export class Session {
    *
    * Handles warm/cold internally, like {@link commitTurn} and unlike
    * {@link prefillUser}:
-   * - **Warm** (trunk exists): appends separator + delta to the existing trunk
+   * - **Warm** (trunk exists): the separator + delta is written on a fork of
+   *   the trunk, and the trunk is fast-forwarded to it ({@link Branch.fastForward}).
+   *   A failed prefill prunes only the fork, so the trunk, its handle and the
+   *   user side are exactly as they were, and the call rethrows. Only when no
+   *   sequence is free for the fork is the turn written on the trunk itself,
+   *   where a failure poisons the trunk: it is pruned and released.
    * - **Cold** (no trunk): creates a branch at position 0, prefills WITHOUT a
    *   separator (fresh branch — no prior turn to separate from), promotes it
    *
@@ -210,7 +216,20 @@ export class Session {
   ): Promise<void> {
     const { sep, prompt, bitmaps, audioLimits } = buildUserDeltaMultimodal(this._ctx, content, inputs, opts);
     const attachments = opts.attachments;
-    if (this._trunk) {
+    if (this._trunk && this._store.available > 0) {
+      const trunk = this._trunk;
+      const prepared = trunk.forkSync({ cloneLogits: false });
+      try {
+        const { tokensDecoded } = await prepared.prefillMultimodal(prompt, bitmaps, sep, audioLimits);
+        trunk.fastForwardSync(prepared);
+        this._userSidePending = true;
+        this._onPrefill?.({ role: 'user', content, cells: tokensDecoded, branchHandle: trunk.handle, ...(attachments ? { attachments } : {}) });
+      } catch (e) {
+        // Whatever failed, it failed on the fork: the trunk never saw it.
+        prepared.pruneSync();
+        throw e;
+      }
+    } else if (this._trunk) {
       const trunk = this._trunk;
       try {
         const { tokensDecoded } = await trunk.prefillMultimodal(prompt, bitmaps, sep, audioLimits);

@@ -1,6 +1,6 @@
 /**
  * What a root IS, learned from its manifest through the content plane: a
- * picture, or a document with its sidecar. One resolution per digest for the
+ * picture, a document with its sidecar, or a video with its timeline. One resolution per digest for the
  * page's lifetime — content is immutable under its address, so an answer never
  * goes stale. A root whose manifest cannot be read is shown as an image, so
  * the failure is visible (a broken picture) rather than silent.
@@ -8,13 +8,18 @@
  * @category UI
  */
 import { useEffect, useState } from 'react';
-import { asDocumentMeta, configUrl, DOCUMENT_CONFIG_TYPE, manifestUrl } from '@lloyal-labs/media';
-import type { DocumentMeta } from '@lloyal-labs/media';
+import { asDocumentMeta, asTranscript, asVideoMeta, configUrl, DOCUMENT_CONFIG_TYPE, manifestUrl, representationUrl, TRANSCRIPT_MEDIA_TYPE, VIDEO_CONFIG_TYPE } from '@lloyal-labs/media';
+import type { DocumentMeta, Transcript, VideoMeta } from '@lloyal-labs/media';
 import { useContentOrigin } from './provider.js';
 
 export type Asset =
   | { kind: 'image' }
-  | { kind: 'document'; meta: DocumentMeta; /** The ingest retained the original file. */ source: boolean };
+  | { kind: 'document'; meta: DocumentMeta; /** The ingest retained the original file. */ source: boolean }
+  | {
+      kind: 'video'; meta: VideoMeta;
+      /** The original was retained and can be played. */ source: boolean;
+      /** What the soundtrack said, when it was transcribed. */ transcript?: Transcript;
+    };
 
 const resolved = new Map<string, Promise<Asset>>();
 
@@ -22,12 +27,20 @@ export async function resolveAsset(origin: string, digest: string): Promise<Asse
   try {
     const manifest = (await (await fetch(manifestUrl(origin, digest))).json()) as {
       config?: { mediaType?: string };
-      layers?: { annotations?: Record<string, string> }[];
+      layers?: { mediaType?: string; annotations?: Record<string, string> }[];
     };
+    const layers = manifest.layers ?? [];
+    const source = layers.some((l) => l.annotations?.['ai.lloyal.role'] === 'source');
+    if (manifest.config?.mediaType === VIDEO_CONFIG_TYPE) {
+      const meta = asVideoMeta(await (await fetch(configUrl(origin, digest))).json());
+      if (!meta) return { kind: 'image' };
+      const at = layers.filter((l) => l.annotations?.['ai.lloyal.role'] !== 'source').findIndex((l) => l.mediaType === TRANSCRIPT_MEDIA_TYPE);
+      const transcript = at < 0 ? null : asTranscript(await (await fetch(representationUrl(origin, digest, at))).json());
+      return { kind: 'video', meta, source, ...(transcript ? { transcript } : {}) };
+    }
     if (manifest.config?.mediaType !== DOCUMENT_CONFIG_TYPE) return { kind: 'image' };
     const meta = asDocumentMeta(await (await fetch(configUrl(origin, digest))).json());
     if (!meta) return { kind: 'image' };
-    const source = (manifest.layers ?? []).some((l) => l.annotations?.['ai.lloyal.role'] === 'source');
     return { kind: 'document', meta, source };
   } catch {
     return { kind: 'image' };
