@@ -241,8 +241,9 @@ export type TraceEvent =
     }
 
   // ── Admission failure ───────────────────────
-  /** A tool result could not enter the cache, on either rail, so the agent is
-   *  DISCARDED — terminal `agent:failed`, branch pruned, never resumed.
+  /** A tool result could not enter the cache, on either rail, or the batched
+   *  commit of sampled tokens failed for room, so the agent is DISCARDED —
+   *  terminal `agent:failed`, branch pruned, never resumed.
    *
    *  Separate from `pool:recoveryFailed` because it is a different event about
    *  a different thing: nothing was recovered, nothing was produced, and the
@@ -255,9 +256,11 @@ export type TraceEvent =
       type: 'pool:settleFailed';
       agentId: number;
       /** `media_prefill_failed` (the embedding rail, branch poisoned),
-       *  `tool_result_failed` (the result could not be processed), or
-       *  `tool_error` (the tool threw: the agent fails, the error is not its findings). */
-      reason: 'media_prefill_failed' | 'tool_result_failed' | 'tool_error';
+       *  `tool_result_failed` (the result could not be processed),
+       *  `tool_error` (the tool threw: the agent fails, the error is not its findings), or
+       *  `commit_failed` (the batched decode of sampled tokens had no room, rc 1: every
+       *  branch in the batch was left intact and gave way, so the pool went on). */
+      reason: 'media_prefill_failed' | 'tool_result_failed' | 'tool_error' | 'commit_failed';
       /** Why it failed, from the failure itself — a native decode message or a
        *  thrown error. NOT the model's output. */
       detail: string;

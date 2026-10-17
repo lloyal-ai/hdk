@@ -105,6 +105,28 @@ describe('useAgent seating', () => {
     expect((caught as Error).message).toBe('the commit blew up after the seat was taken');
   });
 
+  it('an agent whose commit fails for room is handed back failed, as a tool error is, not thrown', async () => {
+    // rc 1 with nothing partial leaves the branch intact; the agent gives way (`commit_failed`) and
+    // the pool closes whole. The caller reads `failed`, as it does for `tool_error`.
+    const w = await world();
+    let samples = 0;
+    w.ctx._branchSample = (): number => (++samples === 1 ? 1 : samples === 2 ? 777 : STOP);
+    w.ctx.mockCommitError = (_h, t) => (t.includes(777) ? { message: 'llama_decode failed: no KV slot', rc: 1, partial: false } : null);
+    let caught: unknown = null;
+    let returned: { failed: string | null; result: string | null } | null = null;
+    await run(function* () {
+      yield* contexts(w);
+      try {
+        yield* scoped(function* () {
+          const a = yield* useAgent({ systemPrompt: 'S', content: 'T', acceptFreeText: true });
+          returned = { failed: a.failed, result: a.result };
+        });
+      } catch (e) { caught = e; }
+    });
+    expect(caught, 'a recoverable commit failure was thrown at the caller').toBeNull();
+    expect(returned).toEqual({ failed: 'commit_failed', result: null });
+  });
+
   it("returns the lineage's final agent, not the disposed original a heal replaced", async () => {
     // A poisoned image prefill reaps the original and the pool forges a
     // replacement that replays its turns. Both sit on the physical roster, the

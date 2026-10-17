@@ -24,6 +24,8 @@ import type { TraceEvent } from './trace-types';
 
 /** A `pool:agentDrop` reason — the wire union is the vocabulary. */
 export type DropReason = Extract<TraceEvent, { type: 'pool:agentDrop' }>['reason'];
+/** A `pool:settleFailed` reason — the ladder's terminal rung, one declaration on the wire. */
+export type SettleFailure = Extract<TraceEvent, { type: 'pool:settleFailed' }>['reason'];
 
 // ── Pending work ────────────────────────────────────────────────
 
@@ -287,12 +289,14 @@ export interface Outputs {
   /** Admitted spawns whose fork failed at admission — the store said a sequence was
    *  vacant and the fork found none. Refused like a scheduler refusal. */
   spawnRefused: RefusedSpawn[];
-  /** The commit succeeded (`steps` counts these), with the reading taken as it did. */
-  committed: boolean;
-  commitPressure: ContextPressure | null;
-  /** A decode failed beyond the ladder: a fatal prefill rc, or the commit
-   *  (KV exhausted). The pool closes partial. */
-  fatal: { phase: 'prefill' | 'commit'; err: unknown } | null;
+  /** The batched commit of every sampled token: the agents whose tokens rode
+   *  in it (`S.decode` minus those that sampled a stop) and its one outcome.
+   *  On success `pressure` is the reading taken as it landed and `steps`
+   *  counts it; on failure the ladder decides, as it does for a prefill. Null
+   *  when nothing was sampled. */
+  commit: { agents: Agent[]; outcome: PrefillOutcome; pressure: ContextPressure | null } | null;
+  /** A prefill failed beyond the ladder (a fatal rc). The pool closes partial. */
+  fatal: { err: unknown } | null;
 }
 
 // ── Terminal helpers ────────────────────────────────────────────
