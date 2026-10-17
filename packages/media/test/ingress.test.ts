@@ -6,12 +6,13 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import sharp from 'sharp';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FileAttachmentStore } from '../src/node';
 import { createImageIngress } from '../src/image';
 import { materialize } from '../src/ingress';
+import { ContentLost } from '../src/store';
 
 const png = () =>
   sharp({ create: { width: 64, height: 64, channels: 3, background: '#0a7' } }).png().toBuffer()
@@ -77,5 +78,35 @@ describe('materialize — inputs are the projector-decodable representations', (
     expect(prepared.attachments).toEqual([doc, image]);
     expect(prepared.inputs).toHaveLength(1);
     expect(prepared.inputs[0]).toEqual(bytes);
+  });
+});
+
+describe('materialize — content that is gone or has drifted is ContentLost, and only that', () => {
+  // The heal path stands down on ContentLost alone; any other throw from the store is a programming error that
+  // must reach the run as it is, so the type is the whole contract.
+  it('a root whose manifest is not in the store', () => {
+    const store = new FileAttachmentStore(mkdtempSync(join(tmpdir(), 'materialize-')));
+    const md = store.putBlob(new TextEncoder().encode('text'), 'text/markdown');
+    const root = store.putAttachment({ representations: [md] });
+    expect(() => materialize(store, [{ ...root, digest: 'sha256:' + 'f'.repeat(64) }])).toThrow(ContentLost);
+  });
+
+  it('an image whose blob is missing from the store', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'materialize-'));
+    const store = new FileAttachmentStore(dir);
+    const image = store.putBlob(await png(), 'image/png');
+    const root = store.putAttachment({ representations: [image] });
+    rmSync(join(dir, 'blobs', 'sha256', image.digest.slice('sha256:'.length)));
+    expect(() => materialize(store, [root])).toThrow(ContentLost);
+  });
+
+  it('a store that throws is not lost content: its error reaches the caller unchanged', () => {
+    const store = new FileAttachmentStore(mkdtempSync(join(tmpdir(), 'materialize-')));
+    const md = store.putBlob(new TextEncoder().encode('text'), 'text/markdown');
+    const root = store.putAttachment({ representations: [md] });
+    store.getManifest = () => { throw new TypeError('the store blew up'); };
+    const thrown = (() => { try { materialize(store, [root]); return null; } catch (e) { return e; } })();
+    expect(thrown).toBeInstanceOf(TypeError);
+    expect(thrown).not.toBeInstanceOf(ContentLost);
   });
 });

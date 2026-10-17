@@ -12,6 +12,7 @@ import sharp from 'sharp';
 import { FileAttachmentStore } from '../src/file-store';
 import { createContentIngress } from '../src/content-ingress';
 import { materialize } from '../src/ingress';
+import { ContentLost } from '../src/store';
 import * as media from '../src/index';
 import { pcmWav } from './fixtures/audio';
 
@@ -183,5 +184,22 @@ describe('guards', () => {
     const frames = await frameRoots(content);
     await expect(media.composeVideo(content, { frames, sampling: { ...SAMPLING, fps: Infinity }, durationMs: 4000 }))
       .rejects.toThrow(/timeline is not well formed/);
+  });
+});
+
+describe('resolveVideo — a video that is gone is ContentLost; a root that is not a video is refused as such', () => {
+  it('a root whose manifest is not in the store', async () => {
+    const content = store();
+    const root = await media.composeVideo(content, { frames: await frameRoots(content), sampling: SAMPLING, durationMs: 4000 });
+    expect(() => media.resolveVideo(content, { ...root, digest: 'sha256:' + 'f'.repeat(64) })).toThrow(ContentLost);
+  });
+
+  it('an image root is not a video, and not lost content', async () => {
+    const content = store();
+    const [frame] = await frameRoots(content);
+    const thrown = (() => { try { media.resolveVideo(content, frame.root); return null; } catch (e) { return e; } })();
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toMatch(/not a video/);
+    expect(thrown).not.toBeInstanceOf(ContentLost);
   });
 });

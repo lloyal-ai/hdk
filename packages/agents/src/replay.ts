@@ -9,7 +9,7 @@ import type { MultimodalDelta, MultimodalInput } from '@lloyal-labs/sdk';
 import { Ctx, Store, Attachments } from './context';
 import type { TraceEvent } from './trace-types';
 import type { Attachment, AttachmentStore, PreparedContent } from '@lloyal-labs/media';
-import { materialize } from '@lloyal-labs/media';
+import { materialize, ContentLost } from '@lloyal-labs/media';
 
 /**
  * Serialized state needed to reconstruct a Branch deterministically.
@@ -296,12 +296,14 @@ export class LineageLost extends Error {
   }
 }
 
-/** Resolve a record's roots through the store; content that is gone or has drifted is a lost lineage. */
+/** Resolve a record's roots through the store. Content that is gone or has drifted ({@link ContentLost}) is a
+ *  lost lineage; anything else the store throws is its own error and reaches the run as such. */
 function materializeLineage(store: AttachmentStore, roots: readonly Attachment[]): PreparedContent {
   try {
     return materialize(store, roots);
   } catch (err) {
-    throw new LineageLost(err instanceof Error ? err.message : String(err));
+    if (err instanceof ContentLost) throw new LineageLost(err.message);
+    throw err;
   }
 }
 

@@ -25,6 +25,7 @@ import type { Tool } from '../src/Tool';
 import { runPool, STOP } from './invariants/harness';
 import type { InstrumentedMockSessionContext, PoolRun } from './invariants/harness';
 import { MediaTool, PNG_BYTES, MEDIA_TEST_NCTX, mediaFailures } from './helpers/media';
+import { MemoryAttachmentStore } from './helpers/memory-store';
 import { Tool as BaseTool, TOOL_ATTACHMENTS_KEY } from '../src/Tool';
 import type { Operation } from 'effection';
 import type { JsonSchema } from '../src/types';
@@ -215,6 +216,56 @@ describe.each(Object.keys(shapes))('spawn throw matrix: %s', (shape) => {
     diag(`${shape} heal-pricing`, run);
     expect(mediaFailures(run.channelEvents)).toHaveLength(1);
     expect(run.result.failure?.message).toBe('heal pricing blew up');
+    expect(openEntries(run)).toEqual([]);
+    expect(formatResult('I42', I42_noLeakedBranches(run))).toBe('I42: ok');
+  });
+
+  /** The lineage's content store, armed by the poison: what it does at the heal's pricing is the case. The agent's
+   *  first image lands and its second is poisoned, so the lineage the heal prices carries a media result and the
+   *  store is read again, armed, at that pricing. */
+  const storeAtHealPricing = (atPricing: (digest: string) => ReturnType<MemoryAttachmentStore['getManifest']>) => {
+    const store = new MemoryAttachmentStore();
+    const getManifest = store.getManifest.bind(store);
+    let armed = false;
+    store.getManifest = (digest) => (armed ? atPricing(digest) : getManifest(digest));
+    return { store, arm: () => { armed = true; } };
+  };
+  const healAfterPoison = (shape: string, atPricing: (digest: string) => ReturnType<MemoryAttachmentStore['getManifest']>) => {
+    const { store, arm } = storeAtHealPricing(atPricing);
+    return runPool({
+      nCtx: MEDIA_TEST_NCTX, cellsUsed: 0, attachments: store,
+      scripts: [{ tokens: [1, STOP], toolCall: { name: 'rasterize', arguments: '{}' } }, { tokens: [1, STOP], content: 'r1' }],
+      tools: new Map<string, Tool>([['rasterize', new MediaTool([PNG_BYTES])]]),
+      policy: callsTools, orchestrate: shapes[shape](),
+      captureError: true,
+      instrument: (ctx) => {
+        let projections = 0;
+        ctx.mockMultimodalError = () => {
+          if (++projections !== 2) return null;
+          arm();
+          return { message: 'compute failed', rc: -3, partial: false };
+        };
+      },
+    });
+  };
+
+  it('a heal whose store throws at pricing fails the run: a programming error is not a lost lineage', async () => {
+    const run = await healAfterPoison(shape, () => { throw new TypeError('the store blew up'); });
+    diag(`${shape} heal-store-throw`, run);
+    expect(mediaFailures(run.channelEvents)).toHaveLength(1);
+    expect(run.result.failure?.message).toBe('the store blew up');
+    expect(run.traceEvents.some(e => e.type === 'pool:agentHeal'), 'a failed heal was announced').toBe(false);
+    expect(openEntries(run)).toEqual([]);
+    expect(formatResult('I42', I42_noLeakedBranches(run))).toBe('I42: ok');
+  });
+
+  it('a heal whose lineage content is gone from the store stands down: the original\'s failure stands and the run goes on', async () => {
+    const run = await healAfterPoison(shape, () => null);
+    diag(`${shape} heal-content-gone`, run);
+    expect(mediaFailures(run.channelEvents)).toHaveLength(1);
+    expect(run.result.failure ?? null).toBe(null);
+    expect(run.traceEvents.some(e => e.type === 'pool:agentHeal')).toBe(false);
+    expect(run.result.outcomes.some(o => o.failed === 'media_prefill_failed'), 'the original\'s failure stands').toBe(true);
     expect(openEntries(run)).toEqual([]);
     expect(formatResult('I42', I42_noLeakedBranches(run))).toBe('I42: ok');
   });

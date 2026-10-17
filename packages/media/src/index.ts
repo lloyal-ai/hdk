@@ -21,7 +21,7 @@ export {
 } from './attachment';
 export type { Attachment, AttachmentManifest, Descriptor } from './attachment';
 
-export { NullAttachmentStore } from './store';
+export { ContentLost, NullAttachmentStore } from './store';
 export type { AttachmentStore } from './store';
 
 export { materialize, NoContentIngress } from './ingress';
