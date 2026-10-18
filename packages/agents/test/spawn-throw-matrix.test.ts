@@ -17,7 +17,6 @@
  * pricing throw that is not a lost lineage.
  */
 import { describe, it, expect } from 'vitest';
-import { appendFileSync } from 'node:fs';
 import type { AgentPolicy } from '../src/AgentPolicy';
 import type { Orchestrator, SpawnSpec } from '../src/orchestrators';
 import { parallel, chain, fanout, dag } from '../src/orchestrators';
@@ -29,6 +28,7 @@ import { MemoryAttachmentStore } from './helpers/memory-store';
 import { Tool as BaseTool, TOOL_ATTACHMENTS_KEY } from '../src/Tool';
 import type { Operation } from 'effection';
 import type { JsonSchema } from '../src/types';
+import { I42_noLeakedBranches, formatResult } from './invariants/predicates';
 
 /** One completed text call, then an image: the lineage a heal replays is the first call, and the second is poisoned. */
 class TextThenImage extends BaseTool<{ query: string }> {
@@ -42,8 +42,6 @@ class TextThenImage extends BaseTool<{ query: string }> {
     return { page: 'p1', [TOOL_ATTACHMENTS_KEY]: [PNG_BYTES] };
   }
 }
-import { I42_noLeakedBranches, formatResult } from './invariants/predicates';
-
 const spec = (i: number): SpawnSpec => ({ content: `Task ${i}`, systemPrompt: 'You are an agent.', seed: i });
 
 /** The four shapes, each over two tasks; Task 1 is spawned second in every shape but `parallel`. */
@@ -71,14 +69,6 @@ const plainScripts = [{ tokens: [1, STOP], content: 'r0' }, { tokens: [1, STOP],
 /** An entry the ledger never settled reads as nothing having happened. */
 const openEntries = (run: PoolRun) => run.result.outcomes.filter(o => o.agentId === null && o.failed === null);
 
-/** `MATRIX_DIAG=<file>` appends what each run did, before the assertions read it. */
-const diag = (label: string, run: PoolRun): void => {
-  if (!process.env.MATRIX_DIAG) return;
-  const counts: Record<string, number> = {};
-  for (const e of run.traceEvents) counts[e.type] = (counts[e.type] ?? 0) + 1;
-  appendFileSync(process.env.MATRIX_DIAG!, `DIAG ${label}: error=${run.error ? `${(run.error as Error).name}: ${(run.error as Error).message} @ ${String((run.error as Error).stack).split('\n').slice(1, 6).map(s => s.trim()).join(' | ')}` : 'none'} failure=${run.result.failure?.message ?? 'none'} outcomes=${JSON.stringify(run.result.outcomes?.map(o => ({ agentId: o.agentId, failed: o.failed, result: o.result })))} trace=${JSON.stringify(counts)}\n`);
-};
-
 /** Every fork made on this run, in order (the harness numbers scripts by it). */
 function forkHandles(ctx: InstrumentedMockSessionContext): number[] {
   const handles: number[] = [];
@@ -99,7 +89,6 @@ describe.each(Object.keys(shapes))('spawn throw matrix: %s', (shape) => {
         };
       },
     });
-    diag(`${shape} pricing`, run);
     expect(run.result.failure?.message).toBe('a throw in pricing');
     expect(openEntries(run), 'an entry was left open').toEqual([]);
     expect(run.result.outcomes.some(o => o.failed === 'spawn_error'), 'the throw did not settle as spawn_error').toBe(true);
@@ -118,7 +107,6 @@ describe.each(Object.keys(shapes))('spawn throw matrix: %s', (shape) => {
         };
       },
     });
-    diag(`${shape} fork`, run);
     expect(run.result.failure?.message).toBe('a throw at the fork');
     expect(run.traceEvents.some(e => e.type === 'pool:spawnRefused'), 'a programming error was recorded as a refusal').toBe(false);
     expect(openEntries(run), 'an entry was left open').toEqual([]);
@@ -143,7 +131,6 @@ describe.each(Object.keys(shapes))('spawn throw matrix: %s', (shape) => {
         };
       },
     });
-    diag(`${shape} suffix ${rc}`, run);
     expect(run.result.failure?.message).toBe('the suffix would not prefill');
     expect(openEntries(run), 'an entry was left open').toEqual([]);
     expect(run.result.outcomes.filter(o => o.failed === 'spawn_error').length).toBeGreaterThan(0);
@@ -183,7 +170,6 @@ describe.each(Object.keys(shapes))('spawn throw matrix: %s', (shape) => {
         };
       },
     });
-    diag(`${shape} replay ${rc}`, run);
     expect(mediaFailures(run.channelEvents), 'the image prefill must have been poisoned').toHaveLength(1);
     const original = (mediaFailures(run.channelEvents)[0] as { agentId: number }).agentId;
     expect(run.result.failure?.message ?? null).toBe(failure);
@@ -213,7 +199,6 @@ describe.each(Object.keys(shapes))('spawn throw matrix: %s', (shape) => {
         };
       },
     });
-    diag(`${shape} heal-pricing`, run);
     expect(mediaFailures(run.channelEvents)).toHaveLength(1);
     expect(run.result.failure?.message).toBe('a throw in the heal\'s pricing');
     expect(openEntries(run)).toEqual([]);
@@ -251,7 +236,6 @@ describe.each(Object.keys(shapes))('spawn throw matrix: %s', (shape) => {
 
   it('a heal whose store throws at pricing fails the run: a programming error is not a lost lineage', async () => {
     const run = await healAfterPoison(shape, () => { throw new TypeError('a type error from the store at pricing'); });
-    diag(`${shape} heal-store-throw`, run);
     expect(mediaFailures(run.channelEvents)).toHaveLength(1);
     expect(run.result.failure?.message).toBe('a type error from the store at pricing');
     expect(run.traceEvents.some(e => e.type === 'pool:agentHeal'), 'a failed heal was announced').toBe(false);
@@ -261,51 +245,11 @@ describe.each(Object.keys(shapes))('spawn throw matrix: %s', (shape) => {
 
   it('a heal whose lineage content is gone from the store stands down: the original\'s failure stands and the run goes on', async () => {
     const run = await healAfterPoison(shape, () => null);
-    diag(`${shape} heal-content-gone`, run);
     expect(mediaFailures(run.channelEvents)).toHaveLength(1);
     expect(run.result.failure ?? null).toBe(null);
     expect(run.traceEvents.some(e => e.type === 'pool:agentHeal')).toBe(false);
     expect(run.result.outcomes.some(o => o.failed === 'media_prefill_failed'), 'the original\'s failure stands').toBe(true);
     expect(openEntries(run)).toEqual([]);
     expect(formatResult('I42', I42_noLeakedBranches(run))).toBe('I42: ok');
-  });
-});
-
-// Diagnostics only (`MATRIX_DIAG=1`): how a rejected spawn request and a spawned orchestrator task
-// propagate through the pool. Not assertions; the printed lines are the evidence.
-describe.skipIf(!process.env.MATRIX_DIAG)('spawn throw matrix: propagation experiments', () => {
-  const rejectSuffixBatch = (ctx: InstrumentedMockSessionContext): void => {
-    const inner = ctx._storePrefill.bind(ctx);
-    let armed = true;
-    ctx._storePrefill = async (handles, tokenArrays) => {
-      if (armed && handles.some(h => h !== 1)) { armed = false; throw new Error('the suffix would not prefill'); }
-      return inner(handles, tokenArrays);
-    };
-  };
-  it('E1 parallel, two spawns rejected in one batch', async () => {
-    const run = await runPool({ nCtx: 8192, cellsUsed: 0, scripts: plainScripts, policy: prose, orchestrate: parallel([spec(0), spec(1)]), captureError: true, instrument: rejectSuffixBatch });
-    diag('E1', run);
-  });
-  it('E2 parallel, one spawn rejected', async () => {
-    const run = await runPool({ nCtx: 8192, cellsUsed: 0, scripts: plainScripts, policy: prose, orchestrate: parallel([spec(0)]), captureError: true, instrument: rejectSuffixBatch });
-    diag('E2', run);
-  });
-  it('E3 parallel, two spawns, capacity 1 so the batch holds one request', async () => {
-    const run = await runPool({ nCtx: 8192, cellsUsed: 0, scripts: plainScripts, policy: prose, orchestrate: parallel([spec(0), spec(1)]), capacity: 1, captureError: true, instrument: rejectSuffixBatch });
-    diag('E3', run);
-  });
-  it('E4 dag, one node whose pricing throws', async () => {
-    const run = await runPool({ nCtx: 8192, cellsUsed: 0, scripts: plainScripts, policy: prose, orchestrate: dag([{ id: 'a', task: spec(0) }]), captureError: true, instrument: (ctx) => {
-      const inner = ctx.formatChatSync.bind(ctx);
-      ctx.formatChatSync = (msgs, opts) => { if (msgs.includes('Task 0')) throw new Error('a throw in pricing'); return inner(msgs, opts); };
-    } });
-    diag('E4', run);
-  });
-  it('E5 parallel via all, one child whose pricing throws, the other seated', async () => {
-    const run = await runPool({ nCtx: 8192, cellsUsed: 0, scripts: plainScripts, policy: prose, orchestrate: parallel([spec(0), spec(1)]), captureError: true, instrument: (ctx) => {
-      const inner = ctx.formatChatSync.bind(ctx);
-      ctx.formatChatSync = (msgs, opts) => { if (msgs.includes('Task 1')) throw new Error('a throw in pricing'); return inner(msgs, opts); };
-    } });
-    diag('E5', run);
   });
 });

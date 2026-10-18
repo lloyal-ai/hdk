@@ -1784,6 +1784,27 @@ describe('self-healing ladder', () => {
     expect((settleFailed as { rc?: number }).rc).toBe(1);
   });
 
+  it('a fatal token-rail prefill rethrows the store\'s own error: the run\'s failure is the very object it threw', async () => {
+    // No rc at all: the ladder calls it fatal, as it does at the commit, and what reaches the pool's failure
+    // must be the error the store threw, not a reading of it, so a caller can tell a TypeError from a refusal.
+    const spy = new SpyTool();
+    const thrown = Object.assign(new TypeError('a type error from the store at a tool result'), { diagnostic: 'kept' });
+    const { result } = await runPool({
+      forkTokenQueues: [[1, STOP, STOP]],
+      ...callTool('web_search'),
+      tools: new Map<string, Tool>([['web_search', spy]]),
+      mutateCtx: (ctx) => {
+        const orig = ctx._storePrefill.bind(ctx);
+        ctx._storePrefill = async (h, t) => {
+          if (spy.capturedContexts.length > 0) throw thrown;
+          return orig(h, t);
+        };
+      },
+    });
+    expect(result.failure).toBe(thrown);
+    expect(result.failure).toBeInstanceOf(TypeError);
+  });
+
   it('token rail rc 1 + partial: an earlier chunk was prefilled, so nothing is re-queued', async () => {
     // The kernel's rule (liblloyal DecodeError): intact ⇔ rc == 1 && !partial.
     // With `partial` set, some branches in the cohort advanced and the error

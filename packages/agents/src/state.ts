@@ -274,7 +274,9 @@ export interface ToolCompletion {
 /** One admitted prefill's fate, as the store reported it. */
 export type PrefillOutcome =
   | { ok: true }
-  | { ok: false; rc?: number; partial?: boolean; message: string };
+  /** `rc`, `partial` and `message` are the ladder's reading of the failure; `err` is the store's own throw, as
+   *  thrown, rethrown as the run's when the ladder calls the failure fatal. */
+  | { ok: false; rc?: number; partial?: boolean; message: string; err: unknown };
 
 /** What the store gave back for one tick. */
 export interface Outputs {
@@ -298,9 +300,6 @@ export interface Outputs {
     agents: Agent[];
     outcome: PrefillOutcome;
     pressure: ContextPressure | null;
-    /** The store's own throw when the commit did not land, rethrown as the run's when the ladder calls it
-     *  fatal: the outcome's fields are the ladder's reading of it, never a replacement for it. Null on success. */
-    err: unknown;
   } | null;
   /** A prefill failed beyond the ladder (a fatal rc). The pool closes partial. */
   fatal: { err: unknown } | null;

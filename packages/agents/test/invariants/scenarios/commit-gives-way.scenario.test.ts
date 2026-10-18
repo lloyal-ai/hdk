@@ -4,8 +4,8 @@
  * The generation step is one batched decode of every sampled token. When that
  * decode returns rc 1 with nothing partial, every branch in the batch is intact
  * (the native rollback restores sampler, grammar, metrics and revision), so the
- * failure is recoverable: someone has to give way. The decision (owner,
- * 2026-10-16): every agent in the failing batch gives way through the ladder's
+ * failure is recoverable: someone has to give way. Every agent in the failing
+ * batch gives way through the ladder's
  * terminal path, `failSettled(a, 'commit_failed', …)`, pruned and announced, its
  * partial report never an outcome; the other agents, the orchestrator and later
  * stages go on, and the pool closes whole. A fatal rc (2, below -1, or none)

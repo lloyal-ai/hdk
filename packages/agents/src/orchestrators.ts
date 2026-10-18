@@ -282,9 +282,7 @@ export const dag = (nodes: DAGNode[]): Orchestrator => {
     // dependency's node resolves with its agent id once it has reported and
     // extended the spine. A node's throw — a refusal among them — fails the
     // `all`, which halts the other nodes and raises the error here, where the
-    // pool's orchestrator catch reads it. (Nodes spawned as bare tasks, with
-    // dependents awaiting the Task itself, failed the orchestrator's scope
-    // from underneath its catch and took the whole pool down.)
+    // pool's orchestrator catch reads it.
     const completed = new Map(nodes.map((n) => [n.id, withResolvers<number>(`dag:${n.id}`)]));
 
     function* runNode(n: DAGNode): Operation<void> {

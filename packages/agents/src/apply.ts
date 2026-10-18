@@ -252,7 +252,7 @@ export class Applier {
         yield* this.d.emit.emit({ kind: 'recoveryFailed', agent: a, reason, outputExcerpt: a.rawOutput.slice(0, 200) });
         a.failed = reason;
       }
-      throw c.err;   // the store's own error, type and stack intact: the run's, as it was before the ladder read it
+      throw o.err;
     }
     for (const a of c.agents) yield* this.failSettled(a, 'commit_failed', o.message, o.rc);
   }
@@ -395,7 +395,7 @@ export class Applier {
         return;
       case 'fatal':
         if (isFatalRc(o.rc)) this.d.ladder.consecutiveFatalRc++;
-        throw Object.assign(new Error(o.message), { rc: o.rc, partial: o.partial });
+        throw o.err;
     }
   }
 

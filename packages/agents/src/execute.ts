@@ -293,10 +293,10 @@ export class Executor {
     if (entries.length > 0) {
       try {
         yield* commit(d.store, entries);
-        out.commit = { agents: batch, outcome: { ok: true }, pressure: new ContextPressure(d.ctx, d.pressureOpts), err: null };
+        out.commit = { agents: batch, outcome: { ok: true }, pressure: new ContextPressure(d.ctx, d.pressureOpts) };
       } catch (err) {
         const de = decodeErrorOf(err);
-        out.commit = { agents: batch, outcome: { ok: false, rc: de?.rc, partial: de?.partial, message: toError(err).message }, pressure: null, err };
+        out.commit = { agents: batch, outcome: { ok: false, rc: de?.rc, partial: de?.partial, message: toError(err).message, err }, pressure: null };
       }
     }
     return out;
@@ -363,7 +363,7 @@ export class Executor {
         out.tokenRail = { items: tokenItems, outcome: { ok: true } };
       } catch (err) {
         const de = decodeErrorOf(err);
-        out.tokenRail = { items: tokenItems, outcome: { ok: false, rc: de?.rc, partial: de?.partial, message: toError(err).message } };
+        out.tokenRail = { items: tokenItems, outcome: { ok: false, rc: de?.rc, partial: de?.partial, message: toError(err).message, err } };
         // A fatal rc ends the tick here, as it always did; the interpreter
         // records it and the pool closes partial.
         if (classifyRc(de?.rc, de?.partial, d.ladder.backendSuspect) === 'fatal') {
@@ -384,7 +384,8 @@ export class Executor {
           book(m, m.media.cells, m.media.attachments);
           out.mediaRail.push({ item: m, outcome: { ok: true } });
         } else {
-          out.mediaRail.push({ item: m, outcome: { ok: false, rc: r.rc, partial: r.partial, message: r.error } });
+          // The store answers a media entry with a result, not a throw; the error the ladder may rethrow is made here, once.
+          out.mediaRail.push({ item: m, outcome: { ok: false, rc: r.rc, partial: r.partial, message: r.error, err: Object.assign(new Error(r.error), { rc: r.rc, partial: r.partial }) } });
         }
       }
     }
