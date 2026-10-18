@@ -1,0 +1,15 @@
+# hdk runs its own gate from source, so an install never compiles it and a fresh clone has the hooks after
+# `npm install`. A consuming repository runs the published `gate` bin instead.
+pre-commit:
+  commands:
+    gate:
+      run: npx tsx packages/gate/src/cli.ts staged
+# Runs even under --no-verify, so an accepted refusal is recorded as one.
+prepare-commit-msg:
+  commands:
+    gate:
+      run: npx tsx packages/gate/src/cli.ts trailer {1} {2}
+post-commit:
+  commands:
+    gate:
+      run: npx tsx packages/gate/src/cli.ts committed

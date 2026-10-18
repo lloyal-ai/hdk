@@ -89,6 +89,28 @@ jobs:
       # upload surface a host mounts. Built from a pinned commit inside the script.
       - run: npm run verify:oci:distribution
 
+  gate:
+    name: Acceptance gate
+    # A fork pull request never receives the secret, so the judge would fail closed on every outside
+    # contribution; the same guard gpu-tests uses keeps the job to pull requests from this repository.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install
+      # The judge's version is the package's own declaration, so a change to the floor moves one place.
+      - run: npm install -g "@anthropic-ai/claude-code@$(node -p "require('./packages/gate/package.json').claudeCode")"
+      # The judge runs on the Claude subscription, never an API key: the secret is the token
+      # `claude setup-token` prints, and the CLI reads it from this variable.
+      - run: npx tsx packages/gate/src/cli.ts range "origin/${{ github.base_ref }}...HEAD"
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
   gpu-tests:
     name: GPU Integration Tests
     needs: build

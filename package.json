@@ -12,6 +12,7 @@
     "packages/relay",
     "packages/host",
     "packages/dev-tools",
+    "packages/gate",
     "packages/ui",
     "packages/desktop",
     "packages/media",
@@ -19,7 +20,7 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces",
-    "typecheck": "tsc -b packages/media packages/sdk packages/agents packages/rig packages/host packages/desktop packages/channel-verify && npm run build -w packages/ui && tsc -p tsconfig.test.json",
+    "typecheck": "tsc -b packages/media packages/sdk packages/agents packages/rig packages/host packages/desktop packages/channel-verify packages/gate && npm run build -w packages/ui && tsc -p tsconfig.test.json",
     "verify:packed": "bash scripts/verify-packed-install.sh",
     "clean": "rm -rf packages/*/dist packages/abilities/*/dist packages/*/tsconfig.tsbuildinfo packages/abilities/*/tsconfig.tsbuildinfo",
     "docs": "npx typedoc",
@@ -27,7 +28,8 @@
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
     "verify:oci:layout": "bash scripts/verify-oci-conformance.sh",
-    "verify:oci:distribution": "bash scripts/verify-distribution-conformance.sh"
+    "verify:oci:distribution": "bash scripts/verify-distribution-conformance.sh",
+    "prepare": "lefthook install"
   },
   "devDependencies": {
     "@types/node": "^25.3.0",
@@ -37,6 +39,7 @@
     "fast-check": "^4.7.0",
     "ink": "^7.1.1",
     "jsdom": "^30.1.1",
+    "lefthook": "^2.2.2",
     "react": "^19.2.0",
     "react-dom": "^19.3.0",
     "tsx": "^4.21.0",
