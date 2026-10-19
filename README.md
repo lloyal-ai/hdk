@@ -82,7 +82,7 @@ economics. [Continuous context](https://docs.lloyal.ai/continuous-context) ·
 > work."
 > — Rich Hickey, *Simplicity Matters*, RailsConf 2012
 
-Sixteen packages. Each does one thing, and the harness composes them.
+Fifteen packages. Each does one thing, and the harness composes them.
 
 | package | layer | what it is |
 |---|---|---|
