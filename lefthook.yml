@@ -4,7 +4,7 @@ output: [execution_out]
 pre-commit:
   commands:
     hickey:
-      run: npx hickey staged
+      run: npx hickey committing
 prepare-commit-msg:
   commands:
     hickey:
