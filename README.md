@@ -96,7 +96,6 @@ Sixteen packages. Each does one thing, and the harness composes them.
 | `@lloyal-labs/desktop` | surfaces | The Electron main-process pieces: the engine over the project's own cli, the window, the content scheme that serves the store to the renderer, the preload bridge. |
 | `@lloyal-labs/ui` | surfaces | The view side: `HarnessProvider` and its hooks over any bridge, the installer that shows a first run acquiring its models, the agent fold, prose and figure primitives that resolve a descriptor to what a reader sees. A view never holds truth and never calls the model. |
 | `@lloyal-labs/dev-tools` | surfaces | The developer's pane: the timeline of every agent's lane on the one context, the sources funnel, the settings with their provenance, over the same events, present only under `LLOYAL_DEV=1`. |
-| `@lloyal-labs/gate` | development | The acceptance gate: a change is judged over its whole delta against the engineering principles by a headless Claude Code session, on every commit and every pull request, and gets in only when the whole with it makes more sense than it does today. |
 | `@lloyal-labs/channel-verify` | channel | Canonical-JSON signing payloads and Ed25519 verification, zero dependencies, Apache 2.0: the public half of the channel, so anyone who wants to verify it may. |
 | `@lloyal-labs/web-ability` | ability | Web search and page reading: keyed through Tavily, keyless with a paced fallback, every page admitted through the reranker under a token budget. |
 | `@lloyal-labs/corpus-ability` | ability | A folder of markdown as a source: BM25 finds candidates, the reranker judges them, and the index is rebuilt while the old one still serves when its path changes under a live run. |
@@ -306,7 +305,7 @@ or alternative HDK Ability distribution channel.
 
 The runtime packages — `@lloyal-labs/sdk`, `@lloyal-labs/lloyal-agents`, `@lloyal-labs/rig`,
 `@lloyal-labs/media`, `@lloyal-labs/binding`, `@lloyal-labs/host`, `@lloyal-labs/relay`,
-`@lloyal-labs/desktop`, `@lloyal-labs/ui`, `@lloyal-labs/dev-tools`, `@lloyal-labs/gate`, and the four first-party abilities — are
+`@lloyal-labs/desktop`, `@lloyal-labs/ui`, `@lloyal-labs/dev-tools`, and the four first-party abilities — are
 Fair Source under FSL-1.1-Apache-2.0 and convert to Apache 2.0 two years after each release.
 `@lloyal-labs/channel-verify` is Apache 2.0 from day one — see its own `LICENSE` file. The CLI is
 [MIT-licensed](https://github.com/lloyal-ai/lloyal-ai/blob/main/LICENSE) and lives in

@@ -1,15 +1,15 @@
-# hdk runs its own gate from source, so an install never compiles it and a fresh clone has the hooks after
-# `npm install`. A consuming repository runs the published `gate` bin instead.
+# Every commit is judged by hickey against PRINCIPLES.md before it exists; the verdict rides in the
+# commit's trailers. Runs even under --no-verify, so an accepted refusal is recorded as one.
+output: [execution_out]
 pre-commit:
   commands:
-    gate:
-      run: npx tsx packages/gate/src/cli.ts staged
-# Runs even under --no-verify, so an accepted refusal is recorded as one.
+    hickey:
+      run: npx hickey staged
 prepare-commit-msg:
   commands:
-    gate:
-      run: npx tsx packages/gate/src/cli.ts trailer {1} {2}
+    hickey:
+      run: npx hickey trailer {1} {2}
 post-commit:
   commands:
-    gate:
-      run: npx tsx packages/gate/src/cli.ts committed
+    hickey:
+      run: npx hickey committed

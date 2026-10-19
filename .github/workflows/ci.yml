@@ -24,10 +24,10 @@ jobs:
       - run: npm install
 
       # The judge runs locally, on the committer's own login, before every commit; a pull request is
-      # accepted only when every commit carries the record the gate wrote into its message. Seconds, no model.
+      # accepted only when every commit carries the record hickey wrote into its message. Seconds, no model.
       - name: Every commit carries the gate's record
         if: github.event_name == 'pull_request'
-        run: npx tsx packages/gate/src/cli.ts carried "origin/${{ github.base_ref }}...HEAD"
+        run: npx hickey carried "origin/${{ github.base_ref }}...HEAD"
 
       - run: npm run build
 

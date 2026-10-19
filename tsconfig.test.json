@@ -51,7 +51,6 @@
       "@lloyal-labs/binding/web": ["packages/binding/src/web.ts"],
       "@lloyal-labs/channel-verify": ["packages/channel-verify/src/index.ts"],
       "@lloyal-labs/dev-tools": ["packages/dev-tools/src/index.ts"],
-      "@lloyal-labs/gate": ["packages/gate/src/index.ts"],
       "@lloyal-labs/host": ["packages/host/src/index.ts"],
       "@lloyal-labs/ui": ["packages/ui/src/index.ts"],
       "@lloyal-labs/ui/fold": ["packages/ui/src/fold.ts"],

@@ -56,8 +56,6 @@ jobs:
           test -f packages/relay/dist/index.d.ts
           test -f packages/dev-tools/dist/index.js
           test -f packages/dev-tools/dist/index.d.ts
-          test -f packages/gate/dist/cli.js
-          test -f packages/gate/dist/index.js
           test -f packages/ui/dist/index.js
           test -f packages/ui/dist/fold.js
           test -f packages/desktop/dist/index.js
@@ -82,7 +80,7 @@ jobs:
 
       - name: Typecheck
         run: |
-          npx tsc -b packages/media packages/sdk packages/agents packages/rig packages/channel-verify packages/binding packages/relay packages/host packages/desktop packages/gate
+          npx tsc -b packages/media packages/sdk packages/agents packages/rig packages/channel-verify packages/binding packages/relay packages/host packages/desktop
           # `ui` builds with `tsc -p`, which does NOT build the references it declares, so it must
           # follow the batch that produces binding's and media's dist rather than join it.
           npm run build -w packages/ui
@@ -111,7 +109,7 @@ jobs:
           # It has no dependencies of its own, so it is safe at the head.
           # media sits right after channel-verify: sdk, agents and rig all
           # depend on it, so it must exist on the registry before they do.
-          for pkg in packages/channel-verify packages/media packages/sdk packages/agents packages/binding packages/host packages/relay packages/rig packages/dev-tools packages/gate packages/ui packages/desktop; do
+          for pkg in packages/channel-verify packages/media packages/sdk packages/agents packages/binding packages/host packages/relay packages/rig packages/dev-tools packages/ui packages/desktop; do
             name=$(node -p "require('./$pkg/package.json').name")
             version=$(node -p "require('./$pkg/package.json').version")
             # The dist-tag follows each package's OWN version: an -alpha.N
