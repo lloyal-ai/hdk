@@ -13,12 +13,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The acceptance check below reads every commit of a pull request.
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
           node-version: 24
 
       - run: npm install
+
+      # The judge runs locally, on the committer's own login, before every commit; a pull request is
+      # accepted only when every commit carries the record hickey wrote into its message. Seconds, no model.
+      - name: Every commit carries the gate's record
+        if: github.event_name == 'pull_request'
+        run: npx hickey carried "origin/${{ github.base_ref }}...HEAD"
+
       - run: npm run build
 
       - name: Verify dist outputs
