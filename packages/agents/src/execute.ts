@@ -16,15 +16,16 @@ import { decideAfterExecute, decideAfterAdmit, type Frame } from './hooks';
 import type { Emitter, Transition, SettleBatch } from './emit';
 import { ContextPressure } from './pressure';
 import { prepareBatch } from './prepare-content';
-import { runReplay } from './replay';
+import { runReplay, LineageLost } from './replay';
 import { failSettled } from './apply';
 import type { SpawnLedger } from './spawns';
 import type { EntailmentScorer } from './scorer';
 import type { TraceWriter } from './trace-writer';
 import type { TraceEvent } from './trace-types';
 import {
-  type Schedule, type Outputs, type Pending, type PrefillItem, type ToolCompletion,
-  type DispatchRequest, type Ladder, classifyRc, prunable, reclaimable, owedParents, type SpawnRequest } from './state';
+  type Schedule, type Outputs, type Pending, type PrefillItem, type ToolCompletion, type DispatchRequest,
+  type Ladder, type SpawnRequest, type SpawnReplay, type ExtendRequest,
+  classifyRc, prunable, reclaimable, owedParents } from './state';
 import type { AgentTaskSpec, AgentEvent, ToolContext, PressureThresholds } from './types';
 
 /**
@@ -152,14 +153,15 @@ export function* priceSpawn(task: AgentTaskSpec, ctx: SessionContext, enableThin
  * suffix prefill is the batch's. The one fallible step after admission, and
  * the one native call after it gives the lease back on failure. A heal's
  * parent must still stand exactly where the original forked it, or the heal
- * stands down: its replay carries only what came after the fork.
+ * stands down ({@link LineageLost}): its replay carries only what came after
+ * the fork.
  */
 export function forkSpawn(req: SpawnRequest, clock: () => number): Agent {
   const { parent, task } = req;
   if (req.replay && (parent.disposed || parent.position !== req.replay.forkHead)) {
-    throw new Error(parent.disposed
-      ? 'heal: the original\'s parent is gone'
-      : `heal: the original's parent has moved (forked at ${req.replay.forkHead}, now at ${parent.position})`);
+    throw new LineageLost(parent.disposed
+      ? 'the original\'s parent is gone'
+      : `the original's parent has moved (forked at ${req.replay.forkHead}, now at ${parent.position})`);
   }
   const branch = parent.forkSync();
   if (task.seed != null) {
@@ -231,7 +233,7 @@ export class Executor {
   constructor(private readonly d: ExecDeps) {}
 
   *run(S: Schedule): Operation<Outputs> {
-    const out: Outputs = { tokenRail: null, mediaRail: [], produced: [], spawnRefused: [], committed: false, commitPressure: null, fatal: null };
+    const out: Outputs = { tokenRail: null, mediaRail: [], produced: [], spawnRefused: [], commit: null, fatal: null };
     const d = this.d;
 
     // 0. Halts — a cancelled agent's in-flight tool is aborted.
@@ -258,6 +260,7 @@ export class Executor {
     void admitted; void born;
     const set = new Set<Agent>(S.decode);
     const entries: [Branch, number][] = [];
+    const batch: Agent[] = [];
     for (const a of d.agents) {
       if (!set.has(a) || a.status !== 'active') continue;
       const { token, text, isStop } = a.branch.produceSync();
@@ -269,6 +272,7 @@ export class Executor {
         continue;
       }
       entries.push([a.branch, token]);
+      batch.push(a);
       if (d.trace) {
         const entropy = a.branch.modelEntropy();
         const surprisal = a.branch.modelSurprisal(token);
@@ -282,14 +286,17 @@ export class Executor {
       }
     }
 
-    // 5. One batched decode for every produced token.
+    // 5. One batched decode for every produced token. Its outcome is recorded
+    //    like a prefill's and the interpreter's ladder reads it: a failure for
+    //    room leaves every branch in the batch intact, so it is theirs to give
+    //    way, not the pool's to end.
     if (entries.length > 0) {
       try {
         yield* commit(d.store, entries);
-        out.committed = true;
-        out.commitPressure = new ContextPressure(d.ctx, d.pressureOpts);
+        out.commit = { agents: batch, outcome: { ok: true }, pressure: new ContextPressure(d.ctx, d.pressureOpts) };
       } catch (err) {
-        out.fatal = { phase: 'commit', err };
+        const de = decodeErrorOf(err);
+        out.commit = { agents: batch, outcome: { ok: false, rc: de?.rc, partial: de?.partial, message: toError(err).message, err }, pressure: null };
       }
     }
     return out;
@@ -356,11 +363,11 @@ export class Executor {
         out.tokenRail = { items: tokenItems, outcome: { ok: true } };
       } catch (err) {
         const de = decodeErrorOf(err);
-        out.tokenRail = { items: tokenItems, outcome: { ok: false, rc: de?.rc, partial: de?.partial, message: toError(err).message } };
+        out.tokenRail = { items: tokenItems, outcome: { ok: false, rc: de?.rc, partial: de?.partial, message: toError(err).message, err } };
         // A fatal rc ends the tick here, as it always did; the interpreter
         // records it and the pool closes partial.
         if (classifyRc(de?.rc, de?.partial, d.ladder.backendSuspect) === 'fatal') {
-          out.fatal = { phase: 'prefill', err };
+          out.fatal = { err };
           return admitted;
         }
       }
@@ -377,7 +384,8 @@ export class Executor {
           book(m, m.media.cells, m.media.attachments);
           out.mediaRail.push({ item: m, outcome: { ok: true } });
         } else {
-          out.mediaRail.push({ item: m, outcome: { ok: false, rc: r.rc, partial: r.partial, message: r.error } });
+          // The store answers a media entry with a result, not a throw; the error the ladder may rethrow is made here, once.
+          out.mediaRail.push({ item: m, outcome: { ok: false, rc: r.rc, partial: r.partial, message: r.error, err: Object.assign(new Error(r.error), { rc: r.rc, partial: r.partial }) } });
         }
       }
     }
@@ -431,19 +439,27 @@ export class Executor {
     // (teardown), a throw after the prefill. A fork still in `d.forged` is
     // released by the pool at its next close or at teardown, after the native
     // work has settled (`waitUntilSettled`), never before.
-    const forked: { req: SpawnRequest; agent: Agent }[] = [];
-    for (const req of S.spawns) {
-      if (req.discarded) continue;   // nobody awaits it: no fork is made
+    const requests = S.spawns.filter(req => !req.discarded);   // nobody awaits a discarded one: no fork is made
+    const forked = new Map<SpawnRequest, Agent>();
+    /** Requests that left the batch before its prefill: refused by name, or a heal that stood down. */
+    const left = new Set<SpawnRequest>();
+    const batch = () => requests.filter(req => !left.has(req));
+    for (const req of requests) {
+      // The scheduler admitted this batch against the vacancies it sampled; a fork made since
+      // outside the pool (an orchestrator's own, a nested pool's) can have taken the last one.
+      // Refused by name, before the fork, like the scheduler refuses.
+      if (d.store.available === 0) { out.spawnRefused.push({ req, reason: 'no_sequence' }); left.add(req); continue; }
       try {
         const agent = forkSpawn(req, d.runNow);
         d.forged.add(agent);
-        forked.push({ req, agent });
+        forked.set(req, agent);
       } catch (err) {
         // A heal whose parent is gone or has moved stands down: the original's failure stands.
-        if (req.replay) { d.spawns.healStoodDown(d.spawns.at(req.index)); continue; }
-        // The store said a sequence was vacant and the fork found none: refused, like the scheduler refuses.
-        if (d.store.available === 0) { out.spawnRefused.push({ req, reason: 'no_sequence', detail: toError(err).message }); continue; }
-        throw err;
+        if (req.replay && err instanceof LineageLost) { d.spawns.healStoodDown(d.spawns.at(req.index)); left.add(req); continue; }
+        // Any other throw is the run's, and this request's own.
+        this.failSpawnBatch(batch(), forked, S.extends, err, new Set([req]));
+        out.fatal = { err };
+        return born;
       }
     }
 
@@ -451,22 +467,15 @@ export class Executor {
     // every admitted extend rides as ONE pair on the spine, in request order.
     const extendTokens = S.extends.flatMap(e => e.tokens);
     const pairs: [Branch, number[]][] = [
-      ...forked.map(f => [f.agent.branch, f.req.suffixTokens] as [Branch, number[]]),
+      ...[...forked].map(([req, a]) => [a.branch, req.suffixTokens] as [Branch, number[]]),
       ...(extendTokens.length > 0 ? [[d.spine, extendTokens] as [Branch, number[]]] : []),
     ];
     try {
       if (pairs.length > 0) yield* prefill(d.store, pairs);
     } catch (err) {
-      // Nothing in this batch entered the pool, so nothing may outlive it: the
-      // forks go back (their KV leases with them) and every waiter hears why.
-      const e = toError(err);
-      for (const x of S.extends) x.reject(e);
-      for (const f of forked) {
-        discardFork(d.forged, f.agent);
-        if (f.req.replay) d.spawns.healStoodDown(d.spawns.at(f.req.index));
-        else if (!f.req.discarded) f.req.reject(e);
-      }
-      out.fatal = { phase: 'prefill', err };
+      // The batch's own prefill failed: every request in it was being seated by that call.
+      this.failSpawnBatch(batch(), forked, S.extends, err, new Set(batch()));
+      out.fatal = { err };
       return born;
     }
 
@@ -479,55 +488,99 @@ export class Executor {
         deltaTokens: e.tokens.length, positionAfter });
       e.resolve(e.tokens.length);
     }
-    for (const { req, agent: a } of forked) {
+    const landing = [...forked];
+    for (const [i, [req, a]] of landing.entries()) {
+      const entry = d.spawns.at(req.index);
       // Discarded while the batch was in flight: its suffix was prefilled, but nobody
       // awaits it and the pool is draining or its orchestrator is gone. The
       // fork goes back rather than into a roster that would only reap it.
       if (req.discarded) {
         discardFork(d.forged, a);
-        if (req.replay) d.spawns.healStoodDown(d.spawns.at(req.index));
+        if (req.replay) d.spawns.healStoodDown(entry);
         continue;
       }
       a.spec = req.task;
       d.forged.delete(a);
       d.agents.push(a);   // in the roster: teardown owns it from here
-      d.spawns.admitted(d.spawns.at(req.index), a);   // the entry follows this fork — a heal's replacement included
-      if (!(yield* this.activate(req, a))) continue;
+      d.emit.trace({ kind: 'created', agent: a });
+      d.emit.trace({ kind: 'formatted', agent: a, promptText: req.formattedPrompt, taskContent: req.task.content,
+        tokenCount: req.suffixTokens.length, systemPrompt: req.task.systemPrompt, tools: req.task.tools });
+      if (req.replay) {
+        let landed: boolean;
+        try {
+          landed = yield* this.replay(req.replay, a);
+        } catch (err) {
+          // A fatal failure in the replay is the run's: the pool closes partial, and the forks
+          // not yet landed go back with their requests told why. The replacement itself stays in
+          // the roster for teardown; it has no entry of its own.
+          this.failSpawnBatch(landing.slice(i + 1).map(([r]) => r), forked, [], err, new Set());
+          out.fatal = { err };
+          return born;
+        }
+        if (!landed) { d.spawns.healStoodDown(entry); continue; }
+      }
+      // The entry follows the fork only once the fork is live: a replacement whose lineage did
+      // not land leaves the entry on the original, whose failure stands.
+      d.spawns.admitted(entry, a);
+      yield* this.activate(req, a);
       req.resolve(a);
       born.push(a);
     }
     return born;
   }
 
-  /** Announce the fork, replay its lineage if it has one, and activate it.
-   *  False when the replay could not land: the half-built replacement is
-   *  discarded and the original's failure stands. */
-  private *activate(s: SpawnRequest, a: Agent): Operation<boolean> {
+  /**
+   * The batch did not seat, and nothing in it may outlive the throw: the forks go back (their KV
+   * leases with them), the extends and the waiters hear why, heals stand down, and the ledger reads
+   * `spawn_error` for a request whose own seating threw and `withdrawn` for a sibling it took down.
+   */
+  private failSpawnBatch(
+    requests: readonly SpawnRequest[], forked: ReadonlyMap<SpawnRequest, Agent>, extends_: readonly ExtendRequest[],
+    err: unknown, errored: ReadonlySet<SpawnRequest>,
+  ): void {
     const d = this.d;
-    d.emit.trace({ kind: 'created', agent: a });
-    d.emit.trace({ kind: 'formatted', agent: a, promptText: s.formattedPrompt, taskContent: s.task.content,
-      tokenCount: s.suffixTokens.length, systemPrompt: s.task.systemPrompt, tools: s.task.tools });
-    if (s.replay) {
-      a.healAttempt = s.replay.attempt;
-      try {
-        yield* runReplay(a.branch, s.replay.steps);
-      } catch {
-        d.emit.trace({ kind: 'drop', agent: a, reason: 'pressure_init', done: false });
-        a.failed = 'pressure_init';
-        a.pruneRequested = true;
-        return false;
-      }
-      // The replay restored the KV; restore the receipt ledger to match, so the
-      // read tools see what the branch now holds instead of re-delivering it.
-      for (const h of s.replay.history) a.recordToolResult(h);
-      d.emit.trace({ kind: 'healed', of: s.replay.of, agent: a, rc: s.replay.rc, attempt: s.replay.attempt,
-        pressure: new ContextPressure(d.ctx, d.pressureOpts) });
+    const e = toError(err);
+    for (const x of extends_) x.reject(e);
+    for (const req of requests) {
+      const agent = forked.get(req);
+      if (agent) discardFork(d.forged, agent);
+      const entry = d.spawns.at(req.index);
+      if (req.replay) { d.spawns.healStoodDown(entry); continue; }
+      d.spawns.fail(entry, errored.has(req) ? 'spawn_error' : 'withdrawn');
+      if (!req.discarded) req.reject(e);
     }
+  }
+
+  /** Replay a heal's lineage onto its fork. False when the lineage did not fit (rc 1: the fork
+   *  is intact, or holds a prefix it will not finish): the half-built replacement is discarded
+   *  and the original's failure stands. A fatal failure throws: it is the run's. */
+  private *replay(r: SpawnReplay, a: Agent): Operation<boolean> {
+    const d = this.d;
+    a.healAttempt = r.attempt;
+    try {
+      yield* runReplay(a.branch, r.steps);
+    } catch (err) {
+      const de = decodeErrorOf(err);
+      if (classifyRc(de?.rc, de?.partial, d.ladder.backendSuspect) === 'fatal') throw err;
+      d.emit.trace({ kind: 'drop', agent: a, reason: 'pressure_init', done: false });
+      a.failed = 'pressure_init';
+      a.pruneRequested = true;
+      return false;
+    }
+    // The replay restored the KV; restore the receipt ledger to match, so the
+    // read tools see what the branch now holds instead of re-delivering it.
+    for (const h of r.history) a.recordToolResult(h);
+    d.emit.trace({ kind: 'healed', of: r.of, agent: a, rc: r.rc, attempt: r.attempt,
+      pressure: new ContextPressure(d.ctx, d.pressureOpts) });
+    return true;
+  }
+
+  /** Activate a landed fork: its grammar, then the move into `active` and the announcement. */
+  private *activate(s: SpawnRequest, a: Agent): Operation<void> {
     this.applyLazyGrammar(a);
     // A later move into a final status resolves the agent's `final` future — a waiting orchestrator resumes there.
     a.transition('active');
-    yield* d.emit.emit({ kind: 'spawned', agent: a, after: s.task.after, key: s.key });
-    return true;
+    yield* this.d.emit.emit({ kind: 'spawned', agent: a, after: s.task.after, key: s.key });
   }
 
   /** Read the turn so far. The moment the call is identified as a tool that samples first, the branch

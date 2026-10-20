@@ -5,7 +5,7 @@ import type { Agent } from './Agent';
 import type { AgentEvent } from './types';
 import type { TraceEvent } from './trace-types';
 import type { TraceWriter } from './trace-writer';
-import type { DropReason } from './state';
+import type { DropReason, SettleFailure } from './state';
 import type { Outcome } from './Tool';
 import { type ContextPressure, finiteOrNull, pressureRecord } from './pressure';
 
@@ -54,7 +54,7 @@ export type Transition =
   | { kind: 'recovered'; agent: Agent; result: string }
   | { kind: 'recoveryFailed'; agent: Agent; reason: string; outputExcerpt: string }
   // ── admission and the ladder ──
-  | { kind: 'settleFailed'; agent: Agent; reason: 'media_prefill_failed' | 'tool_result_failed' | 'tool_error'; detail: string; rc?: number; parentTraceId?: number }
+  | { kind: 'settleFailed'; agent: Agent; reason: SettleFailure; detail: string; rc?: number; parentTraceId?: number }
   | { kind: 'deferred'; agent: Agent; rc: number; attempt: number; pressure: ContextPressure }
   | { kind: 'healed'; of: number; agent: Agent; rc?: number; attempt: number; pressure: ContextPressure }
   | { kind: 'prefilled'; agent: Agent; cells: number; role: Outcome | 'probe'; attachments?: readonly Attachment[]; probeText?: string }

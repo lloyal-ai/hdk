@@ -1,5 +1,5 @@
-import { all, spawn } from 'effection';
-import type { Operation, Task } from 'effection';
+import { all, withResolvers } from 'effection';
+import type { Operation } from 'effection';
 import type { Branch } from '@lloyal-labs/sdk';
 import type { Agent } from './Agent';
 import { ExtensionRefused, SpawnRefused, outcomeOfAgent } from './spawns';
@@ -278,55 +278,29 @@ export interface DAGNode {
 export const dag = (nodes: DAGNode[]): Orchestrator => {
   validateDAG(nodes);
   return function* (ctx) {
-    // Each node runs as a child Task. Dependencies are expressed by
-    // awaiting the dep's Task (`yield* depTask`) — Task<T> extends
-    // Future<T> extends Operation<T>, so this is the canonical Effection
-    // cross-task rendezvous (see frontside.com/effection/api/v4/Task).
-    //
-    // Why this beats the older recursive-spawnNode-with-Sets approach:
-    //   - No mutable bookkeeping. The "node N is done" signal IS the
-    //     Task itself; the runtime tracks lifetimes for free.
-    //   - No race window for double-spawn. Each node spawns exactly
-    //     once, by definition (one entry per `tasks.set`).
-    //   - Failure propagates through the dependency edges automatically:
-    //     if node A throws, every task awaiting A's Task receives the
-    //     same error, and structured concurrency halts the rest.
-    const tasks = new Map<string, Task<void>>();
-    // Node id → spawned agent id, filled as each node forks. A dependent's
-    // deps have all completed (and therefore registered) before it spawns,
-    // so the lookup below never races.
-    const agentIds = new Map<string, number>();
+    // Every node runs under one `all`, and a dependency is a future the
+    // dependency's node resolves with its agent id once it has reported and
+    // extended the spine. A node's throw — a refusal among them — fails the
+    // `all`, which halts the other nodes and raises the error here, where the
+    // pool's orchestrator catch reads it.
+    const completed = new Map(nodes.map((n) => [n.id, withResolvers<number>(`dag:${n.id}`)]));
 
     function* runNode(n: DAGNode): Operation<void> {
-      // Gate: wait for every declared dep's task to complete. The map is
-      // fully populated before any node body runs (spawned tasks don't
-      // execute until the parent yields, and the spawn loop below is
-      // synchronous between iterations).
-      for (const depId of n.dependsOn ?? []) {
-        yield* tasks.get(depId)!;
-      }
-      const after = (n.dependsOn ?? [])
-        .map((d) => agentIds.get(d))
-        .filter((x): x is number => typeof x === 'number');
+      const after: number[] = [];
+      for (const depId of n.dependsOn ?? []) after.push(yield* completed.get(depId)!.operation);
       const spawned = yield* ctx.spawn({
         ...n.task,
         parent: n.task.parent ?? ctx.spine,
         ...(after.length > 0 ? { after } : {}),
       });
-      agentIds.set(n.id, spawned.id);
       const agent = yield* ctx.waitFor(spawned);
       if (agent.result && n.userContent) {
         yield* ctx.extendSpine(n.userContent, agent.result);
       }
+      completed.get(n.id)!.resolve(spawned.id);
     }
 
-    for (const n of nodes) {
-      tasks.set(n.id, yield* spawn(() => runNode(n)));
-    }
-    // Await every task. Roots run first (no deps to await); descendants
-    // unblock as their deps complete. Any throw inside a node propagates
-    // here and halts the rest via structured concurrency.
-    for (const t of tasks.values()) yield* t;
+    yield* all(nodes.map((n) => runNode(n)));
   };
 };
 

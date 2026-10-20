@@ -8,8 +8,8 @@ import {
 import type { MultimodalDelta, MultimodalInput } from '@lloyal-labs/sdk';
 import { Ctx, Store, Attachments } from './context';
 import type { TraceEvent } from './trace-types';
-import type { Attachment } from '@lloyal-labs/media';
-import { materialize } from '@lloyal-labs/media';
+import type { Attachment, AttachmentStore, PreparedContent } from '@lloyal-labs/media';
+import { materialize, ContentLost } from '@lloyal-labs/media';
 
 /**
  * Serialized state needed to reconstruct a Branch deterministically.
@@ -281,6 +281,32 @@ export type AgentTurnRecord =
     }
   | { kind: 'probe'; text: string };
 
+/**
+ * A heal's lineage cannot be rebuilt: the content one of its records carries
+ * is gone from the store or has drifted, or the parent the original forked is
+ * gone or has moved since. The ONE throw a heal stands down on — the
+ * original's failure stands and nothing else goes with it. Every other throw
+ * on a heal's way to its seat is a programming error or a contract mismatch,
+ * and reaches the run as the error it is.
+ */
+export class LineageLost extends Error {
+  constructor(detail: string) {
+    super(`heal: the lineage cannot be rebuilt — ${detail}`);
+    this.name = 'LineageLost';
+  }
+}
+
+/** Resolve a record's roots through the store. Content that is gone or has drifted ({@link ContentLost}) is a
+ *  lost lineage; anything else the store throws is its own error and reaches the run as such. */
+function materializeLineage(store: AttachmentStore, roots: readonly Attachment[]): PreparedContent {
+  try {
+    return materialize(store, roots);
+  } catch (err) {
+    if (err instanceof ContentLost) throw new LineageLost(err.message);
+    throw err;
+  }
+}
+
 /** One prefill of a replayed lineage: built once, priced in cells. */
 export type ReplayStep =
   | { kind: 'tokens'; tokens: number[] }
@@ -317,7 +343,7 @@ export function* prepareReplay(
     } else if (r.attachments && r.attachments.length > 0) {
       // Rail by what the roots MATERIALIZE to: a document root expands to no
       // inputs and replays as the tool text it was.
-      const { inputs } = materialize(attachments, r.attachments);
+      const { inputs } = materializeLineage(attachments, r.attachments);
       if (inputs.length === 0) {
         tokenStep(buildToolResultDelta(ctx, r.resultStr, r.callId, opts));
         continue;

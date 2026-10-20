@@ -38,7 +38,8 @@ wire. The bytes decide the door: an image goes through the normalizer
 policy below requires), a PDF through the document ingress
 (`createDocumentIngress`, below); each is also exported on its own. `materialize` is the inverse: given roots, it returns
 the exact bytes to hand the projector (the model's vision encoder). Replay is
-`materialize` called later.
+`materialize` called later. It throws `ContentLost` when a root or a blob is missing from the store or no longer
+hashes to its digest; any other error is the store's own, and is not lost content.
 
 In a lloyal harness you rarely wire this yourself: `@lloyal-labs/rig`
 constructs the project store, and the runtime carries attachments through

@@ -17,6 +17,20 @@
 import type { Attachment, AttachmentManifest, Descriptor } from './attachment';
 
 /**
+ * Content a caller holds a reference to is not in the store, or its bytes no
+ * longer hash to its digest. The one error `materialize` and `resolveVideo`
+ * raise for it, so a caller rebuilding model state from references can tell
+ * "the content is gone" from a store that is broken: a heal stands down on
+ * this alone, and lets any other error reach the run as the error it is.
+ */
+export class ContentLost extends Error {
+  constructor(detail: string) {
+    super(`content lost: ${detail}`);
+    this.name = 'ContentLost';
+  }
+}
+
+/**
  * Content store for a run's media.
  *
  * Read from the {@link Attachments} Effection context, which defaults to

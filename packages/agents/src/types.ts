@@ -400,7 +400,10 @@ export interface SpawnOutcome {
   /** The final agent's result, or `null`. */
   result: string | null;
   exitReason?: AgentExitReason;
-  /** Why it ended without a result on its own terms: a refusal (`no_sequence`, `pressure_init`) or the agent's terminal failure; `null` otherwise. */
+  /** Why it ended without a result on its own terms. Before any agent: a refusal by name
+   *  (`no_sequence`, `pressure_init`), `spawn_error` (a throw on its way to a seat that was not a
+   *  refusal; the run fails with that error) or `withdrawn` (the pool closed, or a sibling's throw
+   *  ended its batch, before it was seated). With an agent: the agent's terminal failure. `null` otherwise. */
   failed: string | null;
 }
 

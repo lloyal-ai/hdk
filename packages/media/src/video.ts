@@ -10,6 +10,7 @@
  */
 import { representationsOf } from './attachment';
 import type { Attachment, Descriptor } from './attachment';
+import { ContentLost } from './store';
 import type { AttachmentStore } from './store';
 import { imageSize, PROJECTOR_FORMATS, VIDEO_CONTAINER_TYPES, sniffMediaType } from './media-type';
 
@@ -202,19 +203,21 @@ const noteOf = (firstFrameMs: number) => (segment: Transcript['segments'][number
 /**
  * Resolve a video root to the input the projector takes, every blob verified.
  *
- * @throws If the root is not a video, or any frame, the transcript or the
+ * @throws {ContentLost} If the video, any frame, the transcript or the
  *         timeline is missing or has drifted from its digest.
+ * @throws If the root is a stored attachment that is not a video.
  *
  * @category Media
  */
 export function resolveVideo(store: AttachmentStore, root: Attachment): VideoInput {
   const manifest = store.getManifest(root.digest);
-  if (!manifest || manifest.config.mediaType !== VIDEO_CONFIG_TYPE) {
+  if (!manifest) throw new ContentLost(`video ${root.digest.slice(0, 19)}… is not in the content store, or its bytes no longer hash to its digest`);
+  if (manifest.config.mediaType !== VIDEO_CONFIG_TYPE) {
     throw new Error(`resolveVideo: ${root.digest.slice(0, 19)}… is not a video in this store`);
   }
   const read = (d: Descriptor, what: string): Uint8Array => {
     const bytes = store.get(d.digest);
-    if (!bytes) throw new Error(`resolveVideo: the ${what} ${d.digest.slice(0, 19)}… is missing or no longer hashes to its digest`);
+    if (!bytes) throw new ContentLost(`the ${what} ${d.digest.slice(0, 19)}… is missing or no longer hashes to its digest`);
     return bytes;
   };
   const meta = asVideoMeta(JSON.parse(new TextDecoder().decode(read(manifest.config, 'timeline'))));

@@ -13,7 +13,7 @@ import { ContextPressure } from './pressure';
 import { recoveryFor, nudgeItem } from './scheduler';
 import {
   type Schedule, type Outputs, type Pending, type Drop, type Recovery, type PrefillItem, type RefusedSpawn,
-  type PrefillOutcome, type Ladder, type DropReason,
+  type PrefillOutcome, type Ladder, type DropReason, type SettleFailure,
   alive, classifyRc, isFatalRc, spawnCells, MAX_DEFER_ATTEMPTS, BACKEND_TRIPWIRE_N, MAX_HEAL_ATTEMPTS, MAX_RETURNS_REJECTED,
 } from './state';
 import { ExtensionRefused, SpawnRefused } from './spawns';
@@ -224,23 +224,37 @@ export class Applier {
       yield* this.stopped(p.agent, p.parsed, S);
     }
 
-    if (out.committed) {
+    if (out.commit) yield* this.committed(out.commit, S);
+    if (out.fatal) throw out.fatal.err;
+  }
+
+  /** The batched commit's outcome: a landed step, or the ladder's reading of
+   *  why it did not land. rc 1 left every branch in the batch intact (the
+   *  native rollback restores sampler, grammar, metrics and revision), so the
+   *  failure is recoverable and the batch gives way: each of its agents takes
+   *  the terminal rung, pruned and announced, its partial report never an
+   *  outcome, while the rest of the pool goes on. A fatal rc still closes the
+   *  pool partial. */
+  private *committed(c: NonNullable<Outputs['commit']>, S: Schedule): Operation<void> {
+    if (c.outcome.ok) {
       this.d.totals.steps++;
-      yield* this.d.emit.emit({ kind: 'tick', activeAgents: this.countAlive(S), pressure: out.commitPressure! });
+      yield* this.d.emit.emit({ kind: 'tick', activeAgents: this.countAlive(S), pressure: c.pressure! });
+      return;
     }
-    if (out.fatal) {
-      if (out.fatal.phase === 'commit') {
-        // KV exhausted mid-report: announce each in-flight extractor failed
-        // BEFORE the pool closes partial, else the UI spins on "writing report".
-        const reason = `scope_error: ${(out.fatal.err as Error)?.message ?? 'unknown'}`;
-        for (const a of this.agentsOf(S)) {
-          if (!a.extracting || a.status !== 'active') continue;
-          yield* this.d.emit.emit({ kind: 'recoveryFailed', agent: a, reason, outputExcerpt: a.rawOutput.slice(0, 200) });
-          a.failed = reason;
-        }
+    const o = c.outcome;
+    if (classifyRc(o.rc, o.partial, this.d.ladder.backendSuspect) === 'fatal') {
+      if (isFatalRc(o.rc)) this.d.ladder.consecutiveFatalRc++;
+      // KV exhausted mid-report: announce each in-flight extractor failed
+      // BEFORE the pool closes partial, else the UI spins on "writing report".
+      const reason = `scope_error: ${o.message}`;
+      for (const a of this.agentsOf(S)) {
+        if (!a.extracting || a.status !== 'active') continue;
+        yield* this.d.emit.emit({ kind: 'recoveryFailed', agent: a, reason, outputExcerpt: a.rawOutput.slice(0, 200) });
+        a.failed = reason;
       }
-      throw out.fatal.err;
+      throw o.err;
     }
+    for (const a of c.agents) yield* this.failSettled(a, 'commit_failed', o.message, o.rc);
   }
 
   private countAlive(S: Schedule): number {
@@ -381,7 +395,7 @@ export class Applier {
         return;
       case 'fatal':
         if (isFatalRc(o.rc)) this.d.ladder.consecutiveFatalRc++;
-        throw Object.assign(new Error(o.message), { rc: o.rc, partial: o.partial });
+        throw o.err;
     }
   }
 
@@ -442,7 +456,7 @@ export class Applier {
     this.d.pending.items.push(it);
   }
 
-  *failSettled(a: Agent, reason: 'media_prefill_failed' | 'tool_result_failed' | 'tool_error', detail: string, rc?: number): Operation<void> {
+  *failSettled(a: Agent, reason: SettleFailure, detail: string, rc?: number): Operation<void> {
     yield* failSettled(this.d.emit, a, reason, detail, rc);
   }
 }
@@ -451,7 +465,7 @@ export class Applier {
  *  resumed. Shared with the executor's intake, whose failures carry the
  *  dispatch as their trace parent. */
 export function* failSettled(
-  emit: Emitter, a: Agent, reason: 'media_prefill_failed' | 'tool_result_failed' | 'tool_error',
+  emit: Emitter, a: Agent, reason: SettleFailure,
   detail: string, rc?: number, parentTraceId?: number,
 ): Operation<void> {
   yield* emit.emit({ kind: 'settleFailed', agent: a, reason, detail, rc, parentTraceId });
