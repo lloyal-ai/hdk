@@ -50,7 +50,7 @@ export class ReadFileTool extends Tool<{ filename: string; startLine?: number; e
           enum: resources.map(r => r.name),
         },
         startLine: { type: 'number', description: 'Start line (1-indexed, from search results)' },
-        endLine: { type: 'number', description: 'End line (1-indexed, from search results)' },
+        endLine: { type: 'number', description: `End line (1-indexed). Defaults to ${this._defaultMaxLines} lines from startLine, clipped at the end of the file.` },
       },
       required: ['filename'],
     };
@@ -112,7 +112,7 @@ export class ReadFileTool extends Tool<{ filename: string; startLine?: number; e
     lineCount: number,
   ): [number, number] {
     const s = Math.max(0, (typeof args.startLine === 'number' ? args.startLine : 1) - 1);
-    const e = Math.min(lineCount, typeof args.endLine === 'number' ? args.endLine : Math.min(this._defaultMaxLines, lineCount));
+    const e = Math.min(lineCount, typeof args.endLine === 'number' ? args.endLine : s + this._defaultMaxLines);
     return [s, e];
   }
 
