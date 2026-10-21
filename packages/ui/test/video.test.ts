@@ -156,3 +156,21 @@ describe('ingestVideo with timestamps off', () => {
     expect(vi.mocked(extractAudioWindows).mock.calls.at(-1)?.[2]).toMatchObject({ maxSampleRate: 16_000 });
   });
 });
+
+describe('ingestVideo for a long clip', () => {
+  it('cuts the soundtrack at the mark interval its sparse frames are recorded with', async () => {
+    vi.mocked(pushBlob).mockResolvedValue({ mediaType: 'video/mp4', digest: `sha256:${'d'.repeat(64)}`, size: 2518 });
+    vi.mocked(ingestMedia).mockImplementation(async () => ({ mediaType: MANIFEST_TYPE, digest: `sha256:${'e'.repeat(64)}`, size: 1 }));
+    // Frames 6 s apart: past the 5 s interval, so marks are recorded two frames apart.
+    vi.mocked(sampleVideo).mockResolvedValueOnce({ durationMs: 24_000, frames: [0, 6000, 12_000, 18_000].map(tMs => ({ tMs, bytes: new Uint8Array([0xff, 0xd8, 0xff]) })) } as never);
+    const listeners: Array<(f: Frame<VideoEvent>) => void> = [];
+    const bridge = {
+      onEvent: (cb: (f: Frame<VideoEvent>) => void) => { listeners.push(cb); return () => { listeners.splice(listeners.indexOf(cb), 1); }; },
+      send: (c: VideoCommand) => {
+        if (c.type === 'video:compose') queueMicrotask(() => [...listeners].forEach(l => l({ ev: { type: 'video:composed', requestId: c.requestId, root: { mediaType: MANIFEST_TYPE, digest: `sha256:${'f'.repeat(64)}`, size: 1 }, untranscribed: [] } } as unknown as Frame<VideoEvent>)));
+      },
+    };
+    await ingestVideo({ origin: '', bridge, file: new Blob([new Uint8Array(10)]), capabilities: { sampling: SAMPLING, transcription: LIMITS } });
+    expect(vi.mocked(extractAudioWindows).mock.calls.at(-1)?.[1]).toBe(12_000);
+  });
+});

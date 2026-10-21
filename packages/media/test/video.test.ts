@@ -319,3 +319,38 @@ describe('videoWindow — a span of a stored video, as a video of its own', () =
     expect(() => media.videoWindow(content, frame.root, { fromMs: 0, toMs: 500 })).toThrow(/not a video/);
   });
 });
+
+describe('the time-mark interval a video is recorded with', () => {
+  async function spread(content: FileAttachmentStore, n: number, durationMs: number, sampling = SAMPLING) {
+    const roots = await frameRoots(content);
+    const frames = Array.from({ length: n }, (_, i) => ({ root: roots[i % roots.length].root, tMs: Math.floor((i * durationMs) / n) }));
+    return media.composeVideo(content, { frames, sampling, durationMs });
+  }
+  const recorded = (content: FileAttachmentStore, root: media.Attachment) =>
+    media.asVideoMeta(JSON.parse(new TextDecoder().decode(content.get(content.getManifest(root.digest)!.config.digest)!)))!.sampling.timestampIntervalMs;
+
+  it('past 5 min 20 s, marks fall at least two frames apart, so frames still fuse in pairs', async () => {
+    const content = store();
+    const root = await spread(content, 64, 360_000);
+    expect(recorded(content, root)).toBeGreaterThanOrEqual(2 * 5625);
+    expect(media.resolveVideo(content, root).timestampIntervalMs).toBe(recorded(content, root));
+    expect(recorded(content, media.videoWindow(content, root, { fromMs: 90_000, toMs: 180_000 }))).toBe(recorded(content, root));
+  });
+
+  it('a clip whose frames are close keeps the sampling\'s own interval: the layout stays llama.cpp\'s', async () => {
+    const content = store();
+    expect(recorded(content, await spread(content, 16, 4000))).toBe(SAMPLING.timestampIntervalMs);
+  });
+
+  it('a clip sampled without marks stays without them', async () => {
+    const content = store();
+    expect(recorded(content, await spread(content, 3, 27_000, { ...SAMPLING, timestampIntervalMs: 0 }))).toBe(0);
+  });
+
+  it('markInterval is the one rule: twice the widest gap between the frames, or the sampling\'s own when that is longer', () => {
+    expect(media.markInterval([0, 250, 500], SAMPLING)).toBe(5000);
+    expect(media.markInterval([0, 6000, 13000], SAMPLING)).toBe(14000);
+    expect(media.markInterval([0], SAMPLING)).toBe(5000);
+    expect(media.markInterval([0, 9000], { ...SAMPLING, timestampIntervalMs: 0 })).toBe(0);
+  });
+});

@@ -108,7 +108,8 @@ export function useVideoCommands({ wire, sampling = DEFAULT_VIDEO_SAMPLING }: Vi
     const store = yield* Attachments.expect();
     const asr = (yield* Services.get())?.transcription;
     const composing = new Map<string, Task<void>>();
-    // What the timeline records: the policy the page was told to sample by, never one it reports back.
+    // What the timeline is composed from: the policy the page was told to sample by, never one it reports
+    // back. Composition widens its mark interval as the frames require (media's markInterval).
     const timeline = { fps: sampling.fps, timestampIntervalMs: sampling.timestampIntervalMs, maxFrames: sampling.maxFrames };
 
     /** Transcribe each window in turn: silence is skipped, a failure is recorded and the rest go on. */

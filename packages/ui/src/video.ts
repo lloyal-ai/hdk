@@ -11,7 +11,7 @@
  * @category UI
  */
 import { useEffect, useState } from 'react';
-import { ingestMedia, pushBlob } from '@lloyal-labs/media';
+import { ingestMedia, markInterval, pushBlob } from '@lloyal-labs/media';
 import { extractAudioWindows, sampleVideo, soundtrackWindowMs } from '@lloyal-labs/media/client';
 import type { Attachment, Descriptor } from '@lloyal-labs/media';
 import type { UntranscribedWindow, VideoCapabilities, VideoCommand, VideoEvent, VideoFrameRef, VideoAudioRef } from '@lloyal-labs/binding';
@@ -78,7 +78,8 @@ export async function ingestVideo(opts: {
   }
   const audio: VideoAudioRef[] = [];
   if (capabilities.transcription) {
-    for await (const window of extractAudioWindows(file, soundtrackWindowMs(sampling, capabilities.transcription), {
+    const marks = { timestampIntervalMs: markInterval(sampled.frames.map(f => f.tMs), sampling) };
+    for await (const window of extractAudioWindows(file, soundtrackWindowMs(marks, capabilities.transcription), {
       ...(signal ? { signal } : {}), maxSampleRate: capabilities.transcription.maxSampleRate,
     })) {
       audio.push({ root: await ingestMedia(origin, window.bytes, { ...(signal ? { signal } : {}) }), startMs: window.startMs, endMs: window.endMs });

@@ -22,7 +22,9 @@ export const TRANSCRIPT_MEDIA_TYPE = 'application/vnd.lloyal.transcript.v1+json'
 /** How a clip was sampled into frames. */
 export interface VideoSampling {
   fps: number;
-  /** A timestamp joins the layout after the frame that crosses each interval; 0 disables them. */
+  /** A timestamp joins the layout after the frame that crosses each interval; 0 disables them. In a
+   *  stored timeline it is the interval the marks were laid out at, which {@link markInterval} may
+   *  have widened past the policy's. */
   timestampIntervalMs: number;
   maxFrames: number;
 }
@@ -107,6 +109,22 @@ export function asVideoMeta(json: unknown): VideoMeta | null {
     : null;
 }
 
+/**
+ * The interval a clip's time marks are recorded at: the sampling's own, or
+ * twice the widest gap between its frames when that is longer. A mark follows
+ * the frame that crosses each interval, so no two neighbouring frames are both
+ * followed by one, and a projector that merges frames two at a time still
+ * fuses them however sparsely a long clip was sampled. A clip sampled without
+ * marks stays without them. Composition records it; the page cuts the
+ * soundtrack by it, so a window's words join the mark that closes it.
+ *
+ * @category Media
+ */
+export function markInterval(frameTimesMs: readonly number[], sampling: Pick<VideoSampling, 'timestampIntervalMs'>): number {
+  const widestGap = Math.max(0, ...frameTimesMs.slice(1).map((t, i) => t - frameTimesMs[i]));
+  return sampling.timestampIntervalMs > 0 ? Math.max(sampling.timestampIntervalMs, 2 * widestGap) : 0;
+}
+
 /** The one representation an admitted image root carries, or a refusal naming the frame. */
 function frameRepresentation(store: AttachmentStore, root: Attachment, index: number): Descriptor {
   const manifest = store.getManifest(root.digest);
@@ -149,7 +167,8 @@ export function soundtrackRefusal(windows: readonly { startMs: unknown; endMs: u
  * Pure over the store: it reads the referenced roots, checks they can be one
  * video (images of one size, times increasing within the clip; recordings
  * that follow one another within it), and commits a manifest that reuses the
- * frames' and recordings' blobs. Transcription is the caller's concern; this
+ * frames' and recordings' blobs. The timeline records the sampling
+ * with the mark interval its frames need ({@link markInterval}). Transcription is the caller's concern; this
  * only records what was heard.
  *
  * @param signal - Checked before the first write, so a cancelled composition commits nothing.
@@ -202,7 +221,8 @@ export async function composeVideo(store: AttachmentStore, parts: {
   // The last check before the first write: a caller that gave up while the
   // source was read gets nothing committed on its behalf.
   signal?.throwIfAborted();
-  return commitVideo(store, 'composeVideo', timeline(first, durationMs, sampling, frames, soundtrack), [...reps, ...heard], transcript, source ?? undefined);
+  const recorded = { ...sampling, timestampIntervalMs: markInterval(frames.map(f => f.tMs), sampling) };
+  return commitVideo(store, 'composeVideo', timeline(first, durationMs, recorded, frames, soundtrack), [...reps, ...heard], transcript, source ?? undefined);
 }
 
 /** The timeline of frames and soundtrack windows, indexed in the order {@link commitVideo} writes them. */
