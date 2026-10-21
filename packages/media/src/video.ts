@@ -9,9 +9,9 @@
  * config, and the original as the source layer when it was retained. A caller
  * never authors the manifest; this is the only place one is made.
  */
-import { representationsOf } from './attachment';
+import { representationsOf, sourceOf } from './attachment';
 import type { Attachment, Descriptor } from './attachment';
-import { recordingOf } from './audio';
+import { AUDIO_MEDIA_TYPE, recordingOf } from './audio';
 import { ContentLost } from './store';
 import type { AttachmentStore } from './store';
 import { imageSize, PROJECTOR_FORMATS, VIDEO_CONTAINER_TYPES, sniffMediaType } from './media-type';
@@ -199,9 +199,23 @@ export async function composeVideo(store: AttachmentStore, parts: {
   const source = parts.source ? await storedContainer(store, parts.source.digest) : undefined;
   if (parts.source && !source) throw new Error('composeVideo: the source is not a stored video container');
 
-  const meta: VideoMeta = {
-    width: first.width,
-    height: first.height,
+  // The last check before the first write: a caller that gave up while the
+  // source was read gets nothing committed on its behalf.
+  signal?.throwIfAborted();
+  return commitVideo(store, 'composeVideo', timeline(first, durationMs, sampling, frames, soundtrack), [...reps, ...heard], transcript, source ?? undefined);
+}
+
+/** The timeline of frames and soundtrack windows, indexed in the order {@link commitVideo} writes them. */
+function timeline(
+  size: { width: number; height: number },
+  durationMs: number,
+  sampling: VideoSampling,
+  frames: readonly { tMs: number }[],
+  soundtrack: readonly { startMs: number; endMs: number }[],
+): VideoMeta {
+  return {
+    width: size.width,
+    height: size.height,
     durationMs,
     frames: frames.map((f, i) => ({ tMs: f.tMs, frame: i })),
     poster: 0,
@@ -210,16 +224,23 @@ export async function composeVideo(store: AttachmentStore, parts: {
       ? { soundtrack: soundtrack.map((w, i) => ({ startMs: w.startMs, endMs: w.endMs, audio: frames.length + i })) }
       : {}),
   };
-  if (!asVideoMeta(meta)) throw new Error('composeVideo: the timeline is not well formed');
-  // The last check before the first write: a caller that gave up while the
-  // source was read gets nothing committed on its behalf.
-  signal?.throwIfAborted();
+}
+
+/**
+ * Write a video manifest: its frames' and windows' representations as given,
+ * the transcript beside them, the timeline as config. A timeline that would
+ * not read back is refused before anything is written.
+ */
+function commitVideo(
+  store: AttachmentStore, caller: string, meta: VideoMeta, media: readonly Descriptor[], transcript?: Transcript, source?: Descriptor,
+): Attachment {
+  if (!asVideoMeta(meta)) throw new Error(`${caller}: the timeline is not well formed`);
   const enc = new TextEncoder();
   const transcriptRep = transcript
     ? [store.putBlob(enc.encode(JSON.stringify(transcript)), TRANSCRIPT_MEDIA_TYPE)]
     : [];
   return store.putAttachment({
-    representations: [...reps, ...heard, ...transcriptRep],
+    representations: [...media, ...transcriptRep],
     ...(source ? { source } : {}),
     config: { mediaType: VIDEO_CONFIG_TYPE, bytes: enc.encode(JSON.stringify(meta)) },
   });
@@ -256,10 +277,23 @@ const noteOf = (firstFrameMs: number) => (segment: Transcript['segments'][number
  * @category Media
  */
 export function resolveVideo(store: AttachmentStore, root: Attachment): VideoInput {
+  const { meta, reps, transcript, read } = storedVideo(store, root, 'resolveVideo');
+  const notes = transcript?.segments.filter(s => s.text.trim().length > 0).map(noteOf(meta.frames[0].tMs)) ?? [];
+  return {
+    kind: 'video',
+    frames: meta.frames.map(f => read(reps[f.frame], 'frame')),
+    timestampsMs: meta.frames.map(f => f.tMs),
+    timestampIntervalMs: meta.sampling.timestampIntervalMs,
+    ...(notes.length > 0 ? { notes } : {}),
+  };
+}
+
+/** A stored video read back, every blob it is read from verified: its manifest, timeline, representations and transcript. */
+function storedVideo(store: AttachmentStore, root: Attachment, caller: string) {
   const manifest = store.getManifest(root.digest);
   if (!manifest) throw new ContentLost(`video ${root.digest.slice(0, 19)}… is not in the content store, or its bytes no longer hash to its digest`);
   if (manifest.config.mediaType !== VIDEO_CONFIG_TYPE) {
-    throw new Error(`resolveVideo: ${root.digest.slice(0, 19)}… is not a video in this store`);
+    throw new Error(`${caller}: ${root.digest.slice(0, 19)}… is not a video in this store`);
   }
   const read = (d: Descriptor, what: string): Uint8Array => {
     const bytes = store.get(d.digest);
@@ -267,25 +301,52 @@ export function resolveVideo(store: AttachmentStore, root: Attachment): VideoInp
     return bytes;
   };
   const meta = asVideoMeta(JSON.parse(new TextDecoder().decode(read(manifest.config, 'timeline'))));
-  if (!meta) throw new Error('resolveVideo: the video timeline is not well formed');
+  if (!meta) throw new Error(`${caller}: the video timeline is not well formed`);
   const reps = representationsOf(manifest);
   const transcriptRep = reps.find(r => r.mediaType === TRANSCRIPT_MEDIA_TYPE);
   const transcript = transcriptRep
     ? asTranscript(JSON.parse(new TextDecoder().decode(read(transcriptRep, 'transcript'))))
     : null;
-  if (transcriptRep && !transcript) throw new Error('resolveVideo: the stored transcript is not well formed');
-  const notes = transcript?.segments.filter(s => s.text.trim().length > 0).map(noteOf(meta.frames[0].tMs)) ?? [];
-  return {
-    kind: 'video',
-    frames: meta.frames.map(f => {
-      const rep = reps[f.frame];
-      if (!rep || !PROJECTOR_FORMATS.includes(rep.mediaType)) throw new Error(`resolveVideo: frame ${f.frame} is not an image`);
-      return read(rep, 'frame');
-    }),
-    timestampsMs: meta.frames.map(f => f.tMs),
-    timestampIntervalMs: meta.sampling.timestampIntervalMs,
-    ...(notes.length > 0 ? { notes } : {}),
-  };
+  if (transcriptRep && !transcript) throw new Error(`${caller}: the stored transcript is not well formed`);
+  meta.frames.forEach(f => {
+    if (!PROJECTOR_FORMATS.includes(reps[f.frame]?.mediaType)) throw new Error(`${caller}: frame ${f.frame} is not an image`);
+  });
+  meta.soundtrack?.forEach(w => {
+    if (reps[w.audio]?.mediaType !== AUDIO_MEDIA_TYPE) throw new Error(`${caller}: soundtrack representation ${w.audio} is not a recording`);
+  });
+  return { manifest, meta, reps, transcript, read };
+}
+
+/**
+ * A span of a stored video, as a video of its own: the frames that fall in it,
+ * the soundtrack windows and transcript segments that overlap it, all at the
+ * video's own times, so a model reading the window cites the moments the
+ * video plays. The frames' and recordings' blobs and the original are reused;
+ * only the window's timeline and its share of the transcript are written.
+ *
+ * @throws {ContentLost} If the video or what it is read from is gone.
+ * @throws If the root is not a video, or the span is empty or holds no frame.
+ *
+ * @category Media
+ */
+export function videoWindow(store: AttachmentStore, root: Attachment, span: { fromMs: number; toMs: number }): Attachment {
+  const { fromMs, toMs } = span;
+  if (!isMs(fromMs) || !isMs(toMs)) throw new Error('videoWindow: the span is two times in whole milliseconds');
+  if (fromMs > toMs) throw new Error('videoWindow: the span ends before it starts');
+  const { manifest, meta, reps, transcript } = storedVideo(store, root, 'videoWindow');
+  const overlaps = (s: { startMs: number; endMs: number }): boolean => s.startMs < toMs && s.endMs > fromMs;
+  const frames = meta.frames.filter(f => f.tMs >= fromMs && f.tMs <= toMs);
+  if (frames.length === 0) throw new Error(`videoWindow: no frame of this video falls between ${fromMs} and ${toMs} ms`);
+  const soundtrack = (meta.soundtrack ?? []).filter(overlaps);
+  const said = transcript?.segments.filter(overlaps) ?? [];
+  return commitVideo(
+    store,
+    'videoWindow',
+    timeline(meta, meta.durationMs, meta.sampling, frames, soundtrack),
+    [...frames.map(f => reps[f.frame]), ...soundtrack.map(w => reps[w.audio])],
+    transcript && said.length > 0 ? { provenance: transcript.provenance, segments: said } : undefined,
+    sourceOf(manifest),
+  );
 }
 
 /** Whether these leading bytes are a video container the single-payload ingress refuses. */

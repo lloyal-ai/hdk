@@ -266,3 +266,56 @@ describe('resolveVideo — a video that is gone is ContentLost; a root that is n
     expect(thrown).not.toBeInstanceOf(ContentLost);
   });
 });
+
+describe('videoWindow — a span of a stored video, as a video of its own', () => {
+  async function stored(content: FileAttachmentStore) {
+    const ingress = createContentIngress(content);
+    const soundtrack = [
+      { root: await ingress.ingest(pcmWav({ frames: 160 })), startMs: 0, endMs: 400 },
+      { root: await ingress.ingest(pcmWav({ frames: 320 })), startMs: 400, endMs: 1000 },
+    ];
+    const spoken = { provenance: { model: 'asr' }, segments: [{ startMs: 0, endMs: 300, text: 'early' }, { startMs: 300, endMs: 900, text: 'later' }] };
+    const source = content.putBlob(MP4, 'application/octet-stream');
+    const root = await media.composeVideo(content, { frames: await frameRoots(content), sampling: SAMPLING, durationMs: 1000, transcript: spoken, soundtrack, source });
+    return { root, manifest: content.getManifest(root.digest)! };
+  }
+  const metaOf = (content: FileAttachmentStore, root: media.Attachment) =>
+    media.asVideoMeta(JSON.parse(new TextDecoder().decode(content.get(content.getManifest(root.digest)!.config.digest)!)))!;
+
+  it('keeps the frames, soundtrack and speech in the span at the video\'s own times, reusing their blobs', async () => {
+    const content = store();
+    const { root, manifest } = await stored(content);
+    const reps = media.representationsOf(manifest);
+    const window = media.videoWindow(content, root, { fromMs: 250, toMs: 500 });
+
+    const meta = metaOf(content, window);
+    const windowReps = media.representationsOf(content.getManifest(window.digest)!);
+    expect(meta.frames.map(f => f.tMs)).toEqual([250, 500]);
+    expect(meta.frames.map(f => windowReps[f.frame].digest)).toEqual([reps[1].digest, reps[2].digest]);
+    expect(meta.soundtrack!.map(w => [w.startMs, w.endMs, windowReps[w.audio].digest])).toEqual([[0, 400, reps[3].digest], [400, 1000, reps[4].digest]]);
+    expect(media.sourceOf(content.getManifest(window.digest)!)?.digest).toBe(media.sourceOf(manifest)!.digest);
+    expect(media.resolveVideo(content, window)).toMatchObject({
+      timestampsMs: [250, 500],
+      notes: [{ atMs: 300, text: ' Speech: "early"' }, { atMs: 900, text: ' Speech: "later"' }],
+    });
+  });
+
+  it('a later span leaves out what came before it', async () => {
+    const content = store();
+    const { root } = await stored(content);
+    const window = media.videoWindow(content, root, { fromMs: 500, toMs: 1000 });
+    const meta = metaOf(content, window);
+    expect(meta.frames.map(f => f.tMs)).toEqual([500]);
+    expect(meta.soundtrack!.map(w => w.startMs)).toEqual([400]);
+    expect(media.resolveVideo(content, window).notes).toEqual([{ atMs: 900, text: ' Speech: "later"' }]);
+  });
+
+  it('refuses a span with no frame in it, one that ends before it starts, and a root that is not a video', async () => {
+    const content = store();
+    const { root } = await stored(content);
+    expect(() => media.videoWindow(content, root, { fromMs: 600, toMs: 900 })).toThrow(/no frame of this video falls between 600 and 900 ms/);
+    expect(() => media.videoWindow(content, root, { fromMs: 500, toMs: 250 })).toThrow(/ends before it starts/);
+    const [frame] = await frameRoots(content);
+    expect(() => media.videoWindow(content, frame.root, { fromMs: 0, toMs: 500 })).toThrow(/not a video/);
+  });
+});
