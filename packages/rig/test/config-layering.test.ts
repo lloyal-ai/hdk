@@ -12,7 +12,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { isGuardOverrides } from '@lloyal-labs/lloyal-agents';
-import { attachmentSettings, defineConfig, modelSettings, CONFIG_VERSION, DEFAULT_VIDEO_MAX_DURATION_MS, DEFAULT_VIDEO_SAMPLING } from '../src/config';
+import { attachmentSettings, defineConfig, modelSettings, CONFIG_VERSION, DEFAULT_VIDEO_SAMPLING } from '../src/config';
 import { loadYml, loadConfig, saveLocalConfig, runnerConfig } from '../src/config-layering';
 import { makeEdgeRunner, makeServedRunner } from '../src/runner';
 
@@ -42,8 +42,9 @@ describe('the attachments family: bounds declared as data, enforced and said fro
     expect(config.attachments.context).toBe(0.7);
     expect(config.attachments.video).toEqual({
       fps: 2, maxFrames: DEFAULT_VIDEO_SAMPLING.maxFrames, maxEdgePx: DEFAULT_VIDEO_SAMPLING.maxEdgePx,
-      maxDurationSeconds: DEFAULT_VIDEO_MAX_DURATION_MS / 1000,
     });
+    // No limit on length unless the harness sets one.
+    expect(config.attachments.video?.maxDurationSeconds).toBeUndefined();
   });
 
   it('a value out of range fails the load, naming the range it takes', () => {

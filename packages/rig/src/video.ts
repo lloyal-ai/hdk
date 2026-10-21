@@ -19,7 +19,7 @@ import { Attachments } from '@lloyal-labs/lloyal-agents';
 import { asAttachment, composeVideo, DIGEST_PATTERN, durationRefusal, resolveAudio, soundtrackRefusal } from '@lloyal-labs/media';
 import type { Attachment, AttachmentStore, AudioAdmission, Descriptor, Transcript } from '@lloyal-labs/media';
 import type { UntranscribedWindow, VideoCapabilities, VideoCommand, VideoEvent } from '@lloyal-labs/binding';
-import { DEFAULT_VIDEO_MAX_DURATION_MS, DEFAULT_VIDEO_SAMPLING } from './config';
+import { DEFAULT_VIDEO_SAMPLING } from './config';
 import type { attachmentSettings, ConfigOf } from './config';
 import { Services } from './services';
 import type { CommandGroup } from './serve-commands';
@@ -33,13 +33,14 @@ export interface VideoCommandsOptions {
   config?: () => VideoSettings;
 }
 
-/** The policy a video is sampled and composed under now: the harness's video block over rig's defaults. */
-function videoPolicy(settings: VideoSettings): { sampling: VideoCapabilities['sampling']; maxDurationMs: number } {
+/** The policy a video is sampled and composed under now: the harness's video block over rig's defaults, and
+ *  a length limit only when the harness sets one. */
+function videoPolicy(settings: VideoSettings): Pick<VideoCapabilities, 'sampling' | 'maxDurationMs'> {
   const { fps, maxFrames, maxEdgePx, maxDurationSeconds } = settings.attachments?.video ?? {};
   const sampled = Object.fromEntries(Object.entries({ fps, maxFrames, maxEdgePx }).filter(([, v]) => v !== undefined));
   return {
     sampling: { ...DEFAULT_VIDEO_SAMPLING, ...sampled },
-    maxDurationMs: maxDurationSeconds !== undefined ? maxDurationSeconds * 1000 : DEFAULT_VIDEO_MAX_DURATION_MS,
+    ...(maxDurationSeconds !== undefined ? { maxDurationMs: maxDurationSeconds * 1000 } : {}),
   };
 }
 
@@ -140,8 +141,7 @@ export function useVideoCommands({ wire, config = () => ({}) }: VideoCommandsOpt
     yield* provide({
       handlers: {
         *'video:describe'() {
-          const { sampling, maxDurationMs } = videoPolicy(config());
-          yield* wire.send({ type: 'video:capabilities', capabilities: { sampling, maxDurationMs, transcription: asr?.limits ?? null } });
+          yield* wire.send({ type: 'video:capabilities', capabilities: { ...videoPolicy(config()), transcription: asr?.limits ?? null } });
         },
         *'video:compose'(command) {
           if (typeof command.requestId !== 'string' || !command.requestId || command.requestId.length > 128) return;

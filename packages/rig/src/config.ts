@@ -248,15 +248,6 @@ export const DEFAULT_VIDEO_SAMPLING: VideoCapabilities['sampling'] = Object.free
 });
 
 /**
- * The longest clip composed when nothing says otherwise. Frames are capped,
- * so length costs upload and one transcription per soundtrack window: ten
- * minutes is about 120 windows.
- *
- * @category Rig
- */
-export const DEFAULT_VIDEO_MAX_DURATION_MS = 10 * 60_000;
-
-/**
  * The attachments family: how much of the context a turn's attachments may
  * fill, and the policy a video is sampled and composed under. Spread it into
  * `defineConfig` beside `modelSettings`. Each bound is stated by the refusal of
@@ -283,7 +274,7 @@ export const attachmentSettings = defineConfig({
     describe: 'The longest edge a frame is scaled to, in pixels: detail against tokens per frame. 1,920 is a full HD frame; under 64 a frame shows nothing to read.',
   },
   'attachments.video.maxDurationSeconds': {
-    yml: 'attachments.video.maxDurationSeconds', integer: true, min: 1, max: 86_400, default: DEFAULT_VIDEO_MAX_DURATION_MS / 1000, applies: 'session',
-    describe: 'The longest clip a harness takes, refused before any byte is pushed. Length costs upload and one transcription per soundtrack window; footage longer than a day is outside what one video holds.',
+    yml: 'attachments.video.maxDurationSeconds', integer: true, min: 1, max: 86_400, applies: 'session',
+    describe: 'The longest clip a harness takes, refused before any byte is pushed; unset, a clip of any length is taken. Length costs upload and one transcription per soundtrack window. A limit set here is at most a day.',
   },
 });

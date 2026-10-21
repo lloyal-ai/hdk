@@ -381,11 +381,12 @@ function spokenLength(ms: number): string {
  * The sentence refusing a clip longer than a harness takes, if it is. The one
  * limit on a clip's length: the page asks it of the container's duration
  * before pushing any byte, and the host asks it again before transcribing.
+ * Without a limit, a clip of any length is taken.
  *
  * @category Media
  */
-export function durationRefusal(durationMs: number, maxDurationMs: number): string | undefined {
-  return durationMs > maxDurationMs
+export function durationRefusal(durationMs: number, maxDurationMs?: number): string | undefined {
+  return maxDurationMs !== undefined && durationMs > maxDurationMs
     ? `This video runs ${spokenLength(durationMs)}; this harness takes videos up to ${spokenLength(maxDurationMs)}.`
     : undefined;
 }

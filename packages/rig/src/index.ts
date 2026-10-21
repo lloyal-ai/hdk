@@ -87,7 +87,7 @@ export type { InstallStep, InstallStepEvent, InstallCommand } from './install-pr
 export { checkMachine, refusalMessage, gb, MACHINE_CLASS_FLOOR_BYTES } from './machine';
 export type { MachineClass, MachineVerdict } from './machine';
 // A harness's configuration as data: one declaration per key, the model block shipped.
-export { attachmentSettings, defineConfig, modelSettings, mergeConfig, CONFIG_VERSION, DEFAULT_VIDEO_MAX_DURATION_MS, DEFAULT_VIDEO_SAMPLING } from './config';
+export { attachmentSettings, defineConfig, modelSettings, mergeConfig, CONFIG_VERSION, DEFAULT_VIDEO_SAMPLING } from './config';
 export type { ConfigKey, ConfigTable, ConfigTier, ConfigOf, OriginOf, CliOf, YmlOf, ModelFamily } from './config';
 export { createGrantStore } from './grant-store';
 export { createAbilityRegistry, ability, abilityRequiresConfig } from './registry';

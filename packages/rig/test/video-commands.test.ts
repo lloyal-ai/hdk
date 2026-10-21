@@ -15,11 +15,11 @@ import { FileAttachmentStore, createContentIngress } from '@lloyal-labs/media/no
 import type { Attachment } from '@lloyal-labs/media';
 import type { VideoEvent } from '@lloyal-labs/binding';
 import { Services } from '../src/services';
-import { attachmentSettings, DEFAULT_VIDEO_MAX_DURATION_MS, DEFAULT_VIDEO_SAMPLING } from '../src/config';
+import { attachmentSettings, DEFAULT_VIDEO_SAMPLING } from '../src/config';
 import { useVideoCommands } from '../src/video';
 
-/** A harness's video block, as its config hands it over. */
-const VIDEO = { fps: DEFAULT_VIDEO_SAMPLING.fps, maxFrames: DEFAULT_VIDEO_SAMPLING.maxFrames, maxEdgePx: DEFAULT_VIDEO_SAMPLING.maxEdgePx, maxDurationSeconds: DEFAULT_VIDEO_MAX_DURATION_MS / 1000 };
+/** A harness's video block, as its config hands it over, from a harness that sets every video setting, a length limit among them. */
+const VIDEO = { fps: DEFAULT_VIDEO_SAMPLING.fps, maxFrames: DEFAULT_VIDEO_SAMPLING.maxFrames, maxEdgePx: DEFAULT_VIDEO_SAMPLING.maxEdgePx, maxDurationSeconds: 600 };
 import type { Transcription } from '../src/transcription';
 
 const fixture = (name: string): Uint8Array =>
@@ -76,7 +76,7 @@ describe('video commands', () => {
         yield* group.handlers['video:describe']!({ type: 'video:describe' });
       });
       // No service, no limits: the page extracts no soundtrack.
-      expect(events).toEqual([{ type: 'video:capabilities', capabilities: { sampling: DEFAULT_VIDEO_SAMPLING, maxDurationMs: DEFAULT_VIDEO_MAX_DURATION_MS, transcription: bound ? limits : null } }]);
+      expect(events).toEqual([{ type: 'video:capabilities', capabilities: { sampling: DEFAULT_VIDEO_SAMPLING, transcription: bound ? limits : null } }]);
     }
   });
 
@@ -153,6 +153,22 @@ describe('video commands', () => {
     });
     expect(events.map(e => (e as { requestId: string }).requestId).sort()).toEqual(['long', 'many']);
     expect(events.every(e => e.type === 'video:error')).toBe(true);
+  });
+
+  it('with no length limit set, describes none and composes a clip of any length', async () => {
+    const content = store();
+    const { frames } = await parts(content);
+    const events: VideoEvent[] = [];
+    await run(function* () {
+      yield* Attachments.set(content);
+      const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } } });
+      yield* group.handlers['video:describe']!({ type: 'video:describe' });
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'hours', frames, durationMs: 3 * 3_600_000 });
+      for (let i = 0; i < 50 && !events.some(e => e.type === 'video:composed' || e.type === 'video:error'); i++) yield* sleep(5);
+    });
+    const [described] = events.filter(e => e.type === 'video:capabilities') as Extract<VideoEvent, { type: 'video:capabilities' }>[];
+    expect(described.capabilities).not.toHaveProperty('maxDurationMs');
+    expect(events.map(e => e.type)).toEqual(['video:capabilities', 'video:composed']);
   });
 
   it('refuses a clip longer than it takes, before transcribing anything', async () => {

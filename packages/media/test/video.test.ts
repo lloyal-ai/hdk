@@ -362,4 +362,8 @@ describe('durationRefusal — the one limit on a clip\'s length, said the same b
     expect(media.durationRefusal(754_000, 600_000)).toBe('This video runs 12 min 34 s; this harness takes videos up to 10 min.');
     expect(media.durationRefusal(1250, 1000)).toBe('This video runs 1.3 s; this harness takes videos up to 1 s.');
   });
+
+  it('takes a clip of any length when the harness sets no limit', () => {
+    expect(media.durationRefusal(3 * 3_600_000)).toBeUndefined();
+  });
 });
