@@ -402,9 +402,13 @@ export function buildToolResultDeltaMultimodal(
  * is directly comparable with `ContextPressure.headroom` and with the
  * `tokensDecoded` the prefill reports back.
  *
+ * On an embedding context it is what {@link SessionContext.encodeMultimodal}
+ * must hold in one dispatch, the model's own special tokens included: measure
+ * `{ sep: [], prompt, bitmaps }` against `nBatch` before embedding it.
+ *
  * @param ctx - Active session context (created with `mmprojPath`)
- * @param delta - Built by any of the multimodal delta builders
- * @returns Cells the prefill would add: separator, text and projected media rows
+ * @param delta - Built by any of the multimodal delta builders, or `{ sep: [], prompt, bitmaps }` for an embed
+ * @returns Cells the prefill, or the embed, would take: separator, text and projected media rows
  *
  * @category Agents
  */

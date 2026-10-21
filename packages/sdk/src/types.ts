@@ -1499,6 +1499,30 @@ export interface SessionContext {
   encode(tokens: number[]): Promise<void>;
 
   /**
+   * Encode a multimodal input for embedding extraction: a prompt with media
+   * markers and its inputs (images, audio, a video or a video window, in
+   * marker order), read with the model's own special tokens and placed whole
+   * in one dispatch. Text around the media embeds with it, as one vector.
+   *
+   * Requires a context created with `embeddings: true` and an `mmprojPath`;
+   * any other context throws before any work. An input larger than one
+   * dispatch (`nBatch`) rejects with nothing run, so measure it first with
+   * {@link deltaCells}. Read the vector with {@link getEmbeddings}.
+   *
+   * @param prompt Text with one media marker per input
+   * @param inputs The media, in marker order
+   * @param audioLimits Admission limits for audio inputs
+   * @example
+   * ```typescript
+   * const ctx = await createContext({ modelPath, mmprojPath, embeddings: true, poolingType: PoolingType.MEAN });
+   * await ctx.kvCacheClear();
+   * await ctx.encodeMultimodal(MEDIA_MARKER, [imageBytes]);
+   * const vector = ctx.getEmbeddings();
+   * ```
+   */
+  encodeMultimodal(prompt: string, inputs: MultimodalInput[], audioLimits?: AudioLimits): Promise<void>;
+
+  /**
    * Get embedding vector from context (after encode)
    *
    * Returns the embedding vector for the encoded text.
@@ -1700,7 +1724,9 @@ export interface SessionContext {
 
   /** @internal — KV cells a multimodal prefill WOULD consume, known before
    *  anything decodes. Pays media decode + tokenization, not the encoder
-   *  encode. Wrapped by {@link deltaCells}. */
+   *  encode. On an embedding context it counts the model's own special
+   *  tokens, as {@link encodeMultimodal} places the input. Wrapped by
+   *  {@link deltaCells}. */
   _cellsMultimodal(
     sepTokens: number[],
     prompt: string,

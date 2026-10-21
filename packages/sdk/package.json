@@ -51,7 +51,8 @@
   "scripts": {
     "build": "tsc -b",
     "test:audio": "tsx --tsconfig ../../tsconfig.base.json --test test/audio-integration.ts",
-    "test:images": "tsx --tsconfig ../../tsconfig.base.json --test test/image-integration.ts"
+    "test:images": "tsx --tsconfig ../../tsconfig.base.json --test test/image-integration.ts",
+    "test:embedding": "tsx --tsconfig ../../tsconfig.base.json --test test/embedding-integration.ts"
   },
   "files": [
     "dist/",

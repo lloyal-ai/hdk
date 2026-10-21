@@ -116,6 +116,11 @@ export interface MockSessionContextOpts {
   cellsUsed?: number;
   /** Token ID treated as stop token. Default: 999 */
   stopToken?: number;
+  /** Created with embeddings on, as `createContext({ embeddings: true })`: a multimodal input is then
+   *  measured and encoded with the model's own special tokens, and the context pools. As the binding does, the
+   *  measure counts those tokens for a branch prefill too, which places none: a branch is not prefilled on an
+   *  embedding context. Default: false */
+  embeddings?: boolean;
   /** Sequence leases, one per live branch (the root's included): what
    *  `BranchStore.available` counts down and a fork fails without. Default:
    *  unbudgeted — every fork succeeds and `available` stays large. */
@@ -159,11 +164,13 @@ export class MockSessionContext implements SessionContext {
   // ── Properties ────────────────────────────────────────────────
   readonly vocabSize = 32000;
   readonly nBatch: number;
+  readonly embeddings: boolean;
   readonly memorySize = 0;
 
   constructor(opts?: MockSessionContextOpts) {
     this.nCtx = opts?.nCtx ?? 16384;
     this.nBatch = opts?.nBatch ?? 512;
+    this.embeddings = opts?.embeddings ?? false;
     this.cellsUsed = opts?.cellsUsed ?? 0;
     this.stopToken = opts?.stopToken ?? 999;
     this.nSeqMax = opts?.nSeqMax;
@@ -478,7 +485,28 @@ export class MockSessionContext implements SessionContext {
     // The kernel prices by laying the video out, so what prefill refuses cannot be priced either.
     const refusal = inputs.map(videoRefusal).find(Boolean);
     if (refusal) throw new Error(refusal);
-    return this._mockCost(sepTokens, prompt, inputs, this.mockImageCells);
+    return this._mockCost(sepTokens, prompt, inputs, this.mockImageCells) + (this.embeddings ? this.mockSpecialTokens : 0);
+  }
+
+  /** The model's own special tokens an embedding context frames an input with (BOS and EOS). */
+  mockSpecialTokens = 2;
+
+  /** Every multimodal input embedded, with what it cost, so a test can assert what an embedder sent. */
+  readonly multimodalEncodes: Array<{ prompt: string; inputKinds: MediaKind[]; cells: number }> = [];
+
+  /** As the binding: only an embedding context with a projector embeds media, refused before any work; an
+   *  input larger than one dispatch rejects with nothing run, as the kernel's whole placement does. */
+  encodeMultimodal(prompt: string, inputs: MultimodalInput[], audioLimits?: AudioLimits): Promise<void> {
+    if (!this.embeddings || !(this.supportsVision() || this.supportsAudio())) {
+      throw new Error('encodeMultimodal requires an embedding context with a projector; pass embeddings: true and mmprojPath to createContext');
+    }
+    return (async () => {
+      const cells = await this._cellsMultimodal([], prompt, inputs, audioLimits);
+      if (cells > this.nBatch) {
+        throw new Error(`decode::segments - a stream of ${cells} entries must go in one dispatch on this context, which holds ${this.nBatch}`);
+      }
+      this.multimodalEncodes.push({ prompt, inputKinds: inputs.map(kindOf), cells });
+    })();
   }
 
   /** Whether the mock stands in for a vision-capable projector. */
@@ -655,7 +683,7 @@ export class MockSessionContext implements SessionContext {
   async encode(_tokens: number[]): Promise<void> {}
   getEmbeddings(_normalize?: boolean): Float32Array { return new Float32Array(0); }
   getEmbeddingDimension(): number { return 0; }
-  hasPooling(): boolean { return false; }
+  hasPooling(): boolean { return this.embeddings; }
 
   // ── KV cache operations (stubs) ───────────────────────────────
 
