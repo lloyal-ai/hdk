@@ -9,6 +9,6 @@
  * `mediabunny` is an OPTIONAL peer, needed only by this entry.
  */
 export {
-  captureFrames, extractAudioWindows, fitEdge, frameTimes, pcm16Wav, quietestCut, sampleVideo, SoundtrackCutter, soundtrackWindowMs,
+  captureFrames, extractAudioWindows, fitEdge, frameTimes, pcm16Wav, quietestCut, sampleVideo, SoundtrackCutter, soundtrackWindowMs, videoDurationMs,
 } from './video-sampling';
 export type { SampledFrame, SoundtrackWindow } from './video-sampling';

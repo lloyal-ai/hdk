@@ -16,7 +16,7 @@
 import { resource, until, useAbortSignal, useScope } from 'effection';
 import type { Operation, Task } from 'effection';
 import { Attachments } from '@lloyal-labs/lloyal-agents';
-import { asAttachment, composeVideo, DIGEST_PATTERN, resolveAudio, soundtrackRefusal } from '@lloyal-labs/media';
+import { asAttachment, composeVideo, DIGEST_PATTERN, durationRefusal, resolveAudio, soundtrackRefusal } from '@lloyal-labs/media';
 import type { Attachment, AttachmentStore, AudioAdmission, Descriptor, Transcript } from '@lloyal-labs/media';
 import type { UntranscribedWindow, VideoCapabilities, VideoCommand, VideoEvent } from '@lloyal-labs/binding';
 import { Services } from './services';
@@ -37,9 +37,19 @@ export const DEFAULT_VIDEO_SAMPLING: VideoCapabilities['sampling'] = Object.free
   maxEdgePx: 640,
 });
 
+/**
+ * The longest clip composed when nothing says otherwise. Frames are capped,
+ * so length costs upload and one transcription per soundtrack window: ten
+ * minutes is about 120 windows.
+ *
+ * @category Rig
+ */
+export const DEFAULT_VIDEO_MAX_DURATION_MS = 10 * 60_000;
+
 export interface VideoCommandsOptions {
   wire: { send(event: VideoEvent): Operation<void> };
   sampling?: VideoCapabilities['sampling'];
+  maxDurationMs?: number;
 }
 
 type Compose = Extract<VideoCommand, { type: 'video:compose' }>;
@@ -102,7 +112,7 @@ function unadmittedOrMisplaced(
 }
 
 /** The commands that compose a video, for a harness to serve beside its own. */
-export function useVideoCommands({ wire, sampling = DEFAULT_VIDEO_SAMPLING }: VideoCommandsOptions): Operation<CommandGroup<VideoCommand>> {
+export function useVideoCommands({ wire, sampling = DEFAULT_VIDEO_SAMPLING, maxDurationMs = DEFAULT_VIDEO_MAX_DURATION_MS }: VideoCommandsOptions): Operation<CommandGroup<VideoCommand>> {
   return resource(function* (provide) {
     const owner = yield* useScope();
     const store = yield* Attachments.expect();
@@ -142,7 +152,7 @@ export function useVideoCommands({ wire, sampling = DEFAULT_VIDEO_SAMPLING }: Vi
     yield* provide({
       handlers: {
         *'video:describe'() {
-          yield* wire.send({ type: 'video:capabilities', capabilities: { sampling, transcription: asr?.limits ?? null } });
+          yield* wire.send({ type: 'video:capabilities', capabilities: { sampling, maxDurationMs, transcription: asr?.limits ?? null } });
         },
         *'video:compose'(command) {
           if (typeof command.requestId !== 'string' || !command.requestId || command.requestId.length > 128) return;
@@ -150,6 +160,11 @@ export function useVideoCommands({ wire, sampling = DEFAULT_VIDEO_SAMPLING }: Vi
           // One task per id: a second under the same id would take its place and leave the first uncancellable.
           if (composing.has(requestId)) {
             yield* wire.send({ type: 'video:error', requestId, message: 'A video is already being composed under that request.' });
+            return;
+          }
+          const tooLong = isMs(command.durationMs) ? durationRefusal(command.durationMs, maxDurationMs) : undefined;
+          if (tooLong) {
+            yield* wire.send({ type: 'video:error', requestId, message: tooLong });
             return;
           }
           const refs = references(command, sampling.maxFrames);

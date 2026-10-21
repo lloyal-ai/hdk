@@ -11,8 +11,8 @@
  * @category UI
  */
 import { useEffect, useState } from 'react';
-import { ingestMedia, markInterval, pushBlob } from '@lloyal-labs/media';
-import { extractAudioWindows, sampleVideo, soundtrackWindowMs } from '@lloyal-labs/media/client';
+import { durationRefusal, ingestMedia, markInterval, pushBlob } from '@lloyal-labs/media';
+import { extractAudioWindows, sampleVideo, soundtrackWindowMs, videoDurationMs } from '@lloyal-labs/media/client';
 import type { Attachment, Descriptor } from '@lloyal-labs/media';
 import type { UntranscribedWindow, VideoCapabilities, VideoCommand, VideoEvent, VideoFrameRef, VideoAudioRef } from '@lloyal-labs/binding';
 import { useAvailability, useContentOrigin, useHarness } from './provider.js';
@@ -65,6 +65,8 @@ export async function ingestVideo(opts: {
   const { origin, bridge, file, signal, onProgress } = opts;
   const capabilities = opts.capabilities ?? await describe(bridge, signal);
   const { sampling } = capabilities;
+  const tooLong = durationRefusal(await videoDurationMs(file), capabilities.maxDurationMs);
+  if (tooLong) throw new Error(tooLong);
   const source: Descriptor = await pushBlob(origin, file, {
     ...(signal ? { signal } : {}),
     onProgress: (done, total) => onProgress?.({ phase: 'uploading', done, total }),

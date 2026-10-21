@@ -192,6 +192,16 @@ export async function sampleVideo(
   }
 }
 
+/** A clip's length from its container, in whole milliseconds, read before any frame is decoded. */
+export async function videoDurationMs(file: Blob): Promise<number> {
+  const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
+  try {
+    return clipDurationMs(await input.computeDuration());
+  } finally {
+    input.dispose();
+  }
+}
+
 /** One pass over the clip's frames, decoded the way `decoding` prefers. */
 async function readFrames(
   file: Blob,

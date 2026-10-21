@@ -15,7 +15,7 @@ import { FileAttachmentStore, createContentIngress } from '@lloyal-labs/media/no
 import type { Attachment } from '@lloyal-labs/media';
 import type { VideoEvent } from '@lloyal-labs/binding';
 import { Services } from '../src/services';
-import { DEFAULT_VIDEO_SAMPLING, useVideoCommands } from '../src/video';
+import { DEFAULT_VIDEO_MAX_DURATION_MS, DEFAULT_VIDEO_SAMPLING, useVideoCommands } from '../src/video';
 import type { Transcription } from '../src/transcription';
 
 const fixture = (name: string): Uint8Array =>
@@ -72,7 +72,7 @@ describe('video commands', () => {
         yield* group.handlers['video:describe']!({ type: 'video:describe' });
       });
       // No service, no limits: the page extracts no soundtrack.
-      expect(events).toEqual([{ type: 'video:capabilities', capabilities: { sampling: DEFAULT_VIDEO_SAMPLING, transcription: bound ? limits : null } }]);
+      expect(events).toEqual([{ type: 'video:capabilities', capabilities: { sampling: DEFAULT_VIDEO_SAMPLING, maxDurationMs: DEFAULT_VIDEO_MAX_DURATION_MS, transcription: bound ? limits : null } }]);
     }
   });
 
@@ -108,6 +108,22 @@ describe('video commands', () => {
     // Every window is kept for models, heard or not: silence and a failed transcription are still sound.
     const meta = JSON.parse(new TextDecoder().decode(content.get(manifest.config.digest)!));
     expect(meta.soundtrack).toEqual(audio.map((w, i) => ({ startMs: w.startMs, endMs: w.endMs, audio: frames.length + i })));
+  });
+
+  it('refuses a clip longer than it takes, before transcribing anything', async () => {
+    const content = store();
+    const { frames, audio } = await parts(content);
+    const events: VideoEvent[] = [];
+    let heardAny = 0;
+    await run(function* () {
+      yield* Attachments.set(content);
+      yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, *transcribe(a) { heardAny++; return heard(a, 'x'); } } });
+      const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } }, maxDurationMs: 1000 });
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'long', frames, audio, durationMs: 1250 });
+      for (let i = 0; i < 50 && !events.some(e => e.type === 'video:error'); i++) yield* sleep(5);
+    });
+    expect(events).toEqual([{ type: 'video:error', requestId: 'long', message: 'This video runs 1.3 s; this harness takes videos up to 1 s.' }]);
+    expect(heardAny).toBe(0);
   });
 
   it('announces no transcription for a video without a soundtrack', async () => {

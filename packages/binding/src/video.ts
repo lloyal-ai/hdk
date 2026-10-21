@@ -23,6 +23,8 @@ export interface UntranscribedWindow {
 /** What the page needs to sample a clip the way this host will compose it. */
 export interface VideoCapabilities {
   sampling: VideoSampling & { maxEdgePx: number };
+  /** The longest clip this host composes, in milliseconds: the page refuses a longer one before it pushes any byte. */
+  maxDurationMs: number;
   /**
    * The limits each soundtrack window must meet to be transcribed here, or
    * null when no transcription service is bound: the page extracts audio only

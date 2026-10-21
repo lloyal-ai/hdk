@@ -354,3 +354,12 @@ describe('the time-mark interval a video is recorded with', () => {
     expect(media.markInterval([0, 9000], { ...SAMPLING, timestampIntervalMs: 0 })).toBe(0);
   });
 });
+
+describe('durationRefusal — the one limit on a clip\'s length, said the same by the page and the host', () => {
+  it('takes a clip up to the limit and refuses one past it, in words', () => {
+    expect(media.durationRefusal(600_000, 600_000)).toBeUndefined();
+    expect(media.durationRefusal(3_600_000, 600_000)).toBe('This video runs 60 min; this harness takes videos up to 10 min.');
+    expect(media.durationRefusal(754_000, 600_000)).toBe('This video runs 12 min 34 s; this harness takes videos up to 10 min.');
+    expect(media.durationRefusal(1250, 1000)).toBe('This video runs 1.3 s; this harness takes videos up to 1 s.');
+  });
+});

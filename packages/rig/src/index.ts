@@ -153,7 +153,7 @@ export { bufferedCommandSignal } from './buffered-command-signal';
 export { HarnessExit } from './harness-exit';
 export type { Transcriber, Transcription } from './transcription';
 export { useVoiceCommands } from './voice';
-export { DEFAULT_VIDEO_SAMPLING, useVideoCommands } from './video';
+export { DEFAULT_VIDEO_MAX_DURATION_MS, DEFAULT_VIDEO_SAMPLING, useVideoCommands } from './video';
 export type { VideoCommandsOptions } from './video';
 export type { VoiceCommandsOptions } from './voice';
 export type { VoiceCommand, VoiceEvent, VoiceCapabilities, VoiceResult } from '@lloyal-labs/binding';

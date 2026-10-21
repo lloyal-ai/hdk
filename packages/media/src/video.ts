@@ -369,5 +369,26 @@ export function videoWindow(store: AttachmentStore, root: Attachment, span: { fr
   );
 }
 
+/** A length as a reader says it: tenths of a second under a minute, whole minutes and seconds past it. */
+function spokenLength(ms: number): string {
+  if (ms < 60_000) return `${Math.round(ms / 100) / 10} s`;
+  const seconds = Math.round(ms / 1000);
+  const [minutes, rest] = [Math.floor(seconds / 60), seconds % 60];
+  return rest > 0 ? `${minutes} min ${rest} s` : `${minutes} min`;
+}
+
+/**
+ * The sentence refusing a clip longer than a harness takes, if it is. The one
+ * limit on a clip's length: the page asks it of the container's duration
+ * before pushing any byte, and the host asks it again before transcribing.
+ *
+ * @category Media
+ */
+export function durationRefusal(durationMs: number, maxDurationMs: number): string | undefined {
+  return durationMs > maxDurationMs
+    ? `This video runs ${spokenLength(durationMs)}; this harness takes videos up to ${spokenLength(maxDurationMs)}.`
+    : undefined;
+}
+
 /** Whether these leading bytes are a video container the single-payload ingress refuses. */
 export const isVideoContainer = (bytes: Uint8Array): boolean => VIDEO_CONTAINER_TYPES.includes(sniffMediaType(bytes));

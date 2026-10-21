@@ -6,7 +6,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Frame, VideoCommand, VideoEvent } from '@lloyal-labs/binding';
 import { MANIFEST_TYPE, ingestMedia, pushBlob } from '@lloyal-labs/media';
-import { extractAudioWindows, sampleVideo } from '@lloyal-labs/media/client';
+import { extractAudioWindows, sampleVideo, videoDurationMs } from '@lloyal-labs/media/client';
 import { ingestVideo } from '../src/video';
 
 vi.mock('@lloyal-labs/media', async (original) => ({ ...await original<object>(), ingestMedia: vi.fn(), pushBlob: vi.fn() }));
@@ -14,10 +14,12 @@ vi.mock('@lloyal-labs/media', async (original) => ({ ...await original<object>()
 vi.mock('@lloyal-labs/media/client', () => ({
   sampleVideo: vi.fn(async () => ({ durationMs: 2000, frames: [0, 250, 500, 750, 1000, 1250, 1500, 1750].map(tMs => ({ tMs, bytes: new Uint8Array([0xff, 0xd8, 0xff]) })) })),
   extractAudioWindows: vi.fn(async function* () {}),
+  videoDurationMs: vi.fn(async () => 2000),
   soundtrackWindowMs: (s: { timestampIntervalMs: number }) => (s.timestampIntervalMs > 0 ? s.timestampIntervalMs : 5000),
 }));
 
 const SAMPLING = { fps: 4, timestampIntervalMs: 5000, maxFrames: 64, maxEdgePx: 640 };
+const MAX_MS = 600_000;
 const LIMITS = { maxBytes: 16 * 1024 * 1024, maxDurationSeconds: 60, maxChannels: 1, maxSampleRate: 16_000 };
 
 describe('ingestVideo', () => {
@@ -40,7 +42,7 @@ describe('ingestVideo', () => {
     const progress: string[] = [];
     const attached = await ingestVideo({
       origin: '', bridge, file: new Blob([new Uint8Array(10)], { type: 'video/mp4' }),
-      capabilities: { sampling: SAMPLING, transcription: null }, onProgress: (p) => progress.push(p.phase),
+      capabilities: { sampling: SAMPLING, maxDurationMs: MAX_MS, transcription: null }, onProgress: (p) => progress.push(p.phase),
     });
     expect(attached.root).toEqual(root);
     const compose = sent.find(c => c.type === 'video:compose') as Extract<VideoCommand, { type: 'video:compose' }>;
@@ -64,7 +66,7 @@ describe('ingestVideo before the host has described video', () => {
       onEvent: (cb: (f: Frame<VideoEvent>) => void) => { listeners.push(cb); return () => { listeners.splice(listeners.indexOf(cb), 1); }; },
       send: (c: VideoCommand) => {
         sent.push(c.type);
-        if (c.type === 'video:describe') emit({ type: 'video:capabilities', capabilities: { sampling: SAMPLING, transcription: null } });
+        if (c.type === 'video:describe') emit({ type: 'video:capabilities', capabilities: { sampling: SAMPLING, maxDurationMs: MAX_MS, transcription: null } });
         if (c.type === 'video:compose') emit({ type: 'video:composed', requestId: c.requestId, root: { mediaType: MANIFEST_TYPE, digest: `sha256:${'f'.repeat(64)}`, size: 1 } as never, untranscribed: [] });
       },
     };
@@ -105,7 +107,7 @@ describe('ingestVideo, cancelled while the host composes', () => {
     };
     return { bridge, sent, listeners, composing };
   }
-  const capabilities = { sampling: SAMPLING, transcription: null };
+  const capabilities = { sampling: SAMPLING, maxDurationMs: MAX_MS, transcription: null };
 
   it('rejects at once, tells the host, and keeps no listener, though the host never answers', async () => {
     const host = silentHost(false);
@@ -150,7 +152,7 @@ describe('ingestVideo with timestamps off', () => {
         if (c.type === 'video:compose') queueMicrotask(() => [...listeners].forEach(l => l({ ev: { type: 'video:composed', requestId: c.requestId, root: { mediaType: MANIFEST_TYPE, digest: `sha256:${'f'.repeat(64)}`, size: 1 }, untranscribed: [] } } as unknown as Frame<VideoEvent>)));
       },
     };
-    await ingestVideo({ origin: '', bridge, file: new Blob([new Uint8Array(10)]), capabilities: { sampling: { ...SAMPLING, timestampIntervalMs: 0 }, transcription: LIMITS } });
+    await ingestVideo({ origin: '', bridge, file: new Blob([new Uint8Array(10)]), capabilities: { sampling: { ...SAMPLING, timestampIntervalMs: 0 }, maxDurationMs: MAX_MS, transcription: LIMITS } });
     expect(vi.mocked(extractAudioWindows).mock.calls.at(-1)?.[1]).toBe(5000);
     // Written no faster than the service admits.
     expect(vi.mocked(extractAudioWindows).mock.calls.at(-1)?.[2]).toMatchObject({ maxSampleRate: 16_000 });
@@ -170,7 +172,21 @@ describe('ingestVideo for a long clip', () => {
         if (c.type === 'video:compose') queueMicrotask(() => [...listeners].forEach(l => l({ ev: { type: 'video:composed', requestId: c.requestId, root: { mediaType: MANIFEST_TYPE, digest: `sha256:${'f'.repeat(64)}`, size: 1 }, untranscribed: [] } } as unknown as Frame<VideoEvent>)));
       },
     };
-    await ingestVideo({ origin: '', bridge, file: new Blob([new Uint8Array(10)]), capabilities: { sampling: SAMPLING, transcription: LIMITS } });
+    await ingestVideo({ origin: '', bridge, file: new Blob([new Uint8Array(10)]), capabilities: { sampling: SAMPLING, maxDurationMs: MAX_MS, transcription: LIMITS } });
     expect(vi.mocked(extractAudioWindows).mock.calls.at(-1)?.[1]).toBe(12_000);
+  });
+});
+
+describe('ingestVideo for a clip longer than the host takes', () => {
+  it('refuses it from the container\'s own duration, before pushing any byte', async () => {
+    vi.mocked(pushBlob).mockClear();
+    vi.mocked(ingestMedia).mockClear();
+    vi.mocked(videoDurationMs).mockResolvedValueOnce(3_600_000);
+    const bridge = { onEvent: () => () => {}, send: vi.fn() };
+    await expect(ingestVideo({ origin: '', bridge, file: new Blob([new Uint8Array(10)]), capabilities: { sampling: SAMPLING, maxDurationMs: MAX_MS, transcription: LIMITS } }))
+      .rejects.toThrow('This video runs 60 min; this harness takes videos up to 10 min.');
+    expect(pushBlob).not.toHaveBeenCalled();
+    expect(ingestMedia).not.toHaveBeenCalled();
+    expect(bridge.send).not.toHaveBeenCalled();
   });
 });
