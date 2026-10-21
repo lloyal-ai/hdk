@@ -2,14 +2,16 @@
  * @file A video as one attachment, composed by the host from references.
  *
  * The page decodes a clip into frames, each admitted as its own image root,
- * and, when a transcription service is bound, transcribes its soundtrack. The
- * host then composes ONE manifest: the frames' representation descriptors
+ * and cuts its soundtrack into windows, each admitted as a recording. The host
+ * transcribes the windows when a transcription service is bound, then composes
+ * ONE manifest: the frames' and the windows' representation descriptors
  * reused in time order, the transcript beside them, a typed timeline as the
  * config, and the original as the source layer when it was retained. A caller
  * never authors the manifest; this is the only place one is made.
  */
 import { representationsOf } from './attachment';
 import type { Attachment, Descriptor } from './attachment';
+import { recordingOf } from './audio';
 import { ContentLost } from './store';
 import type { AttachmentStore } from './store';
 import { imageSize, PROJECTOR_FORMATS, VIDEO_CONTAINER_TYPES, sniffMediaType } from './media-type';
@@ -35,6 +37,10 @@ export interface VideoMeta {
   /** The representation shown before playback, a frame index. */
   poster: number;
   sampling: VideoSampling;
+  /** The soundtrack's windows in time order; `audio` indexes the manifest's
+   *  representations. The original plays with sound; these are what a model
+   *  that hears is given. Absent when the clip had no soundtrack. */
+  soundtrack?: { startMs: number; endMs: number; audio: number }[];
 }
 
 /** What a transcription service heard, segment by segment, on the clip's timeline. */
@@ -62,6 +68,9 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 const isMs = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
 /** Strictly increasing times, the order the native video input requires. */
 const increasing = (times: readonly unknown[]): boolean => times.every((t, i) => isMs(t) && (i === 0 || t > (times[i - 1] as number)));
+/** Spans in time order, each starting where or after the one before it ends. */
+const followOneAnother = (spans: readonly { startMs: number; endMs: number }[]): boolean =>
+  spans.every((s, i) => i === 0 || s.startMs >= spans[i - 1].endMs);
 /** A span inside a clip of `durationMs`. */
 const withinClip = (startMs: unknown, endMs: unknown, durationMs: number): boolean =>
   isMs(startMs) && isMs(endMs) && startMs <= endMs && endMs <= durationMs;
@@ -88,9 +97,12 @@ export function asVideoMeta(json: unknown): VideoMeta | null {
   };
   const samplingOk = isObj(sampling) && typeof sampling.fps === 'number' && Number.isFinite(sampling.fps) && sampling.fps > 0 &&
     isMs(sampling.timestampIntervalMs) && positive(sampling.maxFrames);
+  const soundtrackOk = json.soundtrack === undefined || (Array.isArray(json.soundtrack) && isMs(durationMs) &&
+    json.soundtrack.every(w => isObj(w) && withinClip(w.startMs, w.endMs, durationMs) && isMs(w.audio)) &&
+    followOneAnother(json.soundtrack as { startMs: number; endMs: number }[]));
   return positive(width) && positive(height) && isMs(durationMs) && Array.isArray(frames) && frames.length > 0 &&
     frames.every(frameOk) && timesOk(frames) && isMs(poster) &&
-    samplingOk
+    samplingOk && soundtrackOk
     ? json as unknown as VideoMeta
     : null;
 }
@@ -105,13 +117,40 @@ function frameRepresentation(store: AttachmentStore, root: Attachment, index: nu
   return reps[0];
 }
 
+/** The one representation an admitted recording carries, or a refusal naming the window. */
+function soundtrackRepresentation(store: AttachmentStore, root: Attachment, index: number): Descriptor {
+  try {
+    return recordingOf(store, root).representation;
+  } catch {
+    throw new Error(`composeVideo: soundtrack window ${index} is not a recording in this store`);
+  }
+}
+
+/**
+ * The sentence refusing a soundtrack's place on a clip of `durationMs`, if a
+ * window ends before it starts, runs past the clip, or overlaps the one before
+ * it. The host asks this before transcribing anything; composition asks it again.
+ *
+ * @category Media
+ */
+export function soundtrackRefusal(windows: readonly { startMs: unknown; endMs: unknown }[], durationMs: unknown): string | undefined {
+  const placed = (w: { startMs: unknown; endMs: unknown }, i: number): string | undefined =>
+    !isMs(w.startMs) || !isMs(w.endMs) ? `Soundtrack window ${i} has no time on the clip.`
+    : w.startMs > w.endMs ? `Soundtrack window ${i} ends before it starts.`
+    : !isMs(durationMs) || !withinClip(w.startMs, w.endMs, durationMs) ? `Soundtrack window ${i} runs past the end of the clip.`
+    : undefined;
+  return windows.map(placed).find((r) => r !== undefined)
+    ?? (followOneAnother(windows as readonly { startMs: number; endMs: number }[]) ? undefined : 'Soundtrack windows must follow one another.');
+}
+
 /**
  * Compose one video attachment from admitted frame roots.
  *
  * Pure over the store: it reads the referenced roots, checks they can be one
- * video (images of one size, times increasing within the clip), and commits a
- * manifest that reuses the frames' blobs. Transcription is the caller's
- * concern; this only records what was heard.
+ * video (images of one size, times increasing within the clip; recordings
+ * that follow one another within it), and commits a manifest that reuses the
+ * frames' and recordings' blobs. Transcription is the caller's concern; this
+ * only records what was heard.
  *
  * @param signal - Checked before the first write, so a cancelled composition commits nothing.
  * @throws When the parts cannot be one video, naming why, or when `signal` aborted.
@@ -122,10 +161,11 @@ export async function composeVideo(store: AttachmentStore, parts: {
   frames: readonly { root: Attachment; tMs: number }[];
   sampling: VideoSampling;
   durationMs: number;
+  soundtrack?: readonly { root: Attachment; startMs: number; endMs: number }[];
   transcript?: Transcript;
   source?: Descriptor;
 }, signal?: AbortSignal): Promise<Attachment> {
-  const { frames, sampling, durationMs, transcript } = parts;
+  const { frames, sampling, durationMs, soundtrack = [], transcript } = parts;
   if (frames.length === 0) throw new Error('composeVideo: a video needs at least one frame');
   if (frames.length > sampling.maxFrames) {
     throw new Error(`composeVideo: the sampling allows at most ${sampling.maxFrames} frames, not ${frames.length}`);
@@ -145,6 +185,9 @@ export async function composeVideo(store: AttachmentStore, parts: {
   if (!isMs(durationMs) || frames[frames.length - 1].tMs > durationMs) {
     throw new Error('composeVideo: frame times must fall within the clip');
   }
+  const heard = soundtrack.map((w, i) => soundtrackRepresentation(store, w.root, i));
+  const offTimeline = soundtrackRefusal(soundtrack, durationMs);
+  if (offTimeline) throw new Error(`composeVideo: ${offTimeline}`);
   if (transcript && !asTranscript(transcript)) throw new Error('composeVideo: the transcript is not well formed');
   transcript?.segments.forEach((segment, i) => {
     if (!withinClip(segment.startMs, segment.endMs, durationMs)) {
@@ -163,6 +206,9 @@ export async function composeVideo(store: AttachmentStore, parts: {
     frames: frames.map((f, i) => ({ tMs: f.tMs, frame: i })),
     poster: 0,
     sampling: { ...sampling },
+    ...(soundtrack.length > 0
+      ? { soundtrack: soundtrack.map((w, i) => ({ startMs: w.startMs, endMs: w.endMs, audio: frames.length + i })) }
+      : {}),
   };
   if (!asVideoMeta(meta)) throw new Error('composeVideo: the timeline is not well formed');
   // The last check before the first write: a caller that gave up while the
@@ -173,7 +219,7 @@ export async function composeVideo(store: AttachmentStore, parts: {
     ? [store.putBlob(enc.encode(JSON.stringify(transcript)), TRANSCRIPT_MEDIA_TYPE)]
     : [];
   return store.putAttachment({
-    representations: [...reps, ...transcriptRep],
+    representations: [...reps, ...heard, ...transcriptRep],
     ...(source ? { source } : {}),
     config: { mediaType: VIDEO_CONFIG_TYPE, bytes: enc.encode(JSON.stringify(meta)) },
   });

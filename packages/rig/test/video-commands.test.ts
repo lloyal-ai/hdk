@@ -105,6 +105,9 @@ describe('video commands', () => {
       segments: [{ startMs: 0, endMs: 500, text: 'one, two, three', language: 'English' }],
     });
     expect(materialize(content, [composed.root]).inputs).toHaveLength(1);
+    // Every window is kept for models, heard or not: silence and a failed transcription are still sound.
+    const meta = JSON.parse(new TextDecoder().decode(content.get(manifest.config.digest)!));
+    expect(meta.soundtrack).toEqual(audio.map((w, i) => ({ startMs: w.startMs, endMs: w.endMs, audio: frames.length + i })));
   });
 
   it('announces no transcription for a video without a soundtrack', async () => {
@@ -120,7 +123,7 @@ describe('video commands', () => {
     expect(events.map(e => e.type)).toEqual(['video:composed']);
   });
 
-  it('refuses a soundtrack window that is not an admitted recording, or runs past the clip, before transcribing anything', async () => {
+  it('refuses a soundtrack window that is not an admitted recording, runs past the clip or overlaps the one before it, before transcribing anything', async () => {
     const content = store();
     const { frames, audio } = await parts(content);
     for (const transcribing of [false, true]) {
@@ -132,8 +135,10 @@ describe('video commands', () => {
         const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } } });
         yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'forged', frames, audio: [{ root: frames[0].root, startMs: 0, endMs: 500 }], durationMs: 1250 });
         yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'late', frames, audio: [{ ...audio[0], startMs: 1000, endMs: 2000 }], durationMs: 1250 });
-        for (let i = 0; i < 50 && events.filter(e => e.type === 'video:error').length < 2; i++) yield* sleep(5);
+        yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'unordered', frames, audio: [audio[1], audio[0]], durationMs: 1250 });
+        for (let i = 0; i < 50 && events.filter(e => e.type === 'video:error').length < 3; i++) yield* sleep(5);
       });
+      expect(events).toContainEqual({ type: 'video:error', requestId: 'unordered', message: 'Soundtrack windows must follow one another.' });
       expect(events).toContainEqual(expect.objectContaining({ type: 'video:error', requestId: 'forged', message: expect.stringMatching(/^Soundtrack window 0 is not an admitted recording/) }));
       expect(events).toContainEqual({ type: 'video:error', requestId: 'late', message: 'Soundtrack window 0 runs past the end of the clip.' });
       expect(events.some(e => e.type === 'video:composed')).toBe(false);

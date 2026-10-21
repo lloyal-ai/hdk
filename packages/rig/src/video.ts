@@ -16,7 +16,7 @@
 import { resource, until, useAbortSignal, useScope } from 'effection';
 import type { Operation, Task } from 'effection';
 import { Attachments } from '@lloyal-labs/lloyal-agents';
-import { asAttachment, composeVideo, DIGEST_PATTERN, resolveAudio } from '@lloyal-labs/media';
+import { asAttachment, composeVideo, DIGEST_PATTERN, resolveAudio, soundtrackRefusal } from '@lloyal-labs/media';
 import type { Attachment, AttachmentStore, AudioAdmission, Descriptor, Transcript } from '@lloyal-labs/media';
 import type { UntranscribedWindow, VideoCapabilities, VideoCommand, VideoEvent } from '@lloyal-labs/binding';
 import { Services } from './services';
@@ -65,7 +65,7 @@ function references(command: Compose, maxFrames: number):
   if (frames.some(f => !f.root || !isMs(f.tMs))) return { refused: 'A frame is not an admitted image reference.' };
   if (frames.length > maxFrames) return { refused: `This host composes at most ${maxFrames} frames a video, not ${frames.length}.` };
   const audio = (Array.isArray(command.audio) ? command.audio : []).map(a => ({ root: asAttachment(a?.root), startMs: a?.startMs, endMs: a?.endMs }));
-  if (audio.some(a => !a.root || !isMs(a.startMs) || !isMs(a.endMs) || a.endMs < a.startMs)) {
+  if (audio.some(a => !a.root || !isMs(a.startMs) || !isMs(a.endMs))) {
     return { refused: 'A soundtrack window is not an admitted audio reference.' };
   }
   const source = command.source === undefined ? undefined : asBlob(command.source);
@@ -78,26 +78,27 @@ function references(command: Compose, maxFrames: number):
 }
 
 /**
- * The sentence refusing a soundtrack window, if one is not a recording this
+ * The sentence refusing a soundtrack, if a window is not a recording this
  * store admitted (read back under the admission limits it will be transcribed
- * under) or runs past the clip. Checked before any window is transcribed, with
- * or without a transcription service, as a frame is.
+ * under) or has no place on the clip's timeline (media's rule, the one the
+ * composition keeps). Checked before any window is transcribed, with or
+ * without a transcription service, as a frame is.
  */
-function soundtrackRefusal(
+function unadmittedOrMisplaced(
   store: AttachmentStore,
-  windows: readonly { root: Attachment; endMs: number }[],
+  windows: readonly { root: Attachment; startMs: number; endMs: number }[],
   durationMs: unknown,
   limits?: Readonly<AudioAdmission>,
 ): string | undefined {
-  const refusal = (w: { root: Attachment; endMs: number }, i: number): string | undefined => {
+  const unadmitted = (w: { root: Attachment }, i: number): string | undefined => {
     try {
       resolveAudio(store, w.root, limits);
+      return undefined;
     } catch (e) {
       return `Soundtrack window ${i} is not an admitted recording: ${message(e)}`;
     }
-    return isMs(durationMs) && w.endMs <= durationMs ? undefined : `Soundtrack window ${i} runs past the end of the clip.`;
   };
-  return windows.map(refusal).find((r) => r !== undefined);
+  return windows.map(unadmitted).find((r) => r !== undefined) ?? soundtrackRefusal(windows, durationMs);
 }
 
 /** The commands that compose a video, for a harness to serve beside its own. */
@@ -155,7 +156,7 @@ export function useVideoCommands({ wire, sampling = DEFAULT_VIDEO_SAMPLING }: Vi
             yield* wire.send({ type: 'video:error', requestId, message: refs.refused });
             return;
           }
-          const unfit = soundtrackRefusal(store, refs.audio, command.durationMs, asr?.limits);
+          const unfit = unadmittedOrMisplaced(store, refs.audio, command.durationMs, asr?.limits);
           if (unfit !== undefined) {
             yield* wire.send({ type: 'video:error', requestId, message: unfit });
             return;
@@ -167,7 +168,7 @@ export function useVideoCommands({ wire, sampling = DEFAULT_VIDEO_SAMPLING }: Vi
               // that lands while it reads the source stops it before it writes anything.
               const signal = yield* useAbortSignal();
               const root = yield* until(composeVideo(store, {
-                frames: refs.frames, sampling: timeline, durationMs: command.durationMs,
+                frames: refs.frames, sampling: timeline, durationMs: command.durationMs, soundtrack: refs.audio,
                 ...(transcript ? { transcript } : {}),
                 ...(refs.source ? { source: refs.source } : {}),
               }, signal));

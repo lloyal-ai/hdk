@@ -1,5 +1,5 @@
 import { representationsOf } from './attachment';
-import type { Attachment, Descriptor } from './attachment';
+import type { Attachment, AttachmentManifest, Descriptor } from './attachment';
 import type { AttachmentStore } from './store';
 
 export const AUDIO_CONFIG_TYPE = 'application/vnd.lloyal.audio.v1+json' as const;
@@ -107,14 +107,19 @@ export function asAudioMeta(value: unknown): AudioMeta | null {
     m.frames >= 2 && m.durationSeconds === m.frames / m.sampleRate && typeof m.silent === 'boolean' ? m : null;
 }
 
-/** Resolve the admitted representation, rechecking both its digest and the caller's current admission limits. */
-export function resolveAudio(store: AttachmentStore, attachment: Attachment, limits: Partial<AudioAdmission> = {}): AdmittedAudio {
-  const bounds = audioAdmission(limits);
+/** What makes a root a recording: an audio manifest carrying one WAV representation. */
+export function recordingOf(store: AttachmentStore, attachment: Attachment): { manifest: AttachmentManifest; representation: Descriptor } {
   const manifest = store.getManifest(attachment.digest);
   if (!manifest || manifest.config.mediaType !== AUDIO_CONFIG_TYPE) throw new Error('missing audio manifest or invalid digest');
   const representations = representationsOf(manifest);
   if (representations.length !== 1 || representations[0].mediaType !== AUDIO_MEDIA_TYPE) throw new Error('invalid audio representation');
-  const representation = representations[0];
+  return { manifest, representation: representations[0] };
+}
+
+/** Resolve the admitted representation, rechecking both its digest and the caller's current admission limits. */
+export function resolveAudio(store: AttachmentStore, attachment: Attachment, limits: Partial<AudioAdmission> = {}): AdmittedAudio {
+  const bounds = audioAdmission(limits);
+  const { manifest, representation } = recordingOf(store, attachment);
   if (representation.size > bounds.maxBytes) throw new Error('audio exceeds the encoded byte limit');
   if (manifest.config.size > 1024) throw new Error('audio metadata exceeds its size limit');
   const bytes = store.get(representation.digest);

@@ -120,6 +120,69 @@ describe('composeVideo', () => {
   });
 });
 
+describe('composeVideo keeps the soundtrack for models', () => {
+  async function soundtrack(content: FileAttachmentStore) {
+    const ingress = createContentIngress(content);
+    return [
+      { root: await ingress.ingest(pcmWav({ frames: 160 })), startMs: 0, endMs: 2000 },
+      { root: await ingress.ingest(pcmWav({ frames: 320 })), startMs: 2000, endMs: 4000 },
+    ];
+  }
+
+  it('lists each soundtrack window on the timeline, reusing the recordings\' blobs', async () => {
+    const content = store();
+    const windows = await soundtrack(content);
+    const root = await media.composeVideo(content, { frames: await frameRoots(content), sampling: SAMPLING, durationMs: 4000, transcript, soundtrack: windows });
+
+    const manifest = content.getManifest(root.digest)!;
+    const reps = media.representationsOf(manifest);
+    const meta = media.asVideoMeta(JSON.parse(new TextDecoder().decode(content.get(manifest.config.digest)!)))!;
+    expect(meta.soundtrack).toEqual([{ startMs: 0, endMs: 2000, audio: 3 }, { startMs: 2000, endMs: 4000, audio: 4 }]);
+    expect(meta.soundtrack!.map(w => reps[w.audio].digest))
+      .toEqual(windows.map(w => media.representationsOf(content.getManifest(w.root.digest)!)[0].digest));
+    expect(reps.map(r => r.mediaType).slice(3)).toEqual([media.AUDIO_MEDIA_TYPE, media.AUDIO_MEDIA_TYPE, media.TRANSCRIPT_MEDIA_TYPE]);
+  });
+
+  it('finds the audio of a span from the manifest alone', async () => {
+    const content = store();
+    const root = await media.composeVideo(content, { frames: await frameRoots(content), sampling: SAMPLING, durationMs: 4000, soundtrack: await soundtrack(content) });
+    const manifest = content.getManifest(root.digest)!;
+    const meta = media.asVideoMeta(JSON.parse(new TextDecoder().decode(content.get(manifest.config.digest)!)))!;
+    const heard = (fromMs: number, toMs: number) => meta.soundtrack!.filter(w => w.startMs < toMs && w.endMs > fromMs).map(w => w.audio);
+    expect(heard(1500, 2500)).toEqual([3, 4]);
+    expect(heard(2500, 3000)).toEqual([4]);
+    expect(media.representationsOf(manifest)[4].mediaType).toBe(media.AUDIO_MEDIA_TYPE);
+  });
+
+  it('the model still sees frames and notes: a recording is never read as a frame', async () => {
+    const content = store();
+    const root = await media.composeVideo(content, { frames: await frameRoots(content), sampling: SAMPLING, durationMs: 4000, transcript, soundtrack: await soundtrack(content) });
+    const video = media.resolveVideo(content, root);
+    expect(video.frames).toHaveLength(3);
+    expect(video.notes).toEqual([{ atMs: 750, text: ' Speech: "one, two, three"' }]);
+    expect(materialize(content, [root]).inputs).toHaveLength(1);
+  });
+
+  it('refuses a window that is not a recording, runs past the clip, or is out of order', async () => {
+    const content = store();
+    const frames = await frameRoots(content);
+    const windows = await soundtrack(content);
+    const compose = (soundtrack: Parameters<typeof media.composeVideo>[1]['soundtrack']) =>
+      media.composeVideo(content, { frames, sampling: SAMPLING, durationMs: 4000, soundtrack });
+    await expect(compose([{ root: frames[0].root, startMs: 0, endMs: 500 }])).rejects.toThrow(/soundtrack window 0 is not a recording/);
+    await expect(compose([{ ...windows[0], endMs: 9000 }])).rejects.toThrow(/Soundtrack window 0 runs past the end of the clip/);
+    await expect(compose([windows[1], windows[0]])).rejects.toThrow(/Soundtrack windows must follow one another/);
+  });
+
+  it('asVideoMeta refuses a soundtrack that is off the timeline', () => {
+    const meta = { width: 320, height: 240, durationMs: 1000, poster: 0, sampling: SAMPLING, frames: [{ tMs: 0, frame: 0 }] };
+    expect(media.asVideoMeta({ ...meta, soundtrack: [{ startMs: 0, endMs: 1000, audio: 1 }] })).not.toBeNull();
+    expect(media.asVideoMeta({ ...meta, soundtrack: [{ startMs: 0, endMs: 2000, audio: 1 }] })).toBeNull();
+    expect(media.asVideoMeta({ ...meta, soundtrack: [{ startMs: 500, endMs: 100, audio: 1 }] })).toBeNull();
+    expect(media.asVideoMeta({ ...meta, soundtrack: [{ startMs: 0, endMs: 1000 }] })).toBeNull();
+  });
+});
+
 describe('materialize and resolveVideo', () => {
   it('a video is ONE typed input: frames on a timeline, its transcript as notes', async () => {
     const content = store();
