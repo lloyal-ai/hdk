@@ -9,12 +9,14 @@
  * declared by none; `version` is rig's.
  *
  * `modelSettings` is the model family — one block per model, each key at the
- * path `harness.yml` names it by — so an app spreads it and declares only its
- * own keys. Node-free: the renderer may import the table and the types it derives.
+ * path `harness.yml` names it by — and `attachmentSettings` the attachments
+ * family, a turn's context share and the video policy, so an app spreads them
+ * and declares only its own keys. Node-free: the renderer may import the table and the types it derives.
  *
  * @category Rig
  */
 import type { RerankInstruction } from '@lloyal-labs/sdk';
+import type { VideoCapabilities } from '@lloyal-labs/binding';
 import type { BaseHarnessConfig, ConfigOriginValue, ConfigPatch } from './runner';
 import { isBag } from './config-paths';
 import type { Bag } from './config-paths';
@@ -40,10 +42,15 @@ export interface ConfigKey {
   cli?: string;
   /** A path: `~` expanded and made absolute at the boundary, whichever rung supplied it. */
   path?: true;
-  /** A positive integer; the env rung parses digits, the others refuse anything else. */
+  /** A positive integer; the env rung parses digits, the others refuse anything else. With `min` or `max`, a whole
+   *  number within them, and `min` replaces the floor of one. */
   integer?: true;
   /** The values it may take. A committed value outside them fails the load. */
   oneOf?: readonly string[];
+  /** The least and most a number may be, inclusive; with `integer`, a whole one. The refusal states them, so the
+   *  constraint a reader is shown is the one the load enforces. The env rung parses whole numbers only. */
+  min?: number;
+  max?: number;
   /** Any other rule. A committed value that fails it fails the load; a local one falls through. */
   check?: (value: unknown) => boolean;
   /** What stands when no rung supplies a value. Makes the key always present — inside a block, only once the
@@ -65,6 +72,7 @@ type Widen<X> = X extends string ? string : X extends number ? number : X extend
 type ValueOf<D> =
   D extends { oneOf: readonly (infer U)[] } ? U
   : D extends { integer: true } ? number
+  : D extends { min: number } | { max: number } ? number
   : D extends { check: (value: unknown) => value is infer G } ? G
   : D extends { default: infer X } ? Widen<X>
   : string;
@@ -223,3 +231,59 @@ export const modelSettings = defineConfig({
 
 /** The model family as the layering resolves it: one block per model, present when a rung requested it. */
 export type ModelFamily = ConfigOf<typeof modelSettings>['model'];
+
+/**
+ * How a clip is sampled when nothing says otherwise: llama.cpp's own video
+ * defaults (4 fps, a timestamp every 5 s), a frame cap that keeps a clip within
+ * a working context, and a longest edge that keeps each frame's projection
+ * small. A clip longer than `maxFrames / fps` is sampled more sparsely.
+ *
+ * @category Rig
+ */
+export const DEFAULT_VIDEO_SAMPLING: VideoCapabilities['sampling'] = Object.freeze({
+  fps: 4,
+  timestampIntervalMs: 5000,
+  maxFrames: 64,
+  maxEdgePx: 640,
+});
+
+/**
+ * The longest clip composed when nothing says otherwise. Frames are capped,
+ * so length costs upload and one transcription per soundtrack window: ten
+ * minutes is about 120 windows.
+ *
+ * @category Rig
+ */
+export const DEFAULT_VIDEO_MAX_DURATION_MS = 10 * 60_000;
+
+/**
+ * The attachments family: how much of the context a turn's attachments may
+ * fill, and the policy a video is sampled and composed under. Spread it into
+ * `defineConfig` beside `modelSettings`. Each bound is stated by the refusal of
+ * a value outside it. The time-mark interval is not a setting: composition
+ * derives it from the frames, and setting it by hand would stop them fusing.
+ *
+ * @category Rig
+ */
+export const attachmentSettings = defineConfig({
+  'attachments.context': {
+    yml: 'attachments.context', min: 0.1, max: 1, default: 1, applies: 'session',
+    describe: 'The share of the context a turn\'s attachments may fill, which the app passes to `admitted`. A tenth is the least: in a 4,096-cell context that holds one 640-pixel frame, about 410 cells.',
+  },
+  'attachments.video.fps': {
+    yml: 'attachments.video.fps', min: 0.1, max: 30, default: DEFAULT_VIDEO_SAMPLING.fps, applies: 'session',
+    describe: 'Frames a second a video is sampled at, up to its frame cap; a longer clip is sampled more sparsely. Past 30 a source rarely has more distinct frames, and repeats are dropped; under 0.1 a moment of speech has no picture.',
+  },
+  'attachments.video.maxFrames': {
+    yml: 'attachments.video.maxFrames', integer: true, min: 1, max: 3600, default: DEFAULT_VIDEO_SAMPLING.maxFrames, applies: 'session',
+    describe: 'The most frames one video keeps. What a video costs is still measured when it is attached, and refused if it does not fit; 3,600 is an hour at one frame a second.',
+  },
+  'attachments.video.maxEdgePx': {
+    yml: 'attachments.video.maxEdgePx', integer: true, min: 64, max: 1920, default: DEFAULT_VIDEO_SAMPLING.maxEdgePx, applies: 'session',
+    describe: 'The longest edge a frame is scaled to, in pixels: detail against tokens per frame. 1,920 is a full HD frame; under 64 a frame shows nothing to read.',
+  },
+  'attachments.video.maxDurationSeconds': {
+    yml: 'attachments.video.maxDurationSeconds', integer: true, min: 1, max: 86_400, default: DEFAULT_VIDEO_MAX_DURATION_MS / 1000, applies: 'session',
+    describe: 'The longest clip a harness takes, refused before any byte is pushed. Length costs upload and one transcription per soundtrack window; footage longer than a day is outside what one video holds.',
+  },
+});

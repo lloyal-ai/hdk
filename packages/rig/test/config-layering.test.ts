@@ -12,7 +12,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { isGuardOverrides } from '@lloyal-labs/lloyal-agents';
-import { defineConfig, modelSettings, CONFIG_VERSION } from '../src/config';
+import { attachmentSettings, defineConfig, modelSettings, CONFIG_VERSION, DEFAULT_VIDEO_MAX_DURATION_MS, DEFAULT_VIDEO_SAMPLING } from '../src/config';
 import { loadYml, loadConfig, saveLocalConfig, runnerConfig } from '../src/config-layering';
 import { makeEdgeRunner, makeServedRunner } from '../src/runner';
 
@@ -33,6 +33,37 @@ const app = defineConfig({
   'defaults.effort': { yml: 'defaults.effort', oneOf: ['low', 'medium', 'high', 'ultra'], default: 'high' },
   'defaults.reasoningMode': { yml: 'defaults.reasoningMode', cli: 'reasoningMode', oneOf: ['flat', 'deep'], default: 'flat' },
   'defaults.guards': { yml: 'defaults.guards', check: isGuardOverrides },
+});
+
+describe('the attachments family: bounds declared as data, enforced and said from one place', () => {
+  it('a value in range reaches the config, and a block that names one key takes the rest at their defaults', () => {
+    writeYml('attachments:\n  context: 0.7\n  video:\n    fps: 2\n');
+    const { config } = loadConfig(attachmentSettings, loadYml(attachmentSettings, cwd), { env: {}, cwd });
+    expect(config.attachments.context).toBe(0.7);
+    expect(config.attachments.video).toEqual({
+      fps: 2, maxFrames: DEFAULT_VIDEO_SAMPLING.maxFrames, maxEdgePx: DEFAULT_VIDEO_SAMPLING.maxEdgePx,
+      maxDurationSeconds: DEFAULT_VIDEO_MAX_DURATION_MS / 1000,
+    });
+  });
+
+  it('a value out of range fails the load, naming the range it takes', () => {
+    writeYml('attachments:\n  video:\n    fps: 100\n');
+    expect(() => loadYml(attachmentSettings, cwd)).toThrow('harness.yml: attachments.video.fps must be a number from 0.1 to 30 (got 100)');
+    writeYml('attachments:\n  video:\n    maxFrames: 2.5\n');
+    expect(() => loadYml(attachmentSettings, cwd)).toThrow('harness.yml: attachments.video.maxFrames must be a whole number from 1 to 3600 (got 2.5)');
+    writeYml('attachments:\n  context: 0\n');
+    expect(() => loadYml(attachmentSettings, cwd)).toThrow('harness.yml: attachments.context must be a number from 0.1 to 1 (got 0)');
+  });
+
+  it('a harness that says nothing takes the whole context share and no video block', () => {
+    const { config } = loadConfig(attachmentSettings, {}, { env: {}, cwd });
+    expect(config.attachments.context).toBe(1);
+    expect(config.attachments.video).toBeUndefined();
+  });
+
+  it('the time-mark interval is not a setting: composition derives it from the frames', () => {
+    expect(Object.keys(attachmentSettings).some(k => k.includes('timestampInterval'))).toBe(false);
+  });
 });
 
 describe('the model block: one block per model, its keys at their yml path', () => {

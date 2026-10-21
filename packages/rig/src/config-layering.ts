@@ -69,10 +69,20 @@ const given = (raw: unknown): unknown => present(typeof raw === 'string' ? raw.t
 
 /** Whether a present value is one the key takes. */
 function takes(key: ConfigKey, v: unknown): boolean {
-  if (key.integer && !(Number.isInteger(v) && (v as number) >= 1)) return false;
+  if (key.integer && !(Number.isInteger(v) && (bounded(key) || (v as number) >= 1))) return false;
   if (key.oneOf && !(typeof v === 'string' && key.oneOf.includes(v))) return false;
   if (key.check && !key.check(v)) return false;
+  if (bounded(key) && !(typeof v === 'number' && Number.isFinite(v) && v >= (key.min ?? -Infinity) && v <= (key.max ?? Infinity))) return false;
   return true;
+}
+
+const bounded = (key: ConfigKey): boolean => key.min !== undefined || key.max !== undefined;
+
+/** The bounds a number takes, said as a reader would: from the least to the most, or one of them. */
+function bounds(key: ConfigKey): string {
+  const what = key.integer ? 'a whole number' : 'a number';
+  if (key.min !== undefined && key.max !== undefined) return `${what} from ${key.min} to ${key.max}`;
+  return key.min !== undefined ? `${what} of at least ${key.min}` : `${what} of at most ${key.max}`;
 }
 
 /** What the key takes, said for a refusal. */
@@ -81,6 +91,7 @@ function expectation(key: ConfigKey): string {
     const v = key.oneOf;
     return `must be ${v.length > 1 ? `${v.slice(0, -1).join(', ')}, or ${v[v.length - 1]}` : v[0]}`;
   }
+  if (bounded(key)) return `must be ${bounds(key)}`;
   if (key.integer) return 'must be a positive integer';
   return 'is not valid';
 }

@@ -19,37 +19,28 @@ import { Attachments } from '@lloyal-labs/lloyal-agents';
 import { asAttachment, composeVideo, DIGEST_PATTERN, durationRefusal, resolveAudio, soundtrackRefusal } from '@lloyal-labs/media';
 import type { Attachment, AttachmentStore, AudioAdmission, Descriptor, Transcript } from '@lloyal-labs/media';
 import type { UntranscribedWindow, VideoCapabilities, VideoCommand, VideoEvent } from '@lloyal-labs/binding';
+import { DEFAULT_VIDEO_MAX_DURATION_MS, DEFAULT_VIDEO_SAMPLING } from './config';
+import type { attachmentSettings, ConfigOf } from './config';
 import { Services } from './services';
 import type { CommandGroup } from './serve-commands';
 
-/**
- * How a clip is sampled when nothing says otherwise: llama.cpp's own video
- * defaults (4 fps, a timestamp every 5 s), a frame cap that keeps a clip within
- * a working context, and a longest edge that keeps each frame's projection
- * small. A clip longer than `maxFrames / fps` is sampled more sparsely.
- *
- * @category Rig
- */
-export const DEFAULT_VIDEO_SAMPLING: VideoCapabilities['sampling'] = Object.freeze({
-  fps: 4,
-  timestampIntervalMs: 5000,
-  maxFrames: 64,
-  maxEdgePx: 640,
-});
-
-/**
- * The longest clip composed when nothing says otherwise. Frames are capped,
- * so length costs upload and one transcription per soundtrack window: ten
- * minutes is about 120 windows.
- *
- * @category Rig
- */
-export const DEFAULT_VIDEO_MAX_DURATION_MS = 10 * 60_000;
+/** The harness's video block, as its config hands it over: absent keys, or no block, take rig's defaults. */
+export type VideoSettings = { attachments?: { video?: Partial<NonNullable<ConfigOf<typeof attachmentSettings>['attachments']['video']>> } };
 
 export interface VideoCommandsOptions {
   wire: { send(event: VideoEvent): Operation<void> };
-  sampling?: VideoCapabilities['sampling'];
-  maxDurationMs?: number;
+  /** The harness's config, read each time a video is described or composed, so a change applies to the next one. */
+  config?: () => VideoSettings;
+}
+
+/** The policy a video is sampled and composed under now: the harness's video block over rig's defaults. */
+function videoPolicy(settings: VideoSettings): { sampling: VideoCapabilities['sampling']; maxDurationMs: number } {
+  const { fps, maxFrames, maxEdgePx, maxDurationSeconds } = settings.attachments?.video ?? {};
+  const sampled = Object.fromEntries(Object.entries({ fps, maxFrames, maxEdgePx }).filter(([, v]) => v !== undefined));
+  return {
+    sampling: { ...DEFAULT_VIDEO_SAMPLING, ...sampled },
+    maxDurationMs: maxDurationSeconds !== undefined ? maxDurationSeconds * 1000 : DEFAULT_VIDEO_MAX_DURATION_MS,
+  };
 }
 
 type Compose = Extract<VideoCommand, { type: 'video:compose' }>;
@@ -112,15 +103,12 @@ function unadmittedOrMisplaced(
 }
 
 /** The commands that compose a video, for a harness to serve beside its own. */
-export function useVideoCommands({ wire, sampling = DEFAULT_VIDEO_SAMPLING, maxDurationMs = DEFAULT_VIDEO_MAX_DURATION_MS }: VideoCommandsOptions): Operation<CommandGroup<VideoCommand>> {
+export function useVideoCommands({ wire, config = () => ({}) }: VideoCommandsOptions): Operation<CommandGroup<VideoCommand>> {
   return resource(function* (provide) {
     const owner = yield* useScope();
     const store = yield* Attachments.expect();
     const asr = (yield* Services.get())?.transcription;
     const composing = new Map<string, Task<void>>();
-    // What the timeline is composed from: the policy the page was told to sample by, never one it reports
-    // back. Composition widens its mark interval as the frames require (media's markInterval).
-    const timeline = { fps: sampling.fps, timestampIntervalMs: sampling.timestampIntervalMs, maxFrames: sampling.maxFrames };
 
     /** Transcribe each window in turn: silence is skipped, a failure is recorded and the rest go on. */
     function* transcribe(requestId: string, windows: { root: Attachment; startMs: number; endMs: number }[]) {
@@ -152,6 +140,7 @@ export function useVideoCommands({ wire, sampling = DEFAULT_VIDEO_SAMPLING, maxD
     yield* provide({
       handlers: {
         *'video:describe'() {
+          const { sampling, maxDurationMs } = videoPolicy(config());
           yield* wire.send({ type: 'video:capabilities', capabilities: { sampling, maxDurationMs, transcription: asr?.limits ?? null } });
         },
         *'video:compose'(command) {
@@ -162,6 +151,10 @@ export function useVideoCommands({ wire, sampling = DEFAULT_VIDEO_SAMPLING, maxD
             yield* wire.send({ type: 'video:error', requestId, message: 'A video is already being composed under that request.' });
             return;
           }
+          const { sampling, maxDurationMs } = videoPolicy(config());
+          // What the timeline is composed from: the policy the page was told to sample by, never one it
+          // reports back. Composition widens its mark interval as the frames require (media's markInterval).
+          const timeline = { fps: sampling.fps, timestampIntervalMs: sampling.timestampIntervalMs, maxFrames: sampling.maxFrames };
           const tooLong = isMs(command.durationMs) ? durationRefusal(command.durationMs, maxDurationMs) : undefined;
           if (tooLong) {
             yield* wire.send({ type: 'video:error', requestId, message: tooLong });

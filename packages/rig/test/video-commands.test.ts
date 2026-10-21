@@ -15,7 +15,11 @@ import { FileAttachmentStore, createContentIngress } from '@lloyal-labs/media/no
 import type { Attachment } from '@lloyal-labs/media';
 import type { VideoEvent } from '@lloyal-labs/binding';
 import { Services } from '../src/services';
-import { DEFAULT_VIDEO_MAX_DURATION_MS, DEFAULT_VIDEO_SAMPLING, useVideoCommands } from '../src/video';
+import { attachmentSettings, DEFAULT_VIDEO_MAX_DURATION_MS, DEFAULT_VIDEO_SAMPLING } from '../src/config';
+import { useVideoCommands } from '../src/video';
+
+/** A harness's video block, as its config hands it over. */
+const VIDEO = { fps: DEFAULT_VIDEO_SAMPLING.fps, maxFrames: DEFAULT_VIDEO_SAMPLING.maxFrames, maxEdgePx: DEFAULT_VIDEO_SAMPLING.maxEdgePx, maxDurationSeconds: DEFAULT_VIDEO_MAX_DURATION_MS / 1000 };
 import type { Transcription } from '../src/transcription';
 
 const fixture = (name: string): Uint8Array =>
@@ -110,6 +114,47 @@ describe('video commands', () => {
     expect(meta.soundtrack).toEqual(audio.map((w, i) => ({ startMs: w.startMs, endMs: w.endMs, audio: frames.length + i })));
   });
 
+  it('describes and composes under the harness\'s configured video policy, read when it is asked', async () => {
+    const content = store();
+    const { frames } = await parts(content);
+    const events: VideoEvent[] = [];
+    let policy = { ...VIDEO, fps: 2, maxEdgePx: 320 };
+    await run(function* () {
+      yield* Attachments.set(content);
+      const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } }, config: () => ({ attachments: { video: policy } }) });
+      yield* group.handlers['video:describe']!({ type: 'video:describe' });
+      policy = { ...policy, fps: 1 };   // a session change applies to the next video
+      yield* group.handlers['video:describe']!({ type: 'video:describe' });
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'c', frames, durationMs: 1250 });
+      for (let i = 0; i < 50 && !events.some(e => e.type === 'video:composed'); i++) yield* sleep(5);
+    });
+    const described = events.filter(e => e.type === 'video:capabilities') as Extract<VideoEvent, { type: 'video:capabilities' }>[];
+    expect(described.map(d => d.capabilities.sampling.fps)).toEqual([2, 1]);
+    expect(described[0].capabilities.sampling.maxEdgePx).toBe(320);
+    expect(described[0].capabilities.maxDurationMs).toBe(VIDEO.maxDurationSeconds * 1000);
+    const composed = events.find(e => e.type === 'video:composed') as Extract<VideoEvent, { type: 'video:composed' }>;
+    const meta = JSON.parse(new TextDecoder().decode(content.get(content.getManifest(composed.root.digest)!.config.digest)!));
+    expect(meta.sampling.fps).toBe(1);
+  });
+
+  it('at the edges of every setting\'s range, a clip too long or with too many frames is still refused', async () => {
+    const content = store();
+    const { frames } = await parts(content);
+    const widest = Object.fromEntries((['fps', 'maxFrames', 'maxEdgePx', 'maxDurationSeconds'] as const)
+      .map(k => [k, attachmentSettings[`attachments.video.${k}`].max]));
+    const many = Array.from({ length: widest.maxFrames + 1 }, (_, i) => ({ root: frames[0].root, tMs: i }));
+    const events: VideoEvent[] = [];
+    await run(function* () {
+      yield* Attachments.set(content);
+      const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } }, config: () => ({ attachments: { video: widest } }) });
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'long', frames, durationMs: widest.maxDurationSeconds * 1000 + 1 });
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'many', frames: many, durationMs: 60_000 });
+      for (let i = 0; i < 50 && events.filter(e => e.type === 'video:error').length < 2; i++) yield* sleep(5);
+    });
+    expect(events.map(e => (e as { requestId: string }).requestId).sort()).toEqual(['long', 'many']);
+    expect(events.every(e => e.type === 'video:error')).toBe(true);
+  });
+
   it('refuses a clip longer than it takes, before transcribing anything', async () => {
     const content = store();
     const { frames, audio } = await parts(content);
@@ -118,7 +163,7 @@ describe('video commands', () => {
     await run(function* () {
       yield* Attachments.set(content);
       yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, *transcribe(a) { heardAny++; return heard(a, 'x'); } } });
-      const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } }, maxDurationMs: 1000 });
+      const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } }, config: () => ({ attachments: { video: { ...VIDEO, maxDurationSeconds: 1 } } }) });
       yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'long', frames, audio, durationMs: 1250 });
       for (let i = 0; i < 50 && !events.some(e => e.type === 'video:error'); i++) yield* sleep(5);
     });
@@ -193,14 +238,13 @@ describe('video commands', () => {
     expect(composed.untranscribed.map(w => w.reason)).toEqual(Array(3).fill('transcription is not configured'));
   });
 
-  it('composes under the host\'s own sampling, and refuses more frames than it samples', async () => {
+  it('composes under the host\'s configured sampling, and refuses more frames than it samples', async () => {
     const content = store();
     const { frames } = await parts(content);
     const events: VideoEvent[] = [];
-    const sampling = { fps: 2, timestampIntervalMs: 5000, maxFrames: 2, maxEdgePx: 320 };
     await run(function* () {
       yield* Attachments.set(content);
-      const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } }, sampling });
+      const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } }, config: () => ({ attachments: { video: { fps: 2, maxFrames: 2, maxEdgePx: 320 } } }) });
       yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'over', frames, durationMs: 1250 });
       yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'within', frames: frames.slice(0, 2), durationMs: 1250 });
       for (let i = 0; i < 50 && events.length < 2; i++) yield* sleep(5);
