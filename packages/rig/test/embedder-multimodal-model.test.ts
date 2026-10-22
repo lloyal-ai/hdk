@@ -1,7 +1,8 @@
 /**
  * The embedder over real weights: EmbeddingGemma 2 with its projector, fed
  * attachments through the content store, agrees with the vectors llama.cpp's
- * server made for the same files. Skipped without the weights.
+ * server made for the same files. Runs in its own process, only when asked
+ * (`EMBEDDINGGEMMA` in ./helpers/embed-model says how), and with the weights.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { run } from 'effection';
@@ -20,11 +21,10 @@ const describeWithModel = EMBEDDINGGEMMA ? describe : describe.skip;
 const cosine = (a: ArrayLike<number>, b: ArrayLike<number>) => Array.from(a).reduce((sum, x, i) => sum + x * b[i], 0);
 
 describeWithModel('createEmbedder over EmbeddingGemma 2 and its projector', () => {
-  const { model, projector, fixtures } = EMBEDDINGGEMMA!;
-  const reference: Map<string, number[]> = new Map(
-    JSON.parse(readFileSync(join(fixtures, 'embedding/embeddinggemma2-reference.json'), 'utf8')).entries.map((e: { name: string; vector: number[] }) => [e.name, e.vector]),
-  );
-  const file = (name: string) => new Uint8Array(readFileSync(join(fixtures, name)));
+  // Read only when the suite runs: a skipped suite's body is still collected, and without the files it has none.
+  const gemma = () => EMBEDDINGGEMMA!;
+  const file = (name: string) => new Uint8Array(readFileSync(join(gemma().fixtures, name)));
+  let reference: Map<string, number[]>;
   let dir: string;
   let store: FileAttachmentStore;
   let cat: Attachment;
@@ -32,6 +32,9 @@ describeWithModel('createEmbedder over EmbeddingGemma 2 and its projector', () =
   let clip: Attachment;
 
   beforeAll(async () => {
+    reference = new Map(
+      JSON.parse(readFileSync(join(gemma().fixtures, 'embedding/embeddinggemma2-reference.json'), 'utf8')).entries.map((e: { name: string; vector: number[] }) => [e.name, e.vector]),
+    );
     dir = mkdtempSync(join(tmpdir(), 'embedder-gemma-'));
     store = new FileAttachmentStore(dir);
     const ingress = createContentIngress(store);
@@ -48,14 +51,14 @@ describeWithModel('createEmbedder over EmbeddingGemma 2 and its projector', () =
 
   const embedded = (inputs: EmbeddingInput[]) => run(function* () {
     const { framing, dimensions } = catalogEntry('embedding', 'embeddinggemma-2-q8')!;
-    const embedder = yield* createEmbedder(model, { nCtx: 8192, pooling: 'mean', projector, store, framing, dimensions });
+    const embedder = yield* createEmbedder(gemma().model, { nCtx: 8192, pooling: 'mean', projector: gemma().projector, store, framing, dimensions });
     expect(embedder.modalities).toEqual(['text', 'image', 'video', 'audio']);
     return yield* embedder.embed(inputs);
   });
 
   it('reads an image at the detail it is given: a ceiling lowers what one image costs, a floor raises it', async () => {
     const cost = (detail: { imageMinTokens?: number; imageMaxTokens?: number }) => run(function* () {
-      const embedder = yield* createEmbedder(model, { nCtx: 8192, pooling: 'mean', projector, store, ...detail });
+      const embedder = yield* createEmbedder(gemma().model, { nCtx: 8192, pooling: 'mean', projector: gemma().projector, store, ...detail });
       const [image, text] = yield* embedder.measure([{ parts: [cat] }, { parts: [''] }]);
       return image - text;
     });

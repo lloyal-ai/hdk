@@ -19,8 +19,12 @@ export const NOMIC_MODEL_PATH: string | null = [
 const lloyalNode = path.join(os.homedir(), 'dev/apps/lloyal-node');
 
 /** EmbeddingGemma 2 Q8_0 and its vision and audio projector, with the reference vectors llama.cpp's server made
- *  for the native runtime's fixtures. `null` skips the suite without them. */
+ *  for the native runtime's fixtures. The suite holds a gigabyte of projector on the GPU, so it runs only when
+ *  asked, in a process of its own beside no other model's suite:
+ *  `LLOYAL_LOCAL=1 LLOYAL_EMBED_MM_TEST=1 npx vitest run packages/rig/test/embedder-multimodal-model.test.ts`.
+ *  `null` skips it otherwise, or without the files. */
 export const EMBEDDINGGEMMA: { model: string; projector: string; fixtures: string } | null = (() => {
+  if (process.env.LLOYAL_EMBED_MM_TEST !== '1') return null;
   const model = process.env.LLAMA_EMBED_MM_MODEL ?? path.join(lloyalNode, 'models/embeddinggemma-2/embeddinggemma-2-Q8_0.gguf');
   const projector = process.env.LLAMA_EMBED_MM_MMPROJ ?? path.join(lloyalNode, 'models/embeddinggemma-2/mmproj-BF16.gguf');
   const fixtures = path.join(lloyalNode, 'liblloyal/tests/fixtures');
