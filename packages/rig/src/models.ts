@@ -64,6 +64,12 @@ export interface ModelCatalogEntry {
   dimensions?: readonly number[];
   /** The projector a transcription decoder or a multimodal embedding model is paired with. */
   projector?: string;
+  /** Embedding entries only: the most tokens the model was trained to read as one input, as its card gives it
+   *  for the runtime that loads it. A file's own header can claim more than the model was trained for. */
+  trainedContext?: number;
+  /** Projector entries only: the range of tokens the projector reads one image as, as it was trained. The runtime
+   *  takes a setting outside it as given, so the range is what refuses one. */
+  imageTokens?: { min: number; max: number };
 }
 
 const USER_AGENT = '@lloyal-labs/rig model-fetch';
@@ -244,6 +250,8 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     ],
     sha256: 'd4e388894e09cf3816e8b0896d81d265b55e7a9fff9ab03fe8bf4ef5e11295ac',
     sizeBytes: 84_106_624,
+    // The card's 8,192 needs a rope scaling llama.cpp is not given here; the file's own 2,048 is what it reads.
+    trainedContext: 2048,
     pooling: 'mean',
     framing: NOMIC_EMBED_FRAMING,
     dimensions: [768, 512, 256, 128, 64],
@@ -258,6 +266,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     ],
     sha256: '06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439',
     sizeBytes: 639_150_592,
+    trainedContext: 32768,
     pooling: 'last',
     framing: QWEN3_EMBEDDING_FRAMING,
     // Its card admits any width from 32 to 1024; these are the halvings a vector index may compare at.
@@ -274,7 +283,8 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     ],
     sha256: '6f1bd4ac6c5df7444f9cca7ca36cafe6cfa34cd6f49fefb1e0b4be8143aed8bc',
     sizeBytes: 309_855_520,
-    recommendedContext: 8192,
+    // One 8,192-token window shared by every part of an input; the file's header inherits a far longer one.
+    trainedContext: 8192,
     pooling: 'mean',
     framing: EMBEDDINGGEMMA_2_FRAMING,
     dimensions: [768, 512, 256, 128],
@@ -291,6 +301,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     ],
     sha256: '995aaa56e88b9b631f651861d659b728a625ccc02a238be37cff56cf11dc0032',
     sizeBytes: 982_074_880,
+    imageTokens: { min: 70, max: 1120 },
   },
 ];
 

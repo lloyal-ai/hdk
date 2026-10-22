@@ -84,15 +84,16 @@ export const providers: { [K in Service]: ProviderRow<K> } = {
     name: 'embedding model',
     projector: { role: 'embedding.projector', name: 'embedding projector', select: block => pairedProjector('embedding', 'embedding projector', block) },
     refuse: (block) => {
-      const pooling = embeddingPooling(block);
-      return typeof pooling === 'string' ? undefined : pooling?.refused ?? UNKNOWN_POOLING;
+      const binding = embeddingBinding(block);
+      return 'refused' in binding ? binding.refused : undefined;
     },
     bind: (artifact, block, projector) => {
-      const pooling = embeddingPooling(block);
-      if (typeof pooling !== 'string') throw new Error(pooling?.refused ?? UNKNOWN_POOLING);
+      const binding = embeddingBinding(block);
+      if ('refused' in binding) throw new Error(binding.refused);
       const { framing, dimensions } = catalogedEmbedding(block) ?? {};
       return createEmbedder(artifact, {
-        nCtx: block.context, pooling, ...(projector ? { projector } : {}), ...(framing ? { framing } : {}), ...(dimensions ? { dimensions } : {}),
+        nCtx: block.context, pooling: binding.pooling, ...(framing ? { framing } : {}), ...(dimensions ? { dimensions } : {}),
+        ...(projector ? { projector, imageMinTokens: block.vision?.minTokens, imageMaxTokens: block.vision?.maxTokens } : {}),
       });
     },
   },
@@ -123,6 +124,43 @@ const UNKNOWN_POOLING = '`model.embedding` names a model whose pooling the catal
 /** What the catalog knows of the embedding model a block names by id. A `path:` model is the harness's own,
  *  and the catalog knows nothing of it. */
 const catalogedEmbedding = (block: ModelBlock<'embedding'>) => (block.path || !block.id ? undefined : catalogEntry('embedding', block.id));
+
+/** The embedding block as it binds, its pooling, or the first reason it cannot: each rule is checked at plan time,
+ *  before a byte is fetched, and again at bind. */
+function embeddingBinding(block: ModelBlock<'embedding'>): { pooling: EmbeddingPooling } | { refused: string } {
+  const pooling = embeddingPooling(block);
+  if (typeof pooling !== 'string') return { refused: pooling?.refused ?? UNKNOWN_POOLING };
+  const refused = contextRefusal(block) ?? imageDetailRefusal(block);
+  return refused ? { refused } : { pooling };
+}
+
+/** A catalog model reads no more than it was trained to: a longer context answers vectors the model never learned
+ *  to make. A `path:` model's file is the harness's to know. */
+function contextRefusal(block: ModelBlock<'embedding'>): string | undefined {
+  const trained = catalogedEmbedding(block)?.trainedContext;
+  const context: number | undefined = block.context;
+  if (trained === undefined || context === undefined || context <= trained) return undefined;
+  return `\`model.embedding.context\` is ${context}, but ${block.id} was trained to read at most ${trained} tokens — lower it to ${trained} or less`;
+}
+
+/** Image detail is the projector's: set where no projector reads it, it would be silently ignored; outside the
+ *  range a catalog projector was trained for, the runtime would take it as given. */
+function imageDetailRefusal(block: ModelBlock<'embedding'>): string | undefined {
+  const { minTokens, maxTokens } = block.vision ?? {};
+  if (minTokens === undefined && maxTokens === undefined) return undefined;
+  const projector = pairedProjector('embedding', 'embedding projector', block);
+  if (!projector) return `\`model.embedding.vision\` sets image detail, but ${block.id ?? block.path} has no projector to read images — remove it, or set \`model.embedding.projector\``;
+  if (minTokens !== undefined && maxTokens !== undefined && minTokens > maxTokens) {
+    return `\`model.embedding.vision.minTokens\` (${minTokens}) is above \`model.embedding.vision.maxTokens\` (${maxTokens})`;
+  }
+  const range = projector.id ? catalogEntry('embedding.projector', projector.id)?.imageTokens : undefined;
+  if (!range) return undefined;
+  const outside = (['minTokens', 'maxTokens'] as const).find((key) => {
+    const tokens = block.vision?.[key];
+    return tokens !== undefined && (tokens < range.min || tokens > range.max);
+  });
+  return outside ? `\`model.embedding.vision.${outside}\` is ${block.vision?.[outside]}, but ${projector.id} reads an image as ${range.min} to ${range.max} tokens — set it within that range` : undefined;
+}
 
 /**
  * How the embedding model pools, or why the block cannot say. A catalog id pools the way the catalog says:

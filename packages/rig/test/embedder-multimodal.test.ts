@@ -114,6 +114,13 @@ describe('createEmbedder over parts', () => {
     expect(read).toEqual({ withProjector: ['text', 'image', 'video', 'audio'], sightOnly: ['text', 'image', 'video'], textOnly: ['text'] });
   });
 
+  it('loads its projector at the image detail it is given', async () => {
+    await run(function* () {
+      yield* createEmbedder('/e.gguf', { nCtx: 2048, pooling: 'mean', store, projector: '/mmproj.gguf', imageMinTokens: 70, imageMaxTokens: 280 });
+    });
+    expect(createContext.mock.calls.at(-1)?.[0]).toMatchObject({ mmprojPath: '/mmproj.gguf', imageMinTokens: 70, imageMaxTokens: 280 });
+  });
+
   it('refuses the whole call before any work when a part needs a projector the model does not have', async () => {
     fake.projector = false;
     await expect(run(function* () {

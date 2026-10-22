@@ -13,10 +13,10 @@ const { resolveModel } = vi.hoisted(() => ({ resolveModel: vi.fn() }));
 vi.mock('../src/models', async original => ({
   ...await original<typeof import('../src/models')>(), resolveModel, isModelPresent: () => false,
 }));
-const { createEmbedder } = vi.hoisted(() => ({ createEmbedder: vi.fn(function* (_path: string, _opts: { framing?: object; dimensions?: number[] }) { return {}; }) }));
+const { createEmbedder } = vi.hoisted(() => ({ createEmbedder: vi.fn(function* (_path: string, _opts: { framing?: object; dimensions?: number[]; imageMinTokens?: number; imageMaxTokens?: number }) { return {}; }) }));
 vi.mock('../src/providers/embedding', () => ({ createEmbedder }));
 const { install, planInstall } = await import('../src/install');
-const { bindServices, resolveServices } = await import('../src/provision');
+const { bindServices, refusalOf, resolveServices } = await import('../src/provision');
 const { catalogEntry } = await import('../src/models');
 
 const model = 'embeddinggemma-2-q8';
@@ -71,6 +71,33 @@ describe('embedding provisioning', () => {
     expect(events.some(e => e.steps.some(s => s.id === 'embedding.projector' && s.got === 10))).toBe(true);
     // The model it already has is not fetched again for its projector's retry.
     expect(resolveModel.mock.calls.filter(([o]) => o.role === 'embedding')).toHaveLength(1);
+  });
+
+  it('refuses, before anything is fetched, a context longer than the catalog model was trained to read', () => {
+    const refused = (embedding: object) => refusalOf('embedding', family(embedding));
+    expect(refused({ id: model, context: 8192 })).toBeUndefined();
+    expect(refused({ id: model, context: 16384 })).toMatch(/model\.embedding\.context.*16384.*embeddinggemma-2-q8.*8192/);
+    expect(refused({ id: 'nomic-embed-text-v1.5-q4', context: 4096 })).toMatch(/model\.embedding\.context.*4096.*2048/);
+    expect(refused({ id: 'qwen3-embedding-0.6b-q8', context: 32768 })).toBeUndefined();
+    // A `path:` model is the harness's own file, and the catalog knows nothing of what it was trained to read.
+    expect(refused({ path: '/embed.gguf', pooling: 'mean', context: 65536 })).toBeUndefined();
+  });
+
+  it('refuses image detail outside the range the paired projector projects an image into, or set where nothing reads it', () => {
+    const refused = (embedding: object) => refusalOf('embedding', family(embedding));
+    expect(refused({ id: model, vision: { minTokens: 70, maxTokens: 280 } })).toBeUndefined();
+    expect(refused({ id: model, vision: { maxTokens: 2000 } })).toMatch(/model\.embedding\.vision\.maxTokens.*2000.*70 to 1120/);
+    expect(refused({ id: model, vision: { minTokens: 35 } })).toMatch(/model\.embedding\.vision\.minTokens.*35.*70 to 1120/);
+    expect(refused({ id: model, vision: { minTokens: 560, maxTokens: 280 } })).toMatch(/minTokens.*560.*above.*maxTokens.*280/);
+    expect(refused({ id: 'nomic-embed-text-v1.5-q4', vision: { maxTokens: 280 } })).toMatch(/model\.embedding\.vision.*no projector/);
+    // A projector named by path is the harness's own file: its range is its own to know.
+    expect(refused({ path: '/embed.gguf', pooling: 'mean', projector: { path: '/mmproj.gguf' }, vision: { maxTokens: 5000 } })).toBeUndefined();
+  });
+
+  it('binds the image detail the block sets onto the projector', async () => {
+    createEmbedder.mockClear();
+    await run(() => bindServices({ embedding: `/models/${model}.gguf`, 'embedding.projector': '/mmproj.gguf' }, family({ id: model, vision: { minTokens: 140, maxTokens: 280 } })));
+    expect(createEmbedder.mock.calls[0][1]).toMatchObject({ projector: '/mmproj.gguf', imageMinTokens: 140, imageMaxTokens: 280 });
   });
 
   it('binds each catalog model with the task framing and trained widths its own card gives', async () => {

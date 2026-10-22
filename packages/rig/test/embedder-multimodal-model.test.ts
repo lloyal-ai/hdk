@@ -53,6 +53,17 @@ describeWithModel('createEmbedder over EmbeddingGemma 2 and its projector', () =
     return yield* embedder.embed(inputs);
   });
 
+  it('reads an image at the detail it is given: a ceiling lowers what one image costs, a floor raises it', async () => {
+    const cost = (detail: { imageMinTokens?: number; imageMaxTokens?: number }) => run(function* () {
+      const embedder = yield* createEmbedder(model, { nCtx: 8192, pooling: 'mean', projector, store, ...detail });
+      const [image, text] = yield* embedder.measure([{ parts: [cat] }, { parts: [''] }]);
+      return image - text;
+    });
+    const [own, ceiling, floor] = [await cost({}), await cost({ imageMaxTokens: 140 }), await cost({ imageMinTokens: 560 })];
+    expect(ceiling).toBeLessThan(own);
+    expect(floor).toBeGreaterThan(own);
+  }, 300_000);
+
   it('embeds an image, a video and a recording from the store where llama.cpp does', async () => {
     const [image, video, sound] = await embedded([{ parts: [cat] }, { parts: [clip] }, { parts: [recording] }]);
     expect(cosine(image, reference.get('cat.jpg')!)).toBeGreaterThan(0.999);

@@ -36,6 +36,9 @@ export interface EmbedderLoadOpts {
   /** The projector a multimodal embedding model reads images, video and sound through, loaded on the same
    *  context. Absent for a text-only model. */
   projector?: string;
+  /** The floor and ceiling on the tokens the projector reads one image or frame as; the projector's own when absent. */
+  imageMinTokens?: number;
+  imageMaxTokens?: number;
   /** Where attachment parts are read from; the run's own store when absent. */
   store?: AttachmentStore;
   /** The model's own text for each task it was trained for, from its catalog entry. Absent, text is embedded
@@ -118,7 +121,7 @@ export function createEmbedder(modelPath: string, opts: EmbedderLoadOpts): Opera
     const ctx = yield* acquire(
       () => createContext({
         modelPath, nCtx, nBatch: nCtx, nSeqMax: 1, embeddings: true, poolingType: POOLING[opts.pooling],
-        ...(opts.projector ? { mmprojPath: opts.projector } : {}),
+        ...(opts.projector ? { mmprojPath: opts.projector, imageMinTokens: opts.imageMinTokens, imageMaxTokens: opts.imageMaxTokens } : {}),
       }),
       free,
     );
