@@ -56,7 +56,8 @@ export const providers: { [K in Service]: ProviderRow<K> } = {
     name: 'transcription model',
     projector: {
       role: 'transcription.projector', name: 'audio projector',
-      select: block => pairedProjector('transcription', 'audio projector', block)
+      // A decoder needs its projector, and a file answers that, so the step refuses rather than the row.
+      select: block => pairedProjector('transcription', block)
         ?? fail('set model.transcription.projector.id or model.transcription.projector.path; no audio projector follows from this decoder'),
     },
     bind: (artifact, block, projector) => {
@@ -84,7 +85,7 @@ export const providers: { [K in Service]: ProviderRow<K> } = {
     name: 'embedding model',
     // One space for text, images, video and sound, so what a harness saw and what it heard are searched alike.
     derive: () => ({ id: 'embeddinggemma-2-q8' }),
-    projector: { role: 'embedding.projector', name: 'embedding projector', select: block => pairedProjector('embedding', 'embedding projector', block) },
+    projector: { role: 'embedding.projector', name: 'embedding projector', select: block => pairedProjector('embedding', block) },
     refuse: (block) => {
       const binding = embeddingBinding(block);
       return 'refused' in binding ? binding.refused : undefined;
@@ -108,13 +109,13 @@ const fail = (why: string): never => { throw new Error(why); };
  * model must be the catalog's own pair; else the catalog's pair. Nothing when the model has none. A `path:`
  * model is bytes the catalog knows nothing about, so it is never paired from the id it shadows.
  */
-function pairedProjector(service: 'transcription' | 'embedding', name: string, block: { id?: string; path?: string; projector?: ModelSpec }): ModelSpec | undefined {
+function pairedProjector(service: 'transcription' | 'embedding', block: { id?: string; path?: string; projector?: ModelSpec }): ModelSpec | undefined {
   const explicit = block.projector;
   if (explicit?.path) return { path: explicit.path };
   const paired = block.path || !block.id ? undefined : catalogEntry(service, block.id)?.projector;
   if (explicit?.id) {
     if (!catalogEntry(`${service}.projector`, explicit.id) || (paired && paired !== explicit.id)) {
-      fail(`model.${service}.projector.id does not name a compatible ${name}; use a matching catalog pair or explicit local paths`);
+      fail(`model.${service}.projector.id does not name a compatible ${providers[service].projector?.name}; use a matching catalog pair or explicit local paths`);
     }
     return { id: explicit.id };
   }
@@ -150,7 +151,7 @@ function contextRefusal(block: ModelBlock<'embedding'>): string | undefined {
 function imageDetailRefusal(block: ModelBlock<'embedding'>): string | undefined {
   const { minTokens, maxTokens } = block.vision ?? {};
   if (minTokens === undefined && maxTokens === undefined) return undefined;
-  const projector = pairedProjector('embedding', 'embedding projector', block);
+  const projector = pairedProjector('embedding', block);
   if (!projector) return `\`model.embedding.vision\` sets image detail, but ${block.id ?? block.path} has no projector to read images — remove it, or set \`model.embedding.projector\``;
   if (minTokens !== undefined && maxTokens !== undefined && minTokens > maxTokens) {
     return `\`model.embedding.vision.minTokens\` (${minTokens}) is above \`model.embedding.vision.maxTokens\` (${maxTokens})`;
