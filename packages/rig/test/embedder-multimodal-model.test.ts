@@ -12,6 +12,7 @@ import { composeVideo } from '@lloyal-labs/media';
 import type { Attachment } from '@lloyal-labs/media';
 import { createContentIngress, FileAttachmentStore } from '@lloyal-labs/media/node';
 import { createEmbedder } from '../src/providers/embedding';
+import { catalogEntry } from '../src/models';
 import type { EmbeddingInput } from '../src/retrieval';
 import { EMBEDDINGGEMMA } from './helpers/embed-model';
 
@@ -46,7 +47,8 @@ describeWithModel('createEmbedder over EmbeddingGemma 2 and its projector', () =
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
   const embedded = (inputs: EmbeddingInput[]) => run(function* () {
-    const embedder = yield* createEmbedder(model, { nCtx: 8192, pooling: 'mean', projector, store });
+    const { framing, dimensions } = catalogEntry('embedding', 'embeddinggemma-2-q8')!;
+    const embedder = yield* createEmbedder(model, { nCtx: 8192, pooling: 'mean', projector, store, framing, dimensions });
     expect(embedder.modalities).toEqual(['text', 'image', 'video', 'audio']);
     return yield* embedder.embed(inputs);
   });
@@ -58,12 +60,27 @@ describeWithModel('createEmbedder over EmbeddingGemma 2 and its projector', () =
     expect(cosine(sound, reference.get('asr-counting.wav')!)).toBeGreaterThan(0.999);
   }, 300_000);
 
-  it('embeds text, an image, a video and a recording interleaved as one vector, where llama.cpp does', async () => {
+  it('embeds text, an image, a video and a recording interleaved as one vector, framed as a document, where llama.cpp does', async () => {
     const [mixed, textAndImage] = await embedded([
-      { parts: ['title: none | text: ', cat, ' beside ', clip, ' while a voice says ', recording] },
-      { parts: ['title: none | text: a photo of ', cat, ' sitting on a mat'] },
+      { parts: [cat, ' beside ', clip, ' while a voice says ', recording] },
+      { parts: ['a photo of ', cat, ' sitting on a mat'] },
     ]);
     expect(cosine(mixed, reference.get('text, image, video and audio')!)).toBeGreaterThan(0.999);
     expect(cosine(textAndImage, reference.get('text and image')!)).toBeGreaterThan(0.999);
+  }, 300_000);
+
+  it('frames every task as the card does: each named intent lands on the reference llama.cpp made from the card\'s text', async () => {
+    const framed: [string, EmbeddingInput][] = [
+      ['query: a photo of a cat', { parts: ['a photo of a cat'], role: 'query' }],
+      ['question answering', { parts: ['What animal is sitting in the photo?'], task: 'question-answering', role: 'query' }],
+      ['fact checking', { parts: ['Robots assemble car bodies on a factory line.'], task: 'fact-checking', role: 'query' }],
+      ['code retrieval', { parts: ['a function that adds two numbers'], task: 'code-retrieval', role: 'query' }],
+      ['titled document', { parts: ['def add(a, b):\n    return a + b'], task: 'code-retrieval', title: 'add.py' }],
+      ['classification', { parts: ['The striker scored in the final minute of the match.'], task: 'classification' }],
+      ['clustering', { parts: ['Quarterly revenue fell because of supply delays.'], task: 'clustering' }],
+      ['sentence similarity', { parts: ['A cat is resting on a rug.'], task: 'similarity' }],
+    ];
+    const vectors = await embedded(framed.map(([, input]) => input));
+    framed.forEach(([name], i) => expect([name, cosine(vectors[i], reference.get(name)!)]).toEqual([name, expect.closeTo(1, 3)]));
   }, 300_000);
 });

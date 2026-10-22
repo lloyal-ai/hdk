@@ -47,7 +47,8 @@ import type { EventBus } from '@lloyal-labs/binding';
 import { SERVICES, Services } from './services';
 import type { Service, ServiceMap } from './services';
 import type { TraceWriter, TraceEvent } from '@lloyal-labs/lloyal-agents';
-import type { Embedder, Reranker } from './retrieval';
+import { EMBEDDING_TASKS } from './retrieval';
+import type { Embedder, EmbeddingInput, Reranker } from './retrieval';
 import type { AttachmentStore } from '@lloyal-labs/media';
 import { DEFAULT_AUDIO_ADMISSION } from '@lloyal-labs/media';
 import { bufferedCommandSignal } from './buffered-command-signal';
@@ -198,12 +199,21 @@ export const stubReranker: Reranker = {
   dispose: () => {},
 };
 
-/** The embedder a scenario runs against: one vector per input, none nearer than another, reading text alone. */
+/** What the stub refuses before any work, as an embedder without a projector does: an input with media in it. */
+function readText(inputs: readonly EmbeddingInput[]): void {
+  const media = inputs.findIndex((input) => typeof input !== 'string' && input.parts.some((part) => typeof part !== 'string'));
+  if (media >= 0) throw new Error(`input ${media} has media, which the stub embedder cannot read`);
+}
+
+/** The embedder a scenario runs against: one vector per input, none nearer than another, reading text alone and
+ *  framing every task. */
 export const stubEmbedder: Embedder = {
   dimension: 2,
+  dimensions: [2],
   modalities: ['text'],
-  *embed(inputs) { return inputs.map(() => new Float32Array([1, 0])); },
-  *measure(inputs) { return inputs.map(() => 1); },
+  tasks: EMBEDDING_TASKS,
+  *embed(inputs) { readText(inputs); return inputs.map(() => new Float32Array([1, 0])); },
+  *measure(inputs) { readText(inputs); return inputs.map(() => 1); },
   *tokenize(text) { return Array.from(text, (_, i) => i); },
   dispose: () => {},
 };

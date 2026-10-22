@@ -32,7 +32,11 @@ export type {
 } from './tools';
 
 // The retrieval contract, the source every ability subclasses, and the admission every search tool runs.
-export type { Resource, Chunk, ScoredChunk, ScoredResult, Reranker, Embedder, EmbeddingPooling } from './retrieval';
+export type {
+  Resource, Chunk, ScoredChunk, ScoredResult, Reranker, Embedder, EmbeddingPooling,
+  EmbeddingInput, EmbeddingTask, EmbeddingRole, EmbeddingFraming, TaskFraming, Modality,
+} from './retrieval';
+export { EMBEDDING_TASKS } from './retrieval';
 export { Source } from './source';
 export { admitChunks } from './admission';
 export type { AdmitOpts, AdmitResult, AdmitSelect, AdmittedPassage } from './admission';

@@ -90,7 +90,10 @@ export const providers: { [K in Service]: ProviderRow<K> } = {
     bind: (artifact, block, projector) => {
       const pooling = embeddingPooling(block);
       if (typeof pooling !== 'string') throw new Error(pooling?.refused ?? UNKNOWN_POOLING);
-      return createEmbedder(artifact, { nCtx: block.context, pooling, ...(projector ? { projector } : {}) });
+      const { framing, dimensions } = catalogedEmbedding(block) ?? {};
+      return createEmbedder(artifact, {
+        nCtx: block.context, pooling, ...(projector ? { projector } : {}), ...(framing ? { framing } : {}), ...(dimensions ? { dimensions } : {}),
+      });
     },
   },
 };
@@ -117,6 +120,10 @@ function pairedProjector(service: 'transcription' | 'embedding', name: string, b
 
 const UNKNOWN_POOLING = '`model.embedding` names a model whose pooling the catalog does not know — set `model.embedding.pooling` (mean, cls or last) in harness.yml';
 
+/** What the catalog knows of the embedding model a block names by id. A `path:` model is the harness's own,
+ *  and the catalog knows nothing of it. */
+const catalogedEmbedding = (block: ModelBlock<'embedding'>) => (block.path || !block.id ? undefined : catalogEntry('embedding', block.id));
+
 /**
  * How the embedding model pools, or why the block cannot say. A catalog id pools the way the catalog says:
  * a block that says otherwise is refused naming both, since a wrong pooling answers vectors that are merely
@@ -124,7 +131,7 @@ const UNKNOWN_POOLING = '`model.embedding` names a model whose pooling the catal
  * A string is the pooling; a refusal is `{ refused }`; `undefined` is a block with nothing to say.
  */
 function embeddingPooling(block: ModelBlock<'embedding'>): EmbeddingPooling | { refused: string } | undefined {
-  const known = block.path || !block.id ? undefined : catalogEntry('embedding', block.id)?.pooling;
+  const known = catalogedEmbedding(block)?.pooling;
   if (known && block.pooling && block.pooling !== known) {
     return { refused: `\`model.embedding.pooling\` says ${block.pooling}, but the catalog pools ${block.id} by ${known} — remove the key, or use a \`path\` for a model that pools differently` };
   }

@@ -22,7 +22,7 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { Service } from './services';
 import type { modelSettings } from './config';
-import type { EmbeddingPooling } from './retrieval';
+import type { EmbeddingFraming, EmbeddingPooling } from './retrieval';
 import type { MachineClass } from './machine';
 
 /** The model roles a harness provisions — the slot `models/<role>/` each is kept in: the reasoning model, and
@@ -58,6 +58,10 @@ export interface ModelCatalogEntry {
   /** Embedding entries only: how this model pools its token states — the model's own property, so the
    *  provider never has to guess and a `path:` model has to say. */
   pooling?: EmbeddingPooling;
+  /** Embedding entries only: the text the model's card asks for before each task's inputs. */
+  framing?: EmbeddingFraming;
+  /** Embedding entries only: the widths the model was trained to be cut to, its own width first. */
+  dimensions?: readonly number[];
   /** The projector a transcription decoder or a multimodal embedding model is paired with. */
   projector?: string;
 }
@@ -104,6 +108,31 @@ export function isModelPresent(projectRoot: string, role: ModelRole, id: string)
  * change. `id`s name the model (`qwen3.5-4b`), matching the on-disk slot
  * `models/<role>/<id>.gguf`.
  */
+
+/** nomic-embed-text v1.5's prefixes, from its card: required, and the space after each colon is part of it. */
+const NOMIC_EMBED_FRAMING: EmbeddingFraming = {
+  search: { query: 'search_query: ', document: 'search_document: ' },
+  classification: { query: 'classification: ', document: 'classification: ' },
+  clustering: { query: 'clustering: ', document: 'clustering: ' },
+};
+
+/** Qwen3-Embedding's framing, from its card: a query is an instruction line, a document goes as it is. The card
+ *  gives one instruction, for search; another task needs an instruction written and measured for it. */
+const QWEN3_EMBEDDING_FRAMING: EmbeddingFraming = {
+  search: { query: 'Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:', document: '' },
+};
+
+/** EmbeddingGemma 2's framing, from its card and its sentence-transformers prompts: a query names its task, a
+ *  document its title, `none` without one; the symmetric tasks frame every input as a query. */
+const EMBEDDINGGEMMA_2_FRAMING: EmbeddingFraming = {
+  search: { query: 'task: search result | query: ', document: 'title: none | text: ', titled: 'title: {title} | text: ' },
+  'question-answering': { query: 'task: question answering | query: ', document: 'title: none | text: ', titled: 'title: {title} | text: ' },
+  'fact-checking': { query: 'task: fact checking | query: ', document: 'title: none | text: ', titled: 'title: {title} | text: ' },
+  'code-retrieval': { query: 'task: code retrieval | query: ', document: 'title: none | text: ', titled: 'title: {title} | text: ' },
+  classification: { query: 'task: classification | query: ', document: 'task: classification | query: ' },
+  clustering: { query: 'task: clustering | query: ', document: 'task: clustering | query: ' },
+  similarity: { query: 'task: sentence similarity | query: ', document: 'task: sentence similarity | query: ' },
+};
 export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
   {
     id: 'qwen3-asr-0.6b-q8', role: 'transcription', label: 'Qwen3-ASR 0.6B · Q8_0',
@@ -216,6 +245,8 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     sha256: 'd4e388894e09cf3816e8b0896d81d265b55e7a9fff9ab03fe8bf4ef5e11295ac',
     sizeBytes: 84_106_624,
     pooling: 'mean',
+    framing: NOMIC_EMBED_FRAMING,
+    dimensions: [768, 512, 256, 128, 64],
   },
   {
     id: 'qwen3-embedding-0.6b-q8',
@@ -228,6 +259,9 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     sha256: '06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439',
     sizeBytes: 639_150_592,
     pooling: 'last',
+    framing: QWEN3_EMBEDDING_FRAMING,
+    // Its card admits any width from 32 to 1024; these are the halvings a vector index may compare at.
+    dimensions: [1024, 512, 256, 128, 64, 32],
   },
   {
     id: 'embeddinggemma-2-q8',
@@ -242,6 +276,8 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     sizeBytes: 309_855_520,
     recommendedContext: 8192,
     pooling: 'mean',
+    framing: EMBEDDINGGEMMA_2_FRAMING,
+    dimensions: [768, 512, 256, 128],
     projector: 'embeddinggemma-2-mmproj-bf16',
   },
   {

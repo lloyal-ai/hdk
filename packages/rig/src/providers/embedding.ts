@@ -9,7 +9,8 @@
  *
  * An input is text and attachment roots in order. Each root becomes what the projector reads (an image's
  * pixels, a recording's samples, a video's frames on their timeline), with a media marker where it stands in
- * the text, and the whole input is measured before any of it runs.
+ * the text; its text is framed as the model asks for its task; and the whole input is measured before any of
+ * it runs.
  *
  * Node-only. Import from `@lloyal-labs/rig/node`.
  */
@@ -22,7 +23,7 @@ import { call, ensure, resource, until } from 'effection';
 import { acquire } from '../acquire';
 import { RunnerCtx } from '../runner';
 import type { Operation } from 'effection';
-import type { Embedder, EmbeddingInput, EmbeddingPooling, Modality } from '../retrieval';
+import type { Embedder, EmbeddingFraming, EmbeddingInput, EmbeddingPooling, EmbeddingTask, Modality } from '../retrieval';
 
 /** What the embedding block decides about its context. */
 export interface EmbedderLoadOpts {
@@ -37,6 +38,11 @@ export interface EmbedderLoadOpts {
   projector?: string;
   /** Where attachment parts are read from; the run's own store when absent. */
   store?: AttachmentStore;
+  /** The model's own text for each task it was trained for, from its catalog entry. Absent, text is embedded
+   *  as given and no task can be asked for. */
+  framing?: EmbeddingFraming;
+  /** The widths the model was trained to be cut to, from its catalog entry. Absent, its own width alone. */
+  dimensions?: readonly number[];
 }
 
 /** One input as the context takes it: its text with a media marker where each piece of media stands, and that
@@ -48,6 +54,28 @@ interface Placed {
 
 const partsOf = (input: EmbeddingInput): readonly (string | Attachment)[] => (typeof input === 'string' ? [input] : input.parts);
 
+/** `a`, `a and b`, `a, b and c`. */
+const listed = (names: readonly string[]): string =>
+  names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+
+/** The text a model's framing puts before an input: its task's framing for its role, with its title where the task
+ *  has a place for one. Media alone goes unframed, as the cards say; a model with no framing embeds text as given,
+ *  so only an input that names a task asks it for one. */
+function framingOf(framing: EmbeddingFraming, input: EmbeddingInput, i: number): string {
+  const { task, role = 'document', title } = typeof input === 'string' ? {} : input;
+  const tasks = Object.keys(framing);
+  if (tasks.length === 0 && task === undefined) return '';
+  const asked: EmbeddingTask = task ?? 'search';
+  const frame = framing[asked];
+  if (!frame) {
+    const offered = tasks.length ? `frames ${listed(tasks)}` : 'frames no task';
+    throw new Error(`input ${i} is for ${asked}; the bound embedding model ${offered} — set \`model.embedding\` to a model that frames it`);
+  }
+  if (!partsOf(input).some((part) => typeof part === 'string')) return '';
+  if (role === 'query') return frame.query;
+  return title !== undefined && frame.titled ? frame.titled.replace('{title}', title) : frame.document;
+}
+
 /** The admission a recording meets to be embedded: media's default. The context bounds what an input costs;
  *  this bounds only what the native decoder may take before the input is measured. */
 const RECORDING_ADMISSION = audioAdmission();
@@ -57,7 +85,8 @@ const modalityOf = (media: MultimodalInput): Modality => (media instanceof Uint8
 
 /** One input placed: each root becomes what the projector reads, and a root it reads nothing of (a document,
  *  whose text is not an image) is refused rather than left out of the vector unseen. */
-function place(store: AttachmentStore | undefined, input: EmbeddingInput, i: number): Placed {
+function place(store: AttachmentStore | undefined, framing: EmbeddingFraming, input: EmbeddingInput, i: number): Placed {
+  const frame = framingOf(framing, input, i);
   const placed = partsOf(input).map((part, j) => {
     if (typeof part === 'string') return { prompt: part, media: [] as MultimodalInput[] };
     if (!store) throw new Error('an attachment part needs the attachment store, and none is in reach');
@@ -65,7 +94,7 @@ function place(store: AttachmentStore | undefined, input: EmbeddingInput, i: num
     if (media.length === 0) throw new Error(`input ${i} part ${j} has nothing the projector reads — embed its text as a text part`);
     return { prompt: MEDIA_MARKER.repeat(media.length), media };
   });
-  return { prompt: placed.map((p) => p.prompt).join(''), media: placed.flatMap((p) => p.media) };
+  return { prompt: frame + placed.map((p) => p.prompt).join(''), media: placed.flatMap((p) => p.media) };
 }
 
 const POOLING: Record<EmbeddingPooling, PoolingType> = { mean: PoolingType.MEAN, cls: PoolingType.CLS, last: PoolingType.LAST };
@@ -85,6 +114,7 @@ export function createEmbedder(modelPath: string, opts: EmbedderLoadOpts): Opera
     // whichever comes first — a caller's `dispose()` once the queue drains, or the scope's exit.
     let freed = false;
     const free = (c: SessionContext): void => { if (freed) return; freed = true; c.dispose(); };
+    const framing = opts.framing ?? {};
     const ctx = yield* acquire(
       () => createContext({
         modelPath, nCtx, nBatch: nCtx, nSeqMax: 1, embeddings: true, poolingType: POOLING[opts.pooling],
@@ -104,6 +134,12 @@ export function createEmbedder(modelPath: string, opts: EmbedderLoadOpts): Opera
       return next;
     };
 
+    const dimension = ctx.getEmbeddingDimension();
+    const dimensions = [...(opts.dimensions ?? [dimension])].sort((a, b) => b - a);
+    if (dimensions[0] !== dimension) {
+      throw new Error(`the embedding model answers ${dimension} dimensions, but its catalog entry was trained to ${dimensions.join(', ')}`);
+    }
+
     // What the bound model reads: text always, and what its projector, if any, reads.
     const modalities: Modality[] = [
       'text',
@@ -115,7 +151,7 @@ export function createEmbedder(modelPath: string, opts: EmbedderLoadOpts): Opera
     /** Every input placed and measured, with nothing run; the whole call refused at the first input the model
      *  cannot read. Text alone keeps its tokens, which is how it is encoded. */
     const admit = async (store: AttachmentStore | undefined, inputs: readonly EmbeddingInput[]) => {
-      const placed = inputs.map((input, i) => place(store, input, i));
+      const placed = inputs.map((input, i) => place(store, framing, input, i));
       placed.forEach(({ media }, i) => {
         const unread = media.map(modalityOf).find((m) => !modalities.includes(m));
         if (unread) {
@@ -143,8 +179,10 @@ export function createEmbedder(modelPath: string, opts: EmbedderLoadOpts): Opera
     // The queue is the adapter over the native calls, the way `call` is over `fetch`; what a caller holds is an
     // Operation, so leaving a scope abandons the wait while the queue behind it still drains.
     const embedder: Embedder = {
-      dimension: ctx.getEmbeddingDimension(),
+      dimension,
+      dimensions,
       modalities,
+      tasks: Object.keys(framing) as EmbeddingTask[],
       // The model's own special tokens, as its file declares them: last-token pooling reads the end-of-text token
       // Qwen3-Embedding appends, and the runtime's default tokenize adds a leading token only.
       tokenize: (text) => call(() => serialized(() => ctx.tokenize(text, true))),

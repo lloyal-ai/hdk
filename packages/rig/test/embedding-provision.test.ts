@@ -13,8 +13,10 @@ const { resolveModel } = vi.hoisted(() => ({ resolveModel: vi.fn() }));
 vi.mock('../src/models', async original => ({
   ...await original<typeof import('../src/models')>(), resolveModel, isModelPresent: () => false,
 }));
+const { createEmbedder } = vi.hoisted(() => ({ createEmbedder: vi.fn(function* (_path: string, _opts: { framing?: object; dimensions?: number[] }) { return {}; }) }));
+vi.mock('../src/providers/embedding', () => ({ createEmbedder }));
 const { install, planInstall } = await import('../src/install');
-const { resolveServices } = await import('../src/provision');
+const { bindServices, resolveServices } = await import('../src/provision');
 const { catalogEntry } = await import('../src/models');
 
 const model = 'embeddinggemma-2-q8';
@@ -69,5 +71,39 @@ describe('embedding provisioning', () => {
     expect(events.some(e => e.steps.some(s => s.id === 'embedding.projector' && s.got === 10))).toBe(true);
     // The model it already has is not fetched again for its projector's retry.
     expect(resolveModel.mock.calls.filter(([o]) => o.role === 'embedding')).toHaveLength(1);
+  });
+
+  it('binds each catalog model with the task framing and trained widths its own card gives', async () => {
+    const bound = async (id: string) => {
+      createEmbedder.mockClear();
+      await run(() => bindServices({ embedding: `/models/${id}.gguf` }, family({ id })));
+      return createEmbedder.mock.calls[0][1];
+    };
+    const query = (task: string) => `task: ${task} | query: `;
+    const asymmetric = (task: string) => ({ query: query(task), document: 'title: none | text: ', titled: 'title: {title} | text: ' });
+    const symmetric = (task: string) => ({ query: query(task), document: query(task) });
+    expect(await bound(model)).toMatchObject({
+      dimensions: [768, 512, 256, 128],
+      framing: {
+        search: asymmetric('search result'),
+        'question-answering': asymmetric('question answering'),
+        'fact-checking': asymmetric('fact checking'),
+        'code-retrieval': asymmetric('code retrieval'),
+        classification: symmetric('classification'),
+        clustering: symmetric('clustering'),
+        similarity: symmetric('sentence similarity'),
+      },
+    });
+    expect(await bound('nomic-embed-text-v1.5-q4')).toMatchObject({
+      dimensions: [768, 512, 256, 128, 64],
+      framing: {
+        search: { query: 'search_query: ', document: 'search_document: ' },
+        classification: { query: 'classification: ', document: 'classification: ' },
+        clustering: { query: 'clustering: ', document: 'clustering: ' },
+      },
+    });
+    expect(await bound('qwen3-embedding-0.6b-q8')).toMatchObject({
+      framing: { search: { query: 'Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:', document: '' } },
+    });
   });
 });
