@@ -18,6 +18,7 @@ import type { Operation, Task } from 'effection';
 import { Attachments } from '@lloyal-labs/lloyal-agents';
 import { asAttachment, composeVideo, DIGEST_PATTERN, durationRefusal, resolveAudio, soundtrackRefusal } from '@lloyal-labs/media';
 import type { Attachment, AttachmentStore, AudioAdmission, Descriptor, Transcript } from '@lloyal-labs/media';
+import { isRequestId } from '@lloyal-labs/binding';
 import type { UntranscribedWindow, VideoCapabilities, VideoCommand, VideoEvent } from '@lloyal-labs/binding';
 import { DEFAULT_VIDEO_SAMPLING } from './config';
 import type { attachmentSettings, ConfigOf } from './config';
@@ -144,7 +145,7 @@ export function useVideoCommands({ wire, config = () => ({}) }: VideoCommandsOpt
           yield* wire.send({ type: 'video:capabilities', capabilities: { ...videoPolicy(config()), transcription: asr?.limits ?? null } });
         },
         *'video:compose'(command) {
-          if (typeof command.requestId !== 'string' || !command.requestId || command.requestId.length > 128) return;
+          if (!isRequestId(command.requestId)) return;
           const { requestId } = command;
           // One task per id: a second under the same id would take its place and leave the first uncancellable.
           if (composing.has(requestId)) {

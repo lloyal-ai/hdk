@@ -25,6 +25,7 @@ import type { Attachment } from '@lloyal-labs/media';
 import { createContentIngress, FileAttachmentStore } from '@lloyal-labs/media/node';
 import { Services, useVideoCommands } from '@lloyal-labs/rig';
 import { createTranscriber } from '@lloyal-labs/rig/node';
+import { isRequestId } from '@lloyal-labs/binding';
 import type { UntranscribedWindow, VideoCapabilities, VideoCommand, VideoEvent } from '@lloyal-labs/binding';
 import { ffmpegDecoder } from './ffmpeg-decoder';
 
@@ -122,8 +123,10 @@ function* composePack(store: FileAttachmentStore, host: Host, capabilities: Vide
 
 main(function* (argv) {
   const [dir, ...named] = argv;
-  if (!dir || named.length === 0 || named.some(n => !/^[\w-]+=.+/.test(n))) {
-    throw new Error('usage: scenario-pack.ts <store dir> <name>=<video> [<name>=<video> ...]');
+  const pairs = named.map(n => n.split(/=(.*)/s, 2) as [string, string]);
+  // Each name is the compose request's id, which the host ignores unless it is one: checked before any ingest.
+  if (!dir || pairs.length === 0 || pairs.some(([name, file]) => !/^[\w-]+$/.test(name) || !isRequestId(name) || !file)) {
+    throw new Error('usage: scenario-pack.ts <store dir> <name>=<video> [<name>=<video> ...], each name a request id the host takes');
   }
   const store = new FileAttachmentStore(resolve(dir));
   const index = join(resolve(dir), 'packs.json');
@@ -132,7 +135,7 @@ main(function* (argv) {
   yield* Services.set({ transcription: yield* createTranscriber(ASR.model, ASR.projector, { store }) });
   const host = yield* useHost();
   const capabilities = yield* host.describe();
-  for (const [name, file] of named.map(n => n.split(/=(.*)/s, 2) as [string, string])) {
+  for (const [name, file] of pairs) {
     packs[name] = yield* composePack(store, host, capabilities, name, resolve(file));
     writeFileSync(index, `${JSON.stringify(packs, null, 2)}\n`);
   }
