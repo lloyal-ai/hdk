@@ -21,7 +21,8 @@ import { encodeVideoFrame } from '@lloyal-labs/media/node';
 /** What the probe found. Each of picture and sound names its stream, and every decode maps that stream: ffmpeg's
  *  own choice (the default-flagged, the largest, the most channels) can be another, read at the wrong rate. */
 interface Probed {
-  durationS: number;
+  /** Where the container's clock starts: an input seek is counted from here, not from zero. */
+  containerStartS: number;
   picture?: { stream: number; width: number; height: number; startS: number; rate: number };
   sound?: { stream: number; startS: number; sampleRate: number; channels: number };
 }
@@ -51,10 +52,10 @@ export function ffmpegDecoder(file: string): ClipDecoder {
 
   const probed: Promise<Probed> = run('ffprobe', [
     '-v', 'error', '-of', 'json',
-    '-show_entries', 'format=duration:stream=index,codec_type,width,height,r_frame_rate,start_time,sample_rate,channels', file,
+    '-show_entries', 'format=start_time:stream=index,codec_type,width,height,r_frame_rate,start_time,sample_rate,channels', file,
   ]).then(({ stdout }) => {
     const { format, streams } = JSON.parse(stdout.toString()) as {
-      format: { duration: string };
+      format: { start_time?: string };
       streams: {
         index: number; codec_type: string; width?: number; height?: number; r_frame_rate: string; start_time?: string;
         sample_rate?: string; channels?: number;
@@ -63,12 +64,28 @@ export function ffmpegDecoder(file: string): ClipDecoder {
     const video = streams.find(s => s.codec_type === 'video');
     const audio = streams.find(s => s.codec_type === 'audio');
     return {
-      durationS: Number(format.duration),
+      containerStartS: Number(format.start_time ?? 0),
       ...(video ? { picture: { stream: video.index, width: video.width!, height: video.height!, startS: Number(video.start_time ?? 0), rate: rational(video.r_frame_rate) } } : {}),
       ...(audio ? { sound: { stream: audio.index, startS: Number(audio.start_time ?? 0), sampleRate: Number(audio.sample_rate), channels: audio.channels! } } : {}),
     };
   });
   probed.catch(() => {});
+
+  /** Where the clip ends on its own clock: the latest end of a packet in the streams this decoder reads. A
+   *  container's own duration is a length in some formats (mp4) and where the clip ends in others (Matroska). */
+  const ended: Promise<number> = probed.then(async ({ picture, sound }) => {
+    const read = new Set([picture?.stream, sound?.stream]);
+    const { stdout } = await run('ffprobe', ['-v', 'error', '-of', 'json', '-show_entries', 'packet=stream_index,pts_time,duration_time', file]);
+    const { packets = [] } = JSON.parse(stdout.toString()) as { packets?: { stream_index: number; pts_time?: string; duration_time?: string }[] };
+    const endS = packets
+      .filter((p) => read.has(p.stream_index))
+      .map((p) => Number(p.pts_time) + (Number(p.duration_time) || 0))
+      .filter(Number.isFinite)
+      .reduce((latest, end) => Math.max(latest, end), -Infinity);
+    if (!Number.isFinite(endS)) throw new Error('ffprobe found no timed packet in the streams this decoder reads.');
+    return endS;
+  });
+  ended.catch(() => {});
 
   const picture = async () => {
     const { picture } = await probed;
@@ -79,9 +96,11 @@ export function ffmpegDecoder(file: string): ClipDecoder {
   /** The frame shown at `t`: the last whose time is at or before it, decoded, scaled to `size` and encoded as a video frame. */
   async function frameAt(t: number, size: { width: number; height: number }): Promise<ShownFrame | null> {
     const { stream, startS, rate } = await picture();
+    const { containerStartS } = await probed;
     const shownS = startS + Math.floor((t - startS) * rate + 1e-6) / rate;
     const { stdout, stderr } = await run('ffmpeg', [
-      '-v', 'info', '-ss', Math.max(0, shownS - SEEK_LEAD_S).toFixed(6), '-i', file, '-map', `0:${stream}`, '-frames:v', '1', '-copyts',
+      // The seek is counted from the container's start; `shownS`, like every time here, is on the clip's own clock.
+      '-v', 'info', '-ss', Math.max(0, shownS - containerStartS - SEEK_LEAD_S).toFixed(6), '-i', file, '-map', `0:${stream}`, '-frames:v', '1', '-copyts',
       '-vf', `scale=${size.width}:${size.height},showinfo`, '-f', 'image2pipe', '-c:v', 'png', '-',
     ]);
     // Past the last frame nothing is shown.
@@ -94,7 +113,7 @@ export function ffmpegDecoder(file: string): ClipDecoder {
   }
 
   return {
-    duration: async () => (await probed).durationS,
+    duration: () => ended,
     picture,
     async *frames(times, size) {
       for (const t of times) yield await frameAt(t, size);
@@ -102,8 +121,10 @@ export function ffmpegDecoder(file: string): ClipDecoder {
     async *sound(): AsyncGenerator<DecodedSound> {
       const { sound } = await probed;
       if (!sound || disposed) return;
-      // The sound as it decodes: interleaved 32-bit floats at the source's own rate and channels.
-      const child = spawn('ffmpeg', ['-v', 'error', '-i', file, '-map', `0:${sound.stream}`, '-f', 'f32le', '-'], { stdio: ['ignore', 'pipe', 'pipe'] });
+      // The sound as it decodes: interleaved 32-bit floats at the source's own rate and channels. The raw stream
+      // carries no timestamps, so a gap in the source's is filled with silence (`aresample=async=1`) and every
+      // sample stands at its time counted from the first.
+      const child = spawn('ffmpeg', ['-v', 'error', '-i', file, '-map', `0:${sound.stream}`, '-af', 'aresample=async=1', '-f', 'f32le', '-'], { stdio: ['ignore', 'pipe', 'pipe'] });
       running.add(child);
       let stderr = '';
       child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });

@@ -64,3 +64,49 @@ describe.runIf(hasFfmpeg)('ffmpegDecoder on a file with two pictures and two sou
     }
   });
 });
+
+describe.runIf(hasFfmpeg)('ffmpegDecoder on the clip\'s own clock', () => {
+  let dir: string;
+  let gapped: string;
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'ffmpeg-decoder-clock-'));
+    // A 4 s clip whose timestamps start at 1.4 s, in two containers: Matroska reports where it ends, mp4 its length.
+    for (const [name, audio] of [['late.mkv', 'pcm_s16le'], ['late.mp4', 'aac']]) {
+      execFileSync('ffmpeg', [
+        '-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=320x240:r=10:d=4', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=16000:duration=4',
+        '-c:v', 'mpeg4', '-c:a', audio, '-output_ts_offset', '1.4', join(dir, name),
+      ]);
+    }
+    // 2 s of sound with a 1 s gap in its timestamps after the first second.
+    gapped = join(dir, 'gapped.mkv');
+    execFileSync('ffmpeg', [
+      '-v', 'error', '-f', 'lavfi', '-i', "sine=frequency=440:sample_rate=16000:duration=2,asetpts='PTS+if(gte(T,1),16000,0)'",
+      '-c:a', 'pcm_s16le', gapped,
+    ]);
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  it.each(['late.mkv', 'late.mp4'])('%s ends where the clip ends on its clock, and shows the frame asked for there', async (name) => {
+    const decoder = ffmpegDecoder(join(dir, name));
+    try {
+      expect(await decoder.duration()).toBeCloseTo(5.4, 3);
+      expect(await decoder.picture()).toMatchObject({ startS: 1.4 });
+      const shown = [];
+      for await (const frame of decoder.frames([2.4, 2.7], { width: 320, height: 240 })) shown.push(frame!.shownS);
+      expect(shown).toEqual([2.4, 2.7]);
+    } finally {
+      decoder.dispose();
+    }
+  });
+
+  it('places sound after a gap in its timestamps where it is presented, the gap silent', async () => {
+    const decoder = ffmpegDecoder(gapped);
+    try {
+      let samples = 0;
+      for await (const run of decoder.sound()) samples += run.channels[0].length;
+      expect(samples / 16000).toBeCloseTo(3, 1);
+    } finally {
+      decoder.dispose();
+    }
+  });
+});
