@@ -9,13 +9,14 @@ import { run } from 'effection';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { composeVideo } from '@lloyal-labs/media';
+import { composeVideo, videoWindow } from '@lloyal-labs/media';
 import type { Attachment } from '@lloyal-labs/media';
 import { createContentIngress, FileAttachmentStore } from '@lloyal-labs/media/node';
 import { createEmbedder } from '../src/providers/embedding';
 import { catalogEntry } from '../src/models';
 import type { EmbeddingInput } from '../src/retrieval';
 import { EMBEDDINGGEMMA } from './helpers/embed-model';
+import { verifyLocalNative } from '../../sdk/test/local-native';
 
 const describeWithModel = EMBEDDINGGEMMA ? describe : describe.skip;
 const cosine = (a: ArrayLike<number>, b: ArrayLike<number>) => Array.from(a).reduce((sum, x, i) => sum + x * b[i], 0);
@@ -32,6 +33,7 @@ describeWithModel('createEmbedder over EmbeddingGemma 2 and its projector', () =
   let clip: Attachment;
 
   beforeAll(async () => {
+    verifyLocalNative();
     reference = new Map(
       JSON.parse(readFileSync(join(gemma().fixtures, 'embedding/embeddinggemma2-reference.json'), 'utf8')).entries.map((e: { name: string; vector: number[] }) => [e.name, e.vector]),
     );
@@ -52,6 +54,7 @@ describeWithModel('createEmbedder over EmbeddingGemma 2 and its projector', () =
   const embedded = (inputs: EmbeddingInput[]) => run(function* () {
     const { framing, dimensions } = catalogEntry('embedding', 'embeddinggemma-2-q8')!;
     const embedder = yield* createEmbedder(gemma().model, { nCtx: 8192, pooling: 'mean', projector: gemma().projector, store, framing, dimensions });
+    verifyLocalNative({ loaded: true });
     expect(embedder.modalities).toEqual(['text', 'image', 'video', 'audio']);
     return yield* embedder.embed(inputs);
   });
@@ -65,6 +68,18 @@ describeWithModel('createEmbedder over EmbeddingGemma 2 and its projector', () =
     const [own, ceiling, floor] = [await cost({}), await cost({ imageMaxTokens: 140 }), await cost({ imageMinTokens: 560 })];
     expect(ceiling).toBeLessThan(own);
     expect(floor).toBeGreaterThan(own);
+  }, 300_000);
+
+  it('embeds a window of a stored video: the whole span where llama.cpp embeds the clip, a part of it as its own moment', async () => {
+    const window = (fromMs: number, toMs: number) => ({ parts: [videoWindow(store, clip, { fromMs, toMs })] });
+    const [whole, early, late] = await embedded([window(0, 3750), window(0, 1750), window(2000, 3750)]);
+    const clipReference = reference.get('video/red-square-moves.mp4')!;
+    expect(cosine(whole, clipReference)).toBeGreaterThan(0.999);
+    for (const part of [early, late]) {
+      expect(Math.sqrt(cosine(part, part))).toBeCloseTo(1, 5);
+      expect(cosine(part, clipReference)).toBeLessThan(0.999);
+    }
+    expect(cosine(early, late)).toBeLessThan(0.999);
   }, 300_000);
 
   it('embeds an image, a video and a recording from the store where llama.cpp does', async () => {
