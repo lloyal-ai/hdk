@@ -27,9 +27,11 @@
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
     "verify:oci:layout": "bash scripts/verify-oci-conformance.sh",
-    "verify:oci:distribution": "bash scripts/verify-distribution-conformance.sh"
+    "verify:oci:distribution": "bash scripts/verify-distribution-conformance.sh",
+    "prepare": "lefthook install"
   },
   "devDependencies": {
+    "@lloyal-labs/hickey": "^0.2.1",
     "@types/node": "^25.3.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.3.0",
@@ -37,6 +39,7 @@
     "fast-check": "^4.7.0",
     "ink": "^7.1.1",
     "jsdom": "^30.1.1",
+    "lefthook": "^2.2.2",
     "react": "^19.2.0",
     "react-dom": "^19.3.0",
     "tsx": "^4.21.0",

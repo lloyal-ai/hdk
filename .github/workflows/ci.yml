@@ -19,6 +19,7 @@ jobs:
           node-version: 24
 
       - run: npm install
+
       - run: npm run build
 
       - name: Verify dist outputs
@@ -29,6 +30,26 @@ jobs:
           test -f packages/agents/dist/index.d.ts
           test -f packages/rig/dist/index.js
           test -f packages/rig/dist/index.d.ts
+
+  # The judge runs locally, on the committer's own login, before every commit; a pull request is
+  # accepted only when every commit carries the record hickey wrote into its message. Seconds, no model.
+  accepted:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The check reads every commit of the pull request.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: npm install
+
+      - name: Every commit carries the gate's record
+        run: npx hickey carried "origin/${{ github.base_ref }}...HEAD"
 
   unit-tests:
     runs-on: ubuntu-latest

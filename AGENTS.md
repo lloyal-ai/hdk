@@ -9,15 +9,9 @@
 
 These documents live in the Linear Lloyal Platform project. Read the relevant document when working in its area; the essential rules below remain available without Linear. Follow the owner's latest instructions and use live repository contents for current implementation, versions, licensing, and release state. Historical plans do not reactivate old tasks.
 
-## Programming style
+## Principles
 
-- Prefer declarative, self-documenting code written for humans to read.
-- Express intent through clear names, data, and small, composable operations.
-- DRY and composition over creation are critical: identify and compose existing primitives before adding machinery; extend the smallest owning boundary when a capability is missing.
-- Avoid dense imperative control flow, nested `if`/`else` chains, and nested loops; make the rules and transformations explicit.
-- Make the code understandable from its structure without depending on lengthy comments. Comments provide durable context, constraints, rationale or invariants for a code reader, never transient task status, session notes or implementation chronology.
-- Public-facing documentation and comments must not contain internal links. Keep internal planning and progress in Linear; public material should stand on its own for an outside reader.
-- Judge abstractions by how clearly they communicate intent; moving complexity behind helpers or into a dense expression does not improve readability by itself.
+Every change is judged, before it is committed, against [PRINCIPLES.md](PRINCIPLES.md): the programming style and the guiding principle, in the owner's words, with the judgments he has made. Read it before changing code; it is the one statement of them in this repository.
 
 ## Native context boundary
 
@@ -27,12 +21,6 @@ These documents live in the Linear Lloyal Platform project. Read the relevant do
 - Existing bypasses are migration work, not precedent for new ones.
 - Preserve native ownership, admission/accounting, and failure semantics. In-flight native work must settle before its state is pruned or disposed.
 
-## Guiding principle
-
-Invest in simplification up front. Build from genuinely simple, independent parts so future changes require less work. Evaluate a design by how readily it can be understood and changed.
-
-Rich Hickey's *Simplicity Matters* is the explicit influence. The full owner-supplied passage is preserved in Engineering principles.
-
 ## Working agreements
 
 - Read the relevant implementation, tests, instructions, and current diff before changing code. Keep changes targeted and preserve unrelated user work.
@@ -41,5 +29,6 @@ Rich Hickey's *Simplicity Matters* is the explicit influence. The full owner-sup
 - Integration tests, locally and in CI, must use their intended models: SmolLM2 for text, Qwen3.5-4B with its vision projector for image projection and strict multimodal checks, Qwen3-ASR with its audio projector for audio, and the designated embedding model for embeddings. The point is that every test runs on the model scoped to what it tests: a reasoning test never runs on a model that cannot reason, and CI never substitutes a smaller model. Select each model explicitly. This is not a limit on how many models one process loads; a test that composes several models, as a harness does, loads each one it needs. Never use text-only SmolLM for multimodal tests or weaken grounded image assertions with a mechanics-only substitute.
 - For local Node/SDK native runtime tests, set `LLOYAL_LOCAL=1` and verify package resolution reaches the intended local Node checkout. Direct C++ integration runners bypass that loader switch; verify their include paths and linked local engine artifacts instead.
 - Preserve approved public wording and design. Explain factual corrections; avoid em dashes in new public copy and unrequested README rewrites.
+- Public-facing documentation and comments must not contain internal links. Keep internal planning and progress in Linear; public material should stand on its own for an outside reader.
 - Do not push, merge, tag, release, or publish without authorization for the current task. Honor authorization already given without repeated permission requests, and follow applicable repository requirements for commits and PRs.
 - Keep changing facts dated and sourced. A merge alone is not proof of a published release.
