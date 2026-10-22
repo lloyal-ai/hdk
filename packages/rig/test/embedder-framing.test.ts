@@ -17,9 +17,10 @@ const { createContext, fake, read } = vi.hoisted(() => {
   const read: string[] = [];
   const fake = {
     width: 768,
-    tokenize: async (text: string) => { read.push(text); return Array.from(text, (_, i) => i); },
+    // A token per character, its code, so what is encoded reads back as the text it was.
+    tokenize: async (text: string) => Array.from(text, (c) => c.charCodeAt(0)),
     kvCacheClear: async () => {},
-    encode: async () => {},
+    encode: async (tokens: number[]) => { read.push(String.fromCharCode(...tokens)); },
     encodeMultimodal: async (prompt: string) => { read.push(prompt); },
     _cellsMultimodal: async (_sep: number[], prompt: string) => prompt.length + 100,
     getEmbeddings: () => new Float32Array(fake.width),

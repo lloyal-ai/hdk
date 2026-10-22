@@ -58,10 +58,17 @@ import type {
 import { Branch } from './Branch.js';
 import { BranchStore } from './BranchStore.js';
 import { Session } from './Session.js';
+import { MEDIA_MARKER, mediaKind } from './deltas.js';
 
-type MediaKind = 'image' | 'audio' | 'video';
-const kindOf = (input: MultimodalInput): MediaKind => input instanceof Uint8Array ? 'image' : input.kind;
+type MediaKind = ReturnType<typeof mediaKind>;
+const kindOf = mediaKind;
 const isAudio = (input: MultimodalInput): boolean => kindOf(input) === 'audio';
+
+/** The kernel's refusal for a prompt whose markers do not match its media, or null. Same words as `MtmdSource`. */
+function markerRefusal(prompt: string, inputs: readonly MultimodalInput[]): string | null {
+  const markers = prompt.split(MEDIA_MARKER).length - 1;
+  return markers === inputs.length ? null : `MtmdSource - media marker count (${markers}) does not match media count (${inputs.length})`;
+}
 
 /** The kernel's refusal for a video it cannot lay out, or null. Same words as `MtmdSource`. */
 function videoRefusal(input: MultimodalInput): string | null {
@@ -482,8 +489,8 @@ export class MockSessionContext implements SessionContext {
     inputs: MultimodalInput[],
     _audioLimits?: AudioLimits,
   ): Promise<number> {
-    // The kernel prices by laying the video out, so what prefill refuses cannot be priced either.
-    const refusal = inputs.map(videoRefusal).find(Boolean);
+    // The kernel prices by laying the input out, so what prefill refuses cannot be priced either.
+    const refusal = markerRefusal(prompt, inputs) ?? inputs.map(videoRefusal).find(Boolean);
     if (refusal) throw new Error(refusal);
     return this._mockCost(sepTokens, prompt, inputs, this.mockImageCells) + (this.embeddings ? this.mockSpecialTokens : 0);
   }
@@ -500,6 +507,8 @@ export class MockSessionContext implements SessionContext {
     if (!this.embeddings || !(this.supportsVision() || this.supportsAudio())) {
       throw new Error('encodeMultimodal requires an embedding context with a projector; pass embeddings: true and mmprojPath to createContext');
     }
+    const mismatch = markerRefusal(prompt, inputs);
+    if (mismatch) throw new Error(mismatch);
     return (async () => {
       const cells = await this._cellsMultimodal([], prompt, inputs, audioLimits);
       if (cells > this.nBatch) {

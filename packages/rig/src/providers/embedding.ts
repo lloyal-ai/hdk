@@ -16,8 +16,8 @@
  * Node-only. Import from `@lloyal-labs/rig/node`.
  */
 import { createContext } from '@lloyal-labs/sdk/node';
-import { defangMarker, deltaCells, MEDIA_MARKER, PoolingType } from '@lloyal-labs/sdk';
-import type { AudioLimits, MultimodalInput, SessionContext } from '@lloyal-labs/sdk';
+import { buildEmbedDelta, embedCells, embedDelta, mediaKind, PoolingType } from '@lloyal-labs/sdk';
+import type { AudioLimits, MultimodalDelta, MultimodalInput, SessionContext } from '@lloyal-labs/sdk';
 import { AUDIO_CONFIG_TYPE, audioAdmission, audioLimitsAt, materialize } from '@lloyal-labs/media';
 import type { AudioAdmission } from '@lloyal-labs/media';
 import type { Attachment, AttachmentStore } from '@lloyal-labs/media';
@@ -50,13 +50,6 @@ export interface EmbedderLoadOpts {
   dimensions?: readonly number[];
 }
 
-/** One input as the context takes it: its text with a media marker where each piece of media stands, and that
- *  media in marker order. */
-interface Placed {
-  prompt: string;
-  media: MultimodalInput[];
-}
-
 const partsOf = (input: EmbeddingInput): readonly (string | Attachment)[] => (typeof input === 'string' ? [input] : input.parts);
 
 /** `a`, `a and b`, `a, b and c`. */
@@ -85,9 +78,6 @@ function framingOf(framing: EmbeddingFraming, input: EmbeddingInput, i: number):
  *  this bounds only what the native decoder may take before the input is measured. */
 const RECORDING_ADMISSION = audioAdmission();
 
-/** Which sense a piece of media is: bare bytes are an image. */
-const modalityOf = (media: MultimodalInput): Modality => (media instanceof Uint8Array ? 'image' : media.kind);
-
 /** Why a root gave the projector nothing: a recording the model cannot hear, or a document, whose text is not an
  *  image. Either is refused rather than left out of the vector unseen. */
 function unread(store: AttachmentStore, part: Attachment, i: number, j: number): Error {
@@ -96,22 +86,20 @@ function unread(store: AttachmentStore, part: Attachment, i: number, j: number):
     : new Error(`input ${i} part ${j} has nothing the projector reads — embed its text as a text part`);
 }
 
-/** One input placed: each root becomes what the projector reads (a video's soundtrack too, when the model hears, under
- *  `heard`). A prompt with media is split on every literal marker, so its text is defanged; text alone is
- *  tokenized, and read as written. */
-function place(store: AttachmentStore | undefined, framing: EmbeddingFraming, heard: AudioAdmission | undefined, input: EmbeddingInput, i: number): Placed {
-  const frame = framingOf(framing, input, i);
-  const placed = partsOf(input).map((part, j) => {
-    if (typeof part === 'string') return { text: part, media: [] as MultimodalInput[] };
+/** One input as the context takes it: its framing, then each part, a root becoming what the projector reads (a
+ *  video's soundtrack too, when the model hears, under `heard`), built as the SDK builds an embedding input. */
+function place(
+  store: AttachmentStore | undefined, framing: EmbeddingFraming, heard: { admission: AudioAdmission; limits: AudioLimits } | undefined,
+  input: EmbeddingInput, i: number,
+): MultimodalDelta {
+  const parts = partsOf(input).flatMap((part, j): (string | MultimodalInput)[] => {
+    if (typeof part === 'string') return [part];
     if (!store) throw new Error('an attachment part needs the attachment store, and none is in reach');
-    const media = materialize(store, [part], heard ? { audio: heard } : {}).inputs as MultimodalInput[];
+    const media = materialize(store, [part], heard ? { audio: heard.admission } : {}).inputs as MultimodalInput[];
     if (media.length === 0) throw unread(store, part, i, j);
-    return { text: '', media };
+    return media;
   });
-  const media = placed.flatMap((p) => p.media);
-  const written = media.length > 0 ? defangMarker : (text: string) => text;
-  const prompt = written(frame) + placed.map((p) => written(p.text) + MEDIA_MARKER.repeat(p.media.length)).join('');
-  return { prompt, media };
+  return buildEmbedDelta([framingOf(framing, input, i), ...parts], heard ? { audioLimits: heard.limits } : {});
 }
 
 const POOLING: Record<EmbeddingPooling, PoolingType> = { mean: PoolingType.MEAN, cls: PoolingType.CLS, last: PoolingType.LAST };
@@ -162,28 +150,22 @@ export function createEmbedder(modelPath: string, opts: EmbedderLoadOpts): Opera
       ...(ctx.supportsVision() ? (['image', 'video'] as const) : []),
       ...(ctx.supportsAudio() ? (['audio'] as const) : []),
     ];
-    const heard = ctx.supportsAudio() ? RECORDING_ADMISSION : undefined;
-    const audioLimits: AudioLimits | undefined = heard ? audioLimitsAt(heard, ctx.audioSampleRate()) : undefined;
+    const heard = ctx.supportsAudio()
+      ? { admission: RECORDING_ADMISSION, limits: audioLimitsAt(RECORDING_ADMISSION, ctx.audioSampleRate()) }
+      : undefined;
 
     /** Every input placed and measured, with nothing run; the whole call refused at the first input the model
-     *  cannot read. Text alone keeps its tokens, which is how it is encoded. */
+     *  cannot read. */
     const admit = async (store: AttachmentStore | undefined, inputs: readonly EmbeddingInput[]) => {
-      const placed = inputs.map((input, i) => place(store, framing, heard, input, i));
-      placed.forEach(({ media }, i) => {
-        const unread = media.map(modalityOf).find((m) => !modalities.includes(m));
+      const deltas = inputs.map((input, i) => place(store, framing, heard, input, i));
+      deltas.forEach(({ bitmaps }, i) => {
+        const unread = bitmaps.map(mediaKind).find((m) => !modalities.includes(m));
         if (unread) {
           throw new Error(`input ${i} has an ${unread}, which this embedding model cannot read — set \`model.embedding.projector\` to a projector that reads it`);
         }
       });
-      const measured: (Placed & { cells: number; tokens?: number[] })[] = [];
-      for (const p of placed) {
-        if (p.media.length === 0) {
-          const tokens = await ctx.tokenize(p.prompt, true);
-          measured.push({ ...p, tokens, cells: tokens.length });
-        } else {
-          measured.push({ ...p, cells: await deltaCells(ctx, { sep: [], prompt: p.prompt, bitmaps: p.media, ...(audioLimits ? { audioLimits } : {}) }) });
-        }
-      }
+      const measured: { delta: MultimodalDelta; cells: number }[] = [];
+      for (const delta of deltas) measured.push({ delta, cells: await embedCells(ctx, delta) });
       return measured;
     };
 
@@ -199,7 +181,7 @@ export function createEmbedder(modelPath: string, opts: EmbedderLoadOpts): Opera
       dimension,
       dimensions,
       modalities,
-      audio: heard ?? null,
+      audio: heard?.admission ?? null,
       tasks: Object.keys(framing) as EmbeddingTask[],
       // The model's own special tokens, as its file declares them: last-token pooling reads the end-of-text token
       // such a model appends, and the runtime's default tokenize adds a leading token only.
@@ -220,12 +202,7 @@ export function createEmbedder(modelPath: string, opts: EmbedderLoadOpts): Opera
           // Work once admitted runs whole: the free waits on this queue's tail, so a dispose mid-batch cannot
           // pull the context from under it, and a caller is never answered half a batch.
           const out: Float32Array[] = [];
-          for (const { prompt, media, tokens } of admitted) {
-            await ctx.kvCacheClear();
-            if (tokens) await ctx.encode(tokens);
-            else await ctx.encodeMultimodal(prompt, media, audioLimits);
-            out.push(new Float32Array(ctx.getEmbeddings(true)));
-          }
+          for (const { delta } of admitted) out.push(await embedDelta(ctx, delta));
           return out;
         }));
       },

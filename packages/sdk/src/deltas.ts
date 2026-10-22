@@ -12,16 +12,19 @@ import type { SessionContext, MultimodalInput, AudioLimits } from './types';
  */
 export const MEDIA_MARKER = '<__media__>';
 
+/** Defang a literal media marker in model-visible text. The native layer
+ *  splits the rendered prompt on EVERY literal occurrence, so text that
+ *  happens to contain the marker would desynchronize markers and bitmaps —
+ *  more markers than inputs fails the prefill; an off-by-one mispairs them.
+ *  Applied wherever text enters a multimodal prompt. */
+const defangMarker = (text: string): string => text.split(MEDIA_MARKER).join('<media>');
+
 /**
- * Defang a literal media marker in model-visible text. The native layer
- * splits the rendered prompt on EVERY literal occurrence, so text that
- * happens to contain the marker would desynchronize markers and bitmaps —
- * more markers than inputs fails the prefill; an off-by-one mispairs them.
- * Applied wherever text enters a multimodal prompt.
+ * What a projector input is: bare bytes are an image.
  *
  * @category Agents
  */
-export const defangMarker = (text: string): string => text.split(MEDIA_MARKER).join('<media>');
+export const mediaKind = (input: MultimodalInput): 'image' | 'audio' | 'video' => (input instanceof Uint8Array ? 'image' : input.kind);
 
 /**
  * Chat content carrying one media marker per input
@@ -406,12 +409,11 @@ export function buildToolResultDeltaMultimodal(
  * is directly comparable with `ContextPressure.headroom` and with the
  * `tokensDecoded` the prefill reports back.
  *
- * On an embedding context it is what {@link SessionContext.encodeMultimodal}
- * must hold in one dispatch, the model's own special tokens included: measure
- * `{ sep: [], prompt, bitmaps }` against `nBatch` before embedding it.
+ * On an embedding context, measure an input with {@link embedCells}, which
+ * also measures text alone on a model with no projector.
  *
  * @param ctx - Active session context (created with `mmprojPath`)
- * @param delta - Built by any of the multimodal delta builders, or `{ sep: [], prompt, bitmaps }` for an embed
+ * @param delta - Built by any of the multimodal delta builders
  * @returns Cells the prefill, or the embed, would take: separator, text and projected media rows
  *
  * @category Agents
@@ -421,4 +423,59 @@ export async function deltaCells(
   delta: MultimodalDelta,
 ): Promise<number> {
   return ctx._cellsMultimodal(delta.sep, delta.prompt, delta.bitmaps, delta.audioLimits);
+}
+
+/**
+ * Build the delta for one embedding input
+ *
+ * An embedding reads one input whole, with no chat template and no turn
+ * separator: its parts in order, text as written and one {@link MEDIA_MARKER}
+ * where each piece of media stands. Only a prompt with media is split on
+ * markers, so its text is defanged; text alone is tokenized as written. The
+ * media is owned as every multimodal delta owns it, and sound is bounded by
+ * `audioLimits` as it is there.
+ *
+ * @param parts - Text and media, in the order they are read
+ * @param opts - Aggregate audio limits, required when a part is sound
+ * @returns The delta {@link embedCells} measures and {@link embedDelta} embeds
+ *
+ * @category Agents
+ */
+export function buildEmbedDelta(
+  parts: readonly (string | MultimodalInput)[],
+  opts: { audioLimits?: AudioLimits } = {},
+): MultimodalDelta {
+  const inputs = parts.filter((part): part is MultimodalInput => typeof part !== 'string');
+  const written = inputs.length > 0 ? defangMarker : (text: string) => text;
+  const prompt = parts.map(part => (typeof part === 'string' ? written(part) : MEDIA_MARKER)).join('');
+  return multimodalDelta([], prompt, inputs, opts.audioLimits);
+}
+
+/**
+ * What an embedding input costs, measured with nothing run: text alone by its
+ * tokens, the model's own special tokens included, and an input with media as
+ * the projector lays it out ({@link deltaCells}). An embedding context must hold
+ * that much in one dispatch.
+ *
+ * @category Agents
+ */
+export async function embedCells(ctx: SessionContext, delta: MultimodalDelta): Promise<number> {
+  return delta.bitmaps.length === 0 ? (await ctx.tokenize(delta.prompt, true)).length : deltaCells(ctx, delta);
+}
+
+/**
+ * Embed one input on an embedding context: the context cleared, the input
+ * encoded whole (text alone through its tokens, with media in one dispatch),
+ * and its pooled vector read, L2-normalized, as a copy the caller owns.
+ *
+ * Several native calls as one unit: a caller must not dispose the context, or
+ * start another embed on it, until this has settled.
+ *
+ * @category Agents
+ */
+export async function embedDelta(ctx: SessionContext, delta: MultimodalDelta): Promise<Float32Array> {
+  await ctx.kvCacheClear();
+  if (delta.bitmaps.length === 0) await ctx.encode(await ctx.tokenize(delta.prompt, true));
+  else await ctx.encodeMultimodal(delta.prompt, delta.bitmaps, delta.audioLimits);
+  return new Float32Array(ctx.getEmbeddings(true));
 }

@@ -59,7 +59,10 @@ describe('createEmbedder — the context it asks for', () => {
       yield* e.tokenize('x');
       yield* e.embed(['y']);
     });
-    expect(log.filter((l) => l.startsWith('tokenize'))).toEqual(['tokenize:x+special', 'tokenize:y+special']);
+    const tokenized = log.filter((l) => l.startsWith('tokenize'));
+    expect(tokenized).toContain('tokenize:x+special');
+    expect(tokenized).toContain('tokenize:y+special');
+    expect(tokenized.every((l) => l.endsWith('+special'))).toBe(true);
   });
 
   it('reports the model\'s dimension', async () => {

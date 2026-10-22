@@ -29,7 +29,7 @@ import { Attachments, ContextPressure, Ctx, waitUntilSettled } from '@lloyal-lab
 import { service } from './services';
 import { asAttachment, materialize } from '@lloyal-labs/media';
 import type { Attachment, Descriptor } from '@lloyal-labs/media';
-import { buildUserDeltaMultimodal, deltaCells } from '@lloyal-labs/sdk';
+import { buildUserDeltaMultimodal, deltaCells, mediaKind } from '@lloyal-labs/sdk';
 import type { MultimodalInput } from '@lloyal-labs/sdk';
 
 /** What the claims came to: the roots the run may read from, the projector
@@ -83,7 +83,7 @@ export function* admitted(descriptors: readonly Descriptor[] = [], budget: Attac
     for (const root of roots) {
       const own = materialize(store, [root]).inputs;
       if (own.length > 0) projected.push(root);
-      if (own.some((input) => !(input instanceof Uint8Array) && input.kind === 'video')) videos.push(root);
+      if (own.some((input) => mediaKind(input) === 'video')) videos.push(root);
       bitmaps.push(...own);
     }
   } catch (err) {
