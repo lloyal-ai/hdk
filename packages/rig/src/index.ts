@@ -62,6 +62,8 @@ export type { FitOpts } from './resources/fit';
 export { mergeRanges, subtractRanges } from './ranges';
 export { fuseRanks } from './fuse-ranks';
 export type { Fused, FuseOpts } from './fuse-ranks';
+export { VectorIndex } from './vector-index';
+export type { VectorHit, VectorIndexOpts, VectorSearchOpts } from './vector-index';
 export { loadDocuments } from './resources/documents';
 export type { Document } from './resources/documents';
 
