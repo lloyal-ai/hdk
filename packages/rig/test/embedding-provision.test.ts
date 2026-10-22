@@ -56,6 +56,10 @@ describe('embedding provisioning', () => {
     expect(() => planInstall(family({ id: model, projector: { id: 'qwen3.5-4b-mmproj' } }))).toThrow(/model\.embedding\.projector\.id.*compatible/);
   });
 
+  it('refuses a projector id for a catalog model the catalog pairs with none: a text-only model reads no projector', () => {
+    expect(() => planInstall(family({ id: 'nomic-embed-text-v1.5-q4', projector: { id: projector } }))).toThrow(/model\.embedding\.projector\.id.*compatible/);
+  });
+
   it('acquires the projector beside the model', async () => {
     const artifacts = await run(() => resolveServices(['embedding'], { projectRoot: '/p', model: family({ id: model }) }));
     expect(artifacts).toEqual({ embedding: `/models/embedding/${model}.gguf`, 'embedding.projector': `/models/embedding.projector/${projector}.gguf` });

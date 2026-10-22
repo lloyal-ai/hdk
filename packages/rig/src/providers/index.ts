@@ -106,15 +106,17 @@ const fail = (why: string): never => { throw new Error(why); };
 
 /**
  * The projector a service's model is paired with: an explicit path; else an explicit id, which for a catalog
- * model must be the catalog's own pair; else the catalog's pair. Nothing when the model has none. A `path:`
- * model is bytes the catalog knows nothing about, so it is never paired from the id it shadows.
+ * model must be the catalog's own pair, and so names none for a model the catalog pairs with nothing; else the
+ * catalog's pair. Nothing when the model has none. A `path:` model is bytes the catalog knows nothing about, so it
+ * is never paired from the id it shadows.
  */
 function pairedProjector(service: 'transcription' | 'embedding', block: { id?: string; path?: string; projector?: ModelSpec }): ModelSpec | undefined {
   const explicit = block.projector;
   if (explicit?.path) return { path: explicit.path };
-  const paired = block.path || !block.id ? undefined : catalogEntry(service, block.id)?.projector;
+  const cataloged = block.path || !block.id ? undefined : catalogEntry(service, block.id);
+  const paired = cataloged?.projector;
   if (explicit?.id) {
-    if (!catalogEntry(`${service}.projector`, explicit.id) || (paired && paired !== explicit.id)) {
+    if (!catalogEntry(`${service}.projector`, explicit.id) || (cataloged && paired !== explicit.id)) {
       fail(`model.${service}.projector.id does not name a compatible ${providers[service].projector?.name}; use a matching catalog pair or explicit local paths`);
     }
     return { id: explicit.id };
