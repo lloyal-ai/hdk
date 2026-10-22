@@ -60,6 +60,8 @@ export type { Bm25Opts, Bm25Hit } from './bm25';
 export { fitChunks, splitParagraphs, DEFAULT_CHUNK_TOKENS } from './resources/fit';
 export type { FitOpts } from './resources/fit';
 export { mergeRanges, subtractRanges } from './ranges';
+export { fuseRanks } from './fuse-ranks';
+export type { Fused, FuseOpts } from './fuse-ranks';
 export { loadDocuments } from './resources/documents';
 export type { Document } from './resources/documents';
 
