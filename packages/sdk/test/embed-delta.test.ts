@@ -32,6 +32,12 @@ describe('buildEmbedDelta', () => {
     expect(buildEmbedDelta([`see ${MEDIA_MARKER}`]).prompt).toBe(`see ${MEDIA_MARKER}`);
   });
 
+  it('defangs the text between two pieces of media as one run: a marker split across parts is still a marker', () => {
+    const delta = buildEmbedDelta(['<__', 'media__>', image]);
+    expect(delta.prompt.split(MEDIA_MARKER)).toHaveLength(2);
+    expect(delta.prompt).toBe(`<media>${MEDIA_MARKER}`);
+  });
+
   it('refuses sound without a byte limit, or over it, as every multimodal delta does', () => {
     expect(() => buildEmbedDelta([audio])).toThrow(/positive safe-integer byte limit/);
     expect(() => buildEmbedDelta([audio], { audioLimits: { maxBytes: 1, maxSamples: 16 } })).toThrow(/aggregate byte limit/);

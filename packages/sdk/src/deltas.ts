@@ -446,9 +446,13 @@ export function buildEmbedDelta(
   opts: { audioLimits?: AudioLimits } = {},
 ): MultimodalDelta {
   const inputs = parts.filter((part): part is MultimodalInput => typeof part !== 'string');
-  const written = inputs.length > 0 ? defangMarker : (text: string) => text;
-  const prompt = parts.map(part => (typeof part === 'string' ? written(part) : MEDIA_MARKER)).join('');
-  return multimodalDelta([], prompt, inputs, opts.audioLimits);
+  // The text between two pieces of media is one run, written whole: a marker split across two parts is still one.
+  const runs = parts.reduce<string[]>(
+    (text, part) => (typeof part === 'string' ? [...text.slice(0, -1), text[text.length - 1] + part] : [...text, '']),
+    [''],
+  );
+  const written = inputs.length > 0 ? runs.map(defangMarker) : runs;
+  return multimodalDelta([], written.join(MEDIA_MARKER), inputs, opts.audioLimits);
 }
 
 /**
