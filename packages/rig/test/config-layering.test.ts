@@ -56,6 +56,16 @@ describe('the attachments family: bounds declared as data, enforced and said fro
     expect(() => loadYml(attachmentSettings, cwd)).toThrow('harness.yml: attachments.context must be a number from 0.1 to 1 (got 0)');
   });
 
+  it('a whole number with only a ceiling keeps its floor of one, and says so', () => {
+    const ceiling = defineConfig({ 'limits.retries': { yml: 'limits.retries', integer: true, max: 5 } });
+    for (const v of [0, -1]) {
+      writeYml(`limits:\n  retries: ${v}\n`);
+      expect(() => loadYml(ceiling, cwd)).toThrow(`harness.yml: limits.retries must be a whole number from 1 to 5 (got ${v})`);
+    }
+    writeYml('limits:\n  retries: 5\n');
+    expect(loadConfig(ceiling, loadYml(ceiling, cwd), { env: {}, cwd }).config.limits.retries).toBe(5);
+  });
+
   it('a harness that says nothing takes the whole context share and no video block', () => {
     const { config } = loadConfig(attachmentSettings, {}, { env: {}, cwd });
     expect(config.attachments.context).toBe(1);
