@@ -241,9 +241,8 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     id: 'nomic-embed-text-v1.5-q4',
     role: 'embedding',
     label: 'nomic-embed-text v1.5 · Q4_K_M',
-    // The edge default: a tenth of the memory and a quarter of the latency of the 0.6B Qwen encoder, and it
-    // orders the long tail more like the reranker (eval/embedding/README.md). Qwen recalls more of the judge's
-    // top five and is offered for an appliance-class box.
+    // Text alone at the least cost of the catalog's encoders, for a harness that embeds no media; it orders the
+    // long tail more like the reranker, and Qwen recalls more of the judge's top five (eval/embedding/README.md).
     urls: [
       'https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf',
       'https://models.lloyal.ai/nomic-embed-text-v1.5.Q4_K_M.gguf',

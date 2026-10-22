@@ -1,5 +1,5 @@
 /**
- * Embedding comparison — the gate on the catalog's default embedding model.
+ * Embedding comparison — how well each embedding model in the catalog orders text, and what it costs.
  *
  * Each candidate embeds the FROZEN reranker fixtures (16 queries × 40 candidate chunks of the docs) through
  * rig's own `createEmbedder`, with the reasoning model, its projector and the reranker resident beside them,

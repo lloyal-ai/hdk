@@ -36,6 +36,12 @@ describe('embedding provisioning', () => {
     expect(catalogEntry('embedding', model)?.pooling).toBe('mean');
   });
 
+  it('takes EmbeddingGemma 2 and its projector for a block that names no model: the default embedding service', () => {
+    expect(planned({})).toEqual([['embedding', { id: model }], ['embedding.projector', { id: projector }]]);
+    // A local file outranks the default, and the catalog pairs it with nothing.
+    expect(planned({ path: '/embed.gguf', pooling: 'mean' })).toEqual([['embedding', { path: '/embed.gguf' }]]);
+  });
+
   it('plans one step for a text-only embedding model', () => {
     expect(planned({ id: 'nomic-embed-text-v1.5-q4' })).toEqual([['embedding', { id: 'nomic-embed-text-v1.5-q4' }]]);
   });

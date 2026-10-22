@@ -59,17 +59,25 @@ export function serviceRequirements<K extends Service>(name: K): ServiceRequirem
   const projector = row.projector;
   return projector ? [primary, {
     role: projector.role, name: projector.name,
-    select: model => projector.select((model[name] ?? {}) as ModelBlock<K>),
+    select: model => projector.select(selectedBlock(name, model)),
   }] : [primary];
 }
 
-/** The block's selection: `path`, else `id`, else what the row derives from the llm. A block that names neither
- *  and derives nothing asked for a service and chose no model — a request nothing can satisfy, refused by the
- *  keys that would. A selection the row still cannot bind is refused here too, on the first step that can know. */
+/** A service's block with its model chosen: as it names one, by `path` or `id`, else with the one its row derives.
+ *  Every hook of the row reads this, so a derived model is paired, refused and bound exactly as a named one. */
+function selectedBlock<K extends Service>(name: K, model: ModelFamily): ModelBlock<K> {
+  const block = (model[name] ?? {}) as ModelBlock<K>;
+  const derived = block.path || block.id ? undefined : providers[name].derive?.({ llm: model.llm ?? {} });
+  return derived ? { ...block, ...derived } : block;
+}
+
+/** The block's selection: `path`, else `id`, else what the row derives. A block that names neither and derives
+ *  nothing asked for a service and chose no model — a request nothing can satisfy, refused by the keys that would.
+ *  A selection the row still cannot bind is refused here too, on the first step that can know. */
 export function specOf(name: Service, model: ModelFamily): ModelSpec {
-  const block: ModelSpec | undefined = model[name];
+  const block: ModelSpec = selectedBlock(name, model);
   const row = providers[name];
-  const spec = block?.path ? { path: block.path } : block?.id ? { id: block.id } : row.derive?.({ llm: model.llm ?? {} });
+  const spec = block.path ? { path: block.path } : block.id ? { id: block.id } : undefined;
   if (!spec) {
     throw new Error(
       `\`model.${name}\` names no model${row.derive ? ' and none follows from the llm' : ''} — ` +
@@ -84,7 +92,7 @@ export function specOf(name: Service, model: ModelFamily): ModelSpec {
 /** What the row says stops its block from being bound, before anything runs — a refusal no file can answer. */
 export function refusalOf<K extends Service>(name: K, model: ModelFamily): string | undefined {
   const row: ProviderRow<K> = providers[name];
-  return row.refuse?.((model[name] ?? {}) as ModelBlock<K>);
+  return row.refuse?.(selectedBlock(name, model));
 }
 
 /**
@@ -128,7 +136,7 @@ export function* bindServices(artifacts: ServiceArtifacts, model: ModelFamily): 
  *  on the resident context — the marker that says it is there. */
 function* bindRow<K extends Service>(bound: Partial<ServiceMap>, name: K, artifact: string, model: ModelFamily, artifacts: ServiceArtifacts): Operation<void> {
   const row: ProviderRow<K> = providers[name];
-  const block = (model[name] ?? {}) as ModelBlock<K>;
+  const block = selectedBlock(name, model);
   bound[name] = row.bind ? yield* row.bind(artifact, block, row.projector ? artifacts[row.projector.role] : undefined) : ({ artifact } as ServiceMap[K]);
 }
 
@@ -150,5 +158,5 @@ export function trunkOptions(artifacts: ServiceArtifacts, model: ModelFamily): P
 /** What one provider contributes to the resident context — nothing, for one that binds an instance of its own. */
 function trunkRow<K extends Service>(name: K, artifact: string, model: ModelFamily): Partial<ContextOptions> {
   const row: ProviderRow<K> = providers[name];
-  return row.trunk ? row.trunk(artifact, (model[name] ?? {}) as ModelBlock<K>) : {};
+  return row.trunk ? row.trunk(artifact, selectedBlock(name, model)) : {};
 }

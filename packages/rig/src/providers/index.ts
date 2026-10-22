@@ -82,6 +82,8 @@ export const providers: { [K in Service]: ProviderRow<K> } = {
   },
   embedding: {
     name: 'embedding model',
+    // One space for text, images, video and sound, so what a harness saw and what it heard are searched alike.
+    derive: () => ({ id: 'embeddinggemma-2-q8' }),
     projector: { role: 'embedding.projector', name: 'embedding projector', select: block => pairedProjector('embedding', 'embedding projector', block) },
     refuse: (block) => {
       const binding = embeddingBinding(block);

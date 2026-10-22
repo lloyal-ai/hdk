@@ -1,9 +1,9 @@
 # Embedding comparison
 
-The gate on which embedding model the catalog puts first. Each candidate embeds the frozen reranker fixtures
-(`eval/rerank/fixtures.json`: 16 queries over 40 candidate chunks of the docs each, BM25 hits plus random
-extras) through rig's own `createEmbedder`, with the reasoning model and its projector resident and the
-reranker bound beside them, as a research harness has them.
+How well each embedding model in the catalog orders text, and what it costs. Each candidate embeds the frozen
+reranker fixtures (`eval/rerank/fixtures.json`: 16 queries over 40 candidate chunks of the docs each, BM25 hits
+plus random extras) through rig's own `createEmbedder`, with the reasoning model and its projector resident and
+the reranker bound beside them, as a research harness has them.
 
 **Relevance** is measured against the reranker's verdicts on the same fixtures (`scores-post-n10.json`), the
 judge the abilities already trust: `recall@10` is how many of the judge's top five a model puts in its top ten;
@@ -50,8 +50,9 @@ is a coarse measure.
 
 **Reading.** On text alone, over these docs, EmbeddingGemma 2 is not the better text encoder: it matches Qwen
 on hard queries and trails both on refined and absent ones, at half Qwen's latency and with the largest
-footprint. Its case is the one this eval does not measure, one space for text, images, video and sound; the
-text default stays a separate choice.
+footprint. Its case is the one this eval does not measure, one space for text, images, video and sound, and
+on that case it is the default embedding model: a harness that indexes what it sees and what it hears searches
+both with one model. nomic stays in the catalog for a harness that embeds text alone at the least cost.
 
 ## Run of 2026-09-25
 

@@ -213,7 +213,7 @@ export const modelSettings = defineConfig({
   'model.vision.path': { yml: 'model.vision.path', path: true, applies: 'reload', describe: 'A local .gguf for the vision projector; outranks the catalog id.' },
   'model.vision.minTokens': { yml: 'model.vision.minTokens', integer: true, applies: 'reload', describe: 'The floor on how many tokens one image is projected into; grounding tasks want it high.' },
   'model.vision.maxTokens': { yml: 'model.vision.maxTokens', integer: true, applies: 'reload', describe: 'The ceiling on what one image costs in context cells; lower it to fit more images.' },
-  'model.embedding.id': { yml: 'model.embedding.id', applies: 'reload', describe: 'The catalog id of the embedding model — the encoder a harness indexes with, one vector per text.' },
+  'model.embedding.id': { yml: 'model.embedding.id', applies: 'reload', describe: 'The catalog id of the embedding model — the encoder a harness indexes with, one vector per input. A block that names no model takes EmbeddingGemma 2 and its projector: one space for text, images, video and sound.' },
   'model.embedding.path': { yml: 'model.embedding.path', path: true, applies: 'reload', describe: 'A local .gguf for the embedding model; outranks the catalog id.' },
   'model.embedding.context': { yml: 'model.embedding.context', integer: true, default: 2048, applies: 'boot', describe: 'The most tokens one input may embed as; a longer input is refused, never truncated. A catalog model refuses a context longer than it was trained to read.' },
   'model.embedding.pooling': { yml: 'model.embedding.pooling', oneOf: EMBEDDING_POOLINGS, applies: 'boot', describe: 'How the model folds token states into one vector — its own property; a catalog id carries it, a local file must say.' },
