@@ -18,9 +18,9 @@
 import { createContext } from '@lloyal-labs/sdk/node';
 import { buildEmbedDelta, embedCells, embedDelta, mediaKind, PoolingType } from '@lloyal-labs/sdk';
 import type { AudioLimits, MultimodalDelta, MultimodalInput, SessionContext } from '@lloyal-labs/sdk';
-import { AUDIO_CONFIG_TYPE, audioAdmission, audioLimitsAt, materialize } from '@lloyal-labs/media';
+import { audioAdmission, audioLimitsAt, materialize } from '@lloyal-labs/media';
 import type { AudioAdmission } from '@lloyal-labs/media';
-import type { Attachment, AttachmentStore } from '@lloyal-labs/media';
+import type { Attachment, AttachmentStore, PreparedContent } from '@lloyal-labs/media';
 import { call, ensure, resource, until } from 'effection';
 import { acquire } from '../acquire';
 import { RunnerCtx } from '../runner';
@@ -78,13 +78,12 @@ function framingOf(framing: EmbeddingFraming, input: EmbeddingInput, i: number):
  *  this bounds only what the native decoder may take before the input is measured. */
 const RECORDING_ADMISSION = audioAdmission();
 
-/** Why a root gave the projector nothing: a recording the model cannot hear, or a document, whose text is not an
- *  image. Either is refused rather than left out of the vector unseen. */
-function unread(store: AttachmentStore, part: Attachment, i: number, j: number): Error {
-  return store.getManifest(part.digest)?.config.mediaType === AUDIO_CONFIG_TYPE
-    ? new Error(`input ${i} part ${j} is a recording, and this embedding model does not hear — set \`model.embedding.projector\` to a projector that hears`)
-    : new Error(`input ${i} part ${j} has nothing the projector reads — embed its text as a text part`);
-}
+/** What to say of a root that gave the projector nothing, by the reason `materialize` gives. Either is refused rather
+ *  than left out of the vector unseen. */
+const UNREAD: Record<PreparedContent['skipped'][number]['reason'], string> = {
+  unheard: 'is a recording, and this embedding model does not hear — set `model.embedding.projector` to a projector that hears',
+  text: 'has nothing the projector reads — embed its text as a text part',
+};
 
 /** One input as the context takes it: its framing, then each part, a root becoming what the projector reads (a
  *  video's soundtrack too, when the model hears, under `heard`), built as the SDK builds an embedding input. */
@@ -95,9 +94,9 @@ function place(
   const parts = partsOf(input).flatMap((part, j): (string | MultimodalInput)[] => {
     if (typeof part === 'string') return [part];
     if (!store) throw new Error('an attachment part needs the attachment store, and none is in reach');
-    const media = materialize(store, [part], heard ? { audio: heard.admission } : {}).inputs as MultimodalInput[];
-    if (media.length === 0) throw unread(store, part, i, j);
-    return media;
+    const { inputs, skipped } = materialize(store, [part], heard ? { audio: heard.admission } : {});
+    if (skipped.length > 0) throw new Error(`input ${i} part ${j} ${UNREAD[skipped[0].reason]}`);
+    return inputs as MultimodalInput[];
   });
   return buildEmbedDelta([framingOf(framing, input, i), ...parts], heard ? { audioLimits: heard.limits } : {});
 }

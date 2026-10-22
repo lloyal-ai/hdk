@@ -34,7 +34,9 @@ describe('admitted audio', () => {
     expect(audio.metadata).toMatchObject({ channels: 2, sampleRate: 48000, frames: 160, bitsPerSample: 16, silent: false });
     expect(audio.representation.mediaType).toBe('audio/wav');
     expect(content.getManifest(root.digest)!.config.mediaType).toBe(media.AUDIO_CONFIG_TYPE);
-    expect(materialize(content, [root]).inputs).toEqual([]);
+    // To a consumer that does not hear, a recording is no input, and is named as unheard.
+    expect(materialize(content, [root])).toMatchObject({ inputs: [], skipped: [{ root, reason: 'unheard' }] });
+    expect(materialize(content, [root], { audio: media.audioAdmission() }).skipped).toEqual([]);
   });
 
   it('identifies digital silence from samples, not from headers or the model output', async () => {
