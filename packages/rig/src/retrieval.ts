@@ -167,8 +167,8 @@ export type EmbeddingInput = string | {
  * Every call is serialized on the one context behind it, across callers, so concurrent calls answer the same
  * vectors they would in sequence. Each call is measured before anything runs: an input over the context, or
  * media the model cannot read, refuses the whole call, and the next call is unaffected. An Operation, like
- * everything a harness composes: leaving the scope abandons the wait, and the encoder's own teardown still lets
- * the native work already submitted settle.
+ * everything a harness composes: leaving the scope abandons the wait, and the native work already submitted still
+ * settles. The encoder lives as long as the scope that bound it.
  */
 export interface Embedder {
   /** The length of every vector this encoder answers. */
@@ -187,7 +187,4 @@ export interface Embedder {
   measure(inputs: readonly EmbeddingInput[]): Operation<number[]>;
   /** Tokenize through the encoder's own vocabulary — what fits is measured in these. */
   tokenize(text: string): Operation<number[]>;
-  /** Release the encoder: no new work from here, and its context freed once the work in flight has settled.
-   *  Idempotent; the owning scope's exit does the same, so a consumer need never call it. */
-  dispose(): void;
 }

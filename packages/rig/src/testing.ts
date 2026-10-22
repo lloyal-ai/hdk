@@ -216,7 +216,6 @@ export const stubEmbedder: Embedder = {
   *embed(inputs) { readText(inputs); return inputs.map(() => new Float32Array([1, 0])); },
   *measure(inputs) { readText(inputs); return inputs.map(() => 1); },
   *tokenize(text) { return Array.from(text, (_, i) => i); },
-  dispose: () => {},
 };
 
 /** What stands in for each service under the rig. */

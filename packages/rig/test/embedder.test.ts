@@ -1,7 +1,8 @@
 /**
- * The embedder's discipline over one context, proven against a fake native context that records every call:
- * a queue that spans callers, a refusal that touches nothing, a teardown that waits for in-flight work, and
- * the pooling the model needs reaching the context.
+ * The embedder over its service context, proven against a fake native context that records every call: callers'
+ * calls one after another, a refusal that touches nothing, every call that reaches the context (an encode, a
+ * tokenize) a unit the scope's teardown waits for, and the pooling the model needs reaching the context. How a
+ * service context queues and frees is its own guard's (`service-context.test.ts`).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { call, run, scoped, sleep, spawn } from 'effection';
@@ -139,59 +140,6 @@ describe('teardown', () => {
     void later;
     expect(afterScope.at(-1)).toBe('dispose');
     expect(afterScope.indexOf('encode:1')).toBeLessThan(afterScope.indexOf('dispose'));
-  });
-
-  it('dispose() IS the release: the context is freed once the encode in flight settles — before the scope ends — and the scope\'s exit frees nothing twice', async () => {
-    let release!: () => void;
-    gate.open = new Promise<void>((resolve) => { release = resolve; });
-    let beforeScopeEnd: string[] = [];
-    let afterScope: string[] = [];
-    const done = run(function* () {
-      yield* scoped(function* () {
-        const e = yield* createEmbedder('/e.gguf', { pooling: 'mean' });
-        yield* spawn(() => e.embed(['a']));   // parks on the gate inside encode
-        yield* sleep(0);
-        e.dispose();                          // a caller releasing it under work in flight
-        expect(log).not.toContain('dispose');  // not under the encode
-        release();
-        yield* call(() => new Promise((r) => setTimeout(r, 20)));
-        beforeScopeEnd = [...log];             // freed while the scope still lives
-      });
-      afterScope = [...log];
-    });
-    await done;
-    expect(beforeScopeEnd.at(-1)).toBe('dispose');
-    expect(beforeScopeEnd.indexOf('encode:1')).toBeLessThan(beforeScopeEnd.indexOf('dispose'));
-    expect(afterScope.filter((l) => l === 'dispose')).toHaveLength(1);
-  });
-
-  it('a dispose mid-batch still answers the whole batch: the binding refuses every call after its own dispose, so the release waits for the queue, not only for the native call in flight', async () => {
-    let release!: () => void;
-    gate.open = new Promise<void>((resolve) => { release = resolve; });
-    const vectors = await run(function* () {
-      const e = yield* createEmbedder('/e.gguf', { pooling: 'mean' });
-      const batch = yield* spawn(() => e.embed(['a', 'bb', 'ccc']));   // parks on the gate, first input
-      yield* sleep(0);
-      e.dispose();
-      release();
-      return yield* batch;
-    });
-    expect(vectors).toHaveLength(3);
-    expect(log.filter((l) => !l.startsWith('tokenize'))).toEqual(['clear', 'encode:1', 'get', 'clear', 'encode:2', 'get', 'clear', 'encode:3', 'get', 'dispose']);
-  });
-
-  it('after dispose, embed AND tokenize refuse rather than queueing onto a freed context', async () => {
-    await run(function* () {
-      const e = yield* createEmbedder('/e.gguf', { pooling: 'mean' });
-      e.dispose();
-      let refused: unknown;
-      try { yield* e.embed(['a']); } catch (err) { refused = err; }
-      expect(String(refused)).toMatch(/disposed/);
-      refused = undefined;
-      try { yield* e.tokenize('a'); } catch (err) { refused = err; }
-      expect(String(refused)).toMatch(/disposed/);
-    });
-    expect(log).not.toContain('tokenize:a+special');
   });
 
   it('a tokenize in flight is native work the teardown waits for, like an encode — every call is in the one queue', async () => {

@@ -12,8 +12,10 @@ import { join, relative } from 'node:path';
  */
 const REPO = join(__dirname, '..', '..', '..');
 const ROOTS = ['packages/agents/src', 'packages/rig/src'];
-const DECODES = 'prefill|prefillMultimodal|prefillUser|prefillUserMultimodal|prefillAssistant|commit|commitTurn|retainOnly|promote';
-const BARE = new RegExp(String.raw`\b(?:call|until)\(\s*(?:\(\)\s*=>\s*)?(?:[\w.]+\.(?:${DECODES})|deltaCells)\(`, 'g');
+const DECODES = 'prefill|prefillMultimodal|prefillUser|prefillUserMultimodal|prefillAssistant|commit|commitTurn|retainOnly|promote|encode|encodeMultimodal';
+// The sdk's own operations over a context, called bare rather than as a method.
+const OPERATIONS = 'deltaCells|embedCells|embedDelta';
+const BARE = new RegExp(String.raw`\b(?:call|until)\(\s*(?:\(\)\s*=>\s*)?(?:[\w.]+\.(?:${DECODES})|${OPERATIONS})\(`, 'g');
 
 function* tsFiles(dir: string): Generator<string> {
   for (const name of readdirSync(dir)) {

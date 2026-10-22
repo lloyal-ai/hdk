@@ -1,18 +1,14 @@
-import { createContext } from '@lloyal-labs/sdk/node';
 import { Branch, buildUserDeltaMultimodal, deltaCells } from '@lloyal-labs/sdk';
-import { waitUntilSettled } from '@lloyal-labs/lloyal-agents';
+import { Attachments, waitUntilSettled } from '@lloyal-labs/lloyal-agents';
 import { audioAdmission, audioLimitsAt, resolveAudio } from '@lloyal-labs/media';
-import type { AttachmentStore } from '@lloyal-labs/media';
-import { ensure, resource, scoped } from 'effection';
+import { ensure, resource } from 'effection';
 import type { Operation } from 'effection';
-import { acquire } from '../acquire';
-import { RunnerCtx } from '../runner';
 import { parseTranscription } from '../transcription';
 import type { Transcriber } from '../transcription';
 import type { ModelBlock } from './index';
-import { useSerialExecutor } from './serial';
+import { useServiceContext } from './service-context';
 
-export type TranscriberLoadOpts = Partial<ModelBlock<'transcription'>> & { store?: AttachmentStore };
+export type TranscriberLoadOpts = Partial<ModelBlock<'transcription'>>;
 
 /** One owned decoder/projector context, with an isolated branch per admitted recording. */
 export function createTranscriber(modelPath: string, projectorPath: string, opts: TranscriberLoadOpts = {}): Operation<Transcriber> {
@@ -24,12 +20,9 @@ export function createTranscriber(modelPath: string, projectorPath: string, opts
     }
     const { maxBytes, maxDurationSeconds, maxChannels, maxSampleRate } = opts;
     const limits = Object.freeze(audioAdmission({ maxBytes, maxDurationSeconds, maxChannels, maxSampleRate }));
-    const ctx = yield* acquire(() => createContext({
-      modelPath, mmprojPath: projectorPath, nCtx: context, nBatch: 128, nSeqMax: 1,
-    }), ctx => ctx.dispose());
-    const sampleRate = ctx.audioSampleRate();
-    if (!ctx.supportsAudio() || !Number.isSafeInteger(sampleRate) || sampleRate <= 0) throw new Error('transcription requires an audio projector');
-    const serial = yield* useSerialExecutor();
+    const service = yield* useServiceContext({ modelPath, mmprojPath: projectorPath, nCtx: context, nBatch: 128, nSeqMax: 1 });
+    const sampleRate = yield* service.run(function* (ctx) { return ctx.supportsAudio() ? ctx.audioSampleRate() : 0; });
+    if (!Number.isSafeInteger(sampleRate) || sampleRate <= 0) throw new Error('transcription requires an audio projector');
     const provenance = Object.freeze({
       model: opts.path ? 'local' : opts.id ?? 'local',
       projector: opts.projector?.path ? 'local' : opts.projector?.id ?? 'paired',
@@ -37,8 +30,8 @@ export function createTranscriber(modelPath: string, projectorPath: string, opts
     });
     yield* provide({
       limits,
-      transcribe: attachment => serial.run(() => scoped(function* () {
-        const store = opts.store ?? (yield* RunnerCtx.expect()).attachmentStore;
+      transcribe: attachment => service.run(function* (ctx) {
+        const store = yield* Attachments.expect();
         const audio = resolveAudio(store, attachment, limits);
         const result = {
           audio: audio.attachment, representation: audio.representation,
@@ -60,7 +53,7 @@ export function createTranscriber(modelPath: string, projectorPath: string, opts
           output += next.text;
           yield* waitUntilSettled(branch.commit(next.token));
         }
-      })),
+      }),
     });
   });
 }

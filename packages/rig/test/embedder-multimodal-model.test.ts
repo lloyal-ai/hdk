@@ -4,6 +4,7 @@
  * server made for the same files. Runs in its own process, only when asked
  * (`EMBEDDINGGEMMA` in ./helpers/embed-model says how), and with the weights.
  */
+import { Attachments } from '@lloyal-labs/lloyal-agents';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { run } from 'effection';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -57,7 +58,8 @@ describeWithModel('createEmbedder over EmbeddingGemma 2 and its projector', () =
 
   const embedded = (inputs: EmbeddingInput[]) => run(function* () {
     const { framing, dimensions } = catalogEntry('embedding', 'embeddinggemma-2-q8')!;
-    const embedder = yield* createEmbedder(gemma().model, { nCtx: 8192, pooling: 'mean', projector: gemma().projector, store, framing, dimensions });
+    yield* Attachments.set(store);
+    const embedder = yield* createEmbedder(gemma().model, { nCtx: 8192, pooling: 'mean', projector: gemma().projector, framing, dimensions });
     verifyLocalNative({ loaded: true });
     expect(embedder.modalities).toEqual(['text', 'image', 'video', 'audio']);
     return yield* embedder.embed(inputs);
@@ -65,7 +67,8 @@ describeWithModel('createEmbedder over EmbeddingGemma 2 and its projector', () =
 
   it('reads an image at the detail it is given: a ceiling lowers what one image costs, a floor raises it', async () => {
     const cost = (detail: { imageMinTokens?: number; imageMaxTokens?: number }) => run(function* () {
-      const embedder = yield* createEmbedder(gemma().model, { nCtx: 8192, pooling: 'mean', projector: gemma().projector, store, ...detail });
+      yield* Attachments.set(store);
+      const embedder = yield* createEmbedder(gemma().model, { nCtx: 8192, pooling: 'mean', projector: gemma().projector, ...detail });
       const [image, text] = yield* embedder.measure([{ parts: [cat] }, { parts: [''] }]);
       return image - text;
     });

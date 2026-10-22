@@ -4,6 +4,7 @@
  * from the framing its catalog entry carries. Proven against a fake native
  * context that records the text it is asked to read.
  */
+import { Attachments } from '@lloyal-labs/lloyal-agents';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { run } from 'effection';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -53,8 +54,11 @@ beforeEach(async () => {
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-const framed = (opts: { framing?: EmbeddingFraming; dimensions?: number[] } = { framing: FRAMING }) =>
-  createEmbedder('/e.gguf', { nCtx: 2048, pooling: 'mean', projector: '/mmproj.gguf', store, ...opts });
+/** An embedder reading attachments from the run's store, as a harness's does. */
+function* framed(opts: { framing?: EmbeddingFraming; dimensions?: number[] } = { framing: FRAMING }) {
+  yield* Attachments.set(store);
+  return yield* createEmbedder('/e.gguf', { nCtx: 2048, pooling: 'mean', projector: '/mmproj.gguf', ...opts });
+}
 
 describe('createEmbedder: task framing from the catalog', () => {
   it('frames a bare string as a document for search, the default task', async () => {

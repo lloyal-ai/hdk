@@ -3,6 +3,7 @@
  * a video), in order, as one input and one vector. Proven against a fake
  * native context that records what it is asked to encode.
  */
+import { Attachments } from '@lloyal-labs/lloyal-agents';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { run } from 'effection';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -56,8 +57,11 @@ beforeEach(async () => {
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-const embedder = (projector: string | undefined = '/mmproj.gguf') =>
-  createEmbedder('/e.gguf', { nCtx: 2048, pooling: 'mean', store, ...(projector ? { projector } : {}) });
+/** An embedder reading attachments from the run's store, as a harness's does. */
+function* embedder(projector: string | undefined = '/mmproj.gguf') {
+  yield* Attachments.set(store);
+  return yield* createEmbedder('/e.gguf', { nCtx: 2048, pooling: 'mean', ...(projector ? { projector } : {}) });
+}
 
 describe('createEmbedder over parts', () => {
   it('embeds text and an image as one input: a marker where the image stands, encoded once', async () => {
@@ -143,7 +147,8 @@ describe('createEmbedder over parts', () => {
 
   it('loads its projector at the image detail it is given', async () => {
     await run(function* () {
-      yield* createEmbedder('/e.gguf', { nCtx: 2048, pooling: 'mean', store, projector: '/mmproj.gguf', imageMinTokens: 70, imageMaxTokens: 280 });
+      yield* Attachments.set(store);
+      yield* createEmbedder('/e.gguf', { nCtx: 2048, pooling: 'mean', projector: '/mmproj.gguf', imageMinTokens: 70, imageMaxTokens: 280 });
     });
     expect(createContext.mock.calls.at(-1)?.[0]).toMatchObject({ mmprojPath: '/mmproj.gguf', imageMinTokens: 70, imageMaxTokens: 280 });
   });
@@ -152,7 +157,7 @@ describe('createEmbedder over parts', () => {
     fake.projector = false;
     await expect(run(function* () {
       yield* (yield* embedder(undefined)).embed(['fine', { parts: [image] }]);
-    })).rejects.toThrow(/input 1 .*image.*model\.embedding\.projector/);
+    })).rejects.toThrow(/input 1 part 0 is an image, and this embedding model does not see — set `model\.embedding\.projector`/);
     expect(log).toEqual([]);
   });
 
@@ -166,7 +171,8 @@ describe('createEmbedder over parts', () => {
 
   it('refuses the whole call before any work when an input is over the context, naming the setting', async () => {
     await expect(run(function* () {
-      const e = yield* createEmbedder('/e.gguf', { nCtx: 8, pooling: 'mean', store, projector: '/mmproj.gguf' });
+      yield* Attachments.set(store);
+      const e = yield* createEmbedder('/e.gguf', { nCtx: 8, pooling: 'mean', projector: '/mmproj.gguf' });
       yield* e.embed(['short', 'this text is too long']);
     })).rejects.toThrow(/input 1 is 21 cells.*model\.embedding\.context/);
     expect(log).toEqual([]);
