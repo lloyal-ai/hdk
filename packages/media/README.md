@@ -49,9 +49,9 @@ trace and replay. This package is the format and the gate.
 
 | entry | holds | needs |
 |---|---|---|
-| `@lloyal-labs/media` | the OCI shapes, the store and ingress contracts, `materialize` | `@noble/hashes` (incremental SHA-256, which WebCrypto lacks); browser-safe |
-| `@lloyal-labs/media/node` | `FileAttachmentStore` (the layout on disk), `createContentIngress` — `createImageIngress` (sharp) and `createDocumentIngress` (PDFium) | `node:fs`; `sharp` and `@embedpdf/pdfium` as optional peers |
-| `@lloyal-labs/media/client` | reading a video in the page: `sampleVideo` (frames sized and encoded as JPEG), `extractAudioWindows` (the soundtrack as PCM WAV windows cut at quiet points), `captureFrames` (frames from a live track) | WebCodecs and a canvas; `mediabunny` as an optional peer, loaded with the entry |
+| `@lloyal-labs/media` | the OCI shapes, the store and ingress contracts, `materialize`; reading a clip through any decoder: the `ClipDecoder` contract, and `prepareVideo`, `sampleFrames` and `soundtrackWindows`, the procedure written once against it | `@noble/hashes` (incremental SHA-256, which WebCrypto lacks); browser-safe |
+| `@lloyal-labs/media/node` | `FileAttachmentStore` (the layout on disk), `createContentIngress` — `createImageIngress` (sharp) and `createDocumentIngress` (PDFium); `encodeVideoFrame`, for a host that decodes video | `node:fs`; `sharp` and `@embedpdf/pdfium` as optional peers |
+| `@lloyal-labs/media/client` | the page's decoder, `mediabunnyDecoder` (WebCodecs, Mediabunny reading the container), and reading a file through it: `sampleVideo` (frames sized and encoded as JPEG), `extractAudioWindows` (the soundtrack as PCM WAV windows cut at quiet points), `captureFrames` (frames from a live track) | WebCodecs and a canvas; `mediabunny` as an optional peer, loaded with the entry |
 
 The root entry never reaches `node:`, `sharp` or the codec — enforced by
 `npm run verify:packed`, which walks the packed artifact's require graph on
@@ -286,6 +286,50 @@ video behind one marker and fuse where the projector fuses frames, rather than
 encoding one by one as still images. `resolveVideo` is that step on its own.
 The single-payload ingress refuses a video container by name: a clip arrives
 as frames.
+
+### Swapping the decoder
+
+What a clip becomes before it is composed (which times are sampled, how each
+frame is stamped and sized, how the sound is mixed, decimated, placed and cut,
+how long each soundtrack window runs, and what the compose is sent) is one
+procedure, `prepareVideo`, written once against `ClipDecoder`. A decoder only
+opens the file and hands over pictures and sound:
+
+```ts
+interface ClipDecoder {
+  duration(): Promise<number>;                                   // where the clip ends, in seconds on its own clock
+  picture(): Promise<{ width: number; height: number; startS: number }>;
+  frames(timesS: number[], size: { width: number; height: number }): AsyncIterable<ShownFrame | null>;
+  sound(): AsyncIterable<DecodedSound>;                          // decoded runs, each at its own time
+  dispose(): void;                                               // a read still waiting rejects
+}
+```
+
+- `frames` yields, for each time asked, the frame **shown** at that time (the
+  last one whose presentation time is at or before it), scaled to `size` and
+  encoded as a video frame: JPEG at the frame quality, which a canvas takes as
+  `0.85` and `encodeVideoFrame` (`@lloyal-labs/media/node`) applies on a host.
+  It reports the time that frame is shown from; the procedure stamps with it.
+- `sound` yields the decoded sound in presentation order, every channel at the
+  source's own rate. The procedure mixes it to mono, decimates it to what the
+  transcription service admits, fills the gaps with silence and trims it to
+  the clip's clock.
+
+The page passes `mediabunnyDecoder(file)`; a host or a tool passes its own,
+and sends the same `video:compose`:
+
+```ts
+const decoder = myDecoder(file);
+const prepared = await prepareVideo(decoder, capabilities, bytes => ingress.ingest(bytes))
+  .finally(() => decoder.dispose());
+// { frames, audio, durationMs }: what a page sends with `video:compose`, beside the original's descriptor.
+```
+
+`capabilities` is what the host answers `video:describe` with, so the clip is
+read under the host's policy whichever decoder reads it. hdk's
+`scripts/ffmpeg-decoder.ts` is a second decoder, over ffmpeg, for building test
+fixtures outside a page; it reads constant-frame-rate pictures and refuses a
+stream whose frames do not land where its rate says.
 
 ## Large originals
 

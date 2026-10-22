@@ -17,6 +17,7 @@ import { DERIVE_PREFIX } from './attachment';
 import type { AttachmentStore } from './store';
 import type { ContentIngress } from './ingress';
 import { PROJECTOR_FORMATS, sniffMediaType, UNKNOWN_MEDIA_TYPE } from './media-type';
+import { loadSharp } from './sharp';
 import { gate, abortError } from './gate';
 
 /**
@@ -238,23 +239,12 @@ export const normalizeImage: NormalizeImage = async (bytes, opts = {}) => {
   const maxPixels = opts.maxPixels ?? DEFAULT_MAX_PIXELS;
   const quality = opts.quality ?? 82;
 
-  // Required at call time, not imported at module load: `sharp` is a native
-  // dependency, and a harness that never accepts an image should not pay its
-  // load. The message names the package because the failure is a missing
-  // install, not a bad picture.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  let sharp: typeof import('sharp').default;
-  try {
-    // sharp's CJS export is the callable itself; its types put it on `default`.
-    sharp = require('sharp');
-  } catch {
-    throw new Error(
-      'normalizeImage: `sharp` is not installed. Add it to the harness that ' +
-        'accepts image uploads (npm i sharp), or hand the projector bytes ' +
-        `that are already ${PROJECTOR_FORMATS.map(f => f.replace(/^image\//, '')).join('/')} ` +
-        'and within its pixel ceiling.',
-    );
-  }
+  const sharp = loadSharp(
+    'normalizeImage: `sharp` is not installed. Add it to the harness that ' +
+      'accepts image uploads (npm i sharp), or hand the projector bytes ' +
+      `that are already ${PROJECTOR_FORMATS.map(f => f.replace(/^image\//, '')).join('/')} ` +
+      'and within its pixel ceiling.',
+  );
 
   // A decompression bomb is a small file that declares an enormous image.
   // Without this the only bound was sharp's ~268 MP default.

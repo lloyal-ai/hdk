@@ -36,6 +36,14 @@ export {
 } from './video';
 export type { Transcript, VideoInput, VideoMeta, VideoSampling } from './video';
 
+// Reading a clip through any decoder: the decoder contract, and the procedure that samples,
+// stamps, mixes and cuts, written once against it. The page's decoder is in `./client`.
+export {
+  clipDurationMs, clipEndSample, fitEdge, frameTimes, pcm16Wav, prepareVideo, quietestCut, sampleFrames,
+  SoundtrackCutter, soundtrackDecimation, soundtrackWindowMs, soundtrackWindows,
+} from './clip';
+export type { ClipDecoder, DecodedSound, PreparedVideo, PrepareProgress, SampledFrame, ShownFrame, SoundtrackWindow } from './clip';
+
 // The document sidecar — facts about a document, kept in its manifest's config
 // slot. Pure data and a guard; a reader branches on DOCUMENT_CONFIG_TYPE.
 export { DOCUMENT_CONFIG_TYPE, asDocumentMeta, pagesOf } from './document';

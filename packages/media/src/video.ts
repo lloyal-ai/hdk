@@ -19,6 +19,9 @@ import { imageSize, PROJECTOR_FORMATS, VIDEO_CONTAINER_TYPES, sniffMediaType } f
 export const VIDEO_CONFIG_TYPE = 'application/vnd.lloyal.video.v1+json' as const;
 export const TRANSCRIPT_MEDIA_TYPE = 'application/vnd.lloyal.transcript.v1+json' as const;
 
+/** The quality a video frame is encoded at, as a canvas takes it (0 to 1): by the page, and by a host that decodes. */
+export const FRAME_JPEG_QUALITY = 0.85;
+
 /** How a clip was sampled into frames. */
 export interface VideoSampling {
   fps: number;
