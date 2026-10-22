@@ -297,9 +297,9 @@ describe('RerankOpts.instruction', () => {
     // it on a successful boot. A second call must not double-dispose.
     const ctx = mock();
     const r = await Rerank.create(ctx as unknown as SessionContext, {});
-    r.dispose();
+    await r.dispose();
     expect(ctx.disposeCount).toBe(1);
-    r.dispose();
+    await r.dispose();
     expect(ctx.disposeCount).toBe(1);
   });
 
