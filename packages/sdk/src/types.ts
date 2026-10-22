@@ -81,7 +81,11 @@ export interface LoadOptions {
  * @category Core
  */
 export enum PoolingType {
-  /** No pooling - raw per-token embeddings */
+  /**
+   * No pooling - raw per-token embeddings. An embedding reads an input whole, in one dispatch, so per-token
+   * embeddings need a model that keeps no memory or attends both ways, as an encoder does. On a model that keeps
+   * memory and attends causally, `encode` and `encodeMultimodal` refuse; give it a pooling type instead.
+   */
   NONE = 0,
   /** Mean pooling - average of all token embeddings */
   MEAN = 1,
@@ -208,7 +212,8 @@ export interface ContextOptions {
    * Pooling type for embedding extraction
    *
    * Only relevant when embeddings=true.
-   * Default: MEAN for embedding contexts, NONE otherwise
+   * Default: MEAN for embedding contexts, NONE otherwise.
+   * NONE cannot embed on every model; see {@link PoolingType.NONE}.
    */
   poolingType?: PoolingType;
 
