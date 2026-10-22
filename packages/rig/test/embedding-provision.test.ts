@@ -87,6 +87,35 @@ describe('embedding provisioning', () => {
     expect(resolveModel.mock.calls.filter(([o]) => o.role === 'embedding')).toHaveLength(1);
   });
 
+  it('a file chosen for the model mid-install drops the projector its old model was paired with: no stale artifact binds', async () => {
+    let attempts = 0;
+    resolveModel.mockImplementation(async ({ role, spec }) => {
+      // A later step fails once, after the model and its projector were acquired.
+      if (role === 'transcription' && attempts++ === 0) throw new Error('offline');
+      return spec?.path ?? `/models/${role}/${spec?.id}.gguf`;
+    });
+    const blocks = (embedding: object) => loadConfig(modelSettings, {
+      model: { llm: { path: '/reasoning.gguf' }, embedding, transcription: { id: 'qwen3-asr-0.6b-q8' } },
+    }, { cwd: '/private/tmp', env: {} }).config.model;
+    let current = blocks({ id: model, pooling: 'mean' });
+    const controls = createSignal<InstallCommand, void>();
+    // The reader chooses a text-only file for the model, once; the walk then takes the failed step again itself.
+    const commands: InstallCommand[] = [{ type: 'install:use_file', step: 'embedding', path: '/embed.gguf' }];
+    const result = await run(function* () {
+      const job = yield* spawn(() => install({
+        projectRoot: '/p', model: current, totalBytes: 16 * 1024 ** 3, controls,
+        persist: () => (current = blocks({ id: model, pooling: 'mean', path: '/embed.gguf' })),
+        report: (e) => {
+          const failed = e.steps.some((s) => s.id === 'transcription' && s.status === 'failed');
+          if (failed && commands.length > 0) controls.send(commands.shift()!);
+        },
+      }));
+      return yield* job;
+    });
+    expect(result.services.embedding).toBe('/embed.gguf');
+    expect(result.services).not.toHaveProperty(['embedding.projector']);
+  });
+
   it('refuses, before anything is fetched, a context longer than the catalog model was trained to read', () => {
     const refused = (embedding: object) => refusalOf('embedding', family(embedding));
     expect(refused({ id: model, context: 8192 })).toBeUndefined();
