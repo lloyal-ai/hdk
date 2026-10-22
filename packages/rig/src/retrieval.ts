@@ -117,7 +117,7 @@ export interface Reranker {
 }
 
 /** How an embedding model folds its token states into one vector — the model's own property, never a choice:
- *  Qwen3-Embedding reads its last token, nomic-embed averages. The catalog carries it per entry. */
+ *  a decoder-style encoder reads its last token, nomic-embed averages. The catalog carries it per entry. */
 export type EmbeddingPooling = 'mean' | 'cls' | 'last';
 
 /** What an embedder reads: text always; images, video and sound through a projector that reads them. */

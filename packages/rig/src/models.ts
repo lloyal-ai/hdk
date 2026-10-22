@@ -123,12 +123,6 @@ const NOMIC_EMBED_FRAMING: EmbeddingFraming = {
   clustering: { query: 'clustering: ', document: 'clustering: ' },
 };
 
-/** Qwen3-Embedding's framing, from its card: a query is an instruction line, a document goes as it is. The card
- *  gives one instruction, for search; another task needs an instruction written and measured for it. */
-const QWEN3_EMBEDDING_FRAMING: EmbeddingFraming = {
-  search: { query: 'Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:', document: '' },
-};
-
 /** EmbeddingGemma 2's framing, from its card and its sentence-transformers prompts: a query names its task, a
  *  document its title, `none` without one; the symmetric tasks frame every input as a query. */
 const EMBEDDINGGEMMA_2_FRAMING: EmbeddingFraming = {
@@ -242,8 +236,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     id: 'nomic-embed-text-v1.5-q4',
     role: 'embedding',
     label: 'nomic-embed-text v1.5 · Q4_K_M',
-    // Text alone at the least cost of the catalog's encoders, for a harness that embeds no media; it orders the
-    // long tail more like the reranker, and Qwen recalls more of the judge's top five (eval/embedding/README.md).
+    // Text alone at the least cost, for a harness that embeds no media (eval/embedding/README.md).
     urls: [
       'https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf',
       'https://models.lloyal.ai/nomic-embed-text-v1.5.Q4_K_M.gguf',
@@ -256,25 +249,6 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     pooling: 'mean',
     framing: NOMIC_EMBED_FRAMING,
     dimensions: [768, 512, 256, 128, 64],
-  },
-  {
-    id: 'qwen3-embedding-0.6b-q8',
-    role: 'embedding',
-    label: 'Qwen3 Embedding 0.6B · Q8_0',
-    urls: [
-      'https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf',
-      'https://models.lloyal.ai/Qwen3-Embedding-0.6B-Q8_0.gguf',
-    ],
-    sha256: '06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439',
-    sizeBytes: 639_150_592,
-    trainedContext: 32768,
-    // An input is encoded whole, so the batch is the context: at 32,768 it asks Metal for a 19 GB compute buffer
-    // and the context cannot be made on an M2 Pro. A harness that needs more sets it, up to the trained limit.
-    recommendedContext: 8192,
-    pooling: 'last',
-    framing: QWEN3_EMBEDDING_FRAMING,
-    // Its card admits any width from 32 to 1024; these are the halvings a vector index may compare at.
-    dimensions: [1024, 512, 256, 128, 64, 32],
   },
   {
     id: 'embeddinggemma-2-q8',

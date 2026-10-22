@@ -187,7 +187,7 @@ export function createEmbedder(modelPath: string, opts: EmbedderLoadOpts): Opera
       modalities,
       tasks: Object.keys(framing) as EmbeddingTask[],
       // The model's own special tokens, as its file declares them: last-token pooling reads the end-of-text token
-      // Qwen3-Embedding appends, and the runtime's default tokenize adds a leading token only.
+      // such a model appends, and the runtime's default tokenize adds a leading token only.
       tokenize: (text) => call(() => serialized(() => ctx.tokenize(text, true))),
       *measure(inputs) {
         const store = yield* storeFor(inputs);

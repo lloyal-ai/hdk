@@ -21,10 +21,12 @@ node eval/embedding/compare.mjs --candidates <dir> --resident <project>/models  
 node eval/embedding/compare.mjs --candidates <dir> --no-resident                  # the encoders alone
 ```
 
-`--candidates` is a directory holding `nomic-embed-text-v1.5.Q4_K_M.gguf`, `Qwen3-Embedding-0.6B-Q8_0.gguf` and
-`embeddinggemma-2-Q8_0.gguf`;
+`--candidates` is a directory holding `nomic-embed-text-v1.5.Q4_K_M.gguf` and `embeddinggemma-2-Q8_0.gguf`;
 `--resident` is a research project's `models/` tree (`llm/`, `vision/`, `reranker/`, one GGUF each), the system
 the encoder is measured beside. The script refuses, naming the flag, when either is missing.
+
+Qwen3-Embedding, measured in both runs below, has left the catalog: it reads text alone, slowest of the three,
+nothing used it, and at its trained 32,768 tokens its context cannot be made on an M2 Pro.
 
 ## Run of 2026-10-22
 

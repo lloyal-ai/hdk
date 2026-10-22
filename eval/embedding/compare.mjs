@@ -56,7 +56,6 @@ const verdicts = JSON.parse(readFileSync(resolve(root, 'eval/rerank/scores-post-
  *  prefix written here. */
 const MODELS = [
   ['nomic-embed-text-v1.5-q4', 'nomic-embed-text-v1.5.Q4_K_M.gguf'],
-  ['qwen3-embedding-0.6b-q8', 'Qwen3-Embedding-0.6B-Q8_0.gguf'],
   ['embeddinggemma-2-q8', 'embeddinggemma-2-Q8_0.gguf'],
 ].map(([id, file]) => {
   const { pooling, framing, dimensions } = catalogEntry('embedding', id);

@@ -42,6 +42,10 @@ describe('embedding provisioning', () => {
     expect(planned({ path: '/embed.gguf', pooling: 'mean' })).toEqual([['embedding', { path: '/embed.gguf' }]]);
   });
 
+  it('refuses, before anything is fetched, a model the catalog does not carry', () => {
+    expect(refusalOf('embedding', family({ id: 'qwen3-embedding-0.6b-q8' }))).toMatch(/pooling the catalog does not know/);
+  });
+
   it('plans one step for a text-only embedding model', () => {
     expect(planned({ id: 'nomic-embed-text-v1.5-q4' })).toEqual([['embedding', { id: 'nomic-embed-text-v1.5-q4' }]]);
   });
@@ -84,7 +88,6 @@ describe('embedding provisioning', () => {
     expect(refused({ id: model, context: 8192 })).toBeUndefined();
     expect(refused({ id: model, context: 16384 })).toMatch(/model\.embedding\.context.*16384.*embeddinggemma-2-q8.*8192/);
     expect(refused({ id: 'nomic-embed-text-v1.5-q4', context: 4096 })).toMatch(/model\.embedding\.context.*4096.*2048/);
-    expect(refused({ id: 'qwen3-embedding-0.6b-q8', context: 32768 })).toBeUndefined();
     // A `path:` model is the harness's own file, and the catalog knows nothing of what it was trained to read.
     expect(refused({ path: '/embed.gguf', pooling: 'mean', context: 65536 })).toBeUndefined();
   });
@@ -108,9 +111,6 @@ describe('embedding provisioning', () => {
     };
     expect(await context({})).toBe(8192);
     expect(await context({ id: 'nomic-embed-text-v1.5-q4' })).toBe(2048);
-    // Trained to 32,768, but an input is encoded whole, and a batch that long asks Metal for 19 GB.
-    expect(await context({ id: 'qwen3-embedding-0.6b-q8' })).toBe(8192);
-    expect(await context({ id: 'qwen3-embedding-0.6b-q8', context: 32768 })).toBe(32768);
     expect(await context({ id: model, context: 4096 })).toBe(4096);
     // A local file's trained context is the harness's to know: the embedder's own default stands.
     expect(await context({ path: '/embed.gguf', pooling: 'mean' })).toBeUndefined();
@@ -150,9 +150,6 @@ describe('embedding provisioning', () => {
         classification: { query: 'classification: ', document: 'classification: ' },
         clustering: { query: 'clustering: ', document: 'clustering: ' },
       },
-    });
-    expect(await bound('qwen3-embedding-0.6b-q8')).toMatchObject({
-      framing: { search: { query: 'Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:', document: '' } },
     });
   });
 });
