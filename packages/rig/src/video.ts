@@ -6,6 +6,8 @@
  * command with references only. The host checks every reference, transcribes
  * the windows through the bound transcription service (block presence is the
  * only switch: no service, no transcript), and composes one video attachment.
+ * It keeps a clip's sound whenever anything it runs hears: the transcription
+ * service, or an embedding model that reads sound.
  *
  * Each compose runs in its own task, so several videos attached in a row
  * compose side by side and a Stop of the run does not reach them; the
@@ -16,13 +18,14 @@
 import { resource, until, useAbortSignal, useScope } from 'effection';
 import type { Operation, Task } from 'effection';
 import { Attachments } from '@lloyal-labs/lloyal-agents';
-import { asAttachment, composeVideo, DIGEST_PATTERN, durationRefusal, resolveAudio, soundtrackRefusal } from '@lloyal-labs/media';
+import { asAttachment, commonAdmission, composeVideo, DIGEST_PATTERN, durationRefusal, resolveAudio, soundtrackRefusal } from '@lloyal-labs/media';
 import type { Attachment, AttachmentStore, AudioAdmission, Descriptor, Transcript } from '@lloyal-labs/media';
 import { isRequestId } from '@lloyal-labs/binding';
 import type { UntranscribedWindow, VideoCapabilities, VideoCommand, VideoEvent } from '@lloyal-labs/binding';
 import { DEFAULT_VIDEO_SAMPLING } from './config';
 import type { attachmentSettings, ConfigOf } from './config';
 import { Services } from './services';
+import type { ServiceMap } from './services';
 import type { CommandGroup } from './serve-commands';
 
 /** The harness's video block, as its config hands it over: absent keys, or no block, take rig's defaults. */
@@ -82,8 +85,8 @@ function references(command: Compose, maxFrames: number):
 
 /**
  * The sentence refusing a soundtrack, if a window is not a recording this
- * store admitted (read back under the admission limits it will be transcribed
- * under) or has no place on the clip's timeline (media's rule, the one the
+ * store admitted (read back under the admission the host keeps sound under,
+ * what every service that hears takes) or has no place on the clip's timeline (media's rule, the one the
  * composition keeps). Checked before any window is transcribed, with or
  * without a transcription service, as a frame is.
  */
@@ -104,12 +107,21 @@ function unadmittedOrMisplaced(
   return windows.map(unadmitted).find((r) => r !== undefined) ?? soundtrackRefusal(windows, durationMs);
 }
 
+/** What this host keeps of a clip's sound, as the admission each window meets: what every bound service that hears
+ *  admits, so each window reaches all of them; none when nothing hears, and the page extracts none. */
+function soundtrackAdmission(services: Partial<ServiceMap> | undefined): Readonly<AudioAdmission> | null {
+  const hearers = [services?.transcription?.limits, services?.embedding?.audio];
+  return commonAdmission(hearers.filter((a): a is Readonly<AudioAdmission> => a != null));
+}
+
 /** The commands that compose a video, for a harness to serve beside its own. */
 export function useVideoCommands({ wire, config = () => ({}) }: VideoCommandsOptions): Operation<CommandGroup<VideoCommand>> {
   return resource(function* (provide) {
     const owner = yield* useScope();
     const store = yield* Attachments.expect();
-    const asr = (yield* Services.get())?.transcription;
+    const services = yield* Services.get();
+    const asr = services?.transcription;
+    const soundtrack = soundtrackAdmission(services);
     const composing = new Map<string, Task<void>>();
 
     /** Transcribe each window in turn: silence is skipped, a failure is recorded and the rest go on. */
@@ -142,7 +154,7 @@ export function useVideoCommands({ wire, config = () => ({}) }: VideoCommandsOpt
     yield* provide({
       handlers: {
         *'video:describe'() {
-          yield* wire.send({ type: 'video:capabilities', capabilities: { ...videoPolicy(config()), transcription: asr?.limits ?? null } });
+          yield* wire.send({ type: 'video:capabilities', capabilities: { ...videoPolicy(config()), soundtrack } });
         },
         *'video:compose'(command) {
           if (!isRequestId(command.requestId)) return;
@@ -166,7 +178,7 @@ export function useVideoCommands({ wire, config = () => ({}) }: VideoCommandsOpt
             yield* wire.send({ type: 'video:error', requestId, message: refs.refused });
             return;
           }
-          const unfit = unadmittedOrMisplaced(store, refs.audio, command.durationMs, asr?.limits);
+          const unfit = unadmittedOrMisplaced(store, refs.audio, command.durationMs, soundtrack ?? undefined);
           if (unfit !== undefined) {
             yield* wire.send({ type: 'video:error', requestId, message: unfit });
             return;

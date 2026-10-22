@@ -8,7 +8,7 @@
  * @category Rig
  */
 import type { Operation } from 'effection';
-import type { Attachment } from '@lloyal-labs/media';
+import type { Attachment, AudioAdmission } from '@lloyal-labs/media';
 
 /**
  * A loaded document available for search, read, and grep operations.
@@ -177,6 +177,9 @@ export interface Embedder {
   readonly dimensions: readonly number[];
   /** What the bound model reads. */
   readonly modalities: readonly Modality[];
+  /** The admission a recording, or a video's soundtrack window, meets to be embedded; null when the model does not
+   *  hear. A host keeps a clip's sound under it. */
+  readonly audio: Readonly<AudioAdmission> | null;
   /** The tasks the bound model frames; an input for any other is refused. */
   readonly tasks: readonly EmbeddingTask[];
   embed(inputs: readonly EmbeddingInput[]): Operation<Float32Array[]>;

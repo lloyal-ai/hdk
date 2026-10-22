@@ -109,7 +109,7 @@ describe('prepareVideo, the page\'s assembly through any decoder', () => {
   it('ingests every frame and soundtrack window, and gives the compose its references and length', async () => {
     ingested.length = 0;
     const phases: string[] = [];
-    const prepared = await prepareVideo(madeUp({ endS: 12, sound: [tone(0, 12, 16_000)] }), { sampling: SAMPLING, transcription: limits }, ingest, {
+    const prepared = await prepareVideo(madeUp({ endS: 12, sound: [tone(0, 12, 16_000)] }), { sampling: SAMPLING, soundtrack: limits }, ingest, {
       onProgress: p => phases.push(p.phase),
     });
     expect(prepared.frames).toHaveLength(48);
@@ -120,8 +120,8 @@ describe('prepareVideo, the page\'s assembly through any decoder', () => {
     expect(new Set(phases)).toEqual(new Set(['sampling', 'ingesting']));
   });
 
-  it('cuts no soundtrack when the host has no transcription service', async () => {
-    const prepared = await prepareVideo(madeUp({ sound: [tone(0, 2, 16_000)] }), { sampling: SAMPLING, transcription: null }, ingest);
+  it('cuts no soundtrack when nothing the host runs hears', async () => {
+    const prepared = await prepareVideo(madeUp({ sound: [tone(0, 2, 16_000)] }), { sampling: SAMPLING, soundtrack: null }, ingest);
     expect(prepared.audio).toEqual([]);
   });
 
@@ -129,7 +129,7 @@ describe('prepareVideo, the page\'s assembly through any decoder', () => {
     // 60 s at the policy's cap of 4 frames: frames 15 s apart, so marks every 30 s and windows sized to match.
     const prepared = await prepareVideo(
       madeUp({ endS: 60, frameS: 0.5, sound: [tone(0, 60, 16_000)] }),
-      { sampling: { ...SAMPLING, maxFrames: 4 }, transcription: { ...limits, maxDurationSeconds: 120 } }, ingest,
+      { sampling: { ...SAMPLING, maxFrames: 4 }, soundtrack: { ...limits, maxDurationSeconds: 120 } }, ingest,
     );
     // A window the cutter may end up to a fifth either side of its nominal 30 s, never near the 5 s default.
     expect(prepared.audio[0].endMs - prepared.audio[0].startMs).toBeGreaterThanOrEqual(30_000 * 4 / 5);

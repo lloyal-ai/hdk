@@ -57,7 +57,7 @@ describe('ingestVideo', () => {
     const progress: string[] = [];
     const attached = await ingestVideo({
       origin: '', bridge, file: new Blob([new Uint8Array(10)], { type: 'video/mp4' }),
-      capabilities: { sampling: SAMPLING, maxDurationMs: MAX_MS, transcription: null }, onProgress: (p) => progress.push(p.phase),
+      capabilities: { sampling: SAMPLING, maxDurationMs: MAX_MS, soundtrack: null }, onProgress: (p) => progress.push(p.phase),
     });
     expect(attached.root).toEqual(root);
     const compose = sent.find(c => c.type === 'video:compose') as Extract<VideoCommand, { type: 'video:compose' }>;
@@ -82,7 +82,7 @@ describe('ingestVideo before the host has described video', () => {
       onEvent: (cb: (f: Frame<VideoEvent>) => void) => { listeners.push(cb); return () => { listeners.splice(listeners.indexOf(cb), 1); }; },
       send: (c: VideoCommand) => {
         sent.push(c.type);
-        if (c.type === 'video:describe') emit({ type: 'video:capabilities', capabilities: { sampling: SAMPLING, maxDurationMs: MAX_MS, transcription: null } });
+        if (c.type === 'video:describe') emit({ type: 'video:capabilities', capabilities: { sampling: SAMPLING, maxDurationMs: MAX_MS, soundtrack: null } });
         if (c.type === 'video:compose') emit({ type: 'video:composed', requestId: c.requestId, root: { mediaType: MANIFEST_TYPE, digest: `sha256:${'f'.repeat(64)}`, size: 1 } as never, untranscribed: [] });
       },
     };
@@ -123,7 +123,7 @@ describe('ingestVideo, cancelled while the host composes', () => {
     };
     return { bridge, sent, listeners, composing };
   }
-  const capabilities = { sampling: SAMPLING, maxDurationMs: MAX_MS, transcription: null };
+  const capabilities = { sampling: SAMPLING, maxDurationMs: MAX_MS, soundtrack: null };
 
   it('rejects at once, tells the host, and keeps no listener, though the host never answers', async () => {
     const host = silentHost(false);
@@ -179,7 +179,7 @@ describe('ingestVideo with timestamps off', () => {
   it('still cuts the soundtrack into windows the transcription service can take', async () => {
     clipOf(12, 48_000);
     const host = composingHost();
-    await ingestVideo({ origin: '', bridge: host.bridge, file: new Blob([new Uint8Array(10)]), capabilities: { sampling: { ...SAMPLING, timestampIntervalMs: 0 }, maxDurationMs: MAX_MS, transcription: LIMITS } });
+    await ingestVideo({ origin: '', bridge: host.bridge, file: new Blob([new Uint8Array(10)]), capabilities: { sampling: { ...SAMPLING, timestampIntervalMs: 0 }, maxDurationMs: MAX_MS, soundtrack: LIMITS } });
     // 5 s windows, which the cutter may end up to a fifth either side.
     expect(lengthOf(host.compose().audio![0])).toBeGreaterThanOrEqual(4000);
     expect(lengthOf(host.compose().audio![0])).toBeLessThanOrEqual(6000);
@@ -194,7 +194,7 @@ describe('ingestVideo for a long clip', () => {
     // 24 s at a cap of 4 frames: frames 6 s apart, past the 5 s interval, so marks are recorded two frames apart.
     clipOf(24);
     const host = composingHost();
-    await ingestVideo({ origin: '', bridge: host.bridge, file: new Blob([new Uint8Array(10)]), capabilities: { sampling: { ...SAMPLING, maxFrames: 4 }, maxDurationMs: MAX_MS, transcription: LIMITS } });
+    await ingestVideo({ origin: '', bridge: host.bridge, file: new Blob([new Uint8Array(10)]), capabilities: { sampling: { ...SAMPLING, maxFrames: 4 }, maxDurationMs: MAX_MS, soundtrack: LIMITS } });
     expect(host.compose().frames.map(f => f.tMs)).toEqual([0, 6000, 12_000, 18_000]);
     // 12 s windows, which the cutter may end up to a fifth either side.
     expect(lengthOf(host.compose().audio![0])).toBeGreaterThanOrEqual(12_000 * 4 / 5);
@@ -208,7 +208,7 @@ describe('ingestVideo for a clip longer than the host takes', () => {
     vi.mocked(ingestMedia).mockClear();
     vi.mocked(videoDurationMs).mockResolvedValueOnce(3_600_000);
     const bridge = { onEvent: () => () => {}, send: vi.fn() };
-    await expect(ingestVideo({ origin: '', bridge, file: new Blob([new Uint8Array(10)]), capabilities: { sampling: SAMPLING, maxDurationMs: MAX_MS, transcription: LIMITS } }))
+    await expect(ingestVideo({ origin: '', bridge, file: new Blob([new Uint8Array(10)]), capabilities: { sampling: SAMPLING, maxDurationMs: MAX_MS, soundtrack: LIMITS } }))
       .rejects.toThrow('This video runs 60 min; this harness takes videos up to 10 min.');
     expect(pushBlob).not.toHaveBeenCalled();
     expect(ingestMedia).not.toHaveBeenCalled();

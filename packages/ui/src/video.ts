@@ -3,8 +3,8 @@
  *
  * The page decodes the clip with its own decoder (`mediabunnyDecoder` from
  * `@lloyal-labs/media/client`), and media's procedure samples the frames the
- * model will see and cuts the soundtrack into windows for the transcription
- * service, as it does for any decoder; the original is pushed as a blob. Each
+ * model will see and, when the host keeps sound, cuts the soundtrack into the
+ * windows it admits, as it does for any decoder; the original is pushed as a blob. Each
  * frame and window enters through the content plane's ordinary ingress; one
  * `video:compose` then asks the host to make them one attachment. Bytes travel
  * over HTTP, the socket carries references, and the host authors the manifest.

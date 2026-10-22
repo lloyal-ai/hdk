@@ -1,6 +1,6 @@
 /**
- * Reading a clip: the frames a model will see and the soundtrack a
- * transcription service will hear, through whichever decoder reads the file.
+ * Reading a clip: the frames a model will see and the soundtrack the models
+ * that hear will be given, through whichever decoder reads the file.
  *
  * The procedure is written once, against {@link ClipDecoder}: what to sample,
  * how each frame is stamped, how the sound is mixed, decimated, placed and cut,
@@ -98,7 +98,7 @@ export function quietestCut(samples: Float32Array, rate: number, target: number,
   return best;
 }
 
-/** Mono PCM16 WAV of these samples, which the transcription service admits. */
+/** Mono PCM16 WAV of these samples, the form a recording is admitted in. */
 export function pcm16Wav(samples: Float32Array, rate: number): Uint8Array {
   const bytes = new Uint8Array(44 + samples.length * 2);
   const view = new DataView(bytes.buffer);
@@ -114,14 +114,14 @@ export function pcm16Wav(samples: Float32Array, rate: number): Uint8Array {
 /** One soundtrack window, ready for the content plane. */
 export interface SoundtrackWindow { bytes: Uint8Array; startMs: number; endMs: number }
 
-/** The highest rate a window is written at, unless the transcription service admits less; higher sources are decimated. */
+/** The highest rate a window is written at, unless the host's admission takes less; higher sources are decimated. */
 const MAX_WINDOW_RATE = 48_000;
 /** A PCM WAV header's bytes, ahead of its samples. */
 const WAV_HEADER_BYTES = 44;
 /** How far past its nominal length the cutter may end a window: a fifth, its search slack. */
 const CUT_SLACK = 1 / 5;
 
-/** The fastest a soundtrack is written: 48 kHz, or the rate the transcription service admits if that is less. */
+/** The fastest a soundtrack is written: 48 kHz, or the rate the host's admission takes if that is less. */
 const soundtrackCeiling = (maxSampleRate = MAX_WINDOW_RATE): number => Math.min(MAX_WINDOW_RATE, maxSampleRate);
 
 /**
@@ -135,10 +135,10 @@ export function soundtrackDecimation(sourceRate: number, maxSampleRate?: number)
 
 /**
  * How long each soundtrack window runs: the timestamp interval, so a window's
- * words join the timestamp that closes it, or 5 s when timestamps are off. A
- * transcription service's limits cap it, with room for the cutter, which may
- * end a window up to a fifth past its nominal length: within the duration the
- * service admits, and within its bytes as mono PCM16 at the rate written.
+ * words join the timestamp that closes it, or 5 s when timestamps are off. The
+ * admission the host keeps windows under caps it, with room for the cutter,
+ * which may end a window up to a fifth past its nominal length: within the
+ * duration it admits, and within its bytes as mono PCM16 at the rate written.
  */
 export function soundtrackWindowMs(
   sampling: Pick<VideoSampling, 'timestampIntervalMs'>,
@@ -273,7 +273,7 @@ function mixDown(channels: Float32Array[], step: number): Float32Array {
 
 /**
  * The clip's soundtrack as mono windows of about `windowMs`, cut at quiet
- * points, written no faster than the transcription service admits. Yields
+ * points, written no faster than the host's admission takes. Yields
  * nothing for a clip without sound the decoder can read.
  *
  * Windows are timed on the file's own clock, the one {@link sampleFrames}
@@ -336,9 +336,9 @@ export interface PreparedVideo {
 
 /**
  * Read a clip under the host's policy and ingest what a compose needs: every
- * sampled frame, and when the host transcribes, every soundtrack window, cut
- * at the mark interval the frames will be recorded with and sized to what the
- * transcription service admits. The page does this with its decoder and its
+ * sampled frame, and when the host keeps sound, every soundtrack window, cut
+ * at the mark interval the frames will be recorded with and sized to the
+ * admission it keeps them under. The page does this with its decoder and its
  * upload; a host or a tool does it with its own, and sends the same compose.
  *
  * The decoder is the caller's: this neither opens nor disposes it, except to
@@ -348,7 +348,7 @@ export async function prepareVideo(
   decoder: ClipDecoder,
   policy: {
     sampling: VideoSampling & { maxEdgePx: number };
-    transcription: Pick<AudioAdmission, 'maxBytes' | 'maxDurationSeconds' | 'maxSampleRate'> | null;
+    soundtrack: Pick<AudioAdmission, 'maxBytes' | 'maxDurationSeconds' | 'maxSampleRate'> | null;
   },
   ingest: (bytes: Uint8Array) => Promise<Descriptor>,
   options: { signal?: AbortSignal; onProgress?: (progress: PrepareProgress) => void } = {},
@@ -362,10 +362,10 @@ export async function prepareVideo(
     onProgress?.({ phase: 'ingesting', done: i + 1, total: sampled.frames.length });
   }
   const audio: PreparedVideo['audio'] = [];
-  if (policy.transcription) {
+  if (policy.soundtrack) {
     const marks = { timestampIntervalMs: markInterval(sampled.frames.map(f => f.tMs), policy.sampling) };
-    const windows = soundtrackWindows(decoder, soundtrackWindowMs(marks, policy.transcription), {
-      ...(signal ? { signal } : {}), maxSampleRate: policy.transcription.maxSampleRate,
+    const windows = soundtrackWindows(decoder, soundtrackWindowMs(marks, policy.soundtrack), {
+      ...(signal ? { signal } : {}), maxSampleRate: policy.soundtrack.maxSampleRate,
     });
     for await (const window of windows) audio.push({ root: await ingest(window.bytes), startMs: window.startMs, endMs: window.endMs });
   }

@@ -8,7 +8,7 @@ import { run } from 'effection';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { composeVideo } from '@lloyal-labs/media';
+import { composeVideo, DEFAULT_AUDIO_ADMISSION } from '@lloyal-labs/media';
 import type { Attachment } from '@lloyal-labs/media';
 import { pcm16Wav } from '@lloyal-labs/media/client';
 import { createContentIngress, FileAttachmentStore } from '@lloyal-labs/media/node';
@@ -127,9 +127,13 @@ describe('createEmbedder over parts', () => {
 
   it('says what it reads: text alone without a projector; images and video with one, sound when it hears', async () => {
     const read = await run(function* () {
-      const withProjector = (yield* embedder()).modalities;
+      const hearing = yield* embedder();
+      const withProjector = hearing.modalities;
+      expect(hearing.audio).toEqual(DEFAULT_AUDIO_ADMISSION);
       fake.audio = false;
-      const sightOnly = (yield* embedder()).modalities;
+      const sighted = yield* embedder();
+      const sightOnly = sighted.modalities;
+      expect(sighted.audio).toBeNull();
       fake.projector = false;
       const textOnly = (yield* embedder(undefined)).modalities;
       return { withProjector, sightOnly, textOnly };

@@ -15,6 +15,7 @@ import { FileAttachmentStore, createContentIngress } from '@lloyal-labs/media/no
 import type { Attachment } from '@lloyal-labs/media';
 import type { VideoEvent } from '@lloyal-labs/binding';
 import { Services } from '../src/services';
+import { stubEmbedder } from '../src/testing';
 import { attachmentSettings, DEFAULT_VIDEO_SAMPLING } from '../src/config';
 import { useVideoCommands } from '../src/video';
 
@@ -65,19 +66,28 @@ const heard = (audio: Attachment, text: string, silent = false): Transcription =
 });
 
 describe('video commands', () => {
-  it('describes the sampling it composes under, and the limits a soundtrack window must meet to be transcribed', async () => {
+  it('describes the sampling it composes under, and the limits a soundtrack window must meet to be kept: whenever anything it runs hears', async () => {
     const limits = { ...DEFAULT_AUDIO_ADMISSION, maxDurationSeconds: 2 };
-    for (const bound of [false, true]) {
+    const transcription = { limits, *transcribe() { throw new Error('unused'); } };
+    const embedder = (audio: typeof limits | null) => ({ ...stubEmbedder, audio });
+    const kept = async (services: Record<string, unknown>) => {
       const events: VideoEvent[] = [];
       await run(function* () {
         yield* Attachments.set(store());
-        yield* Services.set(bound ? { transcription: { limits, *transcribe() { throw new Error('unused'); } } } : {});
+        yield* Services.set(services);
         const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } } });
         yield* group.handlers['video:describe']!({ type: 'video:describe' });
       });
-      // No service, no limits: the page extracts no soundtrack.
-      expect(events).toEqual([{ type: 'video:capabilities', capabilities: { sampling: DEFAULT_VIDEO_SAMPLING, transcription: bound ? limits : null } }]);
-    }
+      const [described] = events as Extract<VideoEvent, { type: 'video:capabilities' }>[];
+      expect(described.capabilities.sampling).toEqual(DEFAULT_VIDEO_SAMPLING);
+      return described.capabilities.soundtrack;
+    };
+    // What every service that hears admits: each alone, the least of both together, none when nothing hears.
+    expect(await kept({ transcription })).toEqual(limits);
+    expect(await kept({ embedding: embedder(DEFAULT_AUDIO_ADMISSION) })).toEqual(DEFAULT_AUDIO_ADMISSION);
+    expect(await kept({ transcription, embedding: embedder({ ...DEFAULT_AUDIO_ADMISSION, maxBytes: 1024 }) })).toEqual({ ...limits, maxBytes: 1024 });
+    expect(await kept({ embedding: embedder(null) })).toBeNull();
+    expect(await kept({})).toBeNull();
   });
 
   it('composes the frames, transcribes the soundtrack window by window, skips silence and reports failures', async () => {

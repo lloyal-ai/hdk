@@ -27,11 +27,11 @@ export interface VideoCapabilities {
    *  before it pushes any byte. Absent, a clip of any length is taken. */
   maxDurationMs?: number;
   /**
-   * The limits each soundtrack window must meet to be transcribed here, or
-   * null when no transcription service is bound: the page extracts audio only
-   * when there are limits, and cuts its windows to meet them.
+   * The limits each soundtrack window must meet to be kept here, or null when
+   * nothing this host runs hears: the page extracts audio only when there are
+   * limits, and cuts its windows to meet them.
    */
-  transcription: Readonly<AudioAdmission> | null;
+  soundtrack: Readonly<AudioAdmission> | null;
 }
 
 /**

@@ -211,6 +211,7 @@ export const stubEmbedder: Embedder = {
   dimension: 2,
   dimensions: [2],
   modalities: ['text'],
+  audio: null,
   tasks: EMBEDDING_TASKS,
   *embed(inputs) { readText(inputs); return inputs.map(() => new Float32Array([1, 0])); },
   *measure(inputs) { readText(inputs); return inputs.map(() => 1); },

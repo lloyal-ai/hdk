@@ -38,6 +38,21 @@ export interface AdmittedAudio {
   bytes: Uint8Array;
 }
 
+/**
+ * What every one of these admissions takes: the least of each limit, so a recording kept under it reaches each
+ * consumer it was kept for. Null when there are none.
+ *
+ * @category Media
+ */
+export function commonAdmission(admissions: readonly Readonly<AudioAdmission>[]): Readonly<AudioAdmission> | null {
+  if (admissions.length === 0) return null;
+  const least = (key: keyof AudioAdmission): number => Math.min(...admissions.map(a => a[key]));
+  return Object.freeze({
+    maxBytes: least('maxBytes'), maxDurationSeconds: least('maxDurationSeconds'),
+    maxChannels: least('maxChannels'), maxSampleRate: least('maxSampleRate'),
+  });
+}
+
 export function audioAdmission(overrides: Partial<AudioAdmission> = {}): AudioAdmission {
   const specified = Object.fromEntries(Object.entries(overrides).filter(([, value]) => value !== undefined));
   const limits = { ...DEFAULT_AUDIO_ADMISSION, ...specified };

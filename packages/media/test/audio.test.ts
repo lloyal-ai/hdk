@@ -91,6 +91,14 @@ describe('admitted audio', () => {
     expect(() => materialize(content, [audio], { audio: media.audioAdmission({ maxBytes: 8 }) })).toThrow(/byte limit/);
   });
 
+  it('keeps what every consumer admits: the least of each limit, and nothing for no consumer', () => {
+    const transcriber = media.audioAdmission({ maxDurationSeconds: 30, maxSampleRate: 16_000 });
+    const embedder = media.audioAdmission({ maxBytes: 4096 });
+    expect(media.commonAdmission([transcriber, embedder])).toEqual({ ...transcriber, maxBytes: 4096 });
+    expect(media.commonAdmission([embedder])).toEqual(embedder);
+    expect(media.commonAdmission([])).toBeNull();
+  });
+
   it('bounds the native decoder at the projector\'s own rate, with one sample of resampling headroom', () => {
     expect(media.audioLimitsAt(media.audioAdmission({ maxDurationSeconds: 30 }), 16_000))
       .toEqual({ maxBytes: media.DEFAULT_AUDIO_ADMISSION.maxBytes, maxSamples: 480_001 });

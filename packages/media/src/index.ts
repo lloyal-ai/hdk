@@ -49,7 +49,7 @@ export type { ClipDecoder, DecodedSound, PreparedVideo, PrepareProgress, Sampled
 export { DOCUMENT_CONFIG_TYPE, asDocumentMeta, pagesOf } from './document';
 export type { DocumentMeta, SectionOrigin } from './document';
 
-export { AUDIO_CONFIG_TYPE, AUDIO_MEDIA_TYPE, DEFAULT_AUDIO_ADMISSION, audioAdmission, audioLimitsAt, asAudioMeta, inspectPcmWav, resolveAudio } from './audio';
+export { AUDIO_CONFIG_TYPE, AUDIO_MEDIA_TYPE, DEFAULT_AUDIO_ADMISSION, audioAdmission, commonAdmission, audioLimitsAt, asAudioMeta, inspectPcmWav, resolveAudio } from './audio';
 export type { AdmittedAudio, AudioAdmission, AudioLimits, AudioMeta } from './audio';
 
 // The client half of the content plane: every door derived from the one origin a

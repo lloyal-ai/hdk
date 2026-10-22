@@ -199,6 +199,7 @@ export function createEmbedder(modelPath: string, opts: EmbedderLoadOpts): Opera
       dimension,
       dimensions,
       modalities,
+      audio: heard ?? null,
       tasks: Object.keys(framing) as EmbeddingTask[],
       // The model's own special tokens, as its file declares them: last-token pooling reads the end-of-text token
       // such a model appends, and the runtime's default tokenize adds a leading token only.
