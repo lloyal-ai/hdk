@@ -19,6 +19,8 @@ import { EMBEDDINGGEMMA } from './helpers/embed-model';
 import { verifyLocalNative } from '../../sdk/test/local-native';
 
 const describeWithModel = EMBEDDINGGEMMA ? describe : describe.skip;
+/** The fixture clip's frames are llama.cpp's own video helper's samples: four a second. */
+const CLIP_SAMPLING = { fps: 4, timestampIntervalMs: 5000, maxFrames: 64 };
 const cosine = (a: ArrayLike<number>, b: ArrayLike<number>) => Array.from(a).reduce((sum, x, i) => sum + x * b[i], 0);
 
 describeWithModel('createEmbedder over EmbeddingGemma 2 and its projector', () => {
@@ -31,6 +33,7 @@ describeWithModel('createEmbedder over EmbeddingGemma 2 and its projector', () =
   let cat: Attachment;
   let recording: Attachment;
   let clip: Attachment;
+  let clipFrames: { root: Attachment; tMs: number }[];
 
   beforeAll(async () => {
     verifyLocalNative();
@@ -47,7 +50,8 @@ describeWithModel('createEmbedder over EmbeddingGemma 2 and its projector', () =
     // The clip's 16 frames, as llama.cpp's video helper samples them: four a second.
     const frames = [];
     for (let i = 0; i < 16; i++) frames.push({ root: await ingress.ingest(file(`video/frame-${String(i).padStart(2, '0')}.png`)), tMs: i * 250 });
-    clip = await composeVideo(store, { frames, sampling: { fps: 4, timestampIntervalMs: 5000, maxFrames: 64 }, durationMs: 4000 });
+    clipFrames = frames;
+    clip = await composeVideo(store, { frames, sampling: CLIP_SAMPLING, durationMs: 4000 });
   });
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -80,6 +84,16 @@ describeWithModel('createEmbedder over EmbeddingGemma 2 and its projector', () =
       expect(cosine(part, clipReference)).toBeLessThan(0.999);
     }
     expect(cosine(early, late)).toBeLessThan(0.999);
+  }, 300_000);
+
+  it('hears a video\'s soundtrack: the clip with its sound embeds as the clip and the recording do, and apart from the clip alone', async () => {
+    const heard = await composeVideo(store, {
+      frames: clipFrames, sampling: CLIP_SAMPLING, durationMs: 4000,
+      soundtrack: [{ root: recording, startMs: 0, endMs: 4000 }],
+    });
+    const [withSound, asParts, silent] = await embedded([{ parts: [heard] }, { parts: [clip, recording] }, { parts: [clip] }]);
+    expect(cosine(withSound, asParts)).toBeGreaterThan(0.9999);
+    expect(cosine(withSound, silent)).toBeLessThan(0.999);
   }, 300_000);
 
   it('embeds an image, a video and a recording from the store where llama.cpp does', async () => {
