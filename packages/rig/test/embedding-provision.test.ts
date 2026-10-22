@@ -13,7 +13,7 @@ const { resolveModel } = vi.hoisted(() => ({ resolveModel: vi.fn() }));
 vi.mock('../src/models', async original => ({
   ...await original<typeof import('../src/models')>(), resolveModel, isModelPresent: () => false,
 }));
-const { createEmbedder } = vi.hoisted(() => ({ createEmbedder: vi.fn(function* (_path: string, _opts: { framing?: object; dimensions?: number[]; imageMinTokens?: number; imageMaxTokens?: number }) { return {}; }) }));
+const { createEmbedder } = vi.hoisted(() => ({ createEmbedder: vi.fn(function* (_path: string, _opts: { nCtx?: number; framing?: object; dimensions?: number[]; imageMinTokens?: number; imageMaxTokens?: number }) { return {}; }) }));
 vi.mock('../src/providers/embedding', () => ({ createEmbedder }));
 const { install, planInstall } = await import('../src/install');
 const { bindServices, refusalOf, resolveServices } = await import('../src/provision');
@@ -98,6 +98,22 @@ describe('embedding provisioning', () => {
     expect(refused({ id: 'nomic-embed-text-v1.5-q4', vision: { maxTokens: 280 } })).toMatch(/model\.embedding\.vision.*no projector/);
     // A projector named by path is the harness's own file: its range is its own to know.
     expect(refused({ path: '/embed.gguf', pooling: 'mean', projector: { path: '/mmproj.gguf' }, vision: { maxTokens: 5000 } })).toBeUndefined();
+  });
+
+  it('takes the context its catalog entry gives when the block sets none, and the one the block says otherwise', async () => {
+    const context = async (embedding: object) => {
+      createEmbedder.mockClear();
+      await run(() => bindServices({ embedding: '/models/e.gguf' }, family(embedding)));
+      return createEmbedder.mock.calls[0][1].nCtx;
+    };
+    expect(await context({})).toBe(8192);
+    expect(await context({ id: 'nomic-embed-text-v1.5-q4' })).toBe(2048);
+    // Trained to 32,768, but an input is encoded whole, and a batch that long asks Metal for 19 GB.
+    expect(await context({ id: 'qwen3-embedding-0.6b-q8' })).toBe(8192);
+    expect(await context({ id: 'qwen3-embedding-0.6b-q8', context: 32768 })).toBe(32768);
+    expect(await context({ id: model, context: 4096 })).toBe(4096);
+    // A local file's trained context is the harness's to know: the embedder's own default stands.
+    expect(await context({ path: '/embed.gguf', pooling: 'mean' })).toBeUndefined();
   });
 
   it('binds the image detail the block sets onto the projector', async () => {

@@ -118,7 +118,7 @@ describe('a block is present when a rung says so — its presence is the request
     expect(absent.origin['model.embedding.pooling']).toBe('default');
     // ...and inside a present block the default stands as any default does.
     const present = loadConfig(tuned, { model: { embedding: {} } }, { env: {}, cwd });
-    expect(present.config.model.embedding).toEqual({ context: 2048, pooling: 'mean' });
+    expect(present.config.model.embedding).toEqual({ pooling: 'mean' });
   });
 
   it('a key set at the cli or in the environment makes its block, since it names a key of it', () => {

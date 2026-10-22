@@ -47,7 +47,8 @@ export interface ModelCatalogEntry {
   sha256: string;
   /** Approx size, for a progress ETA when Content-Length is absent. */
   sizeBytes: number;
-  /** Suggested `context` (nCtx) when the harness doesn't set one. */
+  /** The context (nCtx) the model takes when the harness sets none: rig binds an embedding model at it, and the
+   *  `lloyal-ai` CLI, from its own copy of this catalog, writes an llm's into a new project's `harness.yml`. */
   recommendedContext?: number;
   /** LLM entries only: the id of this model's vision projector (role `vision`). One vision tower serves every
    *  quant of the same model, so a `model.vision` block that names no id takes this one. */
@@ -251,6 +252,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     sizeBytes: 84_106_624,
     // The card's 8,192 needs a rope scaling llama.cpp is not given here; the file's own 2,048 is what it reads.
     trainedContext: 2048,
+    recommendedContext: 2048,
     pooling: 'mean',
     framing: NOMIC_EMBED_FRAMING,
     dimensions: [768, 512, 256, 128, 64],
@@ -266,6 +268,9 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     sha256: '06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439',
     sizeBytes: 639_150_592,
     trainedContext: 32768,
+    // An input is encoded whole, so the batch is the context: at 32,768 it asks Metal for a 19 GB compute buffer
+    // and the context cannot be made on an M2 Pro. A harness that needs more sets it, up to the trained limit.
+    recommendedContext: 8192,
     pooling: 'last',
     framing: QWEN3_EMBEDDING_FRAMING,
     // Its card admits any width from 32 to 1024; these are the halvings a vector index may compare at.
@@ -284,6 +289,7 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     sizeBytes: 309_855_520,
     // One 8,192-token window shared by every part of an input; the file's header inherits a far longer one.
     trainedContext: 8192,
+    recommendedContext: 8192,
     pooling: 'mean',
     framing: EMBEDDINGGEMMA_2_FRAMING,
     dimensions: [768, 512, 256, 128],

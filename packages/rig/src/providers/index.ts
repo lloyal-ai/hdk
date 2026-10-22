@@ -92,9 +92,9 @@ export const providers: { [K in Service]: ProviderRow<K> } = {
     bind: (artifact, block, projector) => {
       const binding = embeddingBinding(block);
       if ('refused' in binding) throw new Error(binding.refused);
-      const { framing, dimensions } = catalogedEmbedding(block) ?? {};
+      const { framing, dimensions, recommendedContext } = catalogedEmbedding(block) ?? {};
       return createEmbedder(artifact, {
-        nCtx: block.context, pooling: binding.pooling, ...(framing ? { framing } : {}), ...(dimensions ? { dimensions } : {}),
+        nCtx: block.context ?? recommendedContext, pooling: binding.pooling, ...(framing ? { framing } : {}), ...(dimensions ? { dimensions } : {}),
         ...(projector ? { projector, imageMinTokens: block.vision?.minTokens, imageMaxTokens: block.vision?.maxTokens } : {}),
       });
     },
@@ -140,7 +140,7 @@ function embeddingBinding(block: ModelBlock<'embedding'>): { pooling: EmbeddingP
  *  to make. A `path:` model's file is the harness's to know. */
 function contextRefusal(block: ModelBlock<'embedding'>): string | undefined {
   const trained = catalogedEmbedding(block)?.trainedContext;
-  const context: number | undefined = block.context;
+  const context = block.context;
   if (trained === undefined || context === undefined || context <= trained) return undefined;
   return `\`model.embedding.context\` is ${context}, but ${block.id} was trained to read at most ${trained} tokens — lower it to ${trained} or less`;
 }
