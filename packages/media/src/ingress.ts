@@ -8,18 +8,28 @@
 import { representationsOf } from './attachment';
 import { PROJECTOR_FORMATS } from './media-type';
 import { resolveVideo, VIDEO_CONFIG_TYPE } from './video';
+import { AUDIO_CONFIG_TYPE, resolveAudio } from './audio';
+import type { AudioAdmission } from './audio';
 import type { VideoInput } from './video';
 import type { Attachment } from './attachment';
 import { ContentLost } from './store';
 import type { AttachmentStore } from './store';
 
 /**
- * One projector input, behind one marker: an image's admitted bytes, or a
- * video's frames on its timeline. Structurally the SDK's `MultimodalInput`.
+ * One projector input, behind one marker: an image's admitted bytes, a
+ * video's frames on its timeline, or a recording's samples. Structurally the
+ * SDK's `MultimodalInput`.
  *
  * @category Media
  */
-export type ProjectorInput = Uint8Array | VideoInput;
+export type ProjectorInput = Uint8Array | VideoInput | { kind: 'audio'; bytes: Uint8Array };
+
+/** What the projector reading the content can take. */
+export interface MaterializeOpts {
+  /** The admission a recording must meet to reach a projector that hears. Absent, recordings contribute no
+   *  input: they reach a transcriber instead. */
+  audio?: AudioAdmission;
+}
 
 /**
  * Admitted content, ready for a delta builder.
@@ -36,10 +46,10 @@ export interface PreparedContent {
   /** Roots, in ingest order — what the trace and the fold carry. */
   attachments: readonly Attachment[];
   /** One input per marker, in root order: each image representation as its
-   *  admitted bytes, each video as ONE input of its frames on their timeline.
-   *  A document, whose representation is text, and audio, which reaches a
-   *  transcriber rather than this projector, contribute none. These are the
-   *  EXACT inputs to hand a builder and then the projector. */
+   *  admitted bytes, each video as ONE input of its frames on their timeline,
+   *  each recording as one audio input when the projector hears. A document,
+   *  whose representation is text, contributes none. These are the EXACT
+   *  inputs to hand a builder and then the projector. */
   inputs: readonly ProjectorInput[];
 }
 
@@ -62,6 +72,7 @@ export interface PreparedContent {
 export function materialize(
   store: AttachmentStore,
   roots: readonly Attachment[],
+  opts: MaterializeOpts = {},
 ): PreparedContent {
   const inputs: ProjectorInput[] = [];
   for (const root of roots) {
@@ -76,6 +87,10 @@ export function materialize(
     // input, so they fuse on their timeline instead of encoding one by one.
     if (manifest.config.mediaType === VIDEO_CONFIG_TYPE) {
       inputs.push(resolveVideo(store, root));
+      continue;
+    }
+    if (manifest.config.mediaType === AUDIO_CONFIG_TYPE) {
+      if (opts.audio) inputs.push({ kind: 'audio', bytes: resolveAudio(store, root, opts.audio).bytes });
       continue;
     }
     for (const rep of representationsOf(manifest)) {

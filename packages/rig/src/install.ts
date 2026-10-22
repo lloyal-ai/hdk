@@ -98,8 +98,11 @@ export function planInstall(model: ModelFamily, opts: { lenient?: boolean } = {}
     const role = request.role;
     const step: PlannedStep = { id: role, label: `Downloading the ${request.name}`, status: 'pending', role, file: takesFile(role) && fileWouldBind(request, model) };
     try {
-      step.spec = request.select(model);
-      Object.assign(step, acquires(role, step.spec));
+      const spec = request.select(model);
+      // A projector the model chosen does not have is no step at all.
+      if (!spec) continue;
+      step.spec = spec;
+      Object.assign(step, acquires(role, spec));
     } catch (err) {
       refuse(step, err);
     }

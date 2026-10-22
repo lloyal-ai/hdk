@@ -45,11 +45,12 @@ export interface ProvisionOpts {
 /** The artifact each resolved service binds from: the model file in its slot. */
 export type ServiceArtifacts = Partial<Record<Exclude<ModelRole, 'llm'>, string>>;
 
-/** Each independently verified file a service needs, including a companion projector when declared. */
+/** Each independently verified file a service needs, including a companion projector when declared. `select`
+ *  answers nothing for a projector the model chosen does not have. */
 export interface ServiceRequirement {
   role: Exclude<ModelRole, 'llm'>;
   name: string;
-  select(model: ModelFamily): ModelSpec;
+  select(model: ModelFamily): ModelSpec | undefined;
 }
 
 export function serviceRequirements<K extends Service>(name: K): ServiceRequirement[] {
@@ -98,6 +99,7 @@ export function* resolveServices(configured: readonly Service[], opts: Provision
     name, role: requirement.role, spec: requirement.select(opts.model),
   })));
   for (const { name, role, spec } of requested) {
+    if (!spec) continue;
     const onProgress: ModelProgress | undefined = opts.onProgress ? (got, total) => opts.onProgress!(name, got, total) : undefined;
     artifacts[role] = yield* call(() =>
       resolveModel({ projectRoot: opts.projectRoot, role, spec, ...(onProgress ? { onProgress } : {}) }),

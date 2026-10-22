@@ -1,7 +1,7 @@
 import { createContext } from '@lloyal-labs/sdk/node';
 import { Branch, buildUserDeltaMultimodal, deltaCells } from '@lloyal-labs/sdk';
 import { waitUntilSettled } from '@lloyal-labs/lloyal-agents';
-import { audioAdmission, resolveAudio } from '@lloyal-labs/media';
+import { audioAdmission, audioLimitsAt, resolveAudio } from '@lloyal-labs/media';
 import type { AttachmentStore } from '@lloyal-labs/media';
 import { ensure, resource, scoped } from 'effection';
 import type { Operation } from 'effection';
@@ -45,8 +45,7 @@ export function createTranscriber(modelPath: string, projectorPath: string, opts
           durationSeconds: audio.metadata.durationSeconds, silent: audio.metadata.silent, provenance,
         };
         if (audio.metadata.silent) return { ...result, text: '' };
-        // One resampling headroom sample matches the pinned native admission bound.
-        const audioLimits = { maxBytes: limits.maxBytes, maxSamples: Math.ceil(limits.maxDurationSeconds * sampleRate) + 1 };
+        const audioLimits = audioLimitsAt(limits, sampleRate);
         const delta = { ...buildUserDeltaMultimodal(ctx, '', [{ kind: 'audio', bytes: audio.bytes }], { audioLimits, enableThinking: false }), sep: [] };
         const demand = yield* waitUntilSettled(deltaCells(ctx, delta));
         if (demand + maxTokens > context) throw new Error('recording and output token limit exceed the transcription context');

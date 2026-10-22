@@ -49,6 +49,19 @@ export function audioAdmission(overrides: Partial<AudioAdmission> = {}): AudioAd
   return limits;
 }
 
+/** How much audio the native decoder may take, counted at the projector's own rate. Structurally the SDK's
+ *  `AudioLimits`. */
+export interface AudioLimits {
+  maxBytes: number;
+  maxSamples: number;
+}
+
+/** An admission as the native decoder bounds it at the projector's `sampleRate`: its byte limit, and its
+ *  duration in samples with one of headroom, which matches the native bound after resampling. */
+export function audioLimitsAt(admission: AudioAdmission, sampleRate: number): AudioLimits {
+  return { maxBytes: admission.maxBytes, maxSamples: Math.ceil(admission.maxDurationSeconds * sampleRate) + 1 };
+}
+
 /** Inspect integer PCM framing before storage or native allocation; no decoding or resampling occurs here. */
 export function inspectPcmWav(bytes: Uint8Array, overrides: Partial<AudioAdmission> = {}): AudioMeta {
   const limits = audioAdmission(overrides);

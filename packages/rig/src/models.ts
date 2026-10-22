@@ -58,7 +58,7 @@ export interface ModelCatalogEntry {
   /** Embedding entries only: how this model pools its token states — the model's own property, so the
    *  provider never has to guess and a `path:` model has to say. */
   pooling?: EmbeddingPooling;
-  /** The audio projector paired with a transcription decoder. */
+  /** The projector a transcription decoder or a multimodal embedding model is paired with. */
   projector?: string;
 }
 
@@ -228,6 +228,33 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     sha256: '06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439',
     sizeBytes: 639_150_592,
     pooling: 'last',
+  },
+  {
+    id: 'embeddinggemma-2-q8',
+    role: 'embedding',
+    label: 'EmbeddingGemma 2 · Q8_0',
+    // One space for text, images, video and audio; with its projector it embeds all four, without it text alone.
+    urls: [
+      'https://huggingface.co/unsloth/embeddinggemma-2-GGUF/resolve/031f0d4b35536f69ab3509d4893c923264fcf253/embeddinggemma-2-Q8_0.gguf',
+      'https://models.lloyal.ai/embeddinggemma-2-Q8_0.gguf',
+    ],
+    sha256: '6f1bd4ac6c5df7444f9cca7ca36cafe6cfa34cd6f49fefb1e0b4be8143aed8bc',
+    sizeBytes: 309_855_520,
+    recommendedContext: 8192,
+    pooling: 'mean',
+    projector: 'embeddinggemma-2-mmproj-bf16',
+  },
+  {
+    id: 'embeddinggemma-2-mmproj-bf16',
+    role: 'embedding.projector',
+    label: 'EmbeddingGemma 2 vision and audio projector · BF16',
+    // Upstream names it `mmproj-BF16.gguf`; the mirror is a flat bucket, so its key names the model.
+    urls: [
+      'https://huggingface.co/unsloth/embeddinggemma-2-GGUF/resolve/031f0d4b35536f69ab3509d4893c923264fcf253/mmproj-BF16.gguf',
+      'https://models.lloyal.ai/mmproj-embeddinggemma-2-BF16.gguf',
+    ],
+    sha256: '995aaa56e88b9b631f651861d659b728a625ccc02a238be37cff56cf11dc0032',
+    sizeBytes: 982_074_880,
   },
 ];
 

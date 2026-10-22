@@ -8,6 +8,7 @@
  * @category Rig
  */
 import type { Operation } from 'effection';
+import type { Attachment } from '@lloyal-labs/media';
 
 /**
  * A loaded document available for search, read, and grep operations.
@@ -119,21 +120,34 @@ export interface Reranker {
  *  Qwen3-Embedding reads its last token, nomic-embed averages. The catalog carries it per entry. */
 export type EmbeddingPooling = 'mean' | 'cls' | 'last';
 
+/** What an embedder reads: text always; images, video and sound through a projector that reads them. */
+export type Modality = 'text' | 'image' | 'video' | 'audio';
+
+/** One input to embed, as one vector: text and attachment roots (an image, a recording, a video or a window of
+ *  one), in order. A bare string is one text part. */
+export type EmbeddingInput = string | { parts: readonly (string | Attachment)[] };
+
 /**
- * The encoder a harness indexes with: one vector per text, in input order, L2-normalized so cosine similarity
- * is a dot product.
+ * The encoder a harness indexes with: one vector per input, in input order, L2-normalized so cosine similarity
+ * is a dot product. An input is text and media together, as one vector: text around an image, a video's
+ * frames beside its soundtrack.
  *
  * `embed` consumes PREPARED text — a model's task prefix (`search_query: ` for nomic, an instruction line for
  * Qwen) is the caller's to add, because the encoder cannot know whether a text is a query or a document.
  * Every call is serialized on the one context behind it, across callers, so concurrent calls answer the same
- * vectors they would in sequence. A text longer than the context is refused before anything runs, and the
- * next call is unaffected. An Operation, like everything a harness composes: leaving the scope abandons the
- * wait, and the encoder's own teardown still lets the native work already submitted settle.
+ * vectors they would in sequence. Each call is measured before anything runs: an input over the context, or
+ * media the model cannot read, refuses the whole call, and the next call is unaffected. An Operation, like
+ * everything a harness composes: leaving the scope abandons the wait, and the encoder's own teardown still lets
+ * the native work already submitted settle.
  */
 export interface Embedder {
   /** The length of every vector this encoder answers. */
   readonly dimension: number;
-  embed(texts: readonly string[]): Operation<Float32Array[]>;
+  /** What the bound model reads. */
+  readonly modalities: readonly Modality[];
+  embed(inputs: readonly EmbeddingInput[]): Operation<Float32Array[]>;
+  /** What each input costs in cells, measured with nothing run: the context must hold that much to embed it. */
+  measure(inputs: readonly EmbeddingInput[]): Operation<number[]>;
   /** Tokenize through the encoder's own vocabulary — what fits is measured in these. */
   tokenize(text: string): Operation<number[]>;
   /** Release the encoder: no new work from here, and its context freed once the work in flight has settled.

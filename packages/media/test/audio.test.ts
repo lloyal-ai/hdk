@@ -82,4 +82,19 @@ describe('admitted audio', () => {
     vi.spyOn(content, 'get').mockImplementation(digest => digest === rep.digest ? null : get(digest));
     expect(() => media.resolveAudio(content, root)).toThrow(/missing|digest/i);
   });
+
+  it('reaches a projector that hears, as one audio input admitted under that projector\'s limits', async () => {
+    const content = store();
+    const bytes = pcmWav();
+    const audio = await createContentIngress(content).ingest(bytes);
+    expect(materialize(content, [audio], { audio: media.audioAdmission() }).inputs).toEqual([{ kind: 'audio', bytes }]);
+    expect(() => materialize(content, [audio], { audio: media.audioAdmission({ maxBytes: 8 }) })).toThrow(/byte limit/);
+  });
+
+  it('bounds the native decoder at the projector\'s own rate, with one sample of resampling headroom', () => {
+    expect(media.audioLimitsAt(media.audioAdmission({ maxDurationSeconds: 30 }), 16_000))
+      .toEqual({ maxBytes: media.DEFAULT_AUDIO_ADMISSION.maxBytes, maxSamples: 480_001 });
+    expect(media.audioLimitsAt(media.audioAdmission({ maxDurationSeconds: 0.5, maxBytes: 1024 }), 44_100))
+      .toEqual({ maxBytes: 1024, maxSamples: 22_051 });
+  });
 });

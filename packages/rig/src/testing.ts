@@ -198,10 +198,12 @@ export const stubReranker: Reranker = {
   dispose: () => {},
 };
 
-/** The embedder a scenario runs against: one vector per text, none nearer than another. */
+/** The embedder a scenario runs against: one vector per input, none nearer than another, reading text alone. */
 export const stubEmbedder: Embedder = {
   dimension: 2,
-  *embed(texts) { return texts.map(() => new Float32Array([1, 0])); },
+  modalities: ['text'],
+  *embed(inputs) { return inputs.map(() => new Float32Array([1, 0])); },
+  *measure(inputs) { return inputs.map(() => 1); },
   *tokenize(text) { return Array.from(text, (_, i) => i); },
   dispose: () => {},
 };

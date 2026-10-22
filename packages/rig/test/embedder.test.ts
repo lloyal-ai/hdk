@@ -17,6 +17,9 @@ const { createContext, fakeCtx, log, gate } = vi.hoisted(() => {
     encode: async (tokens: number[]) => { await gate.open; log.push(`encode:${tokens.length}`); },
     getEmbeddings: (_normalize?: boolean) => { log.push('get'); return new Float32Array([log.length, 0.5]); },
     getEmbeddingDimension: () => 2,
+    // A text-only model: no projector.
+    supportsVision: () => false,
+    supportsAudio: () => false,
     dispose: () => { log.push('dispose'); },
   };
   return { log, gate, fakeCtx, createContext: vi.fn(async (_opts: Record<string, unknown>) => fakeCtx) };
@@ -81,7 +84,7 @@ describe('embed — one text at a time, one caller at a time', () => {
       const e = yield* createEmbedder('/e.gguf', { nCtx: 3, pooling: 'mean' });
       let refused: unknown;
       try { yield* e.embed(['ok', 'far too long']); } catch (err) { refused = err; }
-      expect(String(refused)).toMatch(/text 1 is 12 tokens; `model\.embedding\.context` is 3/);
+      expect(String(refused)).toMatch(/input 1 is 12 cells; `model\.embedding\.context` is 3/);
       expect(log.filter((l) => !l.startsWith('tokenize'))).toEqual([]);
       const out = yield* e.embed(['ok']);
       expect(out).toHaveLength(1);

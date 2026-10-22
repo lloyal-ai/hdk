@@ -217,6 +217,8 @@ export const modelSettings = defineConfig({
   'model.embedding.path': { yml: 'model.embedding.path', path: true, applies: 'reload', describe: 'A local .gguf for the embedding model; outranks the catalog id.' },
   'model.embedding.context': { yml: 'model.embedding.context', integer: true, default: 2048, applies: 'boot', describe: 'The most tokens one text may embed as; a longer text is refused, never truncated.' },
   'model.embedding.pooling': { yml: 'model.embedding.pooling', oneOf: EMBEDDING_POOLINGS, applies: 'boot', describe: 'How the model folds token states into one vector — its own property; a catalog id carries it, a local file must say.' },
+  'model.embedding.projector.id': { yml: 'model.embedding.projector.id', applies: 'reload', describe: 'The projector a multimodal embedding model reads images, video and sound through; otherwise paired from the embedding model in the catalog. A text-only model has none.' },
+  'model.embedding.projector.path': { yml: 'model.embedding.projector.path', path: true, applies: 'reload', describe: 'A local projector for the embedding model; outranks its catalog id.' },
   'model.transcription.id': { yml: 'model.transcription.id', applies: 'reload', describe: 'The catalog id of the speech transcription model.' },
   'model.transcription.path': { yml: 'model.transcription.path', path: true, applies: 'reload', describe: 'A local transcription decoder; outranks the catalog id.' },
   'model.transcription.projector.id': { yml: 'model.transcription.projector.id', applies: 'reload', describe: 'The audio projector; otherwise paired from the transcription decoder in the catalog.' },

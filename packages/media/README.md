@@ -194,6 +194,12 @@ retrieval, not the vision encoder — while a page root yields one. That single
 rule is what lets a document ride the same wire, trace and replay as an image
 without anything upstream learning a new kind.
 
+A recording reaches a transcriber, not the vision encoder, so it yields no
+input either, unless the caller's projector hears: `materialize(store, roots,
+{ audio })` then turns each recording into one audio input, admitted under
+that `AudioAdmission`. `audioLimitsAt(admission, sampleRate)` states the same
+admission as the native decoder bounds it, at the projector's own rate.
+
 Bounds are declared constants on the node entry: `MAX_DOCUMENT_BYTES` (32 MiB,
 refused before the codec sees a byte), `MAX_RENDERED_PAGES` (200 — page one
 first, then graphics-bearing pages, then the rest, so the archive under the

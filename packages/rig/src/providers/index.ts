@@ -36,11 +36,12 @@ export interface ProviderRow<K extends Service> {
   /** Bind the artifact — the model file in the service's slot — as the instance `service(name)` answers. A
    *  `resource()`: the instance lives as long as the scope that bound it. */
   bind?(artifact: string, block: ModelBlock<K>, projector?: string): Operation<ServiceMap[K]>;
-  /** A companion projector acquired through the same verified model resolver. */
+  /** A companion projector acquired through the same verified model resolver. `select` answers nothing when the
+   *  model chosen has no projector, and refuses when it needs one that nothing names. */
   projector?: {
     role: Exclude<ModelRole, 'llm' | Service>;
     name: string;
-    select(block: ModelBlock<K>): ModelSpec;
+    select(block: ModelBlock<K>): ModelSpec | undefined;
   };
   /** The options the artifact contributes to the resident context — for a service that is a capability of the
    *  trunk. `service(name)` then answers the {@link Trunk} marker. */
@@ -53,7 +54,11 @@ export interface ProviderRow<K extends Service> {
 export const providers: { [K in Service]: ProviderRow<K> } = {
   transcription: {
     name: 'transcription model',
-    projector: { role: 'transcription.projector', name: 'audio projector', select: transcriptionProjector },
+    projector: {
+      role: 'transcription.projector', name: 'audio projector',
+      select: block => pairedProjector('transcription', 'audio projector', block)
+        ?? fail('set model.transcription.projector.id or model.transcription.projector.path; no audio projector follows from this decoder'),
+    },
     bind: (artifact, block, projector) => {
       if (!projector) throw new Error('transcription requires its audio projector');
       return createTranscriber(artifact, projector, block);
@@ -77,30 +82,37 @@ export const providers: { [K in Service]: ProviderRow<K> } = {
   },
   embedding: {
     name: 'embedding model',
+    projector: { role: 'embedding.projector', name: 'embedding projector', select: block => pairedProjector('embedding', 'embedding projector', block) },
     refuse: (block) => {
       const pooling = embeddingPooling(block);
       return typeof pooling === 'string' ? undefined : pooling?.refused ?? UNKNOWN_POOLING;
     },
-    bind: (artifact, block) => {
+    bind: (artifact, block, projector) => {
       const pooling = embeddingPooling(block);
       if (typeof pooling !== 'string') throw new Error(pooling?.refused ?? UNKNOWN_POOLING);
-      return createEmbedder(artifact, { nCtx: block.context, pooling });
+      return createEmbedder(artifact, { nCtx: block.context, pooling, ...(projector ? { projector } : {}) });
     },
   },
 };
 
-function transcriptionProjector(block: ModelBlock<'transcription'>): ModelSpec {
+const fail = (why: string): never => { throw new Error(why); };
+
+/**
+ * The projector a service's model is paired with: an explicit path; else an explicit id, which for a catalog
+ * model must be the catalog's own pair; else the catalog's pair. Nothing when the model has none. A `path:`
+ * model is bytes the catalog knows nothing about, so it is never paired from the id it shadows.
+ */
+function pairedProjector(service: 'transcription' | 'embedding', name: string, block: { id?: string; path?: string; projector?: ModelSpec }): ModelSpec | undefined {
   const explicit = block.projector;
   if (explicit?.path) return { path: explicit.path };
-  const paired = block.path || !block.id ? undefined : catalogEntry('transcription', block.id)?.projector;
+  const paired = block.path || !block.id ? undefined : catalogEntry(service, block.id)?.projector;
   if (explicit?.id) {
-    if (!catalogEntry('transcription.projector', explicit.id) || (paired && paired !== explicit.id)) {
-      throw new Error('model.transcription.projector.id does not name a compatible audio projector; use a matching catalog pair or explicit local paths');
+    if (!catalogEntry(`${service}.projector`, explicit.id) || (paired && paired !== explicit.id)) {
+      fail(`model.${service}.projector.id does not name a compatible ${name}; use a matching catalog pair or explicit local paths`);
     }
     return { id: explicit.id };
   }
-  if (paired) return { id: paired };
-  throw new Error('set model.transcription.projector.id or model.transcription.projector.path; no audio projector follows from this decoder');
+  return paired ? { id: paired } : undefined;
 }
 
 const UNKNOWN_POOLING = '`model.embedding` names a model whose pooling the catalog does not know — set `model.embedding.pooling` (mean, cls or last) in harness.yml';

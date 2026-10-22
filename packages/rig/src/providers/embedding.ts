@@ -1,21 +1,28 @@
 /**
  * The embedding provider's binding: a model file becomes an {@link Embedder} on a context of its own.
  *
- * The runtime's encoder is single-text by construction — every token goes into one sequence from position
- * zero, and a text longer than the batch is refused rather than truncated — so an embedder is a serial
- * discipline over that context: clear, encode, read, one text at a time, one caller at a time. Concurrency
- * is not batching here; it is a queue, and the queue spans callers, because two interleaved clear/encode/read
- * sequences answer wrong vectors silently.
+ * The runtime's encoder takes one input whole — every token and every piece of media into one sequence from
+ * position zero, and an input longer than the batch is refused rather than truncated — so an embedder is a
+ * serial discipline over that context: clear, encode, read, one input at a time, one caller at a time.
+ * Concurrency is not batching here; it is a queue, and the queue spans callers, because two interleaved
+ * clear/encode/read sequences answer wrong vectors silently.
+ *
+ * An input is text and attachment roots in order. Each root becomes what the projector reads (an image's
+ * pixels, a recording's samples, a video's frames on their timeline), with a media marker where it stands in
+ * the text, and the whole input is measured before any of it runs.
  *
  * Node-only. Import from `@lloyal-labs/rig/node`.
  */
 import { createContext } from '@lloyal-labs/sdk/node';
-import { PoolingType } from '@lloyal-labs/sdk';
-import type { SessionContext } from '@lloyal-labs/sdk';
+import { deltaCells, MEDIA_MARKER, PoolingType } from '@lloyal-labs/sdk';
+import type { AudioLimits, MultimodalInput, SessionContext } from '@lloyal-labs/sdk';
+import { audioAdmission, audioLimitsAt, materialize } from '@lloyal-labs/media';
+import type { Attachment, AttachmentStore } from '@lloyal-labs/media';
 import { call, ensure, resource, until } from 'effection';
 import { acquire } from '../acquire';
+import { RunnerCtx } from '../runner';
 import type { Operation } from 'effection';
-import type { Embedder, EmbeddingPooling } from '../retrieval';
+import type { Embedder, EmbeddingInput, EmbeddingPooling, Modality } from '../retrieval';
 
 /** What the embedding block decides about its context. */
 export interface EmbedderLoadOpts {
@@ -25,6 +32,40 @@ export interface EmbedderLoadOpts {
   /** How the model pools its token states. The model's own property: the catalog says it for an id, a
    *  `path:` model must say it in `model.embedding.pooling`. */
   pooling: EmbeddingPooling;
+  /** The projector a multimodal embedding model reads images, video and sound through, loaded on the same
+   *  context. Absent for a text-only model. */
+  projector?: string;
+  /** Where attachment parts are read from; the run's own store when absent. */
+  store?: AttachmentStore;
+}
+
+/** One input as the context takes it: its text with a media marker where each piece of media stands, and that
+ *  media in marker order. */
+interface Placed {
+  prompt: string;
+  media: MultimodalInput[];
+}
+
+const partsOf = (input: EmbeddingInput): readonly (string | Attachment)[] => (typeof input === 'string' ? [input] : input.parts);
+
+/** The admission a recording meets to be embedded: media's default. The context bounds what an input costs;
+ *  this bounds only what the native decoder may take before the input is measured. */
+const RECORDING_ADMISSION = audioAdmission();
+
+/** Which sense a piece of media is: bare bytes are an image. */
+const modalityOf = (media: MultimodalInput): Modality => (media instanceof Uint8Array ? 'image' : media.kind);
+
+/** One input placed: each root becomes what the projector reads, and a root it reads nothing of (a document,
+ *  whose text is not an image) is refused rather than left out of the vector unseen. */
+function place(store: AttachmentStore | undefined, input: EmbeddingInput, i: number): Placed {
+  const placed = partsOf(input).map((part, j) => {
+    if (typeof part === 'string') return { prompt: part, media: [] as MultimodalInput[] };
+    if (!store) throw new Error('an attachment part needs the attachment store, and none is in reach');
+    const media = materialize(store, [part], { audio: RECORDING_ADMISSION }).inputs as MultimodalInput[];
+    if (media.length === 0) throw new Error(`input ${i} part ${j} has nothing the projector reads — embed its text as a text part`);
+    return { prompt: MEDIA_MARKER.repeat(media.length), media };
+  });
+  return { prompt: placed.map((p) => p.prompt).join(''), media: placed.flatMap((p) => p.media) };
 }
 
 const POOLING: Record<EmbeddingPooling, PoolingType> = { mean: PoolingType.MEAN, cls: PoolingType.CLS, last: PoolingType.LAST };
@@ -45,7 +86,10 @@ export function createEmbedder(modelPath: string, opts: EmbedderLoadOpts): Opera
     let freed = false;
     const free = (c: SessionContext): void => { if (freed) return; freed = true; c.dispose(); };
     const ctx = yield* acquire(
-      () => createContext({ modelPath, nCtx, nBatch: nCtx, nSeqMax: 1, embeddings: true, poolingType: POOLING[opts.pooling] }),
+      () => createContext({
+        modelPath, nCtx, nBatch: nCtx, nSeqMax: 1, embeddings: true, poolingType: POOLING[opts.pooling],
+        ...(opts.projector ? { mmprojPath: opts.projector } : {}),
+      }),
       free,
     );
 
@@ -60,34 +104,75 @@ export function createEmbedder(modelPath: string, opts: EmbedderLoadOpts): Opera
       return next;
     };
 
+    // What the bound model reads: text always, and what its projector, if any, reads.
+    const modalities: Modality[] = [
+      'text',
+      ...(ctx.supportsVision() ? (['image', 'video'] as const) : []),
+      ...(ctx.supportsAudio() ? (['audio'] as const) : []),
+    ];
+    const audioLimits: AudioLimits | undefined = ctx.supportsAudio() ? audioLimitsAt(RECORDING_ADMISSION, ctx.audioSampleRate()) : undefined;
+
+    /** Every input placed and measured, with nothing run; the whole call refused at the first input the model
+     *  cannot read. Text alone keeps its tokens, which is how it is encoded. */
+    const admit = async (store: AttachmentStore | undefined, inputs: readonly EmbeddingInput[]) => {
+      const placed = inputs.map((input, i) => place(store, input, i));
+      placed.forEach(({ media }, i) => {
+        const unread = media.map(modalityOf).find((m) => !modalities.includes(m));
+        if (unread) {
+          throw new Error(`input ${i} has ${unread === 'audio' ? 'a recording' : `an ${unread}`}, which this embedding model cannot read — set \`model.embedding.projector\` to a projector that reads it`);
+        }
+      });
+      const measured: (Placed & { cells: number; tokens?: number[] })[] = [];
+      for (const p of placed) {
+        if (p.media.length === 0) {
+          const tokens = await ctx.tokenize(p.prompt, true);
+          measured.push({ ...p, tokens, cells: tokens.length });
+        } else {
+          measured.push({ ...p, cells: await deltaCells(ctx, { sep: [], prompt: p.prompt, bitmaps: p.media, ...(audioLimits ? { audioLimits } : {}) }) });
+        }
+      }
+      return measured;
+    };
+
+    /** The store attachment parts are read from: the one given, or the run's own. None is needed for text. */
+    function* storeFor(inputs: readonly EmbeddingInput[]): Operation<AttachmentStore | undefined> {
+      const hasMedia = inputs.some((input) => partsOf(input).some((part) => typeof part !== 'string'));
+      return hasMedia ? opts.store ?? (yield* RunnerCtx.expect()).attachmentStore : undefined;
+    }
+
     // The queue is the adapter over the native calls, the way `call` is over `fetch`; what a caller holds is an
     // Operation, so leaving a scope abandons the wait while the queue behind it still drains.
     const embedder: Embedder = {
       dimension: ctx.getEmbeddingDimension(),
+      modalities,
       // The model's own special tokens, as its file declares them: last-token pooling reads the end-of-text token
       // Qwen3-Embedding appends, and the runtime's default tokenize adds a leading token only.
       tokenize: (text) => call(() => serialized(() => ctx.tokenize(text, true))),
-      embed: (texts) => call(() => {
-        return serialized(async () => {
-          // Measure first, run second: an oversized text is refused with nothing touched, so the call after
-          // it finds the context exactly as it was.
-          const tokenized = await Promise.all(texts.map((t) => ctx.tokenize(t, true)));
-          for (let i = 0; i < tokenized.length; i++) {
-            if (tokenized[i].length > nCtx) {
-              throw new Error(`text ${i} is ${tokenized[i].length} tokens; \`model.embedding.context\` is ${nCtx} — shorten the text or raise the context`);
-            }
-          }
+      *measure(inputs) {
+        const store = yield* storeFor(inputs);
+        return yield* call(() => serialized(async () => (await admit(store, inputs)).map((p) => p.cells)));
+      },
+      *embed(inputs) {
+        const store = yield* storeFor(inputs);
+        return yield* call(() => serialized(async () => {
+          // Measure first, run second: an input over the context is refused with nothing touched, so the call
+          // after it finds the context exactly as it was.
+          const admitted = await admit(store, inputs);
+          admitted.forEach(({ cells }, i) => {
+            if (cells > nCtx) throw new Error(`input ${i} is ${cells} cells; \`model.embedding.context\` is ${nCtx} — shorten it or raise the context`);
+          });
           // Work once admitted runs whole: the free waits on this queue's tail, so a dispose mid-batch cannot
           // pull the context from under it, and a caller is never answered half a batch.
           const out: Float32Array[] = [];
-          for (const tokens of tokenized) {
+          for (const { prompt, media, tokens } of admitted) {
             await ctx.kvCacheClear();
-            await ctx.encode(tokens);
+            if (tokens) await ctx.encode(tokens);
+            else await ctx.encodeMultimodal(prompt, media, audioLimits);
             out.push(new Float32Array(ctx.getEmbeddings(true)));
           }
           return out;
-        });
-      }),
+        }));
+      },
       dispose() {
         if (disposed) return;
         disposed = true;
