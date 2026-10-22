@@ -1,4 +1,4 @@
-import { until, scoped, ensure } from 'effection';
+import { action, until, scoped, ensure } from 'effection';
 import type { Operation } from 'effection';
 
 /**
@@ -77,4 +77,33 @@ export function waitUntilSettled<T>(p: Promise<T>): Operation<T> {
     yield* ensure(() => until(Promise.allSettled([p])));
     return yield* until(p);
   });
+}
+
+/**
+ * A FIFO counting gate: at most `n` holders at once, the rest waiting in the
+ * order they asked. Acquire before the gated work and release in an `ensure`,
+ * so a holder that is halted still gives its permit back; a caller halted while
+ * it waits leaves the queue. `makePermits(1)` serializes.
+ *
+ * @category Agents
+ */
+export interface Permits { acquire(): Operation<void>; release(): void }
+
+export function makePermits(n: number): Permits {
+  let available = n;
+  const waiters: Array<() => void> = [];
+  return {
+    *acquire(): Operation<void> {
+      if (available > 0) { available--; return; }
+      yield* action<void>((resolve) => {
+        const w = () => resolve();
+        waiters.push(w);
+        return () => { const i = waiters.indexOf(w); if (i >= 0) waiters.splice(i, 1); };
+      });
+    },
+    release(): void {
+      const w = waiters.shift();
+      if (w) w(); else available++;
+    },
+  };
 }

@@ -1,4 +1,4 @@
-import { call, ensure, spawn, scoped, action } from 'effection';
+import { call, ensure, spawn, scoped } from 'effection';
 import type { Operation, Task, Signal, Queue } from 'effection';
 import type { Branch, BranchStore, SessionContext, ParsedToolCall, MultimodalDelta, MultimodalInput, AudioLimits } from '@lloyal-labs/sdk';
 import {
@@ -7,6 +7,7 @@ import {
 } from '@lloyal-labs/sdk';
 import type { Attachment, AttachmentStore, ContentIngress, PreparedContent } from '@lloyal-labs/media';
 import { waitUntilSettled } from './combinators';
+import type { Permits } from './combinators';
 import { Trace, TraceParent, CallingAgent, SpineFmt } from './context';
 import { Agent, parseHistoryArgs, type FormatConfig } from './Agent';
 import type { AgentPolicy } from './AgentPolicy';
@@ -75,27 +76,6 @@ export function* measureCells(ctx: SessionContext, delta: MultimodalDelta): Oper
 /** Default cap on concurrent fan-out tool children. */
 export const DEFAULT_MAX_CONCURRENT_TOOLS = 8;
 
-/** FIFO counting gate: acquire before a fan-out child's `execute`, release in
- *  an `ensure`. A halt while queued runs the action cleanup (drops the waiter). */
-export interface Permits { acquire(): Operation<void>; release(): void }
-export function makePermits(n: number): Permits {
-  let available = n;
-  const waiters: Array<() => void> = [];
-  return {
-    *acquire(): Operation<void> {
-      if (available > 0) { available--; return; }
-      yield* action<void>((resolve) => {
-        const w = () => resolve();
-        waiters.push(w);
-        return () => { const i = waiters.indexOf(w); if (i >= 0) waiters.splice(i, 1); };
-      });
-    },
-    release(): void {
-      const w = waiters.shift();
-      if (w) w(); else available++;
-    },
-  };
-}
 
 function toError(err: unknown): Error {
   return err instanceof Error ? err : new Error(String(err));
