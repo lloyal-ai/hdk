@@ -10,7 +10,8 @@ judge the abilities already trust: `recall@10` is how many of the judge's top fi
 `spearman` is rank correlation with the judge over all forty. **Latency** is per text, queries and documents
 alike. **Memory** is the process's peak RSS while the encoder works, over the resident baseline.
 
-Each candidate runs as rig's catalog binds it, with its pooling and its card's framing. The script says only
+Each candidate is bound through rig's own embedding provider, as a harness whose block names its id binds it:
+the context its entry gives, its pooling, its paired projector, and its card's framing. The script says only
 what a text is (the question is a query, each chunk a document for search, titled by its heading) and the
 encoder writes the model's own framing: nomic's `search_query: ` and `search_document: ` prefixes, Qwen's
 `Instruct: ...\nQuery:` line before a query and nothing before a document, EmbeddingGemma 2's
@@ -21,12 +22,33 @@ node eval/embedding/compare.mjs --candidates <dir> --resident <project>/models  
 node eval/embedding/compare.mjs --candidates <dir> --no-resident                  # the encoders alone
 ```
 
-`--candidates` is a directory holding `nomic-embed-text-v1.5.Q4_K_M.gguf` and `embeddinggemma-2-Q8_0.gguf`;
+`--candidates` is a directory holding each candidate's model and projector under the names the mirror keeps them
+by: `nomic-embed-text-v1.5.Q4_K_M.gguf`, `embeddinggemma-2-Q8_0.gguf` and `mmproj-embeddinggemma-2-BF16.gguf`;
 `--resident` is a research project's `models/` tree (`llm/`, `vision/`, `reranker/`, one GGUF each), the system
 the encoder is measured beside. The script refuses, naming the flag, when either is missing.
 
-Qwen3-Embedding, measured in both runs below, has left the catalog: it reads text alone, slowest of the three,
-nothing used it, and at its trained 32,768 tokens its context cannot be made on an M2 Pro.
+Qwen3-Embedding, measured in the earlier runs below, has left the catalog: it reads text alone, slowest of the
+three, nothing used it, and at its trained 32,768 tokens its context cannot be made on an M2 Pro.
+
+## Run of 2026-10-22, bound as the catalog binds
+
+Baseline RSS 4.00 GB with the llm (qwen3.5-4b, 8192 context, 5 sequences) and its projector resident; Apple
+M2 Pro, Metal, the native runtime built from the local checkout. Each candidate bound through rig's embedding
+provider: at its catalog context (2,048 for nomic, 8,192 for EmbeddingGemma 2), EmbeddingGemma 2 with its
+projector.
+
+| model                             | dim  | load    | per text | +RSS    | recall@10 of judge top-5 | spearman |
+| --------------------------------- | ---- | ------- | -------- | ------- | ------------------------ | -------- |
+| `nomic-embed-text-v1.5-q4` (mean) | 768  | 69 ms   | 21.9 ms  | 0.20 GB | 0.525                    | 0.471    |
+| `embeddinggemma-2-q8` (mean)      | 768  | 1976 ms | 40.3 ms  | 1.05 GB | 0.512                    | 0.369    |
+
+**What changed since the run below.** That run bound every candidate by hand, at 2,048 and without a
+projector, which is not how a harness binds EmbeddingGemma 2; the script now binds through the provider a
+harness uses. The projector and the longer context leave its text vectors unchanged, so both relevance columns
+are exactly the earlier ones; its load grows from 461 ms to about 2 s, most of it the projector. Its +RSS reads
+1.05 GB against 1.26 GB, and nomic's 0.20 GB against 0.29 GB: peak RSS over a baseline moves by a few hundred
+megabytes between runs of the same model (an earlier run of this binding read 1.15 GB and 0.07 GB), so the
+column ranks the encoders and does not measure them.
 
 ## Run of 2026-10-22
 
