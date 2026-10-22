@@ -61,8 +61,7 @@ import { Session } from './Session.js';
 import { MEDIA_MARKER, mediaKind } from './deltas.js';
 
 type MediaKind = ReturnType<typeof mediaKind>;
-const kindOf = mediaKind;
-const isAudio = (input: MultimodalInput): boolean => kindOf(input) === 'audio';
+const isAudio = (input: MultimodalInput): boolean => mediaKind(input) === 'audio';
 
 /** The kernel's refusal for a prompt whose markers do not match its media, or null. Same words as `MtmdSource`. */
 function markerRefusal(prompt: string, inputs: readonly MultimodalInput[]): string | null {
@@ -402,7 +401,7 @@ export class MockSessionContext implements SessionContext {
       sepTokens: sepTokens.map((s) => [...s]),
       prompts: [...prompts],
       bitmapCounts: inputs.map(batch => batch.filter(input => !isAudio(input)).length),
-      inputKinds: inputs.map(batch => batch.map(kindOf)),
+      inputKinds: inputs.map(batch => batch.map(mediaKind)),
       audioLimits: handles.map((_, i) => audioLimits[i] ? { ...audioLimits[i]! } : undefined),
       results: out,
     });
@@ -514,7 +513,7 @@ export class MockSessionContext implements SessionContext {
       if (cells > this.nBatch) {
         throw new Error(`decode::segments - a stream of ${cells} entries must go in one dispatch on this context, which holds ${this.nBatch}`);
       }
-      this.multimodalEncodes.push({ prompt, inputKinds: inputs.map(kindOf), cells });
+      this.multimodalEncodes.push({ prompt, inputKinds: inputs.map(mediaKind), cells });
     })();
   }
 
