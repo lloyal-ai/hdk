@@ -6,7 +6,7 @@ export { Rerank, RerankCalibrationError, RerankInternalError, RETRIEVAL_INSTRUCT
 export type { RerankOpts, RerankTruncation, RerankInstruction } from './Rerank';
 export { buildUserDelta, buildUserDeltaMultimodal, buildAssistantDelta, buildToolResultDelta,
          buildToolResultDeltaMultimodal, buildTurnDelta, mediaContent, deltaCells,
-         MEDIA_MARKER } from './deltas';
+         MEDIA_MARKER, defangMarker } from './deltas';
 export type { DeltaOpts, MultimodalDeltaOpts, MultimodalDelta } from './deltas';
 
 // ── Enums + constants ────────────────────────────────────────

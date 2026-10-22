@@ -73,6 +73,25 @@ describe('createEmbedder: task framing from the catalog', () => {
     expect(read).toEqual(['task: search result | query: a sleeping cat', 'title: Cats | text: a cat asleep on a sofa']);
   });
 
+  it('writes a title exactly as given, whatever characters it holds', async () => {
+    await run(function* () {
+      yield* (yield* framed()).embed([{ parts: ['price list'], title: 'Costs in $& and $$ and $`' }]);
+    });
+    expect(read).toEqual(['title: Costs in $& and $$ and $` | text: price list']);
+  });
+
+  it('keeps a literal media marker in the text of a multimodal input from standing for media; text alone is read as written', async () => {
+    await run(function* () {
+      const e = yield* framed();
+      yield* e.embed([{ parts: [`a ${MARKER} tag beside `, image], title: `Using ${MARKER}` }]);
+      yield* e.embed([{ parts: [`a ${MARKER} tag`] }]);
+    });
+    const [multimodal, textAlone] = read;
+    expect(multimodal.split(MARKER)).toHaveLength(2);
+    expect(multimodal).toBe(`title: Using <media> | text: a <media> tag beside ${MARKER}`);
+    expect(textAlone).toBe(`title: none | text: a ${MARKER} tag`);
+  });
+
   it('frames a symmetric task the same on both sides, and leaves a title out where the task has no place for one', async () => {
     await run(function* () {
       yield* (yield* framed()).embed([

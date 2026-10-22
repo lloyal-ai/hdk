@@ -15,7 +15,7 @@
  * Node-only. Import from `@lloyal-labs/rig/node`.
  */
 import { createContext } from '@lloyal-labs/sdk/node';
-import { deltaCells, MEDIA_MARKER, PoolingType } from '@lloyal-labs/sdk';
+import { defangMarker, deltaCells, MEDIA_MARKER, PoolingType } from '@lloyal-labs/sdk';
 import type { AudioLimits, MultimodalInput, SessionContext } from '@lloyal-labs/sdk';
 import { audioAdmission, audioLimitsAt, materialize } from '@lloyal-labs/media';
 import type { Attachment, AttachmentStore } from '@lloyal-labs/media';
@@ -76,7 +76,7 @@ function framingOf(framing: EmbeddingFraming, input: EmbeddingInput, i: number):
   }
   if (!partsOf(input).some((part) => typeof part === 'string')) return '';
   if (role === 'query') return frame.query;
-  return title !== undefined && frame.titled ? frame.titled.replace('{title}', title) : frame.document;
+  return title !== undefined && frame.titled ? frame.titled.replace('{title}', () => title) : frame.document;
 }
 
 /** The admission a recording meets to be embedded: media's default. The context bounds what an input costs;
@@ -87,17 +87,21 @@ const RECORDING_ADMISSION = audioAdmission();
 const modalityOf = (media: MultimodalInput): Modality => (media instanceof Uint8Array ? 'image' : media.kind);
 
 /** One input placed: each root becomes what the projector reads, and a root it reads nothing of (a document,
- *  whose text is not an image) is refused rather than left out of the vector unseen. */
+ *  whose text is not an image) is refused rather than left out of the vector unseen. A prompt with media is split
+ *  on every literal marker, so its text is defanged; text alone is tokenized, and read as written. */
 function place(store: AttachmentStore | undefined, framing: EmbeddingFraming, input: EmbeddingInput, i: number): Placed {
   const frame = framingOf(framing, input, i);
   const placed = partsOf(input).map((part, j) => {
-    if (typeof part === 'string') return { prompt: part, media: [] as MultimodalInput[] };
+    if (typeof part === 'string') return { text: part, media: [] as MultimodalInput[] };
     if (!store) throw new Error('an attachment part needs the attachment store, and none is in reach');
     const media = materialize(store, [part], { audio: RECORDING_ADMISSION }).inputs as MultimodalInput[];
     if (media.length === 0) throw new Error(`input ${i} part ${j} has nothing the projector reads — embed its text as a text part`);
-    return { prompt: MEDIA_MARKER.repeat(media.length), media };
+    return { text: '', media };
   });
-  return { prompt: frame + placed.map((p) => p.prompt).join(''), media: placed.flatMap((p) => p.media) };
+  const media = placed.flatMap((p) => p.media);
+  const written = media.length > 0 ? defangMarker : (text: string) => text;
+  const prompt = written(frame) + placed.map((p) => written(p.text) + MEDIA_MARKER.repeat(p.media.length)).join('');
+  return { prompt, media };
 }
 
 const POOLING: Record<EmbeddingPooling, PoolingType> = { mean: PoolingType.MEAN, cls: PoolingType.CLS, last: PoolingType.LAST };

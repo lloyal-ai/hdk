@@ -12,12 +12,16 @@ import type { SessionContext, MultimodalInput, AudioLimits } from './types';
  */
 export const MEDIA_MARKER = '<__media__>';
 
-/** Defang a literal media marker in model-visible text. The native layer
- *  splits the rendered prompt on EVERY literal occurrence, so text that
- *  happens to contain the marker would desynchronize markers and bitmaps —
- *  more markers than inputs fails the prefill; an off-by-one mispairs them.
- *  Applied wherever text enters a multimodal prompt. */
-const defangMarker = (text: string): string => text.split(MEDIA_MARKER).join('<media>');
+/**
+ * Defang a literal media marker in model-visible text. The native layer
+ * splits the rendered prompt on EVERY literal occurrence, so text that
+ * happens to contain the marker would desynchronize markers and bitmaps —
+ * more markers than inputs fails the prefill; an off-by-one mispairs them.
+ * Applied wherever text enters a multimodal prompt.
+ *
+ * @category Agents
+ */
+export const defangMarker = (text: string): string => text.split(MEDIA_MARKER).join('<media>');
 
 /**
  * Chat content carrying one media marker per input
