@@ -425,6 +425,13 @@ export async function deltaCells(
   return ctx._cellsMultimodal(delta.sep, delta.prompt, delta.bitmaps, delta.audioLimits);
 }
 
+/** The text around an input's media, one run between each two pieces, so a marker split across two text parts is
+ *  still read as one. */
+const textRuns = (parts: readonly (string | MultimodalInput)[]): string[] => parts.reduce<string[]>(
+  (runs, part) => (typeof part === 'string' ? [...runs.slice(0, -1), runs[runs.length - 1] + part] : [...runs, '']),
+  [''],
+);
+
 /**
  * Build the delta for one embedding input
  *
@@ -446,11 +453,7 @@ export function buildEmbedDelta(
   opts: { audioLimits?: AudioLimits } = {},
 ): MultimodalDelta {
   const inputs = parts.filter((part): part is MultimodalInput => typeof part !== 'string');
-  // The text between two pieces of media is one run, written whole: a marker split across two parts is still one.
-  const runs = parts.reduce<string[]>(
-    (text, part) => (typeof part === 'string' ? [...text.slice(0, -1), text[text.length - 1] + part] : [...text, '']),
-    [''],
-  );
+  const runs = textRuns(parts);
   const written = inputs.length > 0 ? runs.map(defangMarker) : runs;
   return multimodalDelta([], written.join(MEDIA_MARKER), inputs, opts.audioLimits);
 }
