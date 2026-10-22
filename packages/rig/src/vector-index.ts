@@ -78,7 +78,8 @@ export class VectorIndex<T> {
   add(item: T, vector: Float32Array): void {
     // Cut at every width it can be compared at, so one with no direction is refused now, not at a search; the
     // widest, the stored width, is what is kept.
-    const [kept] = this.comparableWidths.map((width) => cut(this.fullWidth(vector), width));
+    const full = this.fullWidth(vector);
+    const [kept] = this.comparableWidths.map((width) => cut(full, width));
     this.entries.push({ item, vector: kept });
   }
 
