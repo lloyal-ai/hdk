@@ -32,7 +32,7 @@ beforeEach(async () => {
   const prune = ctx._branchPrune.bind(ctx);
   vi.spyOn(ctx, '_branchPrune').mockImplementation(handle => { events.push('prune'); return prune(handle); });
   const dispose = ctx.dispose.bind(ctx);
-  vi.spyOn(ctx, 'dispose').mockImplementation(() => { events.push('dispose'); dispose(); });
+  vi.spyOn(ctx, 'dispose').mockImplementation(() => { events.push('dispose'); return dispose(); });
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 

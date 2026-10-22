@@ -28,7 +28,7 @@ const { createContext, fake, log } = vi.hoisted(() => {
     supportsVision: () => fake.projector,
     supportsAudio: () => fake.projector && fake.audio,
     audioSampleRate: () => 16_000,
-    dispose: () => {},
+    dispose: async () => {},
   };
   return { log, fake, createContext: vi.fn(async (_opts: Record<string, unknown>) => fake) };
 });

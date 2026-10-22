@@ -1606,9 +1606,14 @@ export interface SessionContext {
    * Free native resources
    *
    * Call when done with context to release model and KV cache memory.
-   * Context becomes unusable after disposal.
+   * Every later call is refused at once. The native state is freed once the
+   * calls already submitted complete, never under one, and the promise
+   * resolves then; it never rejects, and every call answers the same one. A
+   * caller that makes several calls as one unit (clear, encode, read) still
+   * owns waiting for that unit before disposing: only the call in flight is
+   * held.
    */
-  dispose(): void;
+  dispose(): Promise<void>;
 
   // ===== BRANCH API (internal, wrapped by Branch class) =====
 

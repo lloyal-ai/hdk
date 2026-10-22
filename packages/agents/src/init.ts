@@ -1,4 +1,4 @@
-import { ensure, createChannel, call } from 'effection';
+import { ensure, createChannel, call, until } from 'effection';
 import type { Operation, Channel } from 'effection';
 import { BranchStore } from '@lloyal-labs/sdk';
 import { Session } from '@lloyal-labs/sdk';
@@ -139,7 +139,7 @@ export function* initAgents<E = AgentEvent>(
     const tw = yield* Trace.expect();
     tw.flush();
     yield* call(() => session.dispose());
-    if (opts?.disposeContext !== false) ctx.dispose();
+    if (opts?.disposeContext !== false) yield* until(ctx.dispose());
   });
 
   return { ctx, store, session, events };

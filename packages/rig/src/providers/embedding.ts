@@ -115,8 +115,7 @@ export function createEmbedder(modelPath: string, opts: EmbedderLoadOpts): Opera
     const nCtx = opts.nCtx ?? 2048;
     // Owned from the request: a halt while the model loads still frees the context when it arrives. One free,
     // whichever comes first — a caller's `dispose()` once the queue drains, or the scope's exit.
-    let freed = false;
-    const free = (c: SessionContext): void => { if (freed) return; freed = true; c.dispose(); };
+    const free = (c: SessionContext): Promise<void> => c.dispose();
     const framing = opts.framing ?? {};
     const ctx = yield* acquire(
       () => createContext({

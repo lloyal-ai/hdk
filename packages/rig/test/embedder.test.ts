@@ -6,23 +6,30 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { call, run, scoped, sleep, spawn } from 'effection';
 
-const { createContext, fakeCtx, log, gate } = vi.hoisted(() => {
+const { createContext, fakeCtx, log, gate, binding } = vi.hoisted(() => {
   const log: string[] = [];
   // Every encode parks on this until the test opens it — how a test holds native work "in flight".
   const gate = { open: Promise.resolve(), release: () => {} };
+  // As the binding: once disposed, every later call is refused; only a call already submitted completes. Every
+  // dispose answers the one promise, and the context is freed once.
+  const binding: { disposed: boolean; freed?: Promise<void> } = { disposed: false };
+  const live = () => { if (binding.disposed) throw new Error('context is disposed'); };
   const fakeCtx = {
     // Parks on the gate like encode: a tokenize is native work too, and teardown must wait for it the same way.
-    tokenize: async (text: string, addSpecial?: boolean) => { await gate.open; log.push(`tokenize:${text}${addSpecial ? '+special' : ''}`); return Array.from({ length: text.length }, (_, i) => i); },
-    kvCacheClear: async () => { log.push('clear'); },
-    encode: async (tokens: number[]) => { await gate.open; log.push(`encode:${tokens.length}`); },
-    getEmbeddings: (_normalize?: boolean) => { log.push('get'); return new Float32Array([log.length, 0.5]); },
+    tokenize: async (text: string, addSpecial?: boolean) => { live(); await gate.open; log.push(`tokenize:${text}${addSpecial ? '+special' : ''}`); return Array.from({ length: text.length }, (_, i) => i); },
+    kvCacheClear: async () => { live(); log.push('clear'); },
+    encode: async (tokens: number[]) => { live(); await gate.open; log.push(`encode:${tokens.length}`); },
+    getEmbeddings: (_normalize?: boolean) => { live(); log.push('get'); return new Float32Array([log.length, 0.5]); },
     getEmbeddingDimension: () => 2,
     // A text-only model: no projector.
     supportsVision: () => false,
     supportsAudio: () => false,
-    dispose: () => { log.push('dispose'); },
+    dispose: () => {
+      if (!binding.freed) { binding.disposed = true; log.push('dispose'); binding.freed = Promise.resolve(); }
+      return binding.freed;
+    },
   };
-  return { log, gate, fakeCtx, createContext: vi.fn(async (_opts: Record<string, unknown>) => fakeCtx) };
+  return { log, gate, binding, fakeCtx, createContext: vi.fn(async (_opts: Record<string, unknown>) => fakeCtx) };
 });
 vi.mock('@lloyal-labs/sdk/node', () => ({ createContext }));
 
@@ -30,6 +37,8 @@ const { createEmbedder } = await import('../src/providers/embedding');
 
 beforeEach(() => {
   log.length = 0;
+  binding.disposed = false;
+  binding.freed = undefined;
   createContext.mockClear();
   gate.open = Promise.resolve();
 });
@@ -151,6 +160,21 @@ describe('teardown', () => {
     expect(beforeScopeEnd.at(-1)).toBe('dispose');
     expect(beforeScopeEnd.indexOf('encode:1')).toBeLessThan(beforeScopeEnd.indexOf('dispose'));
     expect(afterScope.filter((l) => l === 'dispose')).toHaveLength(1);
+  });
+
+  it('a dispose mid-batch still answers the whole batch: the binding refuses every call after its own dispose, so the release waits for the queue, not only for the native call in flight', async () => {
+    let release!: () => void;
+    gate.open = new Promise<void>((resolve) => { release = resolve; });
+    const vectors = await run(function* () {
+      const e = yield* createEmbedder('/e.gguf', { pooling: 'mean' });
+      const batch = yield* spawn(() => e.embed(['a', 'bb', 'ccc']));   // parks on the gate, first input
+      yield* sleep(0);
+      e.dispose();
+      release();
+      return yield* batch;
+    });
+    expect(vectors).toHaveLength(3);
+    expect(log.filter((l) => !l.startsWith('tokenize'))).toEqual(['clear', 'encode:1', 'get', 'clear', 'encode:2', 'get', 'clear', 'encode:3', 'get', 'dispose']);
   });
 
   it('after dispose, embed AND tokenize refuse rather than queueing onto a freed context', async () => {

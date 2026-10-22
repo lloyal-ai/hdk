@@ -27,7 +27,7 @@ const { createContext, fake, read } = vi.hoisted(() => {
     supportsVision: () => true,
     supportsAudio: () => true,
     audioSampleRate: () => 16_000,
-    dispose: () => {},
+    dispose: async () => {},
   };
   return { read, fake, createContext: vi.fn(async (_opts: Record<string, unknown>) => fake) };
 });

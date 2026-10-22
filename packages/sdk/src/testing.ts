@@ -705,8 +705,14 @@ export class MockSessionContext implements SessionContext {
 
   /** Times `dispose()` was called, so ownership can be asserted. */
   disposeCount = 0;
+  private freed?: Promise<void>;
 
-  dispose(): void { this.disposeCount++; }
+  /** The binding's promise: one, resolved once freed, and the mock holds no work in flight, so at once. It does
+   *  not refuse later calls; a test of what follows a dispose fakes the binding's refusal itself. */
+  dispose(): Promise<void> {
+    this.disposeCount++;
+    return (this.freed ??= Promise.resolve());
+  }
 
   // ── Scoring (stub) ────────────────────────────────────────────
 

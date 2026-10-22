@@ -16,7 +16,7 @@
  * child, so halting the host unwinds every session — no captured scope, no manual
  * task management on top of the runtime.
  */
-import { resource, spawn, action, call, ensure } from "effection";
+import { resource, spawn, action, call, ensure, until } from "effection";
 import type { Operation } from "effection";
 import type {
   AdmissionRequest,
@@ -48,6 +48,19 @@ export interface ModelRuntimeHost<Ctx = unknown> {
   readonly occupancy: number;
   readonly queueDepth: number;
   readonly maxNativeSessions: number;
+}
+
+/**
+ * The supplier's free, settled either way. Freeing the context is the supplier's contract: a dispose that throws
+ * or rejects is not the host's error to surface, and must not abort the teardown or reject a halt. Waited for, so
+ * a slot is dropped only once its context is freed.
+ */
+function freed(m: Materialised<unknown>): Promise<unknown> {
+  try {
+    return Promise.resolve(m.dispose()).catch(() => undefined);
+  } catch {
+    return Promise.resolve();
+  }
 }
 
 /**
@@ -121,16 +134,8 @@ export function createModelRuntimeHost<Ctx = unknown>(
         emit(req, { phase: outcome });
         kick();
       });
-      yield* ensure(() => {
-        // A throwing dispose must not abort teardown (the slot-drop above still
-        // has to run) nor reject the halt promise — swallow it. Freeing the
-        // context is the supplier's contract; a failure there is not the host's
-        // to propagate.
-        try {
-          m.dispose();
-        } catch {
-          /* supplier's dispose failed — not the host's error to surface */
-        }
+      yield* ensure(function* () {
+        yield* until(freed(m));
       });
       try {
         yield* served.run(m, req.sessionId); // the UNCHANGED harness, concurrent
@@ -180,11 +185,7 @@ export function createModelRuntimeHost<Ctx = unknown>(
             // consumer-less harness. The id frees HERE — the pump owns the delete
             // on the cancel path, so a re-admit stayed blocked until now.
             admitted.delete(req.sessionId);
-            try {
-              m.dispose();
-            } catch {
-              /* freeing a just-built context — not the host's error to surface */
-            }
+            yield* until(freed(m));
             emit(req, { phase: "reaped" });
             continue;
           }

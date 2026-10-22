@@ -86,7 +86,7 @@ export type TrunkReleaseObserver = (info: {
  *
  * // Cleanup
  * await session.dispose();
- * ctx.dispose();
+ * await ctx.dispose();
  * ```
  *
  * @category Branching
