@@ -130,13 +130,14 @@ main(function* (argv) {
   }
   const store = new FileAttachmentStore(resolve(dir));
   const index = join(resolve(dir), 'packs.json');
-  const packs: Record<string, Pack> = existsSync(index) ? JSON.parse(readFileSync(index, 'utf8')) : {};
+  // Keyed by name as a map, so every name the check above accepts is a pack of its own, `__proto__` included.
+  const packs = new Map<string, Pack>(existsSync(index) ? Object.entries(JSON.parse(readFileSync(index, 'utf8'))) : []);
   yield* Attachments.set(store);
-  yield* Services.set({ transcription: yield* createTranscriber(ASR.model, ASR.projector, { store }) });
+  yield* Services.set({ transcription: yield* createTranscriber(ASR.model, ASR.projector) });
   const host = yield* useHost();
   const capabilities = yield* host.describe();
   for (const [name, file] of pairs) {
-    packs[name] = yield* composePack(store, host, capabilities, name, resolve(file));
-    writeFileSync(index, `${JSON.stringify(packs, null, 2)}\n`);
+    packs.set(name, yield* composePack(store, host, capabilities, name, resolve(file)));
+    writeFileSync(index, `${JSON.stringify(Object.fromEntries(packs), null, 2)}\n`);
   }
 });
