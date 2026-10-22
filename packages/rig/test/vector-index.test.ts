@@ -50,6 +50,16 @@ describe('VectorIndex', () => {
     expect(() => index.search(vector(1).subarray(0, 128), { k: 1 })).toThrow(/768/);
   });
 
+  it('refuses a vector whose cut has no direction, at any width it would be compared at, so no score is undefined', () => {
+    const index = new VectorIndex({ widths: WIDTHS });
+    // Nonzero at full width, all zeros in its first 128 dimensions: a 128-wide cosine has no value.
+    const hollow = Float32Array.from({ length: 768 }, (_, i) => (i >= 128 ? 1 : 0));
+    expect(() => index.add('hollow', hollow)).toThrow(/128.*no direction/);
+    expect(index.size).toBe(0);
+    index.add('fine', vector(1));
+    expect(() => index.search(hollow, { k: 1, scan: { width: 128, keep: 1 } })).toThrow(/128.*no direction/);
+  });
+
   it('refuses a scan that keeps fewer entries than it is asked for, or scans wider than it rescores', () => {
     const index = new VectorIndex<string>({ widths: WIDTHS });
     index.add('a', vector(1));

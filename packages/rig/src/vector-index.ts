@@ -36,10 +36,14 @@ export interface VectorHit<T> {
   score: number;
 }
 
-/** `vector` cut to its first `width` dimensions and made unit length again. */
+/** `vector` cut to its first `width` dimensions and made unit length again.
+ *  @throws When the cut has no direction: a zero or non-finite length, whose cosine has no value. */
 function cut(vector: Float32Array, width: number): Float32Array {
   const head = vector.slice(0, width);
   const norm = Math.hypot(...head);
+  if (!(norm > 0 && Number.isFinite(norm))) {
+    throw new RangeError(`the vector's first ${width} values have no direction, so a ${width}-wide cosine has no value`);
+  }
   return head.map(x => x / norm);
 }
 
@@ -67,9 +71,11 @@ export class VectorIndex<T> {
     return this.entries.length;
   }
 
-  /** @throws When `vector` is not the full width. */
+  /** @throws When `vector` is not the full width, or has no direction at a width it could be compared at. */
   add(item: T, vector: Float32Array): void {
-    this.entries.push({ item, vector: cut(this.fullWidth(vector), this.stored) });
+    const full = this.fullWidth(vector);
+    this.widths.filter((width) => width < this.stored).forEach((width) => cut(full, width));
+    this.entries.push({ item, vector: cut(full, this.stored) });
   }
 
   /**
@@ -77,7 +83,7 @@ export class VectorIndex<T> {
    * narrower `scan` kept.
    *
    * @throws When a width is untrained or wider than the stored one, the scan is not narrower than the answer,
-   *         it keeps fewer than `k`, or `query` is not the full width.
+   *         it keeps fewer than `k`, or `query` is not the full width or has no direction at a width compared.
    */
   search(query: Float32Array, opts: VectorSearchOpts): VectorHit<T>[] {
     const { k, scan } = opts;
