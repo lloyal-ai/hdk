@@ -423,6 +423,47 @@ describe("ModelRuntimeHost", () => {
     });
   });
 
+  it("a host halted while a warming-cancelled context is still freeing ends only once it is freed", async () => {
+    const started: string[] = [];
+    const log: string[] = [];
+    let releaseMaterialise!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseMaterialise = resolve; });
+    let free!: () => void;
+    let freeing = false;
+    const served: ServedHarness = {
+      async materialise(id: string): Promise<Materialised> {
+        started.push(id);
+        await gate;
+        return {
+          context: { id },
+          uiChannel: createBus<unknown>(),
+          commands: createSignal<unknown, void>(),
+          dispose: () => { freeing = true; return new Promise<void>((r) => { free = r; }); },
+        };
+      },
+      *run(): Operation<void> {
+        yield* suspend();
+      },
+    };
+
+    const hostRun = run(function* () {
+      const host = yield* createModelRuntimeHost({ served, maxNativeSessions: 1 });
+      host.admit({ sessionId: "W", onState: () => {} });
+      yield* waitFor(() => started.includes("W"), "W is warming");
+      yield* call(() => host.release("W"));
+      releaseMaterialise();
+      // The host's scope ends here, with W's discarded context still freeing.
+      yield* waitFor(() => freeing, "W's context is being freed");
+    }).then(() => log.push("host ended"));
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(log).toEqual([]);
+    log.push("freed");
+    free();
+    await hostRun;
+    expect(log).toEqual(["freed", "host ended"]);
+  });
+
   it("survives an onState callback that throws (one bad observer can't sink the host)", async () => {
     const { served } = fakeHarness();
 

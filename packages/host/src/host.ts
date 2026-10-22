@@ -16,7 +16,7 @@
  * child, so halting the host unwinds every session — no captured scope, no manual
  * task management on top of the runtime.
  */
-import { resource, spawn, action, call, ensure, until } from "effection";
+import { resource, spawn, action, call, ensure, scoped, until } from "effection";
 import type { Operation } from "effection";
 import type {
   AdmissionRequest,
@@ -61,6 +61,16 @@ function freed(m: Materialised<unknown>): Promise<unknown> {
   } catch {
     return Promise.resolve();
   }
+}
+
+/**
+ * Free a materialised context, ending only once it is freed. The free runs as a cleanup, so a halt that arrives
+ * while the context frees waits for it rather than abandoning it: every path that lets a context go takes this one.
+ */
+function* freeContext(m: Materialised<unknown>): Operation<void> {
+  yield* scoped(function* () {
+    yield* ensure(() => until(freed(m)));
+  });
 }
 
 /**
@@ -134,9 +144,7 @@ export function createModelRuntimeHost<Ctx = unknown>(
         emit(req, { phase: outcome });
         kick();
       });
-      yield* ensure(function* () {
-        yield* until(freed(m));
-      });
+      yield* ensure(() => freeContext(m));
       try {
         yield* served.run(m, req.sessionId); // the UNCHANGED harness, concurrent
       } catch {
@@ -185,7 +193,7 @@ export function createModelRuntimeHost<Ctx = unknown>(
             // consumer-less harness. The id frees HERE — the pump owns the delete
             // on the cancel path, so a re-admit stayed blocked until now.
             admitted.delete(req.sessionId);
-            yield* until(freed(m));
+            yield* freeContext(m);
             emit(req, { phase: "reaped" });
             continue;
           }
