@@ -58,6 +58,8 @@ export class VectorIndex<T> {
   private readonly widths: readonly number[];
   private readonly full: number;
   private readonly stored: number;
+  /** The widths an entry can be compared at: the trained ones up to the stored width, widest first. */
+  private readonly comparableWidths: readonly number[];
   private readonly entries: { item: T; vector: Float32Array }[] = [];
 
   /** @throws When `stored` is not a trained width. */
@@ -65,6 +67,7 @@ export class VectorIndex<T> {
     this.widths = [...opts.widths].sort((a, b) => b - a);
     this.full = this.widths[0];
     this.stored = this.trained(opts.stored ?? this.full);
+    this.comparableWidths = this.widths.filter((width) => width <= this.stored);
   }
 
   get size(): number {
@@ -73,9 +76,10 @@ export class VectorIndex<T> {
 
   /** @throws When `vector` is not the full width, or has no direction at a width it could be compared at. */
   add(item: T, vector: Float32Array): void {
-    const full = this.fullWidth(vector);
-    this.widths.filter((width) => width < this.stored).forEach((width) => cut(full, width));
-    this.entries.push({ item, vector: cut(full, this.stored) });
+    // Cut at every width it can be compared at, so one with no direction is refused now, not at a search; the
+    // widest, the stored width, is what is kept.
+    const [kept] = this.comparableWidths.map((width) => cut(this.fullWidth(vector), width));
+    this.entries.push({ item, vector: kept });
   }
 
   /**
@@ -116,7 +120,7 @@ export class VectorIndex<T> {
   }
 
   private comparable(width: number): number {
-    if (this.trained(width) > this.stored) throw new RangeError(`entries are stored at ${this.stored}; they cannot be compared at ${width}`);
+    if (!this.comparableWidths.includes(this.trained(width))) throw new RangeError(`entries are stored at ${this.stored}; they cannot be compared at ${width}`);
     return width;
   }
 
