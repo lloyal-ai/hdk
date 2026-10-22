@@ -112,8 +112,6 @@ export interface Reranker {
    * as the chunks (e.g. BM25 first-stage scoring at query time).
    */
   tokenize(text: string): Promise<number[]>;
-  /** Release reranker resources. */
-  dispose(): void;
 }
 
 /** How an embedding model folds its token states into one vector — the model's own property, never a choice:

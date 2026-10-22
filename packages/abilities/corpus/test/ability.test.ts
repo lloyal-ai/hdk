@@ -165,7 +165,6 @@ function mkScoringReranker(expectedScores: Map<string, number>): Reranker {
     // the reranker's own vocabulary (BM25's first stage needs them). Omitting
     // it compiled only because no tsc project covered this file.
     tokenize: async (_text: string) => [],
-    dispose: () => {},
   };
 }
 

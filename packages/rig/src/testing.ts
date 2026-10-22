@@ -196,7 +196,6 @@ export const stubReranker: Reranker = {
   scoreBatch: async (_q, texts) => texts.map(() => 0),
   tokenizeChunks: async () => {},
   tokenize: async () => [],
-  dispose: () => {},
 };
 
 /** What the stub refuses before any work, as an embedder without a projector does: an input with media in it. */
