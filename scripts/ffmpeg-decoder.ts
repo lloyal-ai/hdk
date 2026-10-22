@@ -18,10 +18,12 @@ import type { ChildProcess } from 'node:child_process';
 import type { ClipDecoder, DecodedSound, ShownFrame } from '@lloyal-labs/media';
 import { encodeVideoFrame } from '@lloyal-labs/media/node';
 
+/** What the probe found. Each of picture and sound names its stream, and every decode maps that stream: ffmpeg's
+ *  own choice (the default-flagged, the largest, the most channels) can be another, read at the wrong rate. */
 interface Probed {
   durationS: number;
-  picture?: { width: number; height: number; startS: number; rate: number };
-  sound?: { startS: number; sampleRate: number; channels: number };
+  picture?: { stream: number; width: number; height: number; startS: number; rate: number };
+  sound?: { stream: number; startS: number; sampleRate: number; channels: number };
 }
 
 /** Half a millisecond: how far before a frame's time a seek starts, so float rounding never lands on the next one. */
@@ -49,18 +51,21 @@ export function ffmpegDecoder(file: string): ClipDecoder {
 
   const probed: Promise<Probed> = run('ffprobe', [
     '-v', 'error', '-of', 'json',
-    '-show_entries', 'format=duration:stream=codec_type,width,height,r_frame_rate,start_time,sample_rate,channels', file,
+    '-show_entries', 'format=duration:stream=index,codec_type,width,height,r_frame_rate,start_time,sample_rate,channels', file,
   ]).then(({ stdout }) => {
     const { format, streams } = JSON.parse(stdout.toString()) as {
       format: { duration: string };
-      streams: { codec_type: string; width?: number; height?: number; r_frame_rate: string; start_time?: string; sample_rate?: string; channels?: number }[];
+      streams: {
+        index: number; codec_type: string; width?: number; height?: number; r_frame_rate: string; start_time?: string;
+        sample_rate?: string; channels?: number;
+      }[];
     };
     const video = streams.find(s => s.codec_type === 'video');
     const audio = streams.find(s => s.codec_type === 'audio');
     return {
       durationS: Number(format.duration),
-      ...(video ? { picture: { width: video.width!, height: video.height!, startS: Number(video.start_time ?? 0), rate: rational(video.r_frame_rate) } } : {}),
-      ...(audio ? { sound: { startS: Number(audio.start_time ?? 0), sampleRate: Number(audio.sample_rate), channels: audio.channels! } } : {}),
+      ...(video ? { picture: { stream: video.index, width: video.width!, height: video.height!, startS: Number(video.start_time ?? 0), rate: rational(video.r_frame_rate) } } : {}),
+      ...(audio ? { sound: { stream: audio.index, startS: Number(audio.start_time ?? 0), sampleRate: Number(audio.sample_rate), channels: audio.channels! } } : {}),
     };
   });
   probed.catch(() => {});
@@ -73,10 +78,10 @@ export function ffmpegDecoder(file: string): ClipDecoder {
 
   /** The frame shown at `t`: the last whose time is at or before it, decoded, scaled to `size` and encoded as a video frame. */
   async function frameAt(t: number, size: { width: number; height: number }): Promise<ShownFrame | null> {
-    const { startS, rate } = await picture();
+    const { stream, startS, rate } = await picture();
     const shownS = startS + Math.floor((t - startS) * rate + 1e-6) / rate;
     const { stdout, stderr } = await run('ffmpeg', [
-      '-v', 'info', '-ss', Math.max(0, shownS - SEEK_LEAD_S).toFixed(6), '-i', file, '-frames:v', '1', '-copyts',
+      '-v', 'info', '-ss', Math.max(0, shownS - SEEK_LEAD_S).toFixed(6), '-i', file, '-map', `0:${stream}`, '-frames:v', '1', '-copyts',
       '-vf', `scale=${size.width}:${size.height},showinfo`, '-f', 'image2pipe', '-c:v', 'png', '-',
     ]);
     // Past the last frame nothing is shown.
@@ -98,7 +103,7 @@ export function ffmpegDecoder(file: string): ClipDecoder {
       const { sound } = await probed;
       if (!sound || disposed) return;
       // The sound as it decodes: interleaved 32-bit floats at the source's own rate and channels.
-      const child = spawn('ffmpeg', ['-v', 'error', '-i', file, '-vn', '-f', 'f32le', '-'], { stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn('ffmpeg', ['-v', 'error', '-i', file, '-map', `0:${sound.stream}`, '-f', 'f32le', '-'], { stdio: ['ignore', 'pipe', 'pipe'] });
       running.add(child);
       let stderr = '';
       child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
