@@ -48,6 +48,8 @@ export { renderTemplate, guardedInput } from './prompt';
 export type { MissingInput } from './prompt';
 export { stripDanglingToolCall } from './capture';
 export { reduce, waitUntilSettled } from './combinators';
+export { makePermits } from './execute';
+export type { Permits } from './execute';
 export { parallel, chain, fanout, dag } from './orchestrators';
 export type { SpawnSpec, ChainStep, DAGNode, Orchestrator, PoolContext } from './orchestrators';
 export { extractSpineSeed, extractSpineCheckpoint, reconstructBranch, replayTurns, replayAgentTurns } from './replay';
