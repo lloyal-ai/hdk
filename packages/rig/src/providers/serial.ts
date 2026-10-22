@@ -1,4 +1,4 @@
-import { ensure, resource, scoped } from 'effection';
+import { ensure, resource } from 'effection';
 import type { Operation } from 'effection';
 import { makePermits } from '@lloyal-labs/lloyal-agents';
 
@@ -12,16 +12,15 @@ export function useSerialExecutor(): Operation<SerialExecutor> {
   return resource(function* (provide) {
     const gate = makePermits(1);
     let closed = false;
-    // Closed first, so a caller still queued is refused when its turn comes; the gate taken once is the running
-    // call finished, and handed back so those callers can be.
-    yield* ensure(function* () { closed = true; yield* gate.acquire(); gate.release(); });
+    const refuseOnceClosed = (): void => { if (closed) throw new Error('the service is disposed'); };
+    // Closed first, so a caller still queued is refused when its turn comes; the gate held once is the running
+    // call finished, and given back so those callers can be.
+    yield* ensure(function* () { closed = true; yield* gate.hold(function* () {}); });
     yield* provide({
-      run<T>(work: () => Operation<T>): Operation<T> {
-        return scoped(function* () {
-          if (closed) throw new Error('the service is disposed');
-          yield* gate.acquire();
-          yield* ensure(() => gate.release());
-          if (closed) throw new Error('the service is disposed');
+      *run<T>(work: () => Operation<T>): Operation<T> {
+        refuseOnceClosed();
+        return yield* gate.hold(function* () {
+          refuseOnceClosed();
           return yield* work();
         });
       },

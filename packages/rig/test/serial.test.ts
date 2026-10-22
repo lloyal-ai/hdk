@@ -40,6 +40,22 @@ describe('useSerialExecutor', () => {
     expect(log).toEqual(['first', 'after']);
   });
 
+  it('a caller granted its turn just as the owning scope ends still gives it back, so the scope ends', async () => {
+    const ended = run(function* () {
+      const serial = yield* useSerialExecutor();
+      const running = withResolvers<void>();
+      const first = yield* spawn(() => serial.run(function* () { yield* running.operation; }));
+      yield* sleep(0);
+      // Queued behind the first; the scope ends the turn the first finishes, as it is granted its turn.
+      yield* spawn(() => serial.run(function* () {}));
+      yield* sleep(0);
+      running.resolve();
+      yield* first;
+    }).then(() => 'ended');
+    const stuck = new Promise((resolve) => setTimeout(() => resolve('stuck'), 500));
+    expect(await Promise.race([ended, stuck])).toBe('ended');
+  });
+
   it('the owning scope ends only once a caller\'s running call has, and refuses work after', async () => {
     const log: string[] = [];
     const [scope, destroy] = createScope();

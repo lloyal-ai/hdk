@@ -81,29 +81,40 @@ export function waitUntilSettled<T>(p: Promise<T>): Operation<T> {
 
 /**
  * A FIFO counting gate: at most `n` holders at once, the rest waiting in the
- * order they asked. Acquire before the gated work and release in an `ensure`,
- * so a holder that is halted still gives its permit back; a caller halted while
- * it waits leaves the queue. `makePermits(1)` serializes.
+ * order they asked. `makePermits(1)` serializes.
  *
  * @category Agents
  */
-export interface Permits { acquire(): Operation<void>; release(): void }
+export interface Permits {
+  /** The work, run once a permit is held; the permit is given back however the work ends. A caller halted while
+   *  it waits leaves the queue. */
+  hold<T>(work: () => Operation<T>): Operation<T>;
+}
 
 export function makePermits(n: number): Permits {
   let available = n;
   const waiters: Array<() => void> = [];
+  const release = (): void => {
+    const w = waiters.shift();
+    if (w) w(); else available++;
+  };
   return {
-    *acquire(): Operation<void> {
-      if (available > 0) { available--; return; }
-      yield* action<void>((resolve) => {
-        const w = () => resolve();
-        waiters.push(w);
-        return () => { const i = waiters.indexOf(w); if (i >= 0) waiters.splice(i, 1); };
-      });
-    },
-    release(): void {
-      const w = waiters.shift();
-      if (w) w(); else available++;
-    },
+    hold: <T>(work: () => Operation<T>): Operation<T> => scoped(function* () {
+      // Held from the moment the permit is handed over, not from when this resumes, and given back by a release
+      // registered before the wait: a holder halted at any step after the hand-over still returns it.
+      let held = false;
+      yield* ensure(() => { if (held) release(); });
+      if (available > 0) {
+        available--;
+        held = true;
+      } else {
+        yield* action<void>((resolve) => {
+          const w = () => { held = true; resolve(); };
+          waiters.push(w);
+          return () => { const i = waiters.indexOf(w); if (i >= 0) waiters.splice(i, 1); };
+        });
+      }
+      return yield* work();
+    }),
   };
 }

@@ -76,7 +76,6 @@ export function* measureCells(ctx: SessionContext, delta: MultimodalDelta): Oper
 /** Default cap on concurrent fan-out tool children. */
 export const DEFAULT_MAX_CONCURRENT_TOOLS = 8;
 
-
 function toError(err: unknown): Error {
   return err instanceof Error ? err : new Error(String(err));
 }
@@ -653,15 +652,12 @@ export class Executor {
       // interpreted on this fiber when the loop next observes.
       const fanoutTool = tool;
       d.inflight.set(agent.id, yield* spawn(function*() {
-        let took = false;
         try {
           yield* ensure(() => { d.inflight.delete(agent.id); });
-          yield* ensure(() => { if (took) d.permits.release(); });
-          yield* d.permits.acquire(); took = true;
-          yield* TraceParent.set(dispatchTraceId);
-          yield* CallingAgent.set(agent);
-          yield* Trace.set(tee(agent.id, callId, dispatchTraceId));
-          const result: unknown = yield* scoped(function*() {
+          const result: unknown = yield* d.permits.hold(function*() {
+            yield* TraceParent.set(dispatchTraceId);
+            yield* CallingAgent.set(agent);
+            yield* Trace.set(tee(agent.id, callId, dispatchTraceId));
             return yield* call(() => fanoutTool.execute(toolArgs, toolContext));
           });
           d.completed.push(completed({ kind: 'returned', value: result }));
