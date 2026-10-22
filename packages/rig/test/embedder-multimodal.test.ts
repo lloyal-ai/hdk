@@ -87,6 +87,29 @@ describe('createEmbedder over parts', () => {
     expect(inputs[0]).toMatchObject({ kind: 'video', timestampsMs: [0, 250] });
   });
 
+  it('embeds a video with its soundtrack when the model hears: the frames, then each window as a recording', async () => {
+    const frames = [await createContentIngress(store).ingest(frame)].map((root) => ({ root, tMs: 0 }));
+    const heard = await composeVideo(store, {
+      frames, sampling: { fps: 4, timestampIntervalMs: 5000, maxFrames: 64 }, durationMs: 1000, soundtrack: [{ root: recording, startMs: 0, endMs: 1000 }],
+    });
+    await run(function* () {
+      yield* (yield* embedder()).embed([{ parts: [heard] }]);
+      fake.audio = false;
+      yield* (yield* embedder()).embed([{ parts: [heard] }]);
+    });
+    const [[, hearingPrompt, hearingInputs], [, sightPrompt, sightInputs]] = log as [string, string, { kind: string }[]][];
+    expect([hearingPrompt, hearingInputs.map((i) => i.kind)]).toEqual([MARKER + MARKER, ['video', 'audio']]);
+    expect([sightPrompt, sightInputs.map((i) => i.kind)]).toEqual([MARKER, ['video']]);
+  });
+
+  it('refuses a recording on a model that does not hear, naming the setting that would', async () => {
+    fake.audio = false;
+    await expect(run(function* () {
+      yield* (yield* embedder()).embed(['fine', { parts: [recording] }]);
+    })).rejects.toThrow(/input 1 part 0 .*does not hear.*model\.embedding\.projector/);
+    expect(log).toEqual([]);
+  });
+
   it('embeds text alone through its tokens, a bare string as one part', async () => {
     await run(function* () {
       yield* (yield* embedder()).embed(['plain text', { parts: ['more ', 'text'] }]);

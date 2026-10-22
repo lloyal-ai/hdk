@@ -8,7 +8,8 @@
  * clear/encode/read sequences answer wrong vectors silently.
  *
  * An input is text and attachment roots in order. Each root becomes what the projector reads (an image's
- * pixels, a recording's samples, a video's frames on their timeline), with a media marker where it stands in
+ * pixels, a recording's samples, a video's frames on their timeline and, when the model hears, its soundtrack
+ * window by window), with a media marker where each stands in
  * the text; its text is framed as the model asks for its task; and the whole input is measured before any of
  * it runs.
  *
@@ -17,7 +18,8 @@
 import { createContext } from '@lloyal-labs/sdk/node';
 import { defangMarker, deltaCells, MEDIA_MARKER, PoolingType } from '@lloyal-labs/sdk';
 import type { AudioLimits, MultimodalInput, SessionContext } from '@lloyal-labs/sdk';
-import { audioAdmission, audioLimitsAt, materialize } from '@lloyal-labs/media';
+import { AUDIO_CONFIG_TYPE, audioAdmission, audioLimitsAt, materialize } from '@lloyal-labs/media';
+import type { AudioAdmission } from '@lloyal-labs/media';
 import type { Attachment, AttachmentStore } from '@lloyal-labs/media';
 import { call, ensure, resource, until } from 'effection';
 import { acquire } from '../acquire';
@@ -86,16 +88,24 @@ const RECORDING_ADMISSION = audioAdmission();
 /** Which sense a piece of media is: bare bytes are an image. */
 const modalityOf = (media: MultimodalInput): Modality => (media instanceof Uint8Array ? 'image' : media.kind);
 
-/** One input placed: each root becomes what the projector reads, and a root it reads nothing of (a document,
- *  whose text is not an image) is refused rather than left out of the vector unseen. A prompt with media is split
- *  on every literal marker, so its text is defanged; text alone is tokenized, and read as written. */
-function place(store: AttachmentStore | undefined, framing: EmbeddingFraming, input: EmbeddingInput, i: number): Placed {
+/** Why a root gave the projector nothing: a recording the model cannot hear, or a document, whose text is not an
+ *  image. Either is refused rather than left out of the vector unseen. */
+function unread(store: AttachmentStore, part: Attachment, i: number, j: number): Error {
+  return store.getManifest(part.digest)?.config.mediaType === AUDIO_CONFIG_TYPE
+    ? new Error(`input ${i} part ${j} is a recording, and this embedding model does not hear — set \`model.embedding.projector\` to a projector that hears`)
+    : new Error(`input ${i} part ${j} has nothing the projector reads — embed its text as a text part`);
+}
+
+/** One input placed: each root becomes what the projector reads (a video's soundtrack too, when the model hears, under
+ *  `heard`). A prompt with media is split on every literal marker, so its text is defanged; text alone is
+ *  tokenized, and read as written. */
+function place(store: AttachmentStore | undefined, framing: EmbeddingFraming, heard: AudioAdmission | undefined, input: EmbeddingInput, i: number): Placed {
   const frame = framingOf(framing, input, i);
   const placed = partsOf(input).map((part, j) => {
     if (typeof part === 'string') return { text: part, media: [] as MultimodalInput[] };
     if (!store) throw new Error('an attachment part needs the attachment store, and none is in reach');
-    const media = materialize(store, [part], { audio: RECORDING_ADMISSION }).inputs as MultimodalInput[];
-    if (media.length === 0) throw new Error(`input ${i} part ${j} has nothing the projector reads — embed its text as a text part`);
+    const media = materialize(store, [part], heard ? { audio: heard } : {}).inputs as MultimodalInput[];
+    if (media.length === 0) throw unread(store, part, i, j);
     return { text: '', media };
   });
   const media = placed.flatMap((p) => p.media);
@@ -152,16 +162,17 @@ export function createEmbedder(modelPath: string, opts: EmbedderLoadOpts): Opera
       ...(ctx.supportsVision() ? (['image', 'video'] as const) : []),
       ...(ctx.supportsAudio() ? (['audio'] as const) : []),
     ];
-    const audioLimits: AudioLimits | undefined = ctx.supportsAudio() ? audioLimitsAt(RECORDING_ADMISSION, ctx.audioSampleRate()) : undefined;
+    const heard = ctx.supportsAudio() ? RECORDING_ADMISSION : undefined;
+    const audioLimits: AudioLimits | undefined = heard ? audioLimitsAt(heard, ctx.audioSampleRate()) : undefined;
 
     /** Every input placed and measured, with nothing run; the whole call refused at the first input the model
      *  cannot read. Text alone keeps its tokens, which is how it is encoded. */
     const admit = async (store: AttachmentStore | undefined, inputs: readonly EmbeddingInput[]) => {
-      const placed = inputs.map((input, i) => place(store, framing, input, i));
+      const placed = inputs.map((input, i) => place(store, framing, heard, input, i));
       placed.forEach(({ media }, i) => {
         const unread = media.map(modalityOf).find((m) => !modalities.includes(m));
         if (unread) {
-          throw new Error(`input ${i} has ${unread === 'audio' ? 'a recording' : `an ${unread}`}, which this embedding model cannot read — set \`model.embedding.projector\` to a projector that reads it`);
+          throw new Error(`input ${i} has an ${unread}, which this embedding model cannot read — set \`model.embedding.projector\` to a projector that reads it`);
         }
       });
       const measured: (Placed & { cells: number; tokens?: number[] })[] = [];

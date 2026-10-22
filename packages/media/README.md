@@ -290,6 +290,9 @@ video (images of one size, times increasing within the clip) and commits:
 timeline, the transcript as notes — so the frames reach the projector as one
 video behind one marker and fuse where the projector fuses frames, rather than
 encoding one by one as still images. `resolveVideo` is that step on its own.
+When the caller's projector hears (`materialize`'s `audio` admission), each
+soundtrack window follows the video as a recording of its own, so what was
+heard reaches the model beside what was seen; `resolveSoundtrack` reads them.
 The single-payload ingress refuses a video container by name: a clip arrives
 as frames.
 

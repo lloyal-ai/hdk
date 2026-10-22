@@ -11,7 +11,8 @@
  */
 import { representationsOf, sourceOf } from './attachment';
 import type { Attachment, Descriptor } from './attachment';
-import { AUDIO_MEDIA_TYPE, recordingOf } from './audio';
+import { AUDIO_MEDIA_TYPE, inspectPcmWav, recordingOf } from './audio';
+import type { AudioAdmission } from './audio';
 import { ContentLost } from './store';
 import type { AttachmentStore } from './store';
 import { imageSize, PROJECTOR_FORMATS, VIDEO_CONTAINER_TYPES, sniffMediaType } from './media-type';
@@ -309,6 +310,24 @@ export function resolveVideo(store: AttachmentStore, root: Attachment): VideoInp
     timestampIntervalMs: meta.sampling.timestampIntervalMs,
     ...(notes.length > 0 ? { notes } : {}),
   };
+}
+
+/**
+ * A stored video's soundtrack, window by window in time order, each admitted as a recording under `limits`: what
+ * a consumer that hears is given beside the frames. Empty for a video kept without one.
+ *
+ * @throws {ContentLost} If a window's recording is missing or has drifted from its digest.
+ * @throws If a window is not a recording these limits admit.
+ *
+ * @category Media
+ */
+export function resolveSoundtrack(store: AttachmentStore, root: Attachment, limits: Partial<AudioAdmission> = {}): Uint8Array[] {
+  const { meta, reps, read } = storedVideo(store, root, 'resolveSoundtrack');
+  return (meta.soundtrack ?? []).map(w => {
+    const bytes = read(reps[w.audio], 'soundtrack window');
+    inspectPcmWav(bytes, limits);
+    return bytes;
+  });
 }
 
 /** A stored video read back, every blob it is read from verified: its manifest, timeline, representations and transcript. */

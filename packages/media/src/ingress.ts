@@ -7,7 +7,7 @@
  */
 import { representationsOf } from './attachment';
 import { PROJECTOR_FORMATS } from './media-type';
-import { resolveVideo, VIDEO_CONFIG_TYPE } from './video';
+import { resolveSoundtrack, resolveVideo, VIDEO_CONFIG_TYPE } from './video';
 import { AUDIO_CONFIG_TYPE, resolveAudio } from './audio';
 import type { AudioAdmission } from './audio';
 import type { VideoInput } from './video';
@@ -26,8 +26,9 @@ export type ProjectorInput = Uint8Array | VideoInput | { kind: 'audio'; bytes: U
 
 /** What the projector reading the content can take. */
 export interface MaterializeOpts {
-  /** The admission a recording must meet to reach a projector that hears. Absent, recordings contribute no
-   *  input: they reach a transcriber instead. */
+  /** The projector hears, and a recording, or a video's soundtrack window, must meet this admission to reach it.
+   *  Absent, sound contributes no input: a recording reaches a transcriber instead, and a video its frames and
+   *  transcript alone. */
   audio?: AudioAdmission;
 }
 
@@ -47,6 +48,7 @@ export interface PreparedContent {
   attachments: readonly Attachment[];
   /** One input per marker, in root order: each image representation as its
    *  admitted bytes, each video as ONE input of its frames on their timeline,
+   *  then, when the projector hears, one audio input per soundtrack window, and
    *  each recording as one audio input when the projector hears. A document,
    *  whose representation is text, contributes none. These are the EXACT
    *  inputs to hand a builder and then the projector. */
@@ -87,6 +89,7 @@ export function materialize(
     // input, so they fuse on their timeline instead of encoding one by one.
     if (manifest.config.mediaType === VIDEO_CONFIG_TYPE) {
       inputs.push(resolveVideo(store, root));
+      if (opts.audio) inputs.push(...resolveSoundtrack(store, root, opts.audio).map(bytes => ({ kind: 'audio' as const, bytes })));
       continue;
     }
     if (manifest.config.mediaType === AUDIO_CONFIG_TYPE) {

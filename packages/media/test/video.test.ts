@@ -163,6 +163,20 @@ describe('composeVideo keeps the soundtrack for models', () => {
     expect(materialize(content, [root]).inputs).toHaveLength(1);
   });
 
+  it('a consumer that hears is given the soundtrack after the frames, each window admitted as a recording', async () => {
+    const content = store();
+    const windows = await soundtrack(content);
+    const root = await media.composeVideo(content, { frames: await frameRoots(content), sampling: SAMPLING, durationMs: 4000, transcript, soundtrack: windows });
+    const recorded = windows.map(w => media.resolveAudio(content, w.root).bytes);
+    const heard = materialize(content, [root], { audio: media.audioAdmission() }).inputs;
+    expect(heard.map(i => (i instanceof Uint8Array ? 'image' : i.kind))).toEqual(['video', 'audio', 'audio']);
+    expect(heard.slice(1)).toEqual(recorded.map(bytes => ({ kind: 'audio', bytes })));
+    // A window of the video carries the soundtrack it overlaps, and no more.
+    const early = media.videoWindow(content, root, { fromMs: 0, toMs: 1000 });
+    expect(materialize(content, [early], { audio: media.audioAdmission() }).inputs.slice(1)).toEqual([{ kind: 'audio', bytes: recorded[0] }]);
+    expect(() => materialize(content, [root], { audio: media.audioAdmission({ maxBytes: 8 }) })).toThrow(/byte limit/);
+  });
+
   it('refuses a window that is not a recording, runs past the clip, or is out of order', async () => {
     const content = store();
     const frames = await frameRoots(content);

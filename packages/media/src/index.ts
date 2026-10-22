@@ -32,7 +32,7 @@ export { imageSize, PROJECTOR_FORMATS, sniffMediaType, UNKNOWN_MEDIA_TYPE, VIDEO
 // A video: frames composed by the host into one attachment, its transcript
 // beside them, its timeline in the config slot.
 export {
-  asTranscript, asVideoMeta, composeVideo, durationRefusal, isVideoContainer, markInterval, resolveVideo, soundtrackRefusal, videoWindow, TRANSCRIPT_MEDIA_TYPE, VIDEO_CONFIG_TYPE,
+  asTranscript, asVideoMeta, composeVideo, durationRefusal, isVideoContainer, markInterval, resolveSoundtrack, resolveVideo, soundtrackRefusal, videoWindow, TRANSCRIPT_MEDIA_TYPE, VIDEO_CONFIG_TYPE,
 } from './video';
 export type { Transcript, VideoInput, VideoMeta, VideoSampling } from './video';
 
