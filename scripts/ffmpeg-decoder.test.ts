@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
@@ -111,6 +111,23 @@ describe.runIf(hasFfmpeg)('ffmpegDecoder on the clip\'s own clock', () => {
       expect(shown[0]).toBeCloseTo(1000 + 31 / 30, 6);
     } finally {
       decoder.dispose();
+    }
+  });
+
+  it('rejects its sound when ffmpeg cannot be started, rather than ending the process', async () => {
+    // A PATH with ffprobe on it and no ffmpeg: the probe answers, and the sound's decode cannot start.
+    const onlyProbe = mkdtempSync(join(tmpdir(), 'ffprobe-only-'));
+    symlinkSync(execFileSync('which', ['ffprobe']).toString().trim(), join(onlyProbe, 'ffprobe'));
+    const path = process.env.PATH;
+    process.env.PATH = onlyProbe;
+    const decoder = ffmpegDecoder(gapped);
+    try {
+      const read = async () => { for await (const run of decoder.sound()) void run; };
+      await expect(read()).rejects.toThrow(/ffmpeg failed: .*ENOENT/);
+    } finally {
+      process.env.PATH = path;
+      decoder.dispose();
+      rmSync(onlyProbe, { recursive: true, force: true });
     }
   });
 

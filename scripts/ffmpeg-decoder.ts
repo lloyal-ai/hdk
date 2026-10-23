@@ -141,6 +141,8 @@ export function ffmpegDecoder(file: string): ClipDecoder {
       // sample stands at its time counted from the first.
       const child = spawn('ffmpeg', ['-v', 'error', '-i', file, '-map', `0:${sound.stream}`, '-af', 'aresample=async=1', '-f', 'f32le', '-'], { stdio: ['ignore', 'pipe', 'pipe'] });
       running.add(child);
+      // A decode that cannot start (no ffmpeg, no file handles) fails the read rather than the process.
+      child.on('error', (e) => child.stdout.destroy(new Error(`ffmpeg failed: ${e.message}`)));
       let stderr = '';
       child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
       const exited = new Promise<number | null>(resolve => child.on('close', resolve));
