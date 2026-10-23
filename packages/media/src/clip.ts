@@ -343,6 +343,9 @@ export interface PreparedVideo {
  *
  * The decoder is the caller's: this neither opens nor disposes it, except to
  * stop it on abort.
+ *
+ * @throws With the signal's reason once it aborts: nothing more is ingested
+ *         then, and an abort during the last ingest is still a rejection.
  */
 export async function prepareVideo(
   decoder: ClipDecoder,
@@ -354,11 +357,13 @@ export async function prepareVideo(
   options: { signal?: AbortSignal; onProgress?: (progress: PrepareProgress) => void } = {},
 ): Promise<PreparedVideo> {
   const { signal, onProgress } = options;
+  // Each ingest is a write the caller pays for, so none starts once the caller has asked to stop.
+  const ingestUnlessAborted = (bytes: Uint8Array) => { signal?.throwIfAborted(); return ingest(bytes); };
   onProgress?.({ phase: 'sampling' });
   const sampled = await sampleFrames(decoder, policy.sampling, { ...(signal ? { signal } : {}) });
   const frames: PreparedVideo['frames'] = [];
   for (const [i, frame] of sampled.frames.entries()) {
-    frames.push({ root: await ingest(frame.bytes), tMs: frame.tMs });
+    frames.push({ root: await ingestUnlessAborted(frame.bytes), tMs: frame.tMs });
     onProgress?.({ phase: 'ingesting', done: i + 1, total: sampled.frames.length });
   }
   const audio: PreparedVideo['audio'] = [];
@@ -367,7 +372,8 @@ export async function prepareVideo(
     const windows = soundtrackWindows(decoder, soundtrackWindowMs(marks, policy.soundtrack), {
       ...(signal ? { signal } : {}), maxSampleRate: policy.soundtrack.maxSampleRate,
     });
-    for await (const window of windows) audio.push({ root: await ingest(window.bytes), startMs: window.startMs, endMs: window.endMs });
+    for await (const window of windows) audio.push({ root: await ingestUnlessAborted(window.bytes), startMs: window.startMs, endMs: window.endMs });
   }
+  signal?.throwIfAborted();
   return { frames, audio, durationMs: Math.max(sampled.durationMs, frames[frames.length - 1].tMs) };
 }

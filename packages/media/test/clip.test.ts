@@ -120,6 +120,22 @@ describe('prepareVideo, the page\'s assembly through any decoder', () => {
     expect(new Set(phases)).toEqual(new Set(['sampling', 'ingesting']));
   });
 
+  it.each([
+    ['a frame', 2, null],
+    ['the last frame', 8, null],
+    ['a soundtrack window', 9, limits],
+  ])('aborted while %s is ingested, ingests nothing more and says it was aborted', async (_, abortAt, soundtrack) => {
+    const abort = new AbortController();
+    let calls = 0;
+    const stopping = async (bytes: Uint8Array) => {
+      if (++calls === abortAt) abort.abort();
+      return ingest(bytes);
+    };
+    const prepared = prepareVideo(madeUp({ sound: [tone(0, 2, 16_000)] }), { sampling: SAMPLING, soundtrack }, stopping, { signal: abort.signal });
+    await expect(prepared).rejects.toThrow(/abort/i);
+    expect(calls).toBe(abortAt);
+  });
+
   it('cuts no soundtrack when nothing the host runs hears', async () => {
     const prepared = await prepareVideo(madeUp({ sound: [tone(0, 2, 16_000)] }), { sampling: SAMPLING, soundtrack: null }, ingest);
     expect(prepared.audio).toEqual([]);
