@@ -1,6 +1,7 @@
 /**
  * The native context a service owns: created and freed with its scope, used one unit of work at a time, and freed
- * only once the unit running has finished, so no queued unit starts on a context being freed.
+ * only once the unit running has finished. No unit starts once the owning scope has begun ending, so none starts on a
+ * context being freed.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createScope, run, sleep, spawn, suspend, withResolvers } from 'effection';
@@ -76,6 +77,29 @@ describe('useServiceContext', () => {
     release.resolve();
     await Promise.all([running, ended]);
     expect(log).toEqual(['ran', 'freed', 'ended']);
+  });
+
+  it('once the owning scope has begun ending, a caller\'s unit that reaches its turn is refused and never starts', async () => {
+    const [scope, destroy] = createScope();
+    const service = await new Promise<ServiceContext>((resolve) => {
+      scope.run(function* () { resolve(yield* useServiceContext({ modelPath: '/m.gguf' })); yield* suspend(); });
+    });
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+    const release = withResolvers<void>();
+    // Callers that are not the owner, so its ending halts none of them: one running, one queued before the end began
+    // and one arriving after it.
+    const first = run(() => service.run(function* () { log.push('first:start'); yield* release.operation; log.push('first:end'); }));
+    await tick();
+    const queued = run(() => service.run(function* () { log.push('queued'); }));
+    await tick();
+    const ended = destroy().then(() => log.push('ended'));
+    await tick();
+    const late = run(() => service.run(function* () { log.push('late'); }));
+    await tick();
+    release.resolve();
+    const settled = await Promise.allSettled([first, queued, late, ended]);
+    expect(settled.map((s) => s.status)).toEqual(['fulfilled', 'rejected', 'rejected', 'fulfilled']);
+    expect(log).toEqual(['first:start', 'first:end', 'freed', 'ended']);
   });
 
   it('a caller granted its turn just as the owning scope ends still gives it back, so the scope ends', async () => {
