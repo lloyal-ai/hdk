@@ -23,8 +23,8 @@ import { encodeVideoFrame } from '@lloyal-labs/media/node';
 interface Probed {
   /** Where the container's clock starts: an input seek is counted from here, not from zero. */
   containerStartS: number;
-  picture?: { stream: number; width: number; height: number; startS: number; rate: number };
-  sound?: { stream: number; startS: number; sampleRate: number; channels: number };
+  picture?: { stream: number; width: number; height: number; startS: number; rate: number; endS?: number };
+  sound?: { stream: number; startS: number; sampleRate: number; channels: number; endS?: number };
 }
 
 /** Half a millisecond: how far before a frame's time a seek starts, so float rounding never lands on the next one. */
@@ -32,6 +32,12 @@ const SEEK_LEAD_S = 0.0005;
 
 /** `num/den` as ffprobe writes a rate. */
 const rational = (r: string): number => { const [num, den] = r.split('/').map(Number); return num / den; };
+
+/** Where a stream's presentation ends, when its container states the stream's length; absent when it does not (Matroska). */
+const presentedUntil = (s: { start_time?: string; duration?: string }): { endS?: number } => {
+  const endS = Number(s.start_time ?? 0) + Number(s.duration);
+  return Number.isFinite(endS) ? { endS } : {};
+};
 
 export function ffmpegDecoder(file: string): ClipDecoder {
   const running = new Set<ChildProcess>();
@@ -52,36 +58,42 @@ export function ffmpegDecoder(file: string): ClipDecoder {
 
   const probed: Promise<Probed> = run('ffprobe', [
     '-v', 'error', '-of', 'json',
-    '-show_entries', 'format=start_time:stream=index,codec_type,width,height,r_frame_rate,start_time,sample_rate,channels', file,
+    '-show_entries', 'format=start_time:stream=index,codec_type,width,height,r_frame_rate,start_time,duration,sample_rate,channels', file,
   ]).then(({ stdout }) => {
     const { format, streams } = JSON.parse(stdout.toString()) as {
       format: { start_time?: string };
       streams: {
         index: number; codec_type: string; width?: number; height?: number; r_frame_rate: string; start_time?: string;
-        sample_rate?: string; channels?: number;
+        duration?: string; sample_rate?: string; channels?: number;
       }[];
     };
     const video = streams.find(s => s.codec_type === 'video');
     const audio = streams.find(s => s.codec_type === 'audio');
     return {
       containerStartS: Number(format.start_time ?? 0),
-      ...(video ? { picture: { stream: video.index, width: video.width!, height: video.height!, startS: Number(video.start_time ?? 0), rate: rational(video.r_frame_rate) } } : {}),
-      ...(audio ? { sound: { stream: audio.index, startS: Number(audio.start_time ?? 0), sampleRate: Number(audio.sample_rate), channels: audio.channels! } } : {}),
+      ...(video ? { picture: { stream: video.index, width: video.width!, height: video.height!, startS: Number(video.start_time ?? 0), rate: rational(video.r_frame_rate), ...presentedUntil(video) } } : {}),
+      ...(audio ? { sound: { stream: audio.index, startS: Number(audio.start_time ?? 0), sampleRate: Number(audio.sample_rate), channels: audio.channels!, ...presentedUntil(audio) } } : {}),
     };
   });
   probed.catch(() => {});
 
-  /** Where the clip ends on its own clock: the latest end of a packet in the streams this decoder reads. A
-   *  container's own duration is a length in some formats (mp4) and where the clip ends in others (Matroska). */
+  /** Where the clip ends on its own clock: the latest presentation end of the streams this decoder reads. A
+   *  container's own duration is a length in some formats (mp4) and where the clip ends in others (Matroska). A
+   *  stream's own length, where its container states it, leaves out the codec's padding; a packet's duration can
+   *  count it (ffprobe 6 counts a whole last AAC frame), so packets are read only for a stream with no stated length. */
   const ended: Promise<number> = probed.then(async ({ picture, sound }) => {
-    const read = new Set([picture?.stream, sound?.stream]);
-    const { stdout } = await run('ffprobe', ['-v', 'error', '-of', 'json', '-show_entries', 'packet=stream_index,pts_time,duration_time', file]);
-    const { packets = [] } = JSON.parse(stdout.toString()) as { packets?: { stream_index: number; pts_time?: string; duration_time?: string }[] };
-    const endS = packets
-      .filter((p) => read.has(p.stream_index))
-      .map((p) => Number(p.pts_time) + (Number(p.duration_time) || 0))
-      .filter(Number.isFinite)
-      .reduce((latest, end) => Math.max(latest, end), -Infinity);
+    const read = [picture, sound].filter((s) => s !== undefined);
+    const unstated = new Set(read.filter((s) => s.endS === undefined).map((s) => s.stream));
+    let endS = read.reduce((latest, s) => Math.max(latest, s.endS ?? -Infinity), -Infinity);
+    if (unstated.size > 0) {
+      const { stdout } = await run('ffprobe', ['-v', 'error', '-of', 'json', '-show_entries', 'packet=stream_index,pts_time,duration_time', file]);
+      const { packets = [] } = JSON.parse(stdout.toString()) as { packets?: { stream_index: number; pts_time?: string; duration_time?: string }[] };
+      endS = packets
+        .filter((p) => unstated.has(p.stream_index))
+        .map((p) => Number(p.pts_time) + (Number(p.duration_time) || 0))
+        .filter(Number.isFinite)
+        .reduce((latest, end) => Math.max(latest, end), endS);
+    }
     if (!Number.isFinite(endS)) throw new Error('ffprobe found no timed packet in the streams this decoder reads.');
     return endS;
   });
