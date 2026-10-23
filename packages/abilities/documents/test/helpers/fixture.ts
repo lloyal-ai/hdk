@@ -115,6 +115,5 @@ export function scoringReranker(): Reranker {
       })();
     },
     scoreBatch: async () => [],
-    dispose: () => {},
   } as unknown as Reranker;
 }

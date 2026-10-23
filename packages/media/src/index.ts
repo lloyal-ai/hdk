@@ -25,24 +25,32 @@ export { ContentLost, NullAttachmentStore } from './store';
 export type { AttachmentStore } from './store';
 
 export { materialize, NoContentIngress } from './ingress';
-export type { ContentIngress, PreparedContent, ProjectorInput } from './ingress';
+export type { ContentIngress, MaterializeOpts, PreparedContent, ProjectorInput } from './ingress';
 
 export { imageSize, PROJECTOR_FORMATS, sniffMediaType, UNKNOWN_MEDIA_TYPE, VIDEO_CONTAINER_TYPES } from './media-type';
 
 // A video: frames composed by the host into one attachment, its transcript
 // beside them, its timeline in the config slot.
 export {
-  asTranscript, asVideoMeta, composeVideo, isVideoContainer, resolveVideo, TRANSCRIPT_MEDIA_TYPE, VIDEO_CONFIG_TYPE,
+  asTranscript, asVideoMeta, composeVideo, durationRefusal, isVideoContainer, markInterval, resolveSoundtrack, resolveVideo, soundtrackRefusal, videoWindow, TRANSCRIPT_MEDIA_TYPE, VIDEO_CONFIG_TYPE,
 } from './video';
 export type { Transcript, VideoInput, VideoMeta, VideoSampling } from './video';
+
+// Reading a clip through any decoder: the decoder contract, and the procedure that samples,
+// stamps, mixes and cuts, written once against it. The page's decoder is in `./client`.
+export {
+  clipDurationMs, clipEndSample, fitEdge, frameTimes, pcm16Wav, prepareVideo, quietestCut, sampleFrames,
+  SoundtrackCutter, soundtrackDecimation, soundtrackWindowMs, soundtrackWindows,
+} from './clip';
+export type { ClipDecoder, DecodedSound, PreparedVideo, PrepareProgress, SampledFrame, ShownFrame, SoundtrackWindow } from './clip';
 
 // The document sidecar — facts about a document, kept in its manifest's config
 // slot. Pure data and a guard; a reader branches on DOCUMENT_CONFIG_TYPE.
 export { DOCUMENT_CONFIG_TYPE, asDocumentMeta, pagesOf } from './document';
 export type { DocumentMeta, SectionOrigin } from './document';
 
-export { AUDIO_CONFIG_TYPE, AUDIO_MEDIA_TYPE, DEFAULT_AUDIO_ADMISSION, audioAdmission, asAudioMeta, inspectPcmWav, resolveAudio } from './audio';
-export type { AdmittedAudio, AudioAdmission, AudioMeta } from './audio';
+export { AUDIO_CONFIG_TYPE, AUDIO_MEDIA_TYPE, DEFAULT_AUDIO_ADMISSION, audioAdmission, commonAdmission, audioLimitsAt, asAudioMeta, inspectPcmWav, resolveAudio } from './audio';
+export type { AdmittedAudio, AudioAdmission, AudioLimits, AudioMeta } from './audio';
 
 // The client half of the content plane: every door derived from the one origin a
 // bridge reports, and the citation grammar a view resolves against its own roots.

@@ -21,8 +21,9 @@ export interface Materialised<Ctx = unknown> {
   uiChannel: EventBus<unknown>;
   /** This session's command signal — the transport `send`s into it. */
   commands: Signal<unknown, void>;
-  /** Free the context. Called by the host on teardown, BEFORE the slot is dropped. */
-  dispose(): void;
+  /** Free the context. Called by the host on teardown; the slot is dropped only once a promise it answers has
+   *  settled, so occupancy never understates resident memory. */
+  dispose(): void | Promise<void>;
 }
 
 /**

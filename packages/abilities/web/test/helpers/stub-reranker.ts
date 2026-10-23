@@ -16,5 +16,4 @@ export const stubReranker: Reranker = {
   scoreBatch: async (_q, texts) => texts.map(() => 0),
   tokenizeChunks: async () => {},
   tokenize: async () => [],
-  dispose: () => {},
 };

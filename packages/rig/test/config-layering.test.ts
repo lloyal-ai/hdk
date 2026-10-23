@@ -12,7 +12,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { isGuardOverrides } from '@lloyal-labs/lloyal-agents';
-import { defineConfig, modelSettings, CONFIG_VERSION } from '../src/config';
+import { attachmentSettings, defineConfig, modelSettings, CONFIG_VERSION, DEFAULT_VIDEO_SAMPLING } from '../src/config';
 import { loadYml, loadConfig, saveLocalConfig, runnerConfig } from '../src/config-layering';
 import { makeEdgeRunner, makeServedRunner } from '../src/runner';
 
@@ -33,6 +33,56 @@ const app = defineConfig({
   'defaults.effort': { yml: 'defaults.effort', oneOf: ['low', 'medium', 'high', 'ultra'], default: 'high' },
   'defaults.reasoningMode': { yml: 'defaults.reasoningMode', cli: 'reasoningMode', oneOf: ['flat', 'deep'], default: 'flat' },
   'defaults.guards': { yml: 'defaults.guards', check: isGuardOverrides },
+});
+
+describe('the attachments family: bounds declared as data, enforced and said from one place', () => {
+  it('a value in range reaches the config, and a block that names one key takes the rest at their defaults', () => {
+    writeYml('attachments:\n  context: 0.7\n  video:\n    fps: 2\n');
+    const { config } = loadConfig(attachmentSettings, loadYml(attachmentSettings, cwd), { env: {}, cwd });
+    expect(config.attachments.context).toBe(0.7);
+    expect(config.attachments.video).toEqual({
+      fps: 2, maxFrames: DEFAULT_VIDEO_SAMPLING.maxFrames, maxEdgePx: DEFAULT_VIDEO_SAMPLING.maxEdgePx,
+    });
+    // No limit on length unless the harness sets one.
+    expect(config.attachments.video?.maxDurationSeconds).toBeUndefined();
+  });
+
+  it('a value out of range fails the load, naming the range it takes', () => {
+    writeYml('attachments:\n  video:\n    fps: 100\n');
+    expect(() => loadYml(attachmentSettings, cwd)).toThrow('harness.yml: attachments.video.fps must be a number from 0.1 to 30 (got 100)');
+    writeYml('attachments:\n  video:\n    maxFrames: 2.5\n');
+    expect(() => loadYml(attachmentSettings, cwd)).toThrow('harness.yml: attachments.video.maxFrames must be a whole number from 1 to 3600 (got 2.5)');
+    writeYml('attachments:\n  context: 0\n');
+    expect(() => loadYml(attachmentSettings, cwd)).toThrow('harness.yml: attachments.context must be a number from 0.1 to 1 (got 0)');
+  });
+
+  it('a whole number with only a ceiling keeps its floor of one, and says so', () => {
+    const ceiling = defineConfig({ 'limits.retries': { yml: 'limits.retries', integer: true, max: 5 } });
+    for (const v of [0, -1]) {
+      writeYml(`limits:\n  retries: ${v}\n`);
+      expect(() => loadYml(ceiling, cwd)).toThrow(`harness.yml: limits.retries must be a whole number from 1 to 5 (got ${v})`);
+    }
+    writeYml('limits:\n  retries: 5\n');
+    expect(loadConfig(ceiling, loadYml(ceiling, cwd), { env: {}, cwd }).config.limits.retries).toBe(5);
+  });
+
+  it('a bounded number set in the environment is read as a number, and one out of range or not a number falls through', () => {
+    const share = defineConfig({ 'limits.share': { yml: 'limits.share', env: 'SHARE', min: 0.1, max: 1, default: 0.5 } });
+    const at = (SHARE: string) => loadConfig(share, {}, { env: { SHARE }, cwd }).config.limits.share;
+    expect(at('0.25')).toBe(0.25);
+    expect(at('1')).toBe(1);
+    for (const v of ['0', '1.5', 'half', '0.2.5']) expect(at(v)).toBe(0.5);
+  });
+
+  it('a harness that says nothing takes the whole context share and no video block', () => {
+    const { config } = loadConfig(attachmentSettings, {}, { env: {}, cwd });
+    expect(config.attachments.context).toBe(1);
+    expect(config.attachments.video).toBeUndefined();
+  });
+
+  it('the time-mark interval is not a setting: composition derives it from the frames', () => {
+    expect(Object.keys(attachmentSettings).some(k => k.includes('timestampInterval'))).toBe(false);
+  });
 });
 
 describe('the model block: one block per model, its keys at their yml path', () => {
@@ -86,7 +136,7 @@ describe('a block is present when a rung says so — its presence is the request
     expect(absent.origin['model.embedding.pooling']).toBe('default');
     // ...and inside a present block the default stands as any default does.
     const present = loadConfig(tuned, { model: { embedding: {} } }, { env: {}, cwd });
-    expect(present.config.model.embedding).toEqual({ context: 2048, pooling: 'mean' });
+    expect(present.config.model.embedding).toEqual({ pooling: 'mean' });
   });
 
   it('a key set at the cli or in the environment makes its block, since it names a key of it', () => {

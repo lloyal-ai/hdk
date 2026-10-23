@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { call, run, sleep, spawn } from 'effection';
+import { Attachments } from '@lloyal-labs/lloyal-agents';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -32,14 +33,15 @@ beforeEach(async () => {
   const prune = ctx._branchPrune.bind(ctx);
   vi.spyOn(ctx, '_branchPrune').mockImplementation(handle => { events.push('prune'); return prune(handle); });
   const dispose = ctx.dispose.bind(ctx);
-  vi.spyOn(ctx, 'dispose').mockImplementation(() => { events.push('dispose'); dispose(); });
+  vi.spyOn(ctx, 'dispose').mockImplementation(() => { events.push('dispose'); return dispose(); });
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe('the owned transcription service', () => {
   it('loads its pair, returns text and provenance from admitted audio, and frees each request history', async () => {
     await run(function* () {
-      const asr = yield* createTranscriber('/asr.gguf', '/projector.gguf', { store: content });
+      yield* Attachments.set(content);
+      const asr = yield* createTranscriber('/asr.gguf', '/projector.gguf');
       const a = yield* asr.transcribe(root); const b = yield* asr.transcribe(root);
       expect(a).toMatchObject({ text: 'Hello world.', language: 'English', audio: root, silent: false });
       expect(b.text).toBe(a.text);
@@ -53,7 +55,8 @@ describe('the owned transcription service', () => {
   it('returns empty text for exact silence without projecting or generating', async () => {
     const silent = await createAudioIngress(content).ingest(pcmWav({ silent: true }));
     const result = await run(function* () {
-      const asr = yield* createTranscriber('/asr.gguf', '/p.gguf', { store: content });
+      yield* Attachments.set(content);
+      const asr = yield* createTranscriber('/asr.gguf', '/p.gguf');
       return yield* asr.transcribe(silent);
     });
     expect(result).toMatchObject({ text: '', silent: true });
@@ -66,7 +69,8 @@ describe('the owned transcription service', () => {
     const prefill = ctx._storePrefillMultimodal.bind(ctx);
     vi.spyOn(ctx, '_storePrefillMultimodal').mockImplementationOnce(async (...args) => { events.push('started'); await parked; return prefill(...args); });
     await run(function* () {
-      const asr = yield* createTranscriber('/asr.gguf', '/p.gguf', { store: content });
+      yield* Attachments.set(content);
+      const asr = yield* createTranscriber('/asr.gguf', '/p.gguf');
       const first = yield* spawn(() => asr.transcribe(root));
       yield* sleep(0);
       const cancelled = yield* spawn(() => asr.transcribe(root));
@@ -85,7 +89,8 @@ describe('the owned transcription service', () => {
     vi.spyOn(ctx, '_storePrefillMultimodal').mockImplementationOnce(async (...args) => { events.push('started'); await pending; events.push('settled'); return prefill(...args); });
     let answered = false;
     const owner = run(function* () {
-      const asr = yield* createTranscriber('/asr.gguf', '/p.gguf', { store: content });
+      yield* Attachments.set(content);
+      const asr = yield* createTranscriber('/asr.gguf', '/p.gguf');
       yield* asr.transcribe(root); answered = true;
     });
     await new Promise(r => setTimeout(r, 10));
@@ -98,7 +103,8 @@ describe('the owned transcription service', () => {
 
   it('rejects truncated output and permits the next request after failure', async () => {
     await run(function* () {
-      const asr = yield* createTranscriber('/asr.gguf', '/p.gguf', { store: content, maxTokens: 1 });
+      yield* Attachments.set(content);
+      const asr = yield* createTranscriber('/asr.gguf', '/p.gguf', { maxTokens: 1 });
       ctx._branchSample = () => 7;
       let failure: unknown;
       try { yield* asr.transcribe(root); } catch (err) { failure = err; }
@@ -112,7 +118,7 @@ describe('the owned transcription service', () => {
 
   it('refuses a context without an audio projector and disposes the failed acquisition', async () => {
     ctx.mockAudioSampleRate = 0;
-    await expect(run(() => createTranscriber('/asr.gguf', '/p.gguf', { store: content }))).rejects.toThrow(/audio projector/);
+    await expect(run(function* () { yield* Attachments.set(content); return yield* createTranscriber('/asr.gguf', '/p.gguf'); })).rejects.toThrow(/audio projector/);
     expect(ctx.disposeCount).toBe(1);
   });
 });

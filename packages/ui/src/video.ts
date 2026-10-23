@@ -1,9 +1,10 @@
 /**
  * A video, attached from the page: read here, composed by the host.
  *
- * The page is where a clip can be decoded, so `@lloyal-labs/media/client`
- * samples the frames the model will see and cuts the soundtrack into windows
- * for the transcription service, and the original is pushed as a blob. Each
+ * The page decodes the clip with its own decoder (`mediabunnyDecoder` from
+ * `@lloyal-labs/media/client`), and media's procedure samples the frames the
+ * model will see and, when the host keeps sound, cuts the soundtrack into the
+ * windows it admits, as it does for any decoder; the original is pushed as a blob. Each
  * frame and window enters through the content plane's ordinary ingress; one
  * `video:compose` then asks the host to make them one attachment. Bytes travel
  * over HTTP, the socket carries references, and the host authors the manifest.
@@ -11,10 +12,10 @@
  * @category UI
  */
 import { useEffect, useState } from 'react';
-import { ingestMedia, pushBlob } from '@lloyal-labs/media';
-import { extractAudioWindows, sampleVideo, soundtrackWindowMs } from '@lloyal-labs/media/client';
+import { durationRefusal, ingestMedia, prepareVideo, pushBlob } from '@lloyal-labs/media';
+import { mediabunnyDecoder, videoDurationMs } from '@lloyal-labs/media/client';
 import type { Attachment, Descriptor } from '@lloyal-labs/media';
-import type { UntranscribedWindow, VideoCapabilities, VideoCommand, VideoEvent, VideoFrameRef, VideoAudioRef } from '@lloyal-labs/binding';
+import type { UntranscribedWindow, VideoCapabilities, VideoCommand, VideoEvent } from '@lloyal-labs/binding';
 import { useAvailability, useContentOrigin, useHarness } from './provider.js';
 
 // ── Composing on the host ────────────────────────────────────────────────────
@@ -64,26 +65,18 @@ export async function ingestVideo(opts: {
 }): Promise<AttachedVideo> {
   const { origin, bridge, file, signal, onProgress } = opts;
   const capabilities = opts.capabilities ?? await describe(bridge, signal);
-  const { sampling } = capabilities;
+  const tooLong = durationRefusal(await videoDurationMs(file), capabilities.maxDurationMs);
+  if (tooLong) throw new Error(tooLong);
   const source: Descriptor = await pushBlob(origin, file, {
     ...(signal ? { signal } : {}),
     onProgress: (done, total) => onProgress?.({ phase: 'uploading', done, total }),
   });
-  onProgress?.({ phase: 'sampling' });
-  const sampled = await sampleVideo(file, sampling, { ...(signal ? { signal } : {}) });
-  const frames: VideoFrameRef[] = [];
-  for (const [i, frame] of sampled.frames.entries()) {
-    frames.push({ root: await ingestMedia(origin, frame.bytes, { ...(signal ? { signal } : {}) }), tMs: frame.tMs });
-    onProgress?.({ phase: 'ingesting', done: i + 1, total: sampled.frames.length });
-  }
-  const audio: VideoAudioRef[] = [];
-  if (capabilities.transcription) {
-    for await (const window of extractAudioWindows(file, soundtrackWindowMs(sampling, capabilities.transcription), {
-      ...(signal ? { signal } : {}), maxSampleRate: capabilities.transcription.maxSampleRate,
-    })) {
-      audio.push({ root: await ingestMedia(origin, window.bytes, { ...(signal ? { signal } : {}) }), startMs: window.startMs, endMs: window.endMs });
-    }
-  }
+  // The page reads the clip with its own decoder; what it reads, and how, is media's procedure, the same for any decoder.
+  const decoder = mediabunnyDecoder(file);
+  const { frames, audio, durationMs } = await prepareVideo(
+    decoder, capabilities, bytes => ingestMedia(origin, bytes, { ...(signal ? { signal } : {}) }),
+    { ...(signal ? { signal } : {}), ...(onProgress ? { onProgress } : {}) },
+  ).finally(() => decoder.dispose());
   const requestId = crypto.randomUUID();
   onProgress?.({ phase: 'composing' });
   // Checked last, after every callback, so an abort can never fall between this check and the listener below.
@@ -101,11 +94,7 @@ export async function ingestVideo(opts: {
       if (ev.type === 'video:cancelled') settle(() => reject(new DOMException('The video was cancelled.', 'AbortError')));
     });
     signal?.addEventListener('abort', onAbort, { once: true });
-    bridge.send({
-      type: 'video:compose', requestId, frames,
-      durationMs: Math.max(sampled.durationMs, frames[frames.length - 1].tMs),
-      ...(audio.length > 0 ? { audio } : {}), source,
-    });
+    bridge.send({ type: 'video:compose', requestId, frames, durationMs, ...(audio.length > 0 ? { audio } : {}), source });
   });
 }
 

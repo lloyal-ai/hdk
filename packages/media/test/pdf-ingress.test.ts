@@ -39,8 +39,8 @@ describe('createDocumentIngress — the shape', () => {
     const meta = metaOf(store, root.digest);
     expect(meta.pageCount).toBe(2);
     expect(meta.title).toBe('An Untagged Report');
-    // A document materializes to no inputs: its text is for retrieval, never the projector.
-    expect(materialize(store, [root]).inputs).toEqual([]);
+    // A document materializes to no inputs: its text is for retrieval, never the projector, and says so.
+    expect(materialize(store, [root])).toMatchObject({ inputs: [], skipped: [{ root, reason: 'text' }] });
   }, 60_000);
 
   it('reads headings by size on an untagged page and maps sections to pages', async () => {

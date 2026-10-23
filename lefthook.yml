@@ -1,0 +1,15 @@
+# Every commit is judged by hickey against PRINCIPLES.md before it exists; the verdict rides in the
+# commit's trailers. Runs even under --no-verify, so an accepted refusal is recorded as one.
+output: [execution_out]
+pre-commit:
+  commands:
+    hickey:
+      run: npx hickey committing
+prepare-commit-msg:
+  commands:
+    hickey:
+      run: npx hickey trailer {1} {2}
+post-commit:
+  commands:
+    hickey:
+      run: npx hickey committed

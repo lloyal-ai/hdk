@@ -1,5 +1,5 @@
 import { representationsOf } from './attachment';
-import type { Attachment, Descriptor } from './attachment';
+import type { Attachment, AttachmentManifest, Descriptor } from './attachment';
 import type { AttachmentStore } from './store';
 
 export const AUDIO_CONFIG_TYPE = 'application/vnd.lloyal.audio.v1+json' as const;
@@ -38,6 +38,21 @@ export interface AdmittedAudio {
   bytes: Uint8Array;
 }
 
+/**
+ * What every one of these admissions takes: the least of each limit, so a recording kept under it reaches each
+ * consumer it was kept for. Null when there are none.
+ *
+ * @category Media
+ */
+export function commonAdmission(admissions: readonly Readonly<AudioAdmission>[]): Readonly<AudioAdmission> | null {
+  if (admissions.length === 0) return null;
+  const least = (key: keyof AudioAdmission): number => Math.min(...admissions.map(a => a[key]));
+  return Object.freeze({
+    maxBytes: least('maxBytes'), maxDurationSeconds: least('maxDurationSeconds'),
+    maxChannels: least('maxChannels'), maxSampleRate: least('maxSampleRate'),
+  });
+}
+
 export function audioAdmission(overrides: Partial<AudioAdmission> = {}): AudioAdmission {
   const specified = Object.fromEntries(Object.entries(overrides).filter(([, value]) => value !== undefined));
   const limits = { ...DEFAULT_AUDIO_ADMISSION, ...specified };
@@ -47,6 +62,19 @@ export function audioAdmission(overrides: Partial<AudioAdmission> = {}): AudioAd
     }
   }
   return limits;
+}
+
+/** How much audio the native decoder may take, counted at the projector's own rate. Structurally the SDK's
+ *  `AudioLimits`. */
+export interface AudioLimits {
+  maxBytes: number;
+  maxSamples: number;
+}
+
+/** An admission as the native decoder bounds it at the projector's `sampleRate`: its byte limit, and its
+ *  duration in samples with one of headroom, which matches the native bound after resampling. */
+export function audioLimitsAt(admission: AudioAdmission, sampleRate: number): AudioLimits {
+  return { maxBytes: admission.maxBytes, maxSamples: Math.ceil(admission.maxDurationSeconds * sampleRate) + 1 };
 }
 
 /** Inspect integer PCM framing before storage or native allocation; no decoding or resampling occurs here. */
@@ -107,14 +135,19 @@ export function asAudioMeta(value: unknown): AudioMeta | null {
     m.frames >= 2 && m.durationSeconds === m.frames / m.sampleRate && typeof m.silent === 'boolean' ? m : null;
 }
 
-/** Resolve the admitted representation, rechecking both its digest and the caller's current admission limits. */
-export function resolveAudio(store: AttachmentStore, attachment: Attachment, limits: Partial<AudioAdmission> = {}): AdmittedAudio {
-  const bounds = audioAdmission(limits);
+/** What makes a root a recording: an audio manifest carrying one WAV representation. */
+export function recordingOf(store: AttachmentStore, attachment: Attachment): { manifest: AttachmentManifest; representation: Descriptor } {
   const manifest = store.getManifest(attachment.digest);
   if (!manifest || manifest.config.mediaType !== AUDIO_CONFIG_TYPE) throw new Error('missing audio manifest or invalid digest');
   const representations = representationsOf(manifest);
   if (representations.length !== 1 || representations[0].mediaType !== AUDIO_MEDIA_TYPE) throw new Error('invalid audio representation');
-  const representation = representations[0];
+  return { manifest, representation: representations[0] };
+}
+
+/** Resolve the admitted representation, rechecking both its digest and the caller's current admission limits. */
+export function resolveAudio(store: AttachmentStore, attachment: Attachment, limits: Partial<AudioAdmission> = {}): AdmittedAudio {
+  const bounds = audioAdmission(limits);
+  const { manifest, representation } = recordingOf(store, attachment);
   if (representation.size > bounds.maxBytes) throw new Error('audio exceeds the encoded byte limit');
   if (manifest.config.size > 1024) throw new Error('audio metadata exceeds its size limit');
   const bytes = store.get(representation.digest);

@@ -20,6 +20,7 @@ import { Services } from '../src/services';
 import { FileAttachmentStore, createContentIngress } from '@lloyal-labs/media/node';
 import { composeVideo } from '@lloyal-labs/media';
 import { buildUserDeltaMultimodal, deltaCells } from '@lloyal-labs/sdk';
+import { attachmentSettings } from '../src/config';
 import { admitted } from '../src/admitted';
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
@@ -233,6 +234,14 @@ describe('admitted', () => {
       ctx.mockImageCells = 3_000;
       const out = await run(function* () { yield* priced(store, ctx); return yield* admitted([image], { reserve: 4_000, free: 5_000 }); });
       expect((out as { refused: string }).refused).toMatch(/\(1,000 max allowed for attachments\)/);
+    });
+
+    it('at the widest share a harness may configure, an attachment larger than the context is still refused', async () => {
+      const { store, image } = plant();
+      const ctx = new MockSessionContext({ nCtx: 10_000 });
+      ctx.mockImageCells = 12_000;
+      const out = await run(function* () { yield* priced(store, ctx); return yield* admitted([image], { context: attachmentSettings['attachments.context'].max }); });
+      expect(out).toHaveProperty('refused');
     });
 
     it('a free count that is not a whole number of cells, or more than the context holds, is the developer\'s mistake, thrown', async () => {

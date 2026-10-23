@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { run } from 'effection';
+import { Attachments } from '@lloyal-labs/lloyal-agents';
 import { createAudioIngress, FileAttachmentStore } from '@lloyal-labs/media/node';
 import { pcmWav } from '../../media/test/fixtures/audio';
 import { createTranscriber } from '../src/providers/transcription';
@@ -20,10 +21,10 @@ test('resident Qwen3-ASR transcribes admitted audio and bypasses exact silence',
   const roots = await Promise.all([speech, repeated, silent].map(bytes => ingress.ingest(bytes)));
   try {
     await run(function* () {
+      yield* Attachments.set(store);
       const service = yield* createTranscriber(
         process.env.LLAMA_ASR_MODEL ?? resolve(nativeRepo, 'models/audio/qwen3-asr/Qwen3-ASR-0.6B-Q8_0.gguf'),
         process.env.LLAMA_ASR_MMPROJ ?? resolve(nativeRepo, 'models/audio/qwen3-asr/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf'),
-        { store },
       );
       verifyLocalNative({ loaded: true });
       for (const root of roots.slice(0, 2)) {

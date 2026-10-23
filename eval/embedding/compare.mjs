@@ -1,8 +1,8 @@
 /**
- * Embedding comparison — the gate on the catalog's default embedding model.
+ * Embedding comparison — how well each embedding model in the catalog orders text, and what it costs.
  *
- * Both candidates embed the FROZEN reranker fixtures (16 queries × 40 candidate chunks of the docs) through
- * rig's own `createEmbedder`, with the reasoning model, its projector and the reranker resident beside them,
+ * Each candidate embeds the FROZEN reranker fixtures (16 queries × 40 candidate chunks of the docs) through
+ * rig's own embedding provider, with the reasoning model, its projector and the reranker resident beside them,
  * as a research harness would have them. Relevance is measured against the reranker's verdicts on the same
  * fixtures — the judge the abilities already trust — so the question answered is "does this encoder find what
  * the judge would confirm": recall@10 of the reranker's top five, and Spearman rank correlation over all forty.
@@ -11,7 +11,8 @@
  *   node eval/embedding/compare.mjs --candidates <dir> --resident <project>/models   # writes results.json
  *   node eval/embedding/compare.mjs --candidates <dir> --no-resident
  *
- * `--candidates` holds the two GGUFs named in MODELS; `--resident` is a research project's `models/` tree
+ * `--candidates` holds each candidate's GGUFs, the model and any projector, under the names the mirror keeps them
+ * by; `--resident` is a research project's `models/` tree
  * (`llm/`, `vision/`, `reranker/`), the system the encoder is measured beside.
  *
  * Loaded with `require`, not `import`: rig is CommonJS and holds Effection's CommonJS build, and an `import`
@@ -19,12 +20,12 @@
  */
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { resolve, dirname } from 'node:path';
+import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const { createContext } = require('@lloyal-labs/lloyal.node');
-const { createEmbedder, createReranker } = require('@lloyal-labs/rig/node');
+const { catalogEntry, createReranker, providers } = require('@lloyal-labs/rig/node');
 const { run } = require('effection');
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -51,20 +52,21 @@ const resident = RESIDENT ? { llm: slot('llm'), mmproj: slot('vision'), reranker
 const fixtures = JSON.parse(readFileSync(resolve(root, 'eval/rerank/fixtures.json'), 'utf8'));
 const verdicts = JSON.parse(readFileSync(resolve(root, 'eval/rerank/scores-post-n10.json'), 'utf8'));
 
-/** Each candidate prepares its text the way its card says: the encoder never guesses which side a text is. */
-const MODELS = [
-  {
-    id: 'nomic-embed-text-v1.5-q4', pooling: 'mean', nCtx: 2048,
-    path: resolve(candidates, 'nomic-embed-text-v1.5.Q4_K_M.gguf'),
-    query: (q) => `search_query: ${q}`, doc: (d) => `search_document: ${d}`,
-  },
-  {
-    id: 'qwen3-embedding-0.6b-q8', pooling: 'last', nCtx: 2048,
-    path: resolve(candidates, 'Qwen3-Embedding-0.6B-Q8_0.gguf'),
-    query: (q) => `Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: ${q}`, doc: (d) => d,
-  },
-];
-for (const m of MODELS) if (!existsSync(m.path)) { process.stderr.write(`--candidates: ${m.path} is not there\n`); process.exit(1); }
+/** A catalog id's file, by the name its mirror keeps it under, in the candidates directory. */
+const fileOf = (role, id) => resolve(candidates, basename(new URL(catalogEntry(role, id).urls.at(-1)).pathname));
+
+/** Each candidate is bound through rig's own embedding provider, as a harness whose block names that id binds it:
+ *  the projector it pairs, the context its entry gives, its pooling, and its card's framing, which the encoder
+ *  writes from what the eval says of a text (a query, or a document for search, titled by its heading), never
+ *  from a prefix written here. */
+const MODELS = ['nomic-embed-text-v1.5-q4', 'embeddinggemma-2-q8'].map((id) => {
+  const block = { id };
+  const paired = providers.embedding.projector.select(block);
+  return { id, block, path: fileOf('embedding', id), ...(paired ? { projector: fileOf('embedding.projector', paired.id) } : {}) };
+});
+for (const file of MODELS.flatMap((m) => [m.path, m.projector].filter(Boolean))) {
+  if (!existsSync(file)) { process.stderr.write(`--candidates: ${file} is not there\n`); process.exit(1); }
+}
 
 const cosine = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; };
 const rankOf = (scores) => { const order = scores.map((s, i) => [s, i]).sort((x, y) => y[0] - x[0]); const r = new Array(scores.length); order.forEach(([, i], pos) => { r[i] = pos; }); return r; };
@@ -88,17 +90,18 @@ for (const m of MODELS) {
     if (resident) yield* createReranker(resident.reranker, { nCtx: 16384 });
     const before = rss();
     const t0 = performance.now();
-    const e = yield* createEmbedder(m.path, { nCtx: m.nCtx, pooling: m.pooling });
+    const e = yield* providers.embedding.bind(m.path, m.block, m.projector);
     const loadMs = performance.now() - t0;
     let peak = rss();
     const per = [];
     let texts = 0, textMs = 0, refused = 0;
     for (const q of fixtures.queries) {
       const v = verdictOf.get(q.id);
-      const docs = q.candidates.map((c) => m.doc(c.text));
+      // A chunk's heading is its title: a model whose card frames titled documents reads it, the others ignore it.
+      const docs = q.candidates.map((c) => ({ parts: [c.text], title: c.heading }));
       const t1 = performance.now();
       let vectors;
-      try { vectors = yield* e.embed([m.query(q.text), ...docs]); }
+      try { vectors = yield* e.embed([{ parts: [q.text], role: 'query' }, ...docs]); }
       catch (err) { refused++; process.stderr.write(`${m.id} ${q.id}: ${err.message}\n`); continue; }
       textMs += performance.now() - t1; texts += docs.length + 1;
       peak = Math.max(peak, rss());

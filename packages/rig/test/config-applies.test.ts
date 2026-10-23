@@ -31,7 +31,7 @@ describe('config keys: when a change applies', () => {
       expect(key.split('.').length, key).toBeGreaterThanOrEqual(3);
     }
     expect(Object.keys(modelSettings).filter((k) => k.endsWith('.id')).sort()).toEqual([
-      'model.embedding.id', 'model.llm.id', 'model.reranker.id',
+      'model.embedding.id', 'model.embedding.projector.id', 'model.llm.id', 'model.reranker.id',
       'model.transcription.id', 'model.transcription.projector.id', 'model.vision.id',
     ]);
   });

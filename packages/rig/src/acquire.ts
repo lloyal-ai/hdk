@@ -15,17 +15,20 @@ import type { Operation } from 'effection';
 
 /**
  * Run `create` and hold its result for the calling scope: on any exit the scope waits for the creation to
- * settle and disposes what it produced. A rejection has nothing to dispose. A `dispose` that throws never
- * stops the scope from closing.
+ * settle, disposes what it produced, and, when `dispose` answers a promise, waits until it is freed. A
+ * rejection has nothing to dispose. A `dispose` that throws or rejects never stops the scope from closing.
  */
-export function* acquire<T>(create: () => Promise<T>, dispose: (value: T) => void): Operation<T> {
+export function* acquire<T>(create: () => Promise<T>, dispose: (value: T) => void | Promise<void>): Operation<T> {
   const pending = create();
-  const free = (value: T): void => { try { dispose(value); } catch { /* the value is gone either way */ } };
+  // Settled either way: the value is gone whether its free succeeded or not.
+  const free = (value: T): Promise<unknown> => {
+    try { return Promise.resolve(dispose(value)).catch(() => undefined); } catch { return Promise.resolve(); }
+  };
   // Registered BEFORE the wait, so a halt while the promise is pending still ends in a free — after the
   // arrival, which the teardown waits for.
   yield* ensure(function* () {
     const settled = yield* until(pending.then((value) => ({ value }), () => null));
-    if (settled) free(settled.value);
+    if (settled) yield* until(free(settled.value));
   });
   return yield* until(pending);
 }

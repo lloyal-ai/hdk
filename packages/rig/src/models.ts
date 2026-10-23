@@ -22,7 +22,7 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { Service } from './services';
 import type { modelSettings } from './config';
-import type { EmbeddingPooling } from './retrieval';
+import type { EmbeddingFraming, EmbeddingPooling } from './retrieval';
 import type { MachineClass } from './machine';
 
 /** The model roles a harness provisions — the slot `models/<role>/` each is kept in: the reasoning model, and
@@ -47,7 +47,8 @@ export interface ModelCatalogEntry {
   sha256: string;
   /** Approx size, for a progress ETA when Content-Length is absent. */
   sizeBytes: number;
-  /** Suggested `context` (nCtx) when the harness doesn't set one. */
+  /** The context (nCtx) the model takes when the harness sets none: rig binds an embedding model at it, and the
+   *  `lloyal-ai` CLI, from its own copy of this catalog, writes an llm's into a new project's `harness.yml`. */
   recommendedContext?: number;
   /** LLM entries only: the id of this model's vision projector (role `vision`). One vision tower serves every
    *  quant of the same model, so a `model.vision` block that names no id takes this one. */
@@ -58,8 +59,18 @@ export interface ModelCatalogEntry {
   /** Embedding entries only: how this model pools its token states — the model's own property, so the
    *  provider never has to guess and a `path:` model has to say. */
   pooling?: EmbeddingPooling;
-  /** The audio projector paired with a transcription decoder. */
+  /** Embedding entries only: the text the model's card asks for before each task's inputs. */
+  framing?: EmbeddingFraming;
+  /** Embedding entries only: the widths the model was trained to be cut to, its own width first. */
+  dimensions?: readonly number[];
+  /** The projector a transcription decoder or a multimodal embedding model is paired with. */
   projector?: string;
+  /** Embedding entries only: the most tokens the model was trained to read as one input, as its card gives it
+   *  for the runtime that loads it. A file's own header can claim more than the model was trained for. */
+  trainedContext?: number;
+  /** Projector entries only: the range of tokens the projector reads one image as, as it was trained. The runtime
+   *  takes a setting outside it as given, so the range is what refuses one. */
+  imageTokens?: { min: number; max: number };
 }
 
 const USER_AGENT = '@lloyal-labs/rig model-fetch';
@@ -104,6 +115,25 @@ export function isModelPresent(projectRoot: string, role: ModelRole, id: string)
  * change. `id`s name the model (`qwen3.5-4b`), matching the on-disk slot
  * `models/<role>/<id>.gguf`.
  */
+
+/** nomic-embed-text v1.5's prefixes, from its card: required, and the space after each colon is part of it. */
+const NOMIC_EMBED_FRAMING: EmbeddingFraming = {
+  search: { query: 'search_query: ', document: 'search_document: ' },
+  classification: { query: 'classification: ', document: 'classification: ' },
+  clustering: { query: 'clustering: ', document: 'clustering: ' },
+};
+
+/** EmbeddingGemma 2's framing, from its card and its sentence-transformers prompts: a query names its task, a
+ *  document its title, `none` without one; the symmetric tasks frame every input as a query. */
+const EMBEDDINGGEMMA_2_FRAMING: EmbeddingFraming = {
+  search: { query: 'task: search result | query: ', document: 'title: none | text: ', titled: 'title: {title} | text: ' },
+  'question-answering': { query: 'task: question answering | query: ', document: 'title: none | text: ', titled: 'title: {title} | text: ' },
+  'fact-checking': { query: 'task: fact checking | query: ', document: 'title: none | text: ', titled: 'title: {title} | text: ' },
+  'code-retrieval': { query: 'task: code retrieval | query: ', document: 'title: none | text: ', titled: 'title: {title} | text: ' },
+  classification: { query: 'task: classification | query: ', document: 'task: classification | query: ' },
+  clustering: { query: 'task: clustering | query: ', document: 'task: clustering | query: ' },
+  similarity: { query: 'task: sentence similarity | query: ', document: 'task: sentence similarity | query: ' },
+};
 export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
   {
     id: 'qwen3-asr-0.6b-q8', role: 'transcription', label: 'Qwen3-ASR 0.6B · Q8_0',
@@ -206,28 +236,53 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     id: 'nomic-embed-text-v1.5-q4',
     role: 'embedding',
     label: 'nomic-embed-text v1.5 · Q4_K_M',
-    // The edge default: a tenth of the memory and a quarter of the latency of the 0.6B Qwen encoder, and it
-    // orders the long tail more like the reranker (eval/embedding/README.md). Qwen recalls more of the judge's
-    // top five and is offered for an appliance-class box.
+    // Text alone at the least cost, for a harness that embeds no media (eval/embedding/README.md).
     urls: [
       'https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf',
       'https://models.lloyal.ai/nomic-embed-text-v1.5.Q4_K_M.gguf',
     ],
     sha256: 'd4e388894e09cf3816e8b0896d81d265b55e7a9fff9ab03fe8bf4ef5e11295ac',
     sizeBytes: 84_106_624,
+    // The card's 8,192 needs a rope scaling llama.cpp is not given here; the file's own 2,048 is what it reads.
+    trainedContext: 2048,
+    recommendedContext: 2048,
     pooling: 'mean',
+    framing: NOMIC_EMBED_FRAMING,
+    // Its card cuts a vector narrower only after a layer norm over the whole one, which the binding's pooled output
+    // has not had; cut without it, the narrower vectors are not the ones it was trained to. Its full width only.
+    dimensions: [768],
   },
   {
-    id: 'qwen3-embedding-0.6b-q8',
+    id: 'embeddinggemma-2-q8',
     role: 'embedding',
-    label: 'Qwen3 Embedding 0.6B · Q8_0',
+    label: 'EmbeddingGemma 2 · Q8_0',
+    // One space for text, images, video and audio; with its projector it embeds all four, without it text alone.
     urls: [
-      'https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf',
-      'https://models.lloyal.ai/Qwen3-Embedding-0.6B-Q8_0.gguf',
+      'https://huggingface.co/unsloth/embeddinggemma-2-GGUF/resolve/031f0d4b35536f69ab3509d4893c923264fcf253/embeddinggemma-2-Q8_0.gguf',
+      'https://models.lloyal.ai/embeddinggemma-2-Q8_0.gguf',
     ],
-    sha256: '06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439',
-    sizeBytes: 639_150_592,
-    pooling: 'last',
+    sha256: '6f1bd4ac6c5df7444f9cca7ca36cafe6cfa34cd6f49fefb1e0b4be8143aed8bc',
+    sizeBytes: 309_855_520,
+    // One 8,192-token window shared by every part of an input; the file's header inherits a far longer one.
+    trainedContext: 8192,
+    recommendedContext: 8192,
+    pooling: 'mean',
+    framing: EMBEDDINGGEMMA_2_FRAMING,
+    dimensions: [768, 512, 256, 128],
+    projector: 'embeddinggemma-2-mmproj-bf16',
+  },
+  {
+    id: 'embeddinggemma-2-mmproj-bf16',
+    role: 'embedding.projector',
+    label: 'EmbeddingGemma 2 vision and audio projector · BF16',
+    // Upstream names it `mmproj-BF16.gguf`; the mirror is a flat bucket, so its key names the model.
+    urls: [
+      'https://huggingface.co/unsloth/embeddinggemma-2-GGUF/resolve/031f0d4b35536f69ab3509d4893c923264fcf253/mmproj-BF16.gguf',
+      'https://models.lloyal.ai/mmproj-embeddinggemma-2-BF16.gguf',
+    ],
+    sha256: '995aaa56e88b9b631f651861d659b728a625ccc02a238be37cff56cf11dc0032',
+    sizeBytes: 982_074_880,
+    imageTokens: { min: 70, max: 1120 },
   },
 ];
 

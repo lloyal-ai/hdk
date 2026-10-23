@@ -58,10 +58,16 @@ import type {
 import { Branch } from './Branch.js';
 import { BranchStore } from './BranchStore.js';
 import { Session } from './Session.js';
+import { MEDIA_MARKER, mediaKind } from './deltas.js';
 
-type MediaKind = 'image' | 'audio' | 'video';
-const kindOf = (input: MultimodalInput): MediaKind => input instanceof Uint8Array ? 'image' : input.kind;
-const isAudio = (input: MultimodalInput): boolean => kindOf(input) === 'audio';
+type MediaKind = ReturnType<typeof mediaKind>;
+const isAudio = (input: MultimodalInput): boolean => mediaKind(input) === 'audio';
+
+/** The kernel's refusal for a prompt whose markers do not match its media, or null. Same words as `MtmdSource`. */
+function markerRefusal(prompt: string, inputs: readonly MultimodalInput[]): string | null {
+  const markers = prompt.split(MEDIA_MARKER).length - 1;
+  return markers === inputs.length ? null : `MtmdSource - media marker count (${markers}) does not match media count (${inputs.length})`;
+}
 
 /** The kernel's refusal for a video it cannot lay out, or null. Same words as `MtmdSource`. */
 function videoRefusal(input: MultimodalInput): string | null {
@@ -116,6 +122,11 @@ export interface MockSessionContextOpts {
   cellsUsed?: number;
   /** Token ID treated as stop token. Default: 999 */
   stopToken?: number;
+  /** Created with embeddings on, as `createContext({ embeddings: true })`: a multimodal input is then
+   *  measured and encoded with the model's own special tokens, and the context pools. As the binding does, the
+   *  measure counts those tokens for a branch prefill too, which places none: a branch is not prefilled on an
+   *  embedding context. Default: false */
+  embeddings?: boolean;
   /** Sequence leases, one per live branch (the root's included): what
    *  `BranchStore.available` counts down and a fork fails without. Default:
    *  unbudgeted — every fork succeeds and `available` stays large. */
@@ -159,11 +170,13 @@ export class MockSessionContext implements SessionContext {
   // ── Properties ────────────────────────────────────────────────
   readonly vocabSize = 32000;
   readonly nBatch: number;
+  readonly embeddings: boolean;
   readonly memorySize = 0;
 
   constructor(opts?: MockSessionContextOpts) {
     this.nCtx = opts?.nCtx ?? 16384;
     this.nBatch = opts?.nBatch ?? 512;
+    this.embeddings = opts?.embeddings ?? false;
     this.cellsUsed = opts?.cellsUsed ?? 0;
     this.stopToken = opts?.stopToken ?? 999;
     this.nSeqMax = opts?.nSeqMax;
@@ -388,7 +401,7 @@ export class MockSessionContext implements SessionContext {
       sepTokens: sepTokens.map((s) => [...s]),
       prompts: [...prompts],
       bitmapCounts: inputs.map(batch => batch.filter(input => !isAudio(input)).length),
-      inputKinds: inputs.map(batch => batch.map(kindOf)),
+      inputKinds: inputs.map(batch => batch.map(mediaKind)),
       audioLimits: handles.map((_, i) => audioLimits[i] ? { ...audioLimits[i]! } : undefined),
       results: out,
     });
@@ -475,10 +488,33 @@ export class MockSessionContext implements SessionContext {
     inputs: MultimodalInput[],
     _audioLimits?: AudioLimits,
   ): Promise<number> {
-    // The kernel prices by laying the video out, so what prefill refuses cannot be priced either.
-    const refusal = inputs.map(videoRefusal).find(Boolean);
+    // The kernel prices by laying the input out, so what prefill refuses cannot be priced either.
+    const refusal = markerRefusal(prompt, inputs) ?? inputs.map(videoRefusal).find(Boolean);
     if (refusal) throw new Error(refusal);
-    return this._mockCost(sepTokens, prompt, inputs, this.mockImageCells);
+    return this._mockCost(sepTokens, prompt, inputs, this.mockImageCells) + (this.embeddings ? this.mockSpecialTokens : 0);
+  }
+
+  /** The model's own special tokens an embedding context frames an input with (BOS and EOS). */
+  mockSpecialTokens = 2;
+
+  /** Every multimodal input embedded, with what it cost, so a test can assert what an embedder sent. */
+  readonly multimodalEncodes: Array<{ prompt: string; inputKinds: MediaKind[]; cells: number }> = [];
+
+  /** As the binding: only an embedding context with a projector embeds media, refused before any work; an
+   *  input larger than one dispatch rejects with nothing run, as the kernel's whole placement does. */
+  encodeMultimodal(prompt: string, inputs: MultimodalInput[], audioLimits?: AudioLimits): Promise<void> {
+    if (!this.embeddings || !(this.supportsVision() || this.supportsAudio())) {
+      throw new Error('encodeMultimodal requires an embedding context with a projector; pass embeddings: true and mmprojPath to createContext');
+    }
+    const mismatch = markerRefusal(prompt, inputs);
+    if (mismatch) throw new Error(mismatch);
+    return (async () => {
+      const cells = await this._cellsMultimodal([], prompt, inputs, audioLimits);
+      if (cells > this.nBatch) {
+        throw new Error(`decode::segments - a stream of ${cells} entries must go in one dispatch on this context, which holds ${this.nBatch}`);
+      }
+      this.multimodalEncodes.push({ prompt, inputKinds: inputs.map(mediaKind), cells });
+    })();
   }
 
   /** Whether the mock stands in for a vision-capable projector. */
@@ -655,7 +691,7 @@ export class MockSessionContext implements SessionContext {
   async encode(_tokens: number[]): Promise<void> {}
   getEmbeddings(_normalize?: boolean): Float32Array { return new Float32Array(0); }
   getEmbeddingDimension(): number { return 0; }
-  hasPooling(): boolean { return false; }
+  hasPooling(): boolean { return this.embeddings; }
 
   // ── KV cache operations (stubs) ───────────────────────────────
 
@@ -677,8 +713,14 @@ export class MockSessionContext implements SessionContext {
 
   /** Times `dispose()` was called, so ownership can be asserted. */
   disposeCount = 0;
+  private freed?: Promise<void>;
 
-  dispose(): void { this.disposeCount++; }
+  /** The binding's promise: one, resolved once freed, and the mock holds no work in flight, so at once. It does
+   *  not refuse later calls; a test of what follows a dispose fakes the binding's refusal itself. */
+  dispose(): Promise<void> {
+    this.disposeCount++;
+    return (this.freed ??= Promise.resolve());
+  }
 
   // ── Scoring (stub) ────────────────────────────────────────────
 

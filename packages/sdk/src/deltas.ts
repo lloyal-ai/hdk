@@ -20,6 +20,13 @@ export const MEDIA_MARKER = '<__media__>';
 const defangMarker = (text: string): string => text.split(MEDIA_MARKER).join('<media>');
 
 /**
+ * What a projector input is: bare bytes are an image.
+ *
+ * @category Agents
+ */
+export const mediaKind = (input: MultimodalInput): 'image' | 'audio' | 'video' => (input instanceof Uint8Array ? 'image' : input.kind);
+
+/**
  * Chat content carrying one media marker per input
  *
  * The ONE place `media_marker` parts are emitted. Every ingress — a user turn,
@@ -402,9 +409,12 @@ export function buildToolResultDeltaMultimodal(
  * is directly comparable with `ContextPressure.headroom` and with the
  * `tokensDecoded` the prefill reports back.
  *
+ * On an embedding context, measure an input with {@link embedCells}, which
+ * also measures text alone on a model with no projector.
+ *
  * @param ctx - Active session context (created with `mmprojPath`)
  * @param delta - Built by any of the multimodal delta builders
- * @returns Cells the prefill would add: separator, text and projected media rows
+ * @returns Cells the prefill, or the embed, would take: separator, text and projected media rows
  *
  * @category Agents
  */
@@ -413,4 +423,66 @@ export async function deltaCells(
   delta: MultimodalDelta,
 ): Promise<number> {
   return ctx._cellsMultimodal(delta.sep, delta.prompt, delta.bitmaps, delta.audioLimits);
+}
+
+/** The text around an input's media, one run between each two pieces, so a marker split across two text parts is
+ *  still read as one. */
+const textRuns = (parts: readonly (string | MultimodalInput)[]): string[] => parts.reduce<string[]>(
+  (runs, part) => (typeof part === 'string' ? [...runs.slice(0, -1), runs[runs.length - 1] + part] : [...runs, '']),
+  [''],
+);
+
+/**
+ * Build the delta for one embedding input
+ *
+ * An embedding reads one input whole, with no chat template and no turn
+ * separator: its parts in order, text as written and one {@link MEDIA_MARKER}
+ * where each piece of media stands. Only a prompt with media is split on
+ * markers, so its text is defanged; text alone is tokenized as written. The
+ * media is owned as every multimodal delta owns it, and sound is bounded by
+ * `audioLimits` as it is there.
+ *
+ * @param parts - Text and media, in the order they are read
+ * @param opts - Aggregate audio limits, required when a part is sound
+ * @returns The delta {@link embedCells} measures and {@link embedDelta} embeds
+ *
+ * @category Agents
+ */
+export function buildEmbedDelta(
+  parts: readonly (string | MultimodalInput)[],
+  opts: { audioLimits?: AudioLimits } = {},
+): MultimodalDelta {
+  const inputs = parts.filter((part): part is MultimodalInput => typeof part !== 'string');
+  const runs = textRuns(parts);
+  const written = inputs.length > 0 ? runs.map(defangMarker) : runs;
+  return multimodalDelta([], written.join(MEDIA_MARKER), inputs, opts.audioLimits);
+}
+
+/**
+ * What an embedding input costs, measured with nothing run: text alone by its
+ * tokens, the model's own special tokens included, and an input with media as
+ * the projector lays it out ({@link deltaCells}). An embedding context must hold
+ * that much in one dispatch.
+ *
+ * @category Agents
+ */
+export async function embedCells(ctx: SessionContext, delta: MultimodalDelta): Promise<number> {
+  return delta.bitmaps.length === 0 ? (await ctx.tokenize(delta.prompt, true)).length : deltaCells(ctx, delta);
+}
+
+/**
+ * Embed one input on an embedding context: the context cleared, the input
+ * encoded whole (text alone through its tokens, with media in one dispatch),
+ * and its pooled vector read, L2-normalized, as a copy the caller owns.
+ *
+ * Several native calls as one unit: a caller must not dispose the context, or
+ * start another embed on it, until this has settled.
+ *
+ * @category Agents
+ */
+export async function embedDelta(ctx: SessionContext, delta: MultimodalDelta): Promise<Float32Array> {
+  await ctx.kvCacheClear();
+  if (delta.bitmaps.length === 0) await ctx.encode(await ctx.tokenize(delta.prompt, true));
+  else await ctx.encodeMultimodal(delta.prompt, delta.bitmaps, delta.audioLimits);
+  return new Float32Array(ctx.getEmbeddings(true));
 }

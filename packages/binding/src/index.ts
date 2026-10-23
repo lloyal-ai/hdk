@@ -14,6 +14,7 @@
 export { connectProjection, availabilityOf } from "./projection";
 export type { Bridge, Frame, Snapshot, Projection, WireStatus, Availability } from "./projection";
 export type { SessionState, SessionFrame } from "./session";
+export { isRequestId } from './request';
 export type { Transcription, VoiceCapabilities, VoiceCommand, VoiceEvent, VoiceResult } from './voice';
 export type { UntranscribedWindow, VideoAudioRef, VideoCapabilities, VideoCommand, VideoEvent, VideoFrameRef } from './video';
 import type { SessionFrame } from "./session";

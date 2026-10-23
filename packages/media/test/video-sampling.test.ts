@@ -3,8 +3,9 @@
  * a soundtrack is cut into windows the transcription service admits.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SoundtrackCutter, captureFrames, extractAudioWindows, fitEdge, frameTimes, pcm16Wav, quietestCut, sampleVideo, soundtrackWindowMs } from '../src/video-sampling';
-import type { SampledFrame, SoundtrackWindow } from '../src/video-sampling';
+import { captureFrames, extractAudioWindows, sampleVideo } from '../src/video-sampling';
+import { SoundtrackCutter, fitEdge, frameTimes, pcm16Wav, quietestCut, soundtrackDecimation, soundtrackWindowMs } from '../src/clip';
+import type { SampledFrame, SoundtrackWindow } from '../src/clip';
 
 // Stand-in decoder: a 2-second, 320×240 clip whose frames are shown at 8 fps. A test sets the soundtrack:
 // `globalThis.soundtrack`, decoded buffers with their timestamps, `globalThis.videoStart`, `globalThis.clipSeconds`
@@ -98,6 +99,15 @@ describe('cutting a soundtrack', () => {
     const tight = { ...limits, maxDurationSeconds: 60, maxBytes: 44 + 2 * 16_000 * 3, maxSampleRate: 16_000 };
     expect(soundtrackWindowMs({ timestampIntervalMs: 5000 }, tight)).toBe(2500);
     expect(() => new SoundtrackCutter(16000, 0)).toThrow(RangeError);
+  });
+
+  it('writes every nth sample of the source, no faster than 48 kHz or the rate the service admits', () => {
+    expect(soundtrackDecimation(44_100)).toEqual({ step: 1, rate: 44_100 });
+    expect(soundtrackDecimation(96_000)).toEqual({ step: 2, rate: 48_000 });
+    expect(soundtrackDecimation(44_100, 16_000)).toEqual({ step: 3, rate: 14_700 });
+    expect(soundtrackDecimation(48_000, 16_000)).toEqual({ step: 3, rate: 16_000 });
+    // A service that admits more than 48 kHz is still written at 48 kHz at most.
+    expect(soundtrackDecimation(192_000, 96_000)).toEqual({ step: 4, rate: 48_000 });
   });
 
   it('encodes mono PCM16 WAV the transcription service admits', () => {

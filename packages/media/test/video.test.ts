@@ -120,6 +120,83 @@ describe('composeVideo', () => {
   });
 });
 
+describe('composeVideo keeps the soundtrack for models', () => {
+  async function soundtrack(content: FileAttachmentStore) {
+    const ingress = createContentIngress(content);
+    return [
+      { root: await ingress.ingest(pcmWav({ frames: 160 })), startMs: 0, endMs: 2000 },
+      { root: await ingress.ingest(pcmWav({ frames: 320 })), startMs: 2000, endMs: 4000 },
+    ];
+  }
+
+  it('lists each soundtrack window on the timeline, reusing the recordings\' blobs', async () => {
+    const content = store();
+    const windows = await soundtrack(content);
+    const root = await media.composeVideo(content, { frames: await frameRoots(content), sampling: SAMPLING, durationMs: 4000, transcript, soundtrack: windows });
+
+    const manifest = content.getManifest(root.digest)!;
+    const reps = media.representationsOf(manifest);
+    const meta = media.asVideoMeta(JSON.parse(new TextDecoder().decode(content.get(manifest.config.digest)!)))!;
+    expect(meta.soundtrack).toEqual([{ startMs: 0, endMs: 2000, audio: 3 }, { startMs: 2000, endMs: 4000, audio: 4 }]);
+    expect(meta.soundtrack!.map(w => reps[w.audio].digest))
+      .toEqual(windows.map(w => media.representationsOf(content.getManifest(w.root.digest)!)[0].digest));
+    expect(reps.map(r => r.mediaType).slice(3)).toEqual([media.AUDIO_MEDIA_TYPE, media.AUDIO_MEDIA_TYPE, media.TRANSCRIPT_MEDIA_TYPE]);
+  });
+
+  it('finds the audio of a span from the manifest alone', async () => {
+    const content = store();
+    const root = await media.composeVideo(content, { frames: await frameRoots(content), sampling: SAMPLING, durationMs: 4000, soundtrack: await soundtrack(content) });
+    const manifest = content.getManifest(root.digest)!;
+    const meta = media.asVideoMeta(JSON.parse(new TextDecoder().decode(content.get(manifest.config.digest)!)))!;
+    const heard = (fromMs: number, toMs: number) => meta.soundtrack!.filter(w => w.startMs < toMs && w.endMs > fromMs).map(w => w.audio);
+    expect(heard(1500, 2500)).toEqual([3, 4]);
+    expect(heard(2500, 3000)).toEqual([4]);
+    expect(media.representationsOf(manifest)[4].mediaType).toBe(media.AUDIO_MEDIA_TYPE);
+  });
+
+  it('the model still sees frames and notes: a recording is never read as a frame', async () => {
+    const content = store();
+    const root = await media.composeVideo(content, { frames: await frameRoots(content), sampling: SAMPLING, durationMs: 4000, transcript, soundtrack: await soundtrack(content) });
+    const video = media.resolveVideo(content, root);
+    expect(video.frames).toHaveLength(3);
+    expect(video.notes).toEqual([{ atMs: 750, text: ' Speech: "one, two, three"' }]);
+    expect(materialize(content, [root]).inputs).toHaveLength(1);
+  });
+
+  it('a consumer that hears is given the soundtrack after the frames, each window admitted as a recording', async () => {
+    const content = store();
+    const windows = await soundtrack(content);
+    const root = await media.composeVideo(content, { frames: await frameRoots(content), sampling: SAMPLING, durationMs: 4000, transcript, soundtrack: windows });
+    const recorded = windows.map(w => media.resolveAudio(content, w.root).bytes);
+    const heard = materialize(content, [root], { audio: media.audioAdmission() }).inputs;
+    expect(heard.map(i => (i instanceof Uint8Array ? 'image' : i.kind))).toEqual(['video', 'audio', 'audio']);
+    expect(heard.slice(1)).toEqual(recorded.map(bytes => ({ kind: 'audio', bytes })));
+    // A window of the video carries the soundtrack it overlaps, and no more.
+    const early = media.videoWindow(content, root, { fromMs: 0, toMs: 1000 });
+    expect(materialize(content, [early], { audio: media.audioAdmission() }).inputs.slice(1)).toEqual([{ kind: 'audio', bytes: recorded[0] }]);
+    expect(() => materialize(content, [root], { audio: media.audioAdmission({ maxBytes: 8 }) })).toThrow(/byte limit/);
+  });
+
+  it('refuses a window that is not a recording, runs past the clip, or is out of order', async () => {
+    const content = store();
+    const frames = await frameRoots(content);
+    const windows = await soundtrack(content);
+    const compose = (soundtrack: Parameters<typeof media.composeVideo>[1]['soundtrack']) =>
+      media.composeVideo(content, { frames, sampling: SAMPLING, durationMs: 4000, soundtrack });
+    await expect(compose([{ root: frames[0].root, startMs: 0, endMs: 500 }])).rejects.toThrow(/soundtrack window 0 is not a recording/);
+    await expect(compose([{ ...windows[0], endMs: 9000 }])).rejects.toThrow(/Soundtrack window 0 runs past the end of the clip/);
+    await expect(compose([windows[1], windows[0]])).rejects.toThrow(/Soundtrack windows must follow one another/);
+  });
+
+  it('asVideoMeta refuses a soundtrack that is off the timeline', () => {
+    const meta = { width: 320, height: 240, durationMs: 1000, poster: 0, sampling: SAMPLING, frames: [{ tMs: 0, frame: 0 }] };
+    expect(media.asVideoMeta({ ...meta, soundtrack: [{ startMs: 0, endMs: 1000, audio: 1 }] })).not.toBeNull();
+    expect(media.asVideoMeta({ ...meta, soundtrack: [{ startMs: 0, endMs: 2000, audio: 1 }] })).toBeNull();
+    expect(media.asVideoMeta({ ...meta, soundtrack: [{ startMs: 500, endMs: 100, audio: 1 }] })).toBeNull();
+    expect(media.asVideoMeta({ ...meta, soundtrack: [{ startMs: 0, endMs: 1000 }] })).toBeNull();
+  });
+});
+
 describe('materialize and resolveVideo', () => {
   it('a video is ONE typed input: frames on a timeline, its transcript as notes', async () => {
     const content = store();
@@ -201,5 +278,106 @@ describe('resolveVideo — a video that is gone is ContentLost; a root that is n
     expect(thrown).toBeInstanceOf(Error);
     expect((thrown as Error).message).toMatch(/not a video/);
     expect(thrown).not.toBeInstanceOf(ContentLost);
+  });
+});
+
+describe('videoWindow — a span of a stored video, as a video of its own', () => {
+  async function stored(content: FileAttachmentStore) {
+    const ingress = createContentIngress(content);
+    const soundtrack = [
+      { root: await ingress.ingest(pcmWav({ frames: 160 })), startMs: 0, endMs: 400 },
+      { root: await ingress.ingest(pcmWav({ frames: 320 })), startMs: 400, endMs: 1000 },
+    ];
+    const spoken = { provenance: { model: 'asr' }, segments: [{ startMs: 0, endMs: 300, text: 'early' }, { startMs: 300, endMs: 900, text: 'later' }] };
+    const source = content.putBlob(MP4, 'application/octet-stream');
+    const root = await media.composeVideo(content, { frames: await frameRoots(content), sampling: SAMPLING, durationMs: 1000, transcript: spoken, soundtrack, source });
+    return { root, manifest: content.getManifest(root.digest)! };
+  }
+  const metaOf = (content: FileAttachmentStore, root: media.Attachment) =>
+    media.asVideoMeta(JSON.parse(new TextDecoder().decode(content.get(content.getManifest(root.digest)!.config.digest)!)))!;
+
+  it('keeps the frames, soundtrack and speech in the span at the video\'s own times, reusing their blobs', async () => {
+    const content = store();
+    const { root, manifest } = await stored(content);
+    const reps = media.representationsOf(manifest);
+    const window = media.videoWindow(content, root, { fromMs: 250, toMs: 500 });
+
+    const meta = metaOf(content, window);
+    const windowReps = media.representationsOf(content.getManifest(window.digest)!);
+    expect(meta.frames.map(f => f.tMs)).toEqual([250, 500]);
+    expect(meta.frames.map(f => windowReps[f.frame].digest)).toEqual([reps[1].digest, reps[2].digest]);
+    expect(meta.soundtrack!.map(w => [w.startMs, w.endMs, windowReps[w.audio].digest])).toEqual([[0, 400, reps[3].digest], [400, 1000, reps[4].digest]]);
+    expect(media.sourceOf(content.getManifest(window.digest)!)?.digest).toBe(media.sourceOf(manifest)!.digest);
+    expect(media.resolveVideo(content, window)).toMatchObject({
+      timestampsMs: [250, 500],
+      notes: [{ atMs: 300, text: ' Speech: "early"' }, { atMs: 900, text: ' Speech: "later"' }],
+    });
+  });
+
+  it('a later span leaves out what came before it', async () => {
+    const content = store();
+    const { root } = await stored(content);
+    const window = media.videoWindow(content, root, { fromMs: 500, toMs: 1000 });
+    const meta = metaOf(content, window);
+    expect(meta.frames.map(f => f.tMs)).toEqual([500]);
+    expect(meta.soundtrack!.map(w => w.startMs)).toEqual([400]);
+    expect(media.resolveVideo(content, window).notes).toEqual([{ atMs: 900, text: ' Speech: "later"' }]);
+  });
+
+  it('refuses a span with no frame in it, one that ends before it starts, and a root that is not a video', async () => {
+    const content = store();
+    const { root } = await stored(content);
+    expect(() => media.videoWindow(content, root, { fromMs: 600, toMs: 900 })).toThrow(/no frame of this video falls between 600 and 900 ms/);
+    expect(() => media.videoWindow(content, root, { fromMs: 500, toMs: 250 })).toThrow(/ends before it starts/);
+    const [frame] = await frameRoots(content);
+    expect(() => media.videoWindow(content, frame.root, { fromMs: 0, toMs: 500 })).toThrow(/not a video/);
+  });
+});
+
+describe('the time-mark interval a video is recorded with', () => {
+  async function spread(content: FileAttachmentStore, n: number, durationMs: number, sampling = SAMPLING) {
+    const roots = await frameRoots(content);
+    const frames = Array.from({ length: n }, (_, i) => ({ root: roots[i % roots.length].root, tMs: Math.floor((i * durationMs) / n) }));
+    return media.composeVideo(content, { frames, sampling, durationMs });
+  }
+  const recorded = (content: FileAttachmentStore, root: media.Attachment) =>
+    media.asVideoMeta(JSON.parse(new TextDecoder().decode(content.get(content.getManifest(root.digest)!.config.digest)!)))!.sampling.timestampIntervalMs;
+
+  it('past 5 min 20 s, marks fall at least two frames apart, so frames still fuse in pairs', async () => {
+    const content = store();
+    const root = await spread(content, 64, 360_000);
+    expect(recorded(content, root)).toBeGreaterThanOrEqual(2 * 5625);
+    expect(media.resolveVideo(content, root).timestampIntervalMs).toBe(recorded(content, root));
+    expect(recorded(content, media.videoWindow(content, root, { fromMs: 90_000, toMs: 180_000 }))).toBe(recorded(content, root));
+  });
+
+  it('a clip whose frames are close keeps the sampling\'s own interval: the layout stays llama.cpp\'s', async () => {
+    const content = store();
+    expect(recorded(content, await spread(content, 16, 4000))).toBe(SAMPLING.timestampIntervalMs);
+  });
+
+  it('a clip sampled without marks stays without them', async () => {
+    const content = store();
+    expect(recorded(content, await spread(content, 3, 27_000, { ...SAMPLING, timestampIntervalMs: 0 }))).toBe(0);
+  });
+
+  it('markInterval is the one rule: twice the widest gap between the frames, or the sampling\'s own when that is longer', () => {
+    expect(media.markInterval([0, 250, 500], SAMPLING)).toBe(5000);
+    expect(media.markInterval([0, 6000, 13000], SAMPLING)).toBe(14000);
+    expect(media.markInterval([0], SAMPLING)).toBe(5000);
+    expect(media.markInterval([0, 9000], { ...SAMPLING, timestampIntervalMs: 0 })).toBe(0);
+  });
+});
+
+describe('durationRefusal — the one limit on a clip\'s length, said the same by the page and the host', () => {
+  it('takes a clip up to the limit and refuses one past it, in words', () => {
+    expect(media.durationRefusal(600_000, 600_000)).toBeUndefined();
+    expect(media.durationRefusal(3_600_000, 600_000)).toBe('This video runs 60 min; this harness takes videos up to 10 min.');
+    expect(media.durationRefusal(754_000, 600_000)).toBe('This video runs 12 min 34 s; this harness takes videos up to 10 min.');
+    expect(media.durationRefusal(1250, 1000)).toBe('This video runs 1.3 s; this harness takes videos up to 1 s.');
+  });
+
+  it('takes a clip of any length when the harness sets no limit', () => {
+    expect(media.durationRefusal(3 * 3_600_000)).toBeUndefined();
   });
 });

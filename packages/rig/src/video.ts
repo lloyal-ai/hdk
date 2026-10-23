@@ -6,6 +6,8 @@
  * command with references only. The host checks every reference, transcribes
  * the windows through the bound transcription service (block presence is the
  * only switch: no service, no transcript), and composes one video attachment.
+ * It keeps a clip's sound whenever anything it runs hears: the transcription
+ * service, or an embedding model that reads sound.
  *
  * Each compose runs in its own task, so several videos attached in a row
  * compose side by side and a Stop of the run does not reach them; the
@@ -16,30 +18,34 @@
 import { resource, until, useAbortSignal, useScope } from 'effection';
 import type { Operation, Task } from 'effection';
 import { Attachments } from '@lloyal-labs/lloyal-agents';
-import { asAttachment, composeVideo, DIGEST_PATTERN, resolveAudio } from '@lloyal-labs/media';
+import { asAttachment, commonAdmission, composeVideo, DIGEST_PATTERN, durationRefusal, resolveAudio, soundtrackRefusal } from '@lloyal-labs/media';
 import type { Attachment, AttachmentStore, AudioAdmission, Descriptor, Transcript } from '@lloyal-labs/media';
+import { isRequestId } from '@lloyal-labs/binding';
 import type { UntranscribedWindow, VideoCapabilities, VideoCommand, VideoEvent } from '@lloyal-labs/binding';
+import { DEFAULT_VIDEO_SAMPLING } from './config';
+import type { attachmentSettings, ConfigOf } from './config';
 import { Services } from './services';
+import type { ServiceMap } from './services';
 import type { CommandGroup } from './serve-commands';
 
-/**
- * How a clip is sampled when nothing says otherwise: llama.cpp's own video
- * defaults (4 fps, a timestamp every 5 s), a frame cap that keeps a clip within
- * a working context, and a longest edge that keeps each frame's projection
- * small. A clip longer than `maxFrames / fps` is sampled more sparsely.
- *
- * @category Rig
- */
-export const DEFAULT_VIDEO_SAMPLING: VideoCapabilities['sampling'] = Object.freeze({
-  fps: 4,
-  timestampIntervalMs: 5000,
-  maxFrames: 64,
-  maxEdgePx: 640,
-});
+/** The harness's video block, as its config hands it over: absent keys, or no block, take rig's defaults. */
+export type VideoSettings = { attachments?: { video?: Partial<NonNullable<ConfigOf<typeof attachmentSettings>['attachments']['video']>> } };
 
 export interface VideoCommandsOptions {
   wire: { send(event: VideoEvent): Operation<void> };
-  sampling?: VideoCapabilities['sampling'];
+  /** The harness's config, read each time a video is described or composed, so a change applies to the next one. */
+  config?: () => VideoSettings;
+}
+
+/** The policy a video is sampled and composed under now: the harness's video block over rig's defaults, and
+ *  a length limit only when the harness sets one. */
+function videoPolicy(settings: VideoSettings): Pick<VideoCapabilities, 'sampling' | 'maxDurationMs'> {
+  const { fps, maxFrames, maxEdgePx, maxDurationSeconds } = settings.attachments?.video ?? {};
+  const sampled = Object.fromEntries(Object.entries({ fps, maxFrames, maxEdgePx }).filter(([, v]) => v !== undefined));
+  return {
+    sampling: { ...DEFAULT_VIDEO_SAMPLING, ...sampled },
+    ...(maxDurationSeconds !== undefined ? { maxDurationMs: maxDurationSeconds * 1000 } : {}),
+  };
 }
 
 type Compose = Extract<VideoCommand, { type: 'video:compose' }>;
@@ -65,7 +71,7 @@ function references(command: Compose, maxFrames: number):
   if (frames.some(f => !f.root || !isMs(f.tMs))) return { refused: 'A frame is not an admitted image reference.' };
   if (frames.length > maxFrames) return { refused: `This host composes at most ${maxFrames} frames a video, not ${frames.length}.` };
   const audio = (Array.isArray(command.audio) ? command.audio : []).map(a => ({ root: asAttachment(a?.root), startMs: a?.startMs, endMs: a?.endMs }));
-  if (audio.some(a => !a.root || !isMs(a.startMs) || !isMs(a.endMs) || a.endMs < a.startMs)) {
+  if (audio.some(a => !a.root || !isMs(a.startMs) || !isMs(a.endMs))) {
     return { refused: 'A soundtrack window is not an admitted audio reference.' };
   }
   const source = command.source === undefined ? undefined : asBlob(command.source);
@@ -78,37 +84,45 @@ function references(command: Compose, maxFrames: number):
 }
 
 /**
- * The sentence refusing a soundtrack window, if one is not a recording this
- * store admitted (read back under the admission limits it will be transcribed
- * under) or runs past the clip. Checked before any window is transcribed, with
- * or without a transcription service, as a frame is.
+ * The sentence refusing a soundtrack, if a window is not a recording this
+ * store admitted (read back under the admission the host keeps sound under,
+ * what every service that hears takes) or has no place on the clip's timeline (media's rule, the one the
+ * composition keeps). Checked before any window is transcribed, with or
+ * without a transcription service, as a frame is.
  */
-function soundtrackRefusal(
+function unadmittedOrMisplaced(
   store: AttachmentStore,
-  windows: readonly { root: Attachment; endMs: number }[],
+  windows: readonly { root: Attachment; startMs: number; endMs: number }[],
   durationMs: unknown,
   limits?: Readonly<AudioAdmission>,
 ): string | undefined {
-  const refusal = (w: { root: Attachment; endMs: number }, i: number): string | undefined => {
+  const unadmitted = (w: { root: Attachment }, i: number): string | undefined => {
     try {
       resolveAudio(store, w.root, limits);
+      return undefined;
     } catch (e) {
       return `Soundtrack window ${i} is not an admitted recording: ${message(e)}`;
     }
-    return isMs(durationMs) && w.endMs <= durationMs ? undefined : `Soundtrack window ${i} runs past the end of the clip.`;
   };
-  return windows.map(refusal).find((r) => r !== undefined);
+  return windows.map(unadmitted).find((r) => r !== undefined) ?? soundtrackRefusal(windows, durationMs);
+}
+
+/** What this host keeps of a clip's sound, as the admission each window meets: what every bound service that hears
+ *  admits, so each window reaches all of them; none when nothing hears, and the page extracts none. */
+function soundtrackAdmission(services: Partial<ServiceMap> | undefined): Readonly<AudioAdmission> | null {
+  const hearers = [services?.transcription?.limits, services?.embedding?.audio];
+  return commonAdmission(hearers.filter((a): a is Readonly<AudioAdmission> => a != null));
 }
 
 /** The commands that compose a video, for a harness to serve beside its own. */
-export function useVideoCommands({ wire, sampling = DEFAULT_VIDEO_SAMPLING }: VideoCommandsOptions): Operation<CommandGroup<VideoCommand>> {
+export function useVideoCommands({ wire, config = () => ({}) }: VideoCommandsOptions): Operation<CommandGroup<VideoCommand>> {
   return resource(function* (provide) {
     const owner = yield* useScope();
     const store = yield* Attachments.expect();
-    const asr = (yield* Services.get())?.transcription;
+    const services = yield* Services.get();
+    const asr = services?.transcription;
+    const soundtrack = soundtrackAdmission(services);
     const composing = new Map<string, Task<void>>();
-    // What the timeline records: the policy the page was told to sample by, never one it reports back.
-    const timeline = { fps: sampling.fps, timestampIntervalMs: sampling.timestampIntervalMs, maxFrames: sampling.maxFrames };
 
     /** Transcribe each window in turn: silence is skipped, a failure is recorded and the rest go on. */
     function* transcribe(requestId: string, windows: { root: Attachment; startMs: number; endMs: number }[]) {
@@ -140,14 +154,23 @@ export function useVideoCommands({ wire, sampling = DEFAULT_VIDEO_SAMPLING }: Vi
     yield* provide({
       handlers: {
         *'video:describe'() {
-          yield* wire.send({ type: 'video:capabilities', capabilities: { sampling, transcription: asr?.limits ?? null } });
+          yield* wire.send({ type: 'video:capabilities', capabilities: { ...videoPolicy(config()), soundtrack } });
         },
         *'video:compose'(command) {
-          if (typeof command.requestId !== 'string' || !command.requestId || command.requestId.length > 128) return;
+          if (!isRequestId(command.requestId)) return;
           const { requestId } = command;
           // One task per id: a second under the same id would take its place and leave the first uncancellable.
           if (composing.has(requestId)) {
             yield* wire.send({ type: 'video:error', requestId, message: 'A video is already being composed under that request.' });
+            return;
+          }
+          const { sampling, maxDurationMs } = videoPolicy(config());
+          // What the timeline is composed from: the policy the page was told to sample by, never one it
+          // reports back. Composition widens its mark interval as the frames require (media's markInterval).
+          const timeline = { fps: sampling.fps, timestampIntervalMs: sampling.timestampIntervalMs, maxFrames: sampling.maxFrames };
+          const tooLong = isMs(command.durationMs) ? durationRefusal(command.durationMs, maxDurationMs) : undefined;
+          if (tooLong) {
+            yield* wire.send({ type: 'video:error', requestId, message: tooLong });
             return;
           }
           const refs = references(command, sampling.maxFrames);
@@ -155,7 +178,7 @@ export function useVideoCommands({ wire, sampling = DEFAULT_VIDEO_SAMPLING }: Vi
             yield* wire.send({ type: 'video:error', requestId, message: refs.refused });
             return;
           }
-          const unfit = soundtrackRefusal(store, refs.audio, command.durationMs, asr?.limits);
+          const unfit = unadmittedOrMisplaced(store, refs.audio, command.durationMs, soundtrack ?? undefined);
           if (unfit !== undefined) {
             yield* wire.send({ type: 'video:error', requestId, message: unfit });
             return;
@@ -167,7 +190,7 @@ export function useVideoCommands({ wire, sampling = DEFAULT_VIDEO_SAMPLING }: Vi
               // that lands while it reads the source stops it before it writes anything.
               const signal = yield* useAbortSignal();
               const root = yield* until(composeVideo(store, {
-                frames: refs.frames, sampling: timeline, durationMs: command.durationMs,
+                frames: refs.frames, sampling: timeline, durationMs: command.durationMs, soundtrack: refs.audio,
                 ...(transcript ? { transcript } : {}),
                 ...(refs.source ? { source: refs.source } : {}),
               }, signal));

@@ -32,7 +32,11 @@ export type {
 } from './tools';
 
 // The retrieval contract, the source every ability subclasses, and the admission every search tool runs.
-export type { Resource, Chunk, ScoredChunk, ScoredResult, Reranker, Embedder, EmbeddingPooling } from './retrieval';
+export type {
+  Resource, Chunk, ScoredChunk, ScoredResult, Reranker, Embedder, EmbeddingPooling,
+  EmbeddingInput, EmbeddingTask, EmbeddingRole, EmbeddingFraming, TaskFraming, Modality,
+} from './retrieval';
+export { EMBEDDING_TASKS } from './retrieval';
 export { Source } from './source';
 export { admitChunks } from './admission';
 export type { AdmitOpts, AdmitResult, AdmitSelect, AdmittedPassage } from './admission';
@@ -60,6 +64,10 @@ export type { Bm25Opts, Bm25Hit } from './bm25';
 export { fitChunks, splitParagraphs, DEFAULT_CHUNK_TOKENS } from './resources/fit';
 export type { FitOpts } from './resources/fit';
 export { mergeRanges, subtractRanges } from './ranges';
+export { fuseRanks } from './fuse-ranks';
+export type { Fused, FuseOpts } from './fuse-ranks';
+export { VectorIndex } from './vector-index';
+export type { VectorHit, VectorIndexOpts, VectorSearchOpts } from './vector-index';
 export { loadDocuments } from './resources/documents';
 export type { Document } from './resources/documents';
 
@@ -87,7 +95,7 @@ export type { InstallStep, InstallStepEvent, InstallCommand } from './install-pr
 export { checkMachine, refusalMessage, gb, MACHINE_CLASS_FLOOR_BYTES } from './machine';
 export type { MachineClass, MachineVerdict } from './machine';
 // A harness's configuration as data: one declaration per key, the model block shipped.
-export { defineConfig, modelSettings, mergeConfig, CONFIG_VERSION } from './config';
+export { attachmentSettings, defineConfig, modelSettings, mergeConfig, CONFIG_VERSION, DEFAULT_VIDEO_SAMPLING } from './config';
 export type { ConfigKey, ConfigTable, ConfigTier, ConfigOf, OriginOf, CliOf, YmlOf, ModelFamily } from './config';
 export { createGrantStore } from './grant-store';
 export { createAbilityRegistry, ability, abilityRequiresConfig } from './registry';
@@ -153,8 +161,8 @@ export { bufferedCommandSignal } from './buffered-command-signal';
 export { HarnessExit } from './harness-exit';
 export type { Transcriber, Transcription } from './transcription';
 export { useVoiceCommands } from './voice';
-export { DEFAULT_VIDEO_SAMPLING, useVideoCommands } from './video';
-export type { VideoCommandsOptions } from './video';
+export { useVideoCommands } from './video';
+export type { VideoCommandsOptions, VideoSettings } from './video';
 export type { VoiceCommandsOptions } from './voice';
 export type { VoiceCommand, VoiceEvent, VoiceCapabilities, VoiceResult } from '@lloyal-labs/binding';
 export type { VideoCommand, VideoEvent, VideoCapabilities } from '@lloyal-labs/binding';

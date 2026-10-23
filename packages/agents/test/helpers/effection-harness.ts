@@ -39,7 +39,7 @@ export function createMockSessionContext(opts?: {
     jsonSchemaToGrammar: async () => '{}',
     getTurnSeparator: () => [0],
     vocabSize: 32000,
-    dispose: () => {},
+    dispose: async () => {},
   } as any;
 }
 

@@ -15,7 +15,12 @@ import { FileAttachmentStore, createContentIngress } from '@lloyal-labs/media/no
 import type { Attachment } from '@lloyal-labs/media';
 import type { VideoEvent } from '@lloyal-labs/binding';
 import { Services } from '../src/services';
-import { DEFAULT_VIDEO_SAMPLING, useVideoCommands } from '../src/video';
+import { stubEmbedder } from '../src/testing';
+import { attachmentSettings, DEFAULT_VIDEO_SAMPLING } from '../src/config';
+import { useVideoCommands } from '../src/video';
+
+/** A harness's video block, as its config hands it over, from a harness that sets every video setting, a length limit among them. */
+const VIDEO = { fps: DEFAULT_VIDEO_SAMPLING.fps, maxFrames: DEFAULT_VIDEO_SAMPLING.maxFrames, maxEdgePx: DEFAULT_VIDEO_SAMPLING.maxEdgePx, maxDurationSeconds: 600 };
 import type { Transcription } from '../src/transcription';
 
 const fixture = (name: string): Uint8Array =>
@@ -61,19 +66,28 @@ const heard = (audio: Attachment, text: string, silent = false): Transcription =
 });
 
 describe('video commands', () => {
-  it('describes the sampling it composes under, and the limits a soundtrack window must meet to be transcribed', async () => {
+  it('describes the sampling it composes under, and the limits a soundtrack window must meet to be kept: whenever anything it runs hears', async () => {
     const limits = { ...DEFAULT_AUDIO_ADMISSION, maxDurationSeconds: 2 };
-    for (const bound of [false, true]) {
+    const transcription = { limits, *transcribe() { throw new Error('unused'); } };
+    const embedder = (audio: typeof limits | null) => ({ ...stubEmbedder, audio });
+    const kept = async (services: Record<string, unknown>) => {
       const events: VideoEvent[] = [];
       await run(function* () {
         yield* Attachments.set(store());
-        yield* Services.set(bound ? { transcription: { limits, *transcribe() { throw new Error('unused'); } } } : {});
+        yield* Services.set(services);
         const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } } });
         yield* group.handlers['video:describe']!({ type: 'video:describe' });
       });
-      // No service, no limits: the page extracts no soundtrack.
-      expect(events).toEqual([{ type: 'video:capabilities', capabilities: { sampling: DEFAULT_VIDEO_SAMPLING, transcription: bound ? limits : null } }]);
-    }
+      const [described] = events as Extract<VideoEvent, { type: 'video:capabilities' }>[];
+      expect(described.capabilities.sampling).toEqual(DEFAULT_VIDEO_SAMPLING);
+      return described.capabilities.soundtrack;
+    };
+    // What every service that hears admits: each alone, the least of both together, none when nothing hears.
+    expect(await kept({ transcription })).toEqual(limits);
+    expect(await kept({ embedding: embedder(DEFAULT_AUDIO_ADMISSION) })).toEqual(DEFAULT_AUDIO_ADMISSION);
+    expect(await kept({ transcription, embedding: embedder({ ...DEFAULT_AUDIO_ADMISSION, maxBytes: 1024 }) })).toEqual({ ...limits, maxBytes: 1024 });
+    expect(await kept({ embedding: embedder(null) })).toBeNull();
+    expect(await kept({})).toBeNull();
   });
 
   it('composes the frames, transcribes the soundtrack window by window, skips silence and reports failures', async () => {
@@ -105,6 +119,82 @@ describe('video commands', () => {
       segments: [{ startMs: 0, endMs: 500, text: 'one, two, three', language: 'English' }],
     });
     expect(materialize(content, [composed.root]).inputs).toHaveLength(1);
+    // Every window is kept for models, heard or not: silence and a failed transcription are still sound.
+    const meta = JSON.parse(new TextDecoder().decode(content.get(manifest.config.digest)!));
+    expect(meta.soundtrack).toEqual(audio.map((w, i) => ({ startMs: w.startMs, endMs: w.endMs, audio: frames.length + i })));
+  });
+
+  it('describes and composes under the harness\'s configured video policy, read when it is asked', async () => {
+    const content = store();
+    const { frames } = await parts(content);
+    const events: VideoEvent[] = [];
+    let policy = { ...VIDEO, fps: 2, maxEdgePx: 320 };
+    await run(function* () {
+      yield* Attachments.set(content);
+      const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } }, config: () => ({ attachments: { video: policy } }) });
+      yield* group.handlers['video:describe']!({ type: 'video:describe' });
+      policy = { ...policy, fps: 1 };   // a session change applies to the next video
+      yield* group.handlers['video:describe']!({ type: 'video:describe' });
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'c', frames, durationMs: 1250 });
+      for (let i = 0; i < 50 && !events.some(e => e.type === 'video:composed'); i++) yield* sleep(5);
+    });
+    const described = events.filter(e => e.type === 'video:capabilities') as Extract<VideoEvent, { type: 'video:capabilities' }>[];
+    expect(described.map(d => d.capabilities.sampling.fps)).toEqual([2, 1]);
+    expect(described[0].capabilities.sampling.maxEdgePx).toBe(320);
+    expect(described[0].capabilities.maxDurationMs).toBe(VIDEO.maxDurationSeconds * 1000);
+    const composed = events.find(e => e.type === 'video:composed') as Extract<VideoEvent, { type: 'video:composed' }>;
+    const meta = JSON.parse(new TextDecoder().decode(content.get(content.getManifest(composed.root.digest)!.config.digest)!));
+    expect(meta.sampling.fps).toBe(1);
+  });
+
+  it('at the edges of every setting\'s range, a clip too long or with too many frames is still refused', async () => {
+    const content = store();
+    const { frames } = await parts(content);
+    const widest = Object.fromEntries((['fps', 'maxFrames', 'maxEdgePx', 'maxDurationSeconds'] as const)
+      .map(k => [k, attachmentSettings[`attachments.video.${k}`].max]));
+    const many = Array.from({ length: widest.maxFrames + 1 }, (_, i) => ({ root: frames[0].root, tMs: i }));
+    const events: VideoEvent[] = [];
+    await run(function* () {
+      yield* Attachments.set(content);
+      const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } }, config: () => ({ attachments: { video: widest } }) });
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'long', frames, durationMs: widest.maxDurationSeconds * 1000 + 1 });
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'many', frames: many, durationMs: 60_000 });
+      for (let i = 0; i < 50 && events.filter(e => e.type === 'video:error').length < 2; i++) yield* sleep(5);
+    });
+    expect(events.map(e => (e as { requestId: string }).requestId).sort()).toEqual(['long', 'many']);
+    expect(events.every(e => e.type === 'video:error')).toBe(true);
+  });
+
+  it('with no length limit set, describes none and composes a clip of any length', async () => {
+    const content = store();
+    const { frames } = await parts(content);
+    const events: VideoEvent[] = [];
+    await run(function* () {
+      yield* Attachments.set(content);
+      const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } } });
+      yield* group.handlers['video:describe']!({ type: 'video:describe' });
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'hours', frames, durationMs: 3 * 3_600_000 });
+      for (let i = 0; i < 50 && !events.some(e => e.type === 'video:composed' || e.type === 'video:error'); i++) yield* sleep(5);
+    });
+    const [described] = events.filter(e => e.type === 'video:capabilities') as Extract<VideoEvent, { type: 'video:capabilities' }>[];
+    expect(described.capabilities).not.toHaveProperty('maxDurationMs');
+    expect(events.map(e => e.type)).toEqual(['video:capabilities', 'video:composed']);
+  });
+
+  it('refuses a clip longer than it takes, before transcribing anything', async () => {
+    const content = store();
+    const { frames, audio } = await parts(content);
+    const events: VideoEvent[] = [];
+    let heardAny = 0;
+    await run(function* () {
+      yield* Attachments.set(content);
+      yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, *transcribe(a) { heardAny++; return heard(a, 'x'); } } });
+      const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } }, config: () => ({ attachments: { video: { ...VIDEO, maxDurationSeconds: 1 } } }) });
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'long', frames, audio, durationMs: 1250 });
+      for (let i = 0; i < 50 && !events.some(e => e.type === 'video:error'); i++) yield* sleep(5);
+    });
+    expect(events).toEqual([{ type: 'video:error', requestId: 'long', message: 'This video runs 1.3 s; this harness takes videos up to 1 s.' }]);
+    expect(heardAny).toBe(0);
   });
 
   it('announces no transcription for a video without a soundtrack', async () => {
@@ -120,7 +210,7 @@ describe('video commands', () => {
     expect(events.map(e => e.type)).toEqual(['video:composed']);
   });
 
-  it('refuses a soundtrack window that is not an admitted recording, or runs past the clip, before transcribing anything', async () => {
+  it('refuses a soundtrack window that is not an admitted recording, runs past the clip or overlaps the one before it, before transcribing anything', async () => {
     const content = store();
     const { frames, audio } = await parts(content);
     for (const transcribing of [false, true]) {
@@ -132,8 +222,10 @@ describe('video commands', () => {
         const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } } });
         yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'forged', frames, audio: [{ root: frames[0].root, startMs: 0, endMs: 500 }], durationMs: 1250 });
         yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'late', frames, audio: [{ ...audio[0], startMs: 1000, endMs: 2000 }], durationMs: 1250 });
-        for (let i = 0; i < 50 && events.filter(e => e.type === 'video:error').length < 2; i++) yield* sleep(5);
+        yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'unordered', frames, audio: [audio[1], audio[0]], durationMs: 1250 });
+        for (let i = 0; i < 50 && events.filter(e => e.type === 'video:error').length < 3; i++) yield* sleep(5);
       });
+      expect(events).toContainEqual({ type: 'video:error', requestId: 'unordered', message: 'Soundtrack windows must follow one another.' });
       expect(events).toContainEqual(expect.objectContaining({ type: 'video:error', requestId: 'forged', message: expect.stringMatching(/^Soundtrack window 0 is not an admitted recording/) }));
       expect(events).toContainEqual({ type: 'video:error', requestId: 'late', message: 'Soundtrack window 0 runs past the end of the clip.' });
       expect(events.some(e => e.type === 'video:composed')).toBe(false);
@@ -172,14 +264,13 @@ describe('video commands', () => {
     expect(composed.untranscribed.map(w => w.reason)).toEqual(Array(3).fill('transcription is not configured'));
   });
 
-  it('composes under the host\'s own sampling, and refuses more frames than it samples', async () => {
+  it('composes under the host\'s configured sampling, and refuses more frames than it samples', async () => {
     const content = store();
     const { frames } = await parts(content);
     const events: VideoEvent[] = [];
-    const sampling = { fps: 2, timestampIntervalMs: 5000, maxFrames: 2, maxEdgePx: 320 };
     await run(function* () {
       yield* Attachments.set(content);
-      const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } }, sampling });
+      const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } }, config: () => ({ attachments: { video: { fps: 2, maxFrames: 2, maxEdgePx: 320 } } }) });
       yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'over', frames, durationMs: 1250 });
       yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'within', frames: frames.slice(0, 2), durationMs: 1250 });
       for (let i = 0; i < 50 && events.length < 2; i++) yield* sleep(5);
