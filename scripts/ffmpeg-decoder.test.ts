@@ -99,6 +99,21 @@ describe.runIf(hasFfmpeg)('ffmpegDecoder on the clip\'s own clock', () => {
     }
   });
 
+  it('shows a frame far into its clock at its exact time, which ffmpeg 6 prints to six figures', async () => {
+    // At 30 fps from 1000 s the 32nd frame stands at 1001.0333 s, which ffmpeg 6 prints as 1001.03.
+    const far = join(dir, 'far.mp4');
+    execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=64x48:r=30:d=2', '-c:v', 'mpeg4', '-output_ts_offset', '1000', far]);
+    const decoder = ffmpegDecoder(far);
+    try {
+      const shown = [];
+      for await (const frame of decoder.frames([1001.04], { width: 64, height: 48 })) shown.push(frame!.shownS);
+      expect(shown).toHaveLength(1);
+      expect(shown[0]).toBeCloseTo(1000 + 31 / 30, 6);
+    } finally {
+      decoder.dispose();
+    }
+  });
+
   it('places sound after a gap in its timestamps where it is presented, the gap silent', async () => {
     const decoder = ffmpegDecoder(gapped);
     try {

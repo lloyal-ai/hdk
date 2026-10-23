@@ -117,7 +117,10 @@ export function ffmpegDecoder(file: string): ClipDecoder {
     ]);
     // Past the last frame nothing is shown.
     if (stdout.length === 0) return null;
-    const decodedS = Number(/pts_time:([\d.]+)/.exec(stderr)?.[1]);
+    // The frame's time as its exact count of the filter's time base: the printed `pts_time` is rounded (to six figures
+    // in ffmpeg 6), which far into a clip is more than the check below allows.
+    const [, num, den] = /config in time_base: (\d+)\/(\d+)/.exec(stderr) ?? [];
+    const decodedS = Number(/\spts:\s*(-?\d+)\s/.exec(stderr)?.[1]) * Number(num) / Number(den);
     if (!(Math.abs(decodedS - shownS) < 0.001)) {
       throw new Error(`ffmpeg decoded the frame at ${decodedS} s for ${shownS} s: this decoder reads constant-rate pictures only`);
     }
