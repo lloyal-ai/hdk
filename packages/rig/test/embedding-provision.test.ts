@@ -177,7 +177,7 @@ describe('embedding provisioning', () => {
       },
     });
     expect(await bound('nomic-embed-text-v1.5-q4')).toMatchObject({
-      dimensions: [768, 512, 256, 128, 64],
+      dimensions: [768],
       framing: {
         search: { query: 'search_query: ', document: 'search_document: ' },
         classification: { query: 'classification: ', document: 'classification: ' },

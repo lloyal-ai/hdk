@@ -248,7 +248,9 @@ export const MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     recommendedContext: 2048,
     pooling: 'mean',
     framing: NOMIC_EMBED_FRAMING,
-    dimensions: [768, 512, 256, 128, 64],
+    // Its card cuts a vector narrower only after a layer norm over the whole one, which the binding's pooled output
+    // has not had; cut without it, the narrower vectors are not the ones it was trained to. Its full width only.
+    dimensions: [768],
   },
   {
     id: 'embeddinggemma-2-q8',
