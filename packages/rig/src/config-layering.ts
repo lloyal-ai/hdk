@@ -72,11 +72,17 @@ function takes(key: ConfigKey, v: unknown): boolean {
   if (key.integer && !Number.isInteger(v)) return false;
   if (key.oneOf && !(typeof v === 'string' && key.oneOf.includes(v))) return false;
   if (key.check && !key.check(v)) return false;
-  if ((key.integer || bounded(key)) && !(typeof v === 'number' && Number.isFinite(v) && v >= least(key) && v <= (key.max ?? Infinity))) return false;
+  if (numeric(key) && !(typeof v === 'number' && Number.isFinite(v) && v >= least(key) && v <= (key.max ?? Infinity))) return false;
   return true;
 }
 
 const bounded = (key: ConfigKey): boolean => key.min !== undefined || key.max !== undefined;
+
+/** Whether the key takes a number: a whole one, or one within bounds. */
+const numeric = (key: ConfigKey): boolean => key.integer === true || bounded(key);
+
+/** Text as a number, when it is written as a decimal; whether the number is one the key takes is `takes`'s to say. */
+const asNumber = (v: unknown): number | undefined => (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v) ? Number(v) : undefined);
 
 /** The least a number may be: its `min`, else one for a whole number, else no floor. */
 const least = (key: ConfigKey): number => key.min ?? (key.integer ? 1 : -Infinity);
@@ -100,13 +106,13 @@ function expectation(key: ConfigKey): string {
   return 'is not valid';
 }
 
-/** A rung's value, accepted or fallen through. The env rung arrives as text and is parsed for an integer key. A
- *  relative path resolves against `base`: the project for a value from its files or its default, the process for one
- *  typed at the cli or set in the environment. */
+/** A rung's value, accepted or fallen through. The env rung arrives as text and is read as a number for a numeric
+ *  key. A relative path resolves against `base`: the project for a value
+ *  from its files or its default, the process for one typed at the cli or set in the environment. */
 function accept(key: ConfigKey, raw: unknown, base: string, fromEnv = false): unknown {
   let v = given(raw);
   if (v === undefined) return undefined;
-  if (fromEnv && key.integer) v = typeof v === 'string' && /^\d+$/.test(v) ? parseInt(v, 10) : undefined;
+  if (fromEnv && numeric(key)) v = asNumber(v);
   if (v === undefined || !takes(key, v)) return undefined;
   return key.path && typeof v === 'string' ? resolvePath(v, base) : v;
 }

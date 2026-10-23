@@ -66,6 +66,14 @@ describe('the attachments family: bounds declared as data, enforced and said fro
     expect(loadConfig(ceiling, loadYml(ceiling, cwd), { env: {}, cwd }).config.limits.retries).toBe(5);
   });
 
+  it('a bounded number set in the environment is read as a number, and one out of range or not a number falls through', () => {
+    const share = defineConfig({ 'limits.share': { yml: 'limits.share', env: 'SHARE', min: 0.1, max: 1, default: 0.5 } });
+    const at = (SHARE: string) => loadConfig(share, {}, { env: { SHARE }, cwd }).config.limits.share;
+    expect(at('0.25')).toBe(0.25);
+    expect(at('1')).toBe(1);
+    for (const v of ['0', '1.5', 'half', '0.2.5']) expect(at(v)).toBe(0.5);
+  });
+
   it('a harness that says nothing takes the whole context share and no video block', () => {
     const { config } = loadConfig(attachmentSettings, {}, { env: {}, cwd });
     expect(config.attachments.context).toBe(1);

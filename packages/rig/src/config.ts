@@ -42,13 +42,14 @@ export interface ConfigKey {
   cli?: string;
   /** A path: `~` expanded and made absolute at the boundary, whichever rung supplied it. */
   path?: true;
-  /** A positive integer; the env rung parses digits, the others refuse anything else. With `min` or `max`, a whole
+  /** A positive integer, whichever rung sets it; anything else is refused. With `min` or `max`, a whole
    *  number within them, and `min` replaces the floor of one. */
   integer?: true;
   /** The values it may take. A committed value outside them fails the load. */
   oneOf?: readonly string[];
   /** The least and most a number may be, inclusive; with `integer`, a whole one. The refusal states them, so the
-   *  constraint a reader is shown is the one the load enforces. The env rung parses whole numbers only. */
+   *  constraint a reader is shown is the one the load enforces. The env rung reads a decimal, which these then
+   *  judge as they judge any other rung's. */
   min?: number;
   max?: number;
   /** Any other rule. A committed value that fails it fails the load; a local one falls through. */
