@@ -13,6 +13,7 @@ import { Component, lazy, Suspense, useLayoutEffect, useRef } from 'react';
 import type { CSSProperties, ReactElement, ReactNode } from 'react';
 import { representationUrl } from '@lloyal-labs/media';
 import { useContentOrigin } from './provider.js';
+import { useStartAt } from './start-at.js';
 import { useTrackUrls } from './track-urls.js';
 import { momentClock } from './video-view.js';
 import type { VideoView } from './video-view.js';
@@ -54,9 +55,10 @@ function Modal({ label, style, onClose, children }: { label: string; style: CSSP
 /** The browser's own player, for when Video.js cannot run: the same file, moment and captions. */
 function NativePlayer({ video, style }: { video: VideoView & { src: string }; style: CSSProperties }): ReactElement {
   const tracks = useTrackUrls(video);
+  const media = useRef<HTMLVideoElement>(null);
+  useStartAt(media, video.atMs, video.src);
   return (
-    <video src={video.src} controls crossOrigin="anonymous" style={style} poster={video.poster}
-      onLoadedMetadata={(e) => { if (video.atMs !== undefined) e.currentTarget.currentTime = video.atMs / 1000; }}>
+    <video ref={media} src={video.src} controls crossOrigin="anonymous" style={style} poster={video.poster}>
       {tracks?.captions && <track kind="captions" label="Transcript" srcLang="und" src={tracks.captions} default />}
     </video>
   );

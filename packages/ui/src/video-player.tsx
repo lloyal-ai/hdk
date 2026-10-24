@@ -15,6 +15,7 @@
 import { useEffect, useRef } from 'react';
 import type { CSSProperties, ReactElement, RefObject } from 'react';
 import { Video, VideoPlayer as Player, VideoSkin } from '@videojs/react/video';
+import { useStartAt } from './start-at.js';
 import { useTrackUrls } from './track-urls.js';
 import type { VideoView } from './video-view.js';
 
@@ -35,18 +36,6 @@ export interface VideoPlayerProps {
   /** Layout and any of the skin's `--media-*` properties, over the harness register. */
   style?: CSSProperties;
   className?: string;
-}
-
-/** Open at `atMs`: at once when the media already knows its length, else when it learns it. */
-function useStartAt(media: RefObject<HTMLVideoElement | null>, atMs: number | undefined, src: string): void {
-  useEffect(() => {
-    const element = media.current;
-    if (!element || atMs === undefined) return;
-    const seek = (): void => { element.currentTime = atMs / 1000; };
-    if (element.readyState >= HTMLMediaElement.HAVE_METADATA) seek();
-    else element.addEventListener('loadedmetadata', seek, { once: true });
-    return () => element.removeEventListener('loadedmetadata', seek);
-  }, [media, atMs, src]);
 }
 
 /**
