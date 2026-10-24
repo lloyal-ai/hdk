@@ -54,8 +54,9 @@ function useStartAt(media: RefObject<HTMLVideoElement | null>, atMs: number | un
  * the audio output (on macOS, around an output device change), and its pipeline
  * stays dead. Reloading at the same moment reopens the device and plays on; a
  * second failure in a row goes on muted, so the picture is never lost to sound.
+ * A recovery belongs to the clip that failed: a new `src` starts with none.
  */
-function useRecoverAudioOutput(media: RefObject<HTMLVideoElement | null>): void {
+function useRecoverAudioOutput(media: RefObject<HTMLVideoElement | null>, src: string): void {
   useEffect(() => {
     const element = media.current;
     if (!element) return;
@@ -82,14 +83,14 @@ function useRecoverAudioOutput(media: RefObject<HTMLVideoElement | null>): void 
       element.removeEventListener('playing', onPlaying);
       element.removeEventListener('loadedmetadata', resume);
     };
-  }, [media]);
+  }, [media, src]);
 }
 
 export function VideoPlayer({ video, title, style, className }: VideoPlayerProps): ReactElement {
   const tracks = useTrackUrls(video);
   const media = useRef<HTMLVideoElement>(null);
   useStartAt(media, video.atMs, video.src);
-  useRecoverAudioOutput(media);
+  useRecoverAudioOutput(media, video.src);
   return (
     <Player title={title} poster={video.poster}>
       <VideoSkin style={{ ...THEME, ...style }} {...(className ? { className } : {})}>
