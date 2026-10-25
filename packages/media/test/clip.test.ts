@@ -8,7 +8,7 @@ import { MANIFEST_TYPE } from '../src/attachment';
 import { prepareVideo, sampleFrames, soundtrackWindows } from '../src/clip';
 import type { ClipDecoder, DecodedSound } from '../src/clip';
 
-const SAMPLING = { fps: 4, timestampIntervalMs: 5000, maxFrames: 64, maxEdgePx: 640 };
+const SAMPLING = { fps: 4, timestampIntervalMs: 5000, maxFrames: 64, maxEdgePx: 640, soundtrackWindowMs: 5000 };
 
 /** A made-up clip: a 1280×720 picture starting at `startS` whose frames change every `frameS`, and the sound given. */
 function madeUp(clip: { endS?: number; startS?: number; frameS?: number; sound?: DecodedSound[] } = {}) {
@@ -141,13 +141,25 @@ describe('prepareVideo, the page\'s assembly through any decoder', () => {
     expect(prepared.audio).toEqual([]);
   });
 
-  it('cuts the soundtrack at the mark interval its sparse frames are recorded with', async () => {
-    // 60 s at the policy's cap of 4 frames: frames 15 s apart, so marks every 30 s and windows sized to match.
+  /** The first window's length when a 60 s clip is sampled at 4 frames (15 s apart, so marks every 30 s). */
+  const firstWindow = async (soundtrackWindowMs: number) => {
     const prepared = await prepareVideo(
       madeUp({ endS: 60, frameS: 0.5, sound: [tone(0, 60, 16_000)] }),
-      { sampling: { ...SAMPLING, maxFrames: 4 }, soundtrack: { ...limits, maxDurationSeconds: 120 } }, ingest,
+      { sampling: { ...SAMPLING, maxFrames: 4, soundtrackWindowMs }, soundtrack: { ...limits, maxDurationSeconds: 120 } }, ingest,
     );
-    // A window the cutter may end up to a fifth either side of its nominal 30 s, never near the 5 s default.
-    expect(prepared.audio[0].endMs - prepared.audio[0].startMs).toBeGreaterThanOrEqual(30_000 * 4 / 5);
+    return prepared.audio[0].endMs - prepared.audio[0].startMs;
+  };
+
+  it('cuts the soundtrack at the window the policy asks for, however far apart sparse frames put the marks', async () => {
+    // The cutter may end a window up to a fifth either side of its nominal length; the marks fall every 30 s.
+    const length = await firstWindow(5000);
+    expect(length).toBeGreaterThanOrEqual(5000 * 4 / 5);
+    expect(length).toBeLessThanOrEqual(5000 * 6 / 5);
+  });
+
+  it('cuts at another window when the policy asks for one, still not the marks\' 30 s', async () => {
+    const length = await firstWindow(10_000);
+    expect(length).toBeGreaterThanOrEqual(10_000 * 4 / 5);
+    expect(length).toBeLessThanOrEqual(10_000 * 6 / 5);
   });
 });

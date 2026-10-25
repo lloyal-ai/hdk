@@ -40,8 +40,9 @@ export interface VideoCommandsOptions {
 /** The policy a video is sampled and composed under now: the harness's video block over rig's defaults, and
  *  a length limit only when the harness sets one. */
 function videoPolicy(settings: VideoSettings): Pick<VideoCapabilities, 'sampling' | 'maxDurationMs'> {
-  const { fps, maxFrames, maxEdgePx, maxDurationSeconds } = settings.attachments?.video ?? {};
-  const sampled = Object.fromEntries(Object.entries({ fps, maxFrames, maxEdgePx }).filter(([, v]) => v !== undefined));
+  const { fps, maxFrames, maxEdgePx, soundtrackWindowSeconds, maxDurationSeconds } = settings.attachments?.video ?? {};
+  const soundtrackWindowMs = soundtrackWindowSeconds !== undefined ? Math.round(soundtrackWindowSeconds * 1000) : undefined;
+  const sampled = Object.fromEntries(Object.entries({ fps, maxFrames, maxEdgePx, soundtrackWindowMs }).filter(([, v]) => v !== undefined));
   return {
     sampling: { ...DEFAULT_VIDEO_SAMPLING, ...sampled },
     ...(maxDurationSeconds !== undefined ? { maxDurationMs: maxDurationSeconds * 1000 } : {}),

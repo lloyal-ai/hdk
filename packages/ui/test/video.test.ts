@@ -33,7 +33,7 @@ vi.mock('@lloyal-labs/media/client', () => ({
 function clipOf(seconds: number, rate = 16_000) { Object.assign(clip, { seconds, sound: seconds, rate }); }
 afterEach(() => Object.assign(clip, { seconds: 2, sound: 0, rate: 16_000, sizes: [] }));
 
-const SAMPLING = { fps: 4, timestampIntervalMs: 5000, maxFrames: 64, maxEdgePx: 640 };
+const SAMPLING = { fps: 4, timestampIntervalMs: 5000, maxFrames: 64, maxEdgePx: 640, soundtrackWindowMs: 5000 };
 const MAX_MS = 600_000;
 const LIMITS = { maxBytes: 16 * 1024 * 1024, maxDurationSeconds: 60, maxChannels: 1, maxSampleRate: 16_000 };
 
@@ -190,15 +190,15 @@ describe('ingestVideo with timestamps off', () => {
 });
 
 describe('ingestVideo for a long clip', () => {
-  it('cuts the soundtrack at the mark interval its sparse frames are recorded with', async () => {
-    // 24 s at a cap of 4 frames: frames 6 s apart, past the 5 s interval, so marks are recorded two frames apart.
+  it('cuts the soundtrack at the window the host asks for, however far apart sparse frames put the marks', async () => {
+    // 24 s at a cap of 4 frames: frames 6 s apart, so marks fall every 12 s; the windows stay at the host's 5 s.
     clipOf(24);
     const host = composingHost();
     await ingestVideo({ origin: '', bridge: host.bridge, file: new Blob([new Uint8Array(10)]), capabilities: { sampling: { ...SAMPLING, maxFrames: 4 }, maxDurationMs: MAX_MS, soundtrack: LIMITS } });
     expect(host.compose().frames.map(f => f.tMs)).toEqual([0, 6000, 12_000, 18_000]);
-    // 12 s windows, which the cutter may end up to a fifth either side.
-    expect(lengthOf(host.compose().audio![0])).toBeGreaterThanOrEqual(12_000 * 4 / 5);
-    expect(lengthOf(host.compose().audio![0])).toBeLessThanOrEqual(12_000 * 6 / 5);
+    // 5 s windows, which the cutter may end up to a fifth either side.
+    expect(lengthOf(host.compose().audio![0])).toBeGreaterThanOrEqual(5000 * 4 / 5);
+    expect(lengthOf(host.compose().audio![0])).toBeLessThanOrEqual(5000 * 6 / 5);
   });
 });
 

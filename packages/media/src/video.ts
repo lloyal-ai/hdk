@@ -119,8 +119,9 @@ export function asVideoMeta(json: unknown): VideoMeta | null {
  * the frame that crosses each interval, so no two neighbouring frames are both
  * followed by one, and a projector that merges frames two at a time still
  * fuses them however sparsely a long clip was sampled. A clip sampled without
- * marks stays without them. Composition records it; the page cuts the
- * soundtrack by it, so a window's words join the mark that closes it.
+ * marks stays without them. Composition records it. The soundtrack is cut by
+ * its own window length, not by this: a transcript note joins the first mark
+ * at or after it, however the soundtrack was cut.
  *
  * @category Media
  */

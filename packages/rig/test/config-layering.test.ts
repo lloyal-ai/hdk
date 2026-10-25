@@ -42,6 +42,7 @@ describe('the attachments family: bounds declared as data, enforced and said fro
     expect(config.attachments.context).toBe(0.7);
     expect(config.attachments.video).toEqual({
       fps: 2, maxFrames: DEFAULT_VIDEO_SAMPLING.maxFrames, maxEdgePx: DEFAULT_VIDEO_SAMPLING.maxEdgePx,
+      soundtrackWindowSeconds: DEFAULT_VIDEO_SAMPLING.soundtrackWindowMs / 1000,
     });
     // No limit on length unless the harness sets one.
     expect(config.attachments.video?.maxDurationSeconds).toBeUndefined();
@@ -52,6 +53,8 @@ describe('the attachments family: bounds declared as data, enforced and said fro
     expect(() => loadYml(attachmentSettings, cwd)).toThrow('harness.yml: attachments.video.fps must be a number from 0.1 to 30 (got 100)');
     writeYml('attachments:\n  video:\n    maxFrames: 2.5\n');
     expect(() => loadYml(attachmentSettings, cwd)).toThrow('harness.yml: attachments.video.maxFrames must be a whole number from 1 to 3600 (got 2.5)');
+    writeYml('attachments:\n  video:\n    soundtrackWindowSeconds: 90\n');
+    expect(() => loadYml(attachmentSettings, cwd)).toThrow('harness.yml: attachments.video.soundtrackWindowSeconds must be a number from 1 to 60 (got 90)');
     writeYml('attachments:\n  context: 0\n');
     expect(() => loadYml(attachmentSettings, cwd)).toThrow('harness.yml: attachments.context must be a number from 0.1 to 1 (got 0)');
   });

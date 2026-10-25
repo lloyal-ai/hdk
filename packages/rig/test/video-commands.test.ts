@@ -128,7 +128,7 @@ describe('video commands', () => {
     const content = store();
     const { frames } = await parts(content);
     const events: VideoEvent[] = [];
-    let policy = { ...VIDEO, fps: 2, maxEdgePx: 320 };
+    let policy = { ...VIDEO, fps: 2, maxEdgePx: 320, soundtrackWindowSeconds: 8 };
     await run(function* () {
       yield* Attachments.set(content);
       const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } }, config: () => ({ attachments: { video: policy } }) });
@@ -141,6 +141,8 @@ describe('video commands', () => {
     const described = events.filter(e => e.type === 'video:capabilities') as Extract<VideoEvent, { type: 'video:capabilities' }>[];
     expect(described.map(d => d.capabilities.sampling.fps)).toEqual([2, 1]);
     expect(described[0].capabilities.sampling.maxEdgePx).toBe(320);
+    // The soundtrack is cut by the harness's own window, in milliseconds as the page reads it, not by the marks.
+    expect(described[0].capabilities.sampling.soundtrackWindowMs).toBe(8000);
     expect(described[0].capabilities.maxDurationMs).toBe(VIDEO.maxDurationSeconds * 1000);
     const composed = events.find(e => e.type === 'video:composed') as Extract<VideoEvent, { type: 'video:composed' }>;
     const meta = JSON.parse(new TextDecoder().decode(content.get(content.getManifest(composed.root.digest)!.config.digest)!));

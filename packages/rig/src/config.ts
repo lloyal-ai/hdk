@@ -250,6 +250,7 @@ export const DEFAULT_VIDEO_SAMPLING: VideoCapabilities['sampling'] = Object.free
   timestampIntervalMs: 5000,
   maxFrames: 64,
   maxEdgePx: 640,
+  soundtrackWindowMs: 5000,
 });
 
 /**
@@ -277,6 +278,10 @@ export const attachmentSettings = defineConfig({
   'attachments.video.maxEdgePx': {
     yml: 'attachments.video.maxEdgePx', integer: true, min: 64, max: 1920, default: DEFAULT_VIDEO_SAMPLING.maxEdgePx, applies: 'session',
     describe: 'The longest edge a frame is scaled to, in pixels: detail against tokens per frame. 1,920 is a full HD frame; under 64 a frame shows nothing to read.',
+  },
+  'attachments.video.soundtrackWindowSeconds': {
+    yml: 'attachments.video.soundtrackWindowSeconds', min: 1, max: 60, default: DEFAULT_VIDEO_SAMPLING.soundtrackWindowMs / 1000, applies: 'session',
+    describe: 'How long each window a video\'s soundtrack is cut into runs, in seconds. Each window is transcribed and heard on its own and becomes one caption: shorter gives finer captions, search by sound and placement of what was said, longer gives fewer transcriptions. Cut at the quietest point near its end, and never longer than the services that hear admit. Under 1 a window holds no word; past 60 no service admits one by default.',
   },
   'attachments.video.maxDurationSeconds': {
     yml: 'attachments.video.maxDurationSeconds', integer: true, min: 1, max: 86_400, applies: 'session',

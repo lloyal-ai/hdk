@@ -88,16 +88,15 @@ describe('cutting a soundtrack', () => {
     expect(windows.at(-1)!.endMs).toBe(2700);
   });
 
-  it('cuts at the timestamp interval, and at 5 s when timestamps are off; never at nothing', () => {
-    expect(soundtrackWindowMs({ timestampIntervalMs: 5000 })).toBe(5000);
-    expect(soundtrackWindowMs({ timestampIntervalMs: 2000 })).toBe(2000);
-    expect(soundtrackWindowMs({ timestampIntervalMs: 0 })).toBe(5000);
+  it('cuts at the window the host asks for, capped by what the services that hear admit; never at nothing', () => {
+    expect(soundtrackWindowMs({ soundtrackWindowMs: 5000 })).toBe(5000);
+    expect(soundtrackWindowMs({ soundtrackWindowMs: 2000 })).toBe(2000);
     // A service that admits less: even a window the cutter stretches by a fifth stays within its duration and bytes.
     const limits = { maxBytes: 16 * 1024 * 1024, maxDurationSeconds: 2, maxChannels: 2, maxSampleRate: 48_000 };
-    expect(soundtrackWindowMs({ timestampIntervalMs: 5000 }, limits)).toBe(1666);
-    expect(soundtrackWindowMs({ timestampIntervalMs: 1000 }, limits)).toBe(1000);
+    expect(soundtrackWindowMs({ soundtrackWindowMs: 5000 }, limits)).toBe(1666);
+    expect(soundtrackWindowMs({ soundtrackWindowMs: 1000 }, limits)).toBe(1000);
     const tight = { ...limits, maxDurationSeconds: 60, maxBytes: 44 + 2 * 16_000 * 3, maxSampleRate: 16_000 };
-    expect(soundtrackWindowMs({ timestampIntervalMs: 5000 }, tight)).toBe(2500);
+    expect(soundtrackWindowMs({ soundtrackWindowMs: 5000 }, tight)).toBe(2500);
     expect(() => new SoundtrackCutter(16000, 0)).toThrow(RangeError);
   });
 

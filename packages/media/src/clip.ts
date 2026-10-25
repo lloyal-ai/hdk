@@ -15,7 +15,6 @@
  */
 import type { Descriptor } from './attachment';
 import type { AudioAdmission } from './audio';
-import { markInterval } from './video';
 import type { VideoSampling } from './video';
 
 // ── The decoder contract ─────────────────────────────────────────────────────
@@ -134,17 +133,18 @@ export function soundtrackDecimation(sourceRate: number, maxSampleRate?: number)
 }
 
 /**
- * How long each soundtrack window runs: the timestamp interval, so a window's
- * words join the timestamp that closes it, or 5 s when timestamps are off. The
- * admission the host keeps windows under caps it, with room for the cutter,
- * which may end a window up to a fifth past its nominal length: within the
- * duration it admits, and within its bytes as mono PCM16 at the rate written.
+ * How long each soundtrack window runs: the length the host asks for, whatever
+ * the frames' time marks are, since a transcript note joins the first mark at or
+ * after it however the soundtrack was cut. The admission the host keeps windows
+ * under caps it, with room for the cutter, which may end a window up to a fifth
+ * past its nominal length: within the duration it admits, and within its bytes
+ * as mono PCM16 at the rate written.
  */
 export function soundtrackWindowMs(
-  sampling: Pick<VideoSampling, 'timestampIntervalMs'>,
+  sampling: { soundtrackWindowMs: number },
   limits?: Pick<AudioAdmission, 'maxBytes' | 'maxDurationSeconds' | 'maxSampleRate'>,
 ): number {
-  const wanted = sampling.timestampIntervalMs > 0 ? sampling.timestampIntervalMs : 5000;
+  const wanted = sampling.soundtrackWindowMs;
   if (!limits) return wanted;
   const rate = soundtrackCeiling(limits.maxSampleRate);
   const admitted = Math.min(limits.maxDurationSeconds * 1000, ((limits.maxBytes - WAV_HEADER_BYTES) / 2 / rate) * 1000);
@@ -337,8 +337,8 @@ export interface PreparedVideo {
 /**
  * Read a clip under the host's policy and ingest what a compose needs: every
  * sampled frame, and when the host keeps sound, every soundtrack window, cut
- * at the mark interval the frames will be recorded with and sized to the
- * admission it keeps them under. The page does this with its decoder and its
+ * at the window length the host asks for and sized to the admission it keeps
+ * them under. The page does this with its decoder and its
  * upload; a host or a tool does it with its own, and sends the same compose.
  *
  * The decoder is the caller's: this neither opens nor disposes it, except to
@@ -350,7 +350,7 @@ export interface PreparedVideo {
 export async function prepareVideo(
   decoder: ClipDecoder,
   policy: {
-    sampling: VideoSampling & { maxEdgePx: number };
+    sampling: VideoSampling & { maxEdgePx: number; soundtrackWindowMs: number };
     soundtrack: Pick<AudioAdmission, 'maxBytes' | 'maxDurationSeconds' | 'maxSampleRate'> | null;
   },
   ingest: (bytes: Uint8Array) => Promise<Descriptor>,
@@ -368,8 +368,7 @@ export async function prepareVideo(
   }
   const audio: PreparedVideo['audio'] = [];
   if (policy.soundtrack) {
-    const marks = { timestampIntervalMs: markInterval(sampled.frames.map(f => f.tMs), policy.sampling) };
-    const windows = soundtrackWindows(decoder, soundtrackWindowMs(marks, policy.soundtrack), {
+    const windows = soundtrackWindows(decoder, soundtrackWindowMs(policy.sampling, policy.soundtrack), {
       ...(signal ? { signal } : {}), maxSampleRate: policy.soundtrack.maxSampleRate,
     });
     for await (const window of windows) audio.push({ root: await ingestUnlessAborted(window.bytes), startMs: window.startMs, endMs: window.endMs });
