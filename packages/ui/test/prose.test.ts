@@ -69,6 +69,14 @@ describe('headingsOf / linksOf', () => {
     expect(linksOf(md).map((l) => l.offset)).toEqual([md.lastIndexOf('attachment://')]);
   });
 
+  it('the scheme is read in any case, as media\'s grammar reads it, bare or in a link', () => {
+    const md = 'At Attachment://81cc8d9fd4e4/t/5000 and ATTACHMENT://81cc8d9fd4e4/page/2, and [here](aTtachment://81cc8d9fd4e4/t/5000).';
+    expect(linksOf(md).map((l) => l.href)).toEqual([
+      'Attachment://81cc8d9fd4e4/t/5000', 'ATTACHMENT://81cc8d9fd4e4/page/2', 'aTtachment://81cc8d9fd4e4/t/5000',
+    ]);
+    expect(linksOf(md)[0].offset).toBe(md.indexOf('Attachment://'));
+  });
+
   it('a quote or guillemet of any script around an address is the sentence\'s, not the address\'s', () => {
     const at = 'attachment://81cc8d9fd4e4/t/5000';
     const page = 'attachment://81cc8d9fd4e4/page/2';

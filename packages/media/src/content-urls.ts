@@ -153,18 +153,28 @@ const locationOf = (origin: string, res: Response): string => {
 const failure = async (res: Response, what: string): Promise<string> =>
   `${what} (${res.status}): ${await res.text().catch(() => '')}`;
 
+/** The content plane's scheme: every attachment address begins with it, and it is read in any case. */
+export const ATTACHMENT_SCHEME = 'attachment://';
+
+/** Whether a url is on the content plane's scheme, in any case. */
+export const isAttachmentUrl = (url: string): boolean =>
+  url.slice(0, ATTACHMENT_SCHEME.length).toLowerCase() === ATTACHMENT_SCHEME;
+
+/** What follows the scheme in an address, or nothing when the url is not one. */
+const addressed = (href: string): string => (isAttachmentUrl(href) ? href.slice(ATTACHMENT_SCHEME.length) : '');
+
 /** The citation grammar the documents ability emits and the model copies:
  *  `attachment://<digest prefix>/page/<n>`. The prefix is the asset's own
  *  identity, resolved by the view against digests it already holds. */
 export function parseAttachmentHref(href: string): { prefix: string; page: number } | null {
-  const m = /^attachment:\/\/([0-9a-f]{6,64})\/page\/(\d+)$/i.exec(href);
+  const m = /^([0-9a-f]{6,64})\/page\/(\d+)$/i.exec(addressed(href));
   return m ? { prefix: m[1].toLowerCase(), page: Number(m[2]) } : null;
 }
 
 /** A moment in a video, in the same grammar: `attachment://<digest prefix>/t/<time>`, where the time is
  *  written as the video marks it to the model (`1m5.00s`) or in milliseconds (`65000`). */
 export function parseAttachmentMoment(href: string): { prefix: string; tMs: number } | null {
-  const m = /^attachment:\/\/([0-9a-f]{6,64})\/t\/(?:(\d+)m(\d+(?:\.\d+)?)s|(\d+))$/i.exec(href);
+  const m = /^([0-9a-f]{6,64})\/t\/(?:(\d+)m(\d+(?:\.\d+)?)s|(\d+))$/i.exec(addressed(href));
   if (!m) return null;
   const tMs = m[4] !== undefined ? Number(m[4]) : Math.round((Number(m[2]) * 60 + Number(m[3])) * 1000);
   return Number.isSafeInteger(tMs) ? { prefix: m[1].toLowerCase(), tMs } : null;

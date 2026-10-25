@@ -21,6 +21,7 @@
  * @packageDocumentation
  * @category UI
  */
+import { isAttachmentUrl } from '@lloyal-labs/media';
 import { lexer } from 'marked';
 import { unified } from 'unified';
 import type { PluggableList } from 'unified';
@@ -60,12 +61,12 @@ export interface Anchor {
  *  imports React at scope and this one is framework-free. */
 const SAFE_PROTOCOL = /^(https?|ircs?|mailto|xmpp)$/i;
 
-/** The ONE url policy of a harness view: the content plane's scheme (`attachment://…`) is admitted, a relative
- *  url or a safe scheme passes, anything else (`javascript:`, `data:`) is stripped to `''`. `Markdown` renders
- *  through it and `linksOf` reports through it, so a citation built from a link carries the href the page
- *  carries. */
+/** The ONE url policy of a harness view: the content plane's scheme (`attachment://…`, as media reads it) is
+ *  admitted, a relative url or a safe scheme passes, anything else (`javascript:`, `data:`) is stripped to `''`.
+ *  `Markdown` renders through it and `linksOf` reports through it, so a citation built from a link carries the
+ *  href the page carries. */
 export function admitUrl(url: string): string {
-  if (url.startsWith('attachment://')) return url;
+  if (isAttachmentUrl(url)) return url;
   const colon = url.indexOf(':');
   const questionMark = url.indexOf('?');
   const numberSign = url.indexOf('#');

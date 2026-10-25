@@ -11,7 +11,7 @@
  *
  * @category UI
  */
-import { parseAttachmentHref, parseAttachmentMoment } from '@lloyal-labs/media';
+import { ATTACHMENT_SCHEME, parseAttachmentHref, parseAttachmentMoment } from '@lloyal-labs/media';
 import { asciiAlpha, markdownLineEndingOrSpace, unicodePunctuation, unicodeWhitespace } from 'micromark-util-character';
 import type { Code, Construct, Event, Extension, State, TokenizeContext, Tokenizer } from 'micromark-util-types';
 import type { CompileContext, Extension as FromMarkdownExtension, Token } from 'mdast-util-from-markdown';
@@ -28,8 +28,9 @@ declare module 'micromark-util-types' {
   }
 }
 
-/** The content plane's scheme, which every address begins with. */
-const SCHEME = 'attachment://';
+/** Whether `code` is the scheme's character at `index`, in either case, as media reads the scheme. */
+const schemeAt = (code: Code, index: number): boolean =>
+  code !== null && String.fromCodePoint(code).toLowerCase() === ATTACHMENT_SCHEME[index];
 /** What ends a run outright: markdown punctuation an address never holds. */
 const ENDS = new Set(['<', '(', ')', '[', ']'].map((c) => c.codePointAt(0)!));
 
@@ -95,9 +96,9 @@ const tokenizeAddress: Tokenizer = function (this: TokenizeContext, effects, ok,
     return take(code, rest);
   };
   const scheme: State = (code) =>
-    run.length === SCHEME.length ? rest(code) : code === SCHEME.codePointAt(run.length) ? take(code, scheme) : nok(code);
+    run.length === ATTACHMENT_SCHEME.length ? rest(code) : schemeAt(code, run.length) ? take(code, scheme) : nok(code);
   return (code) => {
-    if (code !== SCHEME.codePointAt(0) || !previousAddress(this.previous) || previousUnbalanced(this.events)) return nok(code);
+    if (!schemeAt(code, 0) || !previousAddress(this.previous) || previousUnbalanced(this.events)) return nok(code);
     effects.enter('attachmentAddress');
     effects.enter('attachmentAddressValue');
     return scheme(code);
@@ -106,7 +107,7 @@ const tokenizeAddress: Tokenizer = function (this: TokenizeContext, effects, ok,
 
 const address: Construct = { name: 'attachmentAddress', tokenize: tokenizeAddress };
 
-const syntax: Extension = { text: { [SCHEME.codePointAt(0)!]: address } };
+const syntax: Extension = { text: Object.fromEntries([ATTACHMENT_SCHEME[0], ATTACHMENT_SCHEME[0].toUpperCase()].map((c) => [c.codePointAt(0)!, address])) };
 
 /** The address as a link, through the handlers GFM's protocol literal uses: its text is the address, and so is
  *  its url. */
