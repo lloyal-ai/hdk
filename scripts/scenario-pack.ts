@@ -15,13 +15,13 @@
  * Writes the packs into `<store dir>` and what each one is into `<store dir>/packs.json`.
  */
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, readSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { call, main, withResolvers } from 'effection';
 import type { Operation } from 'effection';
 import { Attachments } from '@lloyal-labs/lloyal-agents';
 import { prepareVideo, sniffMediaType } from '@lloyal-labs/media';
-import type { Attachment } from '@lloyal-labs/media';
+import type { Attachment, Descriptor } from '@lloyal-labs/media';
 import { createContentIngress, FileAttachmentStore } from '@lloyal-labs/media/node';
 import { Services, useVideoCommands } from '@lloyal-labs/rig';
 import { createTranscriber } from '@lloyal-labs/rig/node';
@@ -40,7 +40,38 @@ const ASR = {
 
 const DECODER = 'ffmpeg (scripts/ffmpeg-decoder.ts) in place of the page\'s WebCodecs; media\'s procedure did the rest';
 
-const sha256 = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
+/** How much of an original is read at a time: a clip may be larger than the memory the models leave. */
+const CHUNK_BYTES = 8 * 1024 * 1024;
+
+/** A file's bytes in order, one chunk at a time, the same buffer reused: each chunk is gone once the next is read. */
+function* chunksOf(file: string): Generator<Uint8Array> {
+  const chunk = new Uint8Array(CHUNK_BYTES);
+  const fd = openSync(file, 'r');
+  try {
+    for (let read = readSync(fd, chunk); read > 0; read = readSync(fd, chunk)) yield chunk.subarray(0, read);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** The original into the store as a blob the way an upload arrives at the host: staged chunk by chunk, hashed as
+ *  it goes and adopted under its digest, never held whole. A read or write that fails discards the staging. */
+function putOriginal(store: FileAttachmentStore, file: string): Descriptor {
+  const staged = store.stage();
+  const hash = createHash('sha256');
+  let mediaType: string | undefined;
+  try {
+    for (const bytes of chunksOf(file)) {
+      mediaType ??= sniffMediaType(bytes);
+      hash.update(bytes);
+      staged.append(bytes);
+    }
+    return staged.adopt(`sha256:${hash.digest('hex')}`, mediaType ?? sniffMediaType(new Uint8Array(0)));
+  } catch (e) {
+    staged.discard();
+    throw e;
+  }
+}
 
 /** What a page asks of the host: how it composes a video, and to compose one. */
 interface Host {
@@ -97,7 +128,7 @@ interface Pack {
 }
 
 function* composePack(store: FileAttachmentStore, host: Host, capabilities: VideoCapabilities, name: string, file: string): Operation<Pack> {
-  const bytes = new Uint8Array(readFileSync(file));
+  const source = putOriginal(store, file);
   const ingress = createContentIngress(store);
   const log = (line: string) => process.stderr.write(`${name}: ${line}\n`);
   const decoder = ffmpegDecoder(file);
@@ -106,12 +137,12 @@ function* composePack(store: FileAttachmentStore, host: Host, capabilities: Vide
   }).finally(() => decoder.dispose()));
   log(`${prepared.frames.length} frames and ${prepared.audio.length} soundtrack windows ingested`);
   const composed = yield* host.compose({
-    type: 'video:compose', requestId: name, ...prepared, source: store.putBlob(bytes, sniffMediaType(bytes)),
+    type: 'video:compose', requestId: name, ...prepared, source,
   });
   log(`composed ${composed.root.digest}, ${composed.untranscribed.length} windows untranscribed`);
   return {
     root: composed.root,
-    source: { file: basename(file), sha256: sha256(bytes), bytes: bytes.byteLength },
+    source: { file: basename(file), sha256: source.digest.replace(/^sha256:/, ''), bytes: source.size },
     sampling: capabilities.sampling,
     frames: prepared.frames.length,
     soundtrackWindows: prepared.audio.length,
