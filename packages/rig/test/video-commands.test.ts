@@ -133,7 +133,7 @@ describe('video commands', () => {
       yield* Attachments.set(content);
       const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } }, config: () => ({ attachments: { video: policy } }) });
       yield* group.handlers['video:describe']!({ type: 'video:describe' });
-      policy = { ...policy, fps: 1 };   // a session change applies to the next video
+      policy = { ...policy, fps: 1 };   // the config read when it is asked is the one each video is described under
       yield* group.handlers['video:describe']!({ type: 'video:describe' });
       yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'c', frames, durationMs: 1250 });
       for (let i = 0; i < 50 && !events.some(e => e.type === 'video:composed'); i++) yield* sleep(5);

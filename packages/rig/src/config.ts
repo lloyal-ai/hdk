@@ -28,8 +28,9 @@ import { DEFAULT_AUDIO_ADMISSION } from '@lloyal-labs/media';
 export const CONFIG_VERSION = 2;
 
 /** When a change to a key takes effect. `session`: at once, for what runs next. `reload`: it names the
- *  residency (a model, a backend), so it is saved and the next launch applies it. `boot`: it sizes the context
- *  the process already built, so only `harness.yml` and a restart change it. */
+ *  residency (a model, a backend), so it is saved and the next launch applies it. `boot`: it is fixed for the
+ *  run, so only `harness.yml` and a restart change it: it sizes the context the process already built, or a
+ *  page holds a copy of it, as it holds a video's sampling. */
 export type ConfigTier = 'session' | 'reload' | 'boot';
 
 /** One key's declaration. Every field is optional; a key with none is a committed-only string. */
@@ -267,24 +268,27 @@ export const attachmentSettings = defineConfig({
     yml: 'attachments.context', min: 0.1, max: 1, default: 1, applies: 'session',
     describe: 'The share of the context a turn\'s attachments may fill, which the app passes to `admitted`. A tenth is the least: in a 4,096-cell context that holds one 640-pixel frame, about 410 cells.',
   },
+  // The video keys are `boot` because the page samples by the copy of the policy it was described, and nothing
+  // tells it of a change. The host still reads them each time it is asked (`useVideoCommands`): that read is the
+  // seam a host announcing its policy to every sampler builds on, and then these keys are `session`.
   'attachments.video.fps': {
-    yml: 'attachments.video.fps', min: 0.1, max: 30, default: DEFAULT_VIDEO_SAMPLING.fps, applies: 'session',
+    yml: 'attachments.video.fps', min: 0.1, max: 30, default: DEFAULT_VIDEO_SAMPLING.fps, applies: 'boot',
     describe: 'Frames a second a video is sampled at, up to its frame cap; a longer clip is sampled more sparsely. Past 30 a source rarely has more distinct frames, and repeats are dropped; under 0.1 a moment of speech has no picture.',
   },
   'attachments.video.maxFrames': {
-    yml: 'attachments.video.maxFrames', integer: true, min: 1, max: 3600, default: DEFAULT_VIDEO_SAMPLING.maxFrames, applies: 'session',
+    yml: 'attachments.video.maxFrames', integer: true, min: 1, max: 3600, default: DEFAULT_VIDEO_SAMPLING.maxFrames, applies: 'boot',
     describe: 'The most frames one video keeps. What a video costs is still measured when it is attached, and refused if it does not fit; 3,600 is an hour at one frame a second.',
   },
   'attachments.video.maxEdgePx': {
-    yml: 'attachments.video.maxEdgePx', integer: true, min: 64, max: 1920, default: DEFAULT_VIDEO_SAMPLING.maxEdgePx, applies: 'session',
+    yml: 'attachments.video.maxEdgePx', integer: true, min: 64, max: 1920, default: DEFAULT_VIDEO_SAMPLING.maxEdgePx, applies: 'boot',
     describe: 'The longest edge a frame is scaled to, in pixels: detail against tokens per frame. 1,920 is a full HD frame; under 64 a frame shows nothing to read.',
   },
   'attachments.video.soundtrackWindowSeconds': {
-    yml: 'attachments.video.soundtrackWindowSeconds', min: 1, max: 60, default: DEFAULT_VIDEO_SAMPLING.soundtrackWindowMs / 1000, applies: 'session',
+    yml: 'attachments.video.soundtrackWindowSeconds', min: 1, max: 60, default: DEFAULT_VIDEO_SAMPLING.soundtrackWindowMs / 1000, applies: 'boot',
     describe: 'How long each window a video\'s soundtrack is cut into runs, in seconds. Each window is transcribed and heard on its own and becomes one caption: shorter gives finer captions, search by sound and placement of what was said, longer gives fewer transcriptions. Cut at the quietest point near its end, and never longer than the services that hear admit. Under 1 a window holds no word; past 60 no service admits one by default.',
   },
   'attachments.video.maxDurationSeconds': {
-    yml: 'attachments.video.maxDurationSeconds', integer: true, min: 1, max: 86_400, applies: 'session',
+    yml: 'attachments.video.maxDurationSeconds', integer: true, min: 1, max: 86_400, applies: 'boot',
     describe: 'The longest clip a harness takes, refused before any byte is pushed; unset, a clip of any length is taken. Length costs upload and one transcription per soundtrack window. A limit set here is at most a day.',
   },
 });
