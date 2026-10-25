@@ -54,9 +54,10 @@ function* chunksOf(file: string): Generator<Uint8Array> {
   }
 }
 
-/** The original into the store as a blob the way an upload arrives at the host: staged chunk by chunk, hashed as
- *  it goes and adopted under its digest, never held whole. A read or write that fails discards the staging. */
-function putOriginal(store: FileAttachmentStore, file: string): Descriptor {
+/** The original into the store as a blob through its staging: read chunk by chunk, hashed as it goes and adopted
+ *  under its digest, never held whole. A read or write that fails discards the staging. Returns the stored blob
+ *  and the hex of the hash it was adopted under. */
+function putOriginal(store: FileAttachmentStore, file: string): { descriptor: Descriptor; sha256: string } {
   const staged = store.stage();
   const hash = createHash('sha256');
   let mediaType: string | undefined;
@@ -66,7 +67,8 @@ function putOriginal(store: FileAttachmentStore, file: string): Descriptor {
       hash.update(bytes);
       staged.append(bytes);
     }
-    return staged.adopt(`sha256:${hash.digest('hex')}`, mediaType ?? sniffMediaType(new Uint8Array(0)));
+    const sha256 = hash.digest('hex');
+    return { descriptor: staged.adopt(`sha256:${sha256}`, mediaType ?? sniffMediaType(new Uint8Array(0))), sha256 };
   } catch (e) {
     staged.discard();
     throw e;
@@ -128,7 +130,7 @@ interface Pack {
 }
 
 function* composePack(store: FileAttachmentStore, host: Host, capabilities: VideoCapabilities, name: string, file: string): Operation<Pack> {
-  const source = putOriginal(store, file);
+  const original = putOriginal(store, file);
   const ingress = createContentIngress(store);
   const log = (line: string) => process.stderr.write(`${name}: ${line}\n`);
   const decoder = ffmpegDecoder(file);
@@ -137,12 +139,12 @@ function* composePack(store: FileAttachmentStore, host: Host, capabilities: Vide
   }).finally(() => decoder.dispose()));
   log(`${prepared.frames.length} frames and ${prepared.audio.length} soundtrack windows ingested`);
   const composed = yield* host.compose({
-    type: 'video:compose', requestId: name, ...prepared, source,
+    type: 'video:compose', requestId: name, ...prepared, source: original.descriptor,
   });
   log(`composed ${composed.root.digest}, ${composed.untranscribed.length} windows untranscribed`);
   return {
     root: composed.root,
-    source: { file: basename(file), sha256: source.digest.replace(/^sha256:/, ''), bytes: source.size },
+    source: { file: basename(file), sha256: original.sha256, bytes: original.descriptor.size },
     sampling: capabilities.sampling,
     frames: prepared.frames.length,
     soundtrackWindows: prepared.audio.length,
