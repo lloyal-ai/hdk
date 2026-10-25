@@ -63,6 +63,7 @@
     "@videojs/react": "^10.1.0",
     "katex": "^0.16.22",
     "marked": "^18.0.13",
+    "mdast-util-find-and-replace": "^3.0.2",
     "mdast-util-to-string": "^4.0.0",
     "mediabunny": "^1.61.4",
     "react-markdown": "^10.1.0",

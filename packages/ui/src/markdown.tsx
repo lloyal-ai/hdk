@@ -16,11 +16,9 @@ import { memo } from 'react';
 import type { CSSProperties, ReactElement } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
-import { admitUrl } from './prose.js';
+import { REMARK_PLUGINS, admitUrl } from './prose.js';
 
 export type { Components as MarkdownComponents } from 'react-markdown';
 
@@ -43,7 +41,7 @@ export const Markdown = memo(function Markdown({ markdown, components, style }: 
     <div style={style}>
       <style>{MATH}</style>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
+        remarkPlugins={REMARK_PLUGINS}
         rehypePlugins={[[rehypeKatex, { throwOnError: false }]]}
         urlTransform={admitUrl}
         components={components}
