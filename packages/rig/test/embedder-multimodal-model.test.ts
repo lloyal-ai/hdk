@@ -15,6 +15,7 @@ import type { Attachment } from '@lloyal-labs/media';
 import { createContentIngress, FileAttachmentStore } from '@lloyal-labs/media/node';
 import { createEmbedder } from '../src/providers/embedding';
 import { catalogEntry } from '../src/models';
+import { VectorIndex } from '../src/vector-index';
 import type { EmbeddingInput } from '../src/retrieval';
 import { EMBEDDINGGEMMA } from './helpers/embed-model';
 import { verifyLocalNative } from '../../sdk/test/local-native';
@@ -97,6 +98,20 @@ describeWithModel('createEmbedder over EmbeddingGemma 2 and its projector', () =
     const [withSound, asParts, silent] = await embedded([{ parts: [heard] }, { parts: [clip, recording] }, { parts: [clip] }]);
     expect(cosine(withSound, asParts)).toBeGreaterThan(0.9999);
     expect(cosine(withSound, silent)).toBeLessThan(0.999);
+  }, 300_000);
+
+  it('finds any medium from one text query: each question finds its own image, clip or recording first', async () => {
+    const media = { cat, clip, recording };
+    const asked = { cat: 'a photo of a cat', clip: 'a red square moving across a plain background', recording: 'a voice counting numbers out loud' };
+    const names = Object.keys(media) as (keyof typeof media)[];
+    const vectors = await embedded([
+      ...names.map((name) => ({ parts: [media[name]] })),
+      ...names.map((name) => ({ parts: [asked[name]], role: 'query' as const })),
+    ]);
+    const index = new VectorIndex<string>({ widths: catalogEntry('embedding', 'embeddinggemma-2-q8')!.dimensions! });
+    names.forEach((name, i) => index.add(name, vectors[i]));
+    const found = names.map((_, i) => index.search(vectors[names.length + i], { k: 1 })[0].item);
+    expect(found).toEqual(names);
   }, 300_000);
 
   it('embeds an image, a video and a recording from the store where llama.cpp does', async () => {
