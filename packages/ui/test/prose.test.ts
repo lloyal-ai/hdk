@@ -64,6 +64,20 @@ describe('headingsOf / linksOf', () => {
     }
   });
 
+  it('an address written with a character reference is not one, as GFM leaves a url written that way; the literal copy beside it stands where it is written', () => {
+    const md = 'See &#97;ttachment://81cc8d9fd4e4/t/5000 then attachment://81cc8d9fd4e4/t/5000.';
+    expect(linksOf(md).map((l) => l.offset)).toEqual([md.lastIndexOf('attachment://')]);
+  });
+
+  it('a quote or guillemet of any script around an address is the sentence\'s, not the address\'s', () => {
+    const at = 'attachment://81cc8d9fd4e4/t/5000';
+    const page = 'attachment://81cc8d9fd4e4/page/2';
+    const md = `See “${at}”. And ‘${page}’, «${at}», "${page}".`;
+    expect(linksOf(md).map((l) => [l.href, md.slice(l.offset, l.offset + l.href.length)])).toEqual(
+      [at, page, at, page].map((a) => [a, a]),
+    );
+  });
+
   it('a bare attachment address is a link too, as the renderer links it: a moment or a page, without the sentence\'s own punctuation', () => {
     const md = 'It brakes at attachment://81cc8d9fd4e4/t/1m24.87s. Page attachment://81cc8d9fd4e4/page/3, and 5 s in (attachment://81cc8d9fd4e4/t/5000).';
     expect(linksOf(md)).toEqual([

@@ -63,16 +63,17 @@
     "@videojs/react": "^10.1.0",
     "katex": "^0.16.22",
     "marked": "^18.0.13",
-    "mdast-util-find-and-replace": "^3.0.2",
+    "mdast-util-from-markdown": "^2.0.3",
     "mdast-util-to-string": "^4.0.0",
     "mediabunny": "^1.61.4",
+    "micromark-util-character": "^2.1.1",
+    "micromark-util-types": "^2.0.2",
     "react-markdown": "^10.1.0",
     "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
     "remark-parse": "^11.0.0",
-    "unified": "^11.0.5",
-    "vfile-location": "^5.0.3"
+    "unified": "^11.0.5"
   },
   "peerDependencies": {
     "react": "^18.3.0 || ^19.0.0",
