@@ -48,6 +48,22 @@ describe('headingsOf / linksOf', () => {
     expect(linksOf(md).map((l) => l.offset)).toEqual([at(0), at(at(0) + 1)]);
   });
 
+  it('an address stands where the source writes it, after a character reference, an escape, or a quote\'s or list\'s own marks', () => {
+    const address = 'attachment://81cc8d9fd4e4/t/1m24.87s';
+    const bodies = [
+      `Tom &amp; Jerry at ${address}.`,
+      `A \\*literal\\* star, then ${address}.`,
+      `> First line\n> then ${address}, quoted.`,
+      `- First line\n  then ${address}, listed.`,
+      `> &amp; once at ${address} and\n> twice at ${address}.`,
+    ];
+    for (const md of bodies) {
+      const offsets = linksOf(md).map((l) => l.offset);
+      expect(offsets.map((o) => md.slice(o, o + address.length)), md).toEqual(offsets.map(() => address));
+      expect(offsets.length, md).toBe(md.split(address).length - 1);
+    }
+  });
+
   it('a bare attachment address is a link too, as the renderer links it: a moment or a page, without the sentence\'s own punctuation', () => {
     const md = 'It brakes at attachment://81cc8d9fd4e4/t/1m24.87s. Page attachment://81cc8d9fd4e4/page/3, and 5 s in (attachment://81cc8d9fd4e4/t/5000).';
     expect(linksOf(md)).toEqual([
