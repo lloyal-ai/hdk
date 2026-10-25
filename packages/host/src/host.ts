@@ -190,10 +190,11 @@ export function createModelRuntimeHost<Ctx = unknown>(
           if (warmingCancelled) {
             // `release()` cancelled this session while its context was being built
             // (transport gone). Discard the just-built context and never spawn a
-            // consumer-less harness. The id frees HERE — the pump owns the delete
-            // on the cancel path, so a re-admit stayed blocked until now.
-            admitted.delete(req.sessionId);
+            // consumer-less harness. The id frees once the context is freed — the
+            // pump owns the delete on the cancel path, so a re-admit stays blocked
+            // until then, as a live session's does.
             yield* freeContext(m);
+            admitted.delete(req.sessionId);
             emit(req, { phase: "reaped" });
             continue;
           }
