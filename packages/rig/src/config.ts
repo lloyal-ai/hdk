@@ -29,8 +29,7 @@ export const CONFIG_VERSION = 2;
 
 /** When a change to a key takes effect. `session`: at once, for what runs next. `reload`: it names the
  *  residency (a model, a backend), so it is saved and the next launch applies it. `boot`: it is fixed for the
- *  run, so only `harness.yml` and a restart change it: it sizes the context the process already built, or a
- *  page holds a copy of it, as it holds a video's sampling. */
+ *  run, so only `harness.yml` and a restart change it. */
 export type ConfigTier = 'session' | 'reload' | 'boot';
 
 /** One key's declaration. Every field is optional; a key with none is a committed-only string. */
@@ -269,8 +268,8 @@ export const attachmentSettings = defineConfig({
     describe: 'The share of the context a turn\'s attachments may fill, which the app passes to `admitted`. A tenth is the least: in a 4,096-cell context that holds one 640-pixel frame, about 410 cells.',
   },
   // The video keys are `boot` because the page samples by the copy of the policy it was described, and nothing
-  // tells it of a change. The host still reads them each time it is asked (`useVideoCommands`): that read is the
-  // seam a host announcing its policy to every sampler builds on, and then these keys are `session`.
+  // tells it of a change. The host reads them each time it is asked (`useVideoCommands`), which is the seam for
+  // a host that announces its policy to every sampler.
   'attachments.video.fps': {
     yml: 'attachments.video.fps', min: 0.1, max: 30, default: DEFAULT_VIDEO_SAMPLING.fps, applies: 'boot',
     describe: 'Frames a second a video is sampled at, up to its frame cap; a longer clip is sampled more sparsely. Past 30 a source rarely has more distinct frames, and repeats are dropped; under 0.1 a moment of speech has no picture.',

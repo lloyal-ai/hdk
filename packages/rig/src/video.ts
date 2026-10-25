@@ -33,9 +33,7 @@ export type VideoSettings = { attachments?: { video?: Partial<NonNullable<Config
 
 export interface VideoCommandsOptions {
   wire: { send(event: VideoEvent): Operation<void> };
-  /** The harness's config, read each time a video is described or composed. Its video keys are fixed for the run
-   *  (`boot`), since the page samples by the copy it was described; reading them at each ask, not once, is the
-   *  seam for changing them while a session runs, once the host announces its policy to every sampler. */
+  /** The harness's config, read each time a video is described or composed. */
   config?: () => VideoSettings;
 }
 
