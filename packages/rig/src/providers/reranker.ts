@@ -44,7 +44,7 @@ export interface RerankerLoadOpts {
  * as an Effection `resource()`.
  *
  * Loads a separate model (typically a cross-encoder) into its own KV cache
- * and exposes `score`, `scoreBatch`, `tokenizeChunks`, and `dispose`. The
+ * and exposes `score`, `scoreBatch`, `tokenize` and `tokenizeChunks`. The
  * returned `score` method yields {@link ScoredResult} batches as an async
  * iterable, mapping raw indices back to the original {@link Chunk} metadata.
  *
@@ -52,8 +52,7 @@ export interface RerankerLoadOpts {
  * and disposes them transitively when the yielding scope exits (success,
  * error, or halt) — owned from the moment they are requested, so a halt while
  * the weights load still frees them. The provider binds it once per owning
- * scope and `service('reranker')` answers it. `dispose()` remains on the
- * interface for callers that manage teardown explicitly; it is idempotent.
+ * scope and `service('reranker')` answers it; the scope is its one lifetime.
  *
  * @param modelPath - Absolute path to the reranking model file (GGUF)
  * @param opts - Optional context sizing overrides ({@link RerankerLoadOpts})
@@ -95,7 +94,6 @@ export function createReranker(
       (r) => r.dispose(),
     );
 
-    let disposed = false;
     const reranker: Reranker = {
     score(query: string, chunks: Chunk[]): AsyncIterable<ScoredResult> {
       const inner = rerank.score(
@@ -152,12 +150,6 @@ export function createReranker(
       for (let i = 0; i < chunks.length; i++) {
         chunks[i].tokens = toks[i];
       }
-    },
-
-    dispose() {
-      if (disposed) return;
-      disposed = true;
-      rerank.dispose();
     },
     };
 

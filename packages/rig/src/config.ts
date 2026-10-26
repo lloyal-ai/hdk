@@ -9,12 +9,14 @@
  * declared by none; `version` is rig's.
  *
  * `modelSettings` is the model family — one block per model, each key at the
- * path `harness.yml` names it by — so an app spreads it and declares only its
- * own keys. Node-free: the renderer may import the table and the types it derives.
+ * path `harness.yml` names it by — and `attachmentSettings` the attachments
+ * family, a turn's context share and the video policy, so an app spreads them
+ * and declares only its own keys. Node-free: the renderer may import the table and the types it derives.
  *
  * @category Rig
  */
 import type { RerankInstruction } from '@lloyal-labs/sdk';
+import type { VideoCapabilities } from '@lloyal-labs/binding';
 import type { BaseHarnessConfig, ConfigOriginValue, ConfigPatch } from './runner';
 import { isBag } from './config-paths';
 import type { Bag } from './config-paths';
@@ -26,8 +28,8 @@ import { DEFAULT_AUDIO_ADMISSION } from '@lloyal-labs/media';
 export const CONFIG_VERSION = 2;
 
 /** When a change to a key takes effect. `session`: at once, for what runs next. `reload`: it names the
- *  residency (a model, a backend), so it is saved and the next launch applies it. `boot`: it sizes the context
- *  the process already built, so only `harness.yml` and a restart change it. */
+ *  residency (a model, a backend), so it is saved and the next launch applies it. `boot`: it is fixed for the
+ *  run, so only `harness.yml` and a restart change it. */
 export type ConfigTier = 'session' | 'reload' | 'boot';
 
 /** One key's declaration. Every field is optional; a key with none is a committed-only string. */
@@ -40,10 +42,16 @@ export interface ConfigKey {
   cli?: string;
   /** A path: `~` expanded and made absolute at the boundary, whichever rung supplied it. */
   path?: true;
-  /** A positive integer; the env rung parses digits, the others refuse anything else. */
+  /** A positive integer, whichever rung sets it; anything else is refused. With `min` or `max`, a whole
+   *  number within them, and `min` replaces the floor of one. */
   integer?: true;
   /** The values it may take. A committed value outside them fails the load. */
   oneOf?: readonly string[];
+  /** The least and most a number may be, inclusive; with `integer`, a whole one. The refusal states them, so the
+   *  constraint a reader is shown is the one the load enforces. The env rung reads a decimal, which these then
+   *  judge as they judge any other rung's. */
+  min?: number;
+  max?: number;
   /** Any other rule. A committed value that fails it fails the load; a local one falls through. */
   check?: (value: unknown) => boolean;
   /** What stands when no rung supplies a value. Makes the key always present — inside a block, only once the
@@ -65,6 +73,7 @@ type Widen<X> = X extends string ? string : X extends number ? number : X extend
 type ValueOf<D> =
   D extends { oneOf: readonly (infer U)[] } ? U
   : D extends { integer: true } ? number
+  : D extends { min: number } | { max: number } ? number
   : D extends { check: (value: unknown) => value is infer G } ? G
   : D extends { default: infer X } ? Widen<X>
   : string;
@@ -205,10 +214,14 @@ export const modelSettings = defineConfig({
   'model.vision.path': { yml: 'model.vision.path', path: true, applies: 'reload', describe: 'A local .gguf for the vision projector; outranks the catalog id.' },
   'model.vision.minTokens': { yml: 'model.vision.minTokens', integer: true, applies: 'reload', describe: 'The floor on how many tokens one image is projected into; grounding tasks want it high.' },
   'model.vision.maxTokens': { yml: 'model.vision.maxTokens', integer: true, applies: 'reload', describe: 'The ceiling on what one image costs in context cells; lower it to fit more images.' },
-  'model.embedding.id': { yml: 'model.embedding.id', applies: 'reload', describe: 'The catalog id of the embedding model — the encoder a harness indexes with, one vector per text.' },
+  'model.embedding.id': { yml: 'model.embedding.id', applies: 'reload', describe: 'The catalog id of the embedding model — the encoder a harness indexes with, one vector per input. A block that names no model takes EmbeddingGemma 2 and its projector: one space for text, images, video and sound.' },
   'model.embedding.path': { yml: 'model.embedding.path', path: true, applies: 'reload', describe: 'A local .gguf for the embedding model; outranks the catalog id.' },
-  'model.embedding.context': { yml: 'model.embedding.context', integer: true, default: 2048, applies: 'boot', describe: 'The most tokens one text may embed as; a longer text is refused, never truncated.' },
+  'model.embedding.context': { yml: 'model.embedding.context', integer: true, applies: 'boot', describe: 'The most tokens one input may embed as; a longer input is refused, never truncated. Unset, a catalog model takes the context its entry gives, and a local file 2,048; a catalog model refuses more than it was trained to read.' },
   'model.embedding.pooling': { yml: 'model.embedding.pooling', oneOf: EMBEDDING_POOLINGS, applies: 'boot', describe: 'How the model folds token states into one vector — its own property; a catalog id carries it, a local file must say.' },
+  'model.embedding.projector.id': { yml: 'model.embedding.projector.id', applies: 'reload', describe: 'The projector a multimodal embedding model reads images, video and sound through; otherwise paired from the embedding model in the catalog. A text-only model has none.' },
+  'model.embedding.projector.path': { yml: 'model.embedding.projector.path', path: true, applies: 'reload', describe: 'A local projector for the embedding model; outranks its catalog id.' },
+  'model.embedding.vision.minTokens': { yml: 'model.embedding.vision.minTokens', integer: true, applies: 'reload', describe: 'The floor on how many tokens the embedding projector reads one image or frame as: detail against cost. A catalog projector refuses a value outside the range it was trained for.' },
+  'model.embedding.vision.maxTokens': { yml: 'model.embedding.vision.maxTokens', integer: true, applies: 'reload', describe: 'The ceiling on what one image or frame costs the embedding context; lower it to fit more frames in one input.' },
   'model.transcription.id': { yml: 'model.transcription.id', applies: 'reload', describe: 'The catalog id of the speech transcription model.' },
   'model.transcription.path': { yml: 'model.transcription.path', path: true, applies: 'reload', describe: 'A local transcription decoder; outranks the catalog id.' },
   'model.transcription.projector.id': { yml: 'model.transcription.projector.id', applies: 'reload', describe: 'The audio projector; otherwise paired from the transcription decoder in the catalog.' },
@@ -223,3 +236,58 @@ export const modelSettings = defineConfig({
 
 /** The model family as the layering resolves it: one block per model, present when a rung requested it. */
 export type ModelFamily = ConfigOf<typeof modelSettings>['model'];
+
+/**
+ * How a clip is sampled when nothing says otherwise: llama.cpp's own video
+ * defaults (4 fps, a timestamp every 5 s), a frame cap that keeps a clip within
+ * a working context, and a longest edge that keeps each frame's projection
+ * small. A clip longer than `maxFrames / fps` is sampled more sparsely.
+ *
+ * @category Rig
+ */
+export const DEFAULT_VIDEO_SAMPLING: VideoCapabilities['sampling'] = Object.freeze({
+  fps: 4,
+  timestampIntervalMs: 5000,
+  maxFrames: 64,
+  maxEdgePx: 640,
+  soundtrackWindowMs: 5000,
+});
+
+/**
+ * The attachments family: how much of the context a turn's attachments may
+ * fill, and the policy a video is sampled and composed under. Spread it into
+ * `defineConfig` beside `modelSettings`. Each bound is stated by the refusal of
+ * a value outside it. The time-mark interval is not a setting: composition
+ * derives it from the frames, and setting it by hand would stop them fusing.
+ *
+ * @category Rig
+ */
+export const attachmentSettings = defineConfig({
+  'attachments.context': {
+    yml: 'attachments.context', min: 0.1, max: 1, default: 1, applies: 'session',
+    describe: 'The share of the context a turn\'s attachments may fill, which the app passes to `admitted`. A tenth is the least: in a 4,096-cell context that holds one 640-pixel frame, about 410 cells.',
+  },
+  // The video keys are `boot` because the page samples by the copy of the policy it was described, and nothing
+  // tells it of a change. The host reads them each time it is asked (`useVideoCommands`), which is the seam for
+  // a host that announces its policy to every sampler.
+  'attachments.video.fps': {
+    yml: 'attachments.video.fps', min: 0.1, max: 30, default: DEFAULT_VIDEO_SAMPLING.fps, applies: 'boot',
+    describe: 'Frames a second a video is sampled at, up to its frame cap; a longer clip is sampled more sparsely. Past 30 a source rarely has more distinct frames, and repeats are dropped; under 0.1 a moment of speech has no picture.',
+  },
+  'attachments.video.maxFrames': {
+    yml: 'attachments.video.maxFrames', integer: true, min: 1, max: 3600, default: DEFAULT_VIDEO_SAMPLING.maxFrames, applies: 'boot',
+    describe: 'The most frames one video keeps. What a video costs is still measured when it is attached, and refused if it does not fit; 3,600 is an hour at one frame a second.',
+  },
+  'attachments.video.maxEdgePx': {
+    yml: 'attachments.video.maxEdgePx', integer: true, min: 64, max: 1920, default: DEFAULT_VIDEO_SAMPLING.maxEdgePx, applies: 'boot',
+    describe: 'The longest edge a frame is scaled to, in pixels: detail against tokens per frame. 1,920 is a full HD frame; under 64 a frame shows nothing to read.',
+  },
+  'attachments.video.soundtrackWindowSeconds': {
+    yml: 'attachments.video.soundtrackWindowSeconds', min: 1, max: 60, default: DEFAULT_VIDEO_SAMPLING.soundtrackWindowMs / 1000, applies: 'boot',
+    describe: 'How long each window a video\'s soundtrack is cut into runs, in seconds. Each window is transcribed and heard on its own and becomes one caption: shorter gives finer captions, search by sound and placement of what was said, longer gives fewer transcriptions. Cut at the quietest point near its end, and never longer than the services that hear admit. Under 1 a window holds no word; past 60 no service admits one by default.',
+  },
+  'attachments.video.maxDurationSeconds': {
+    yml: 'attachments.video.maxDurationSeconds', integer: true, min: 1, max: 86_400, applies: 'boot',
+    describe: 'The longest clip a harness takes, refused before any byte is pushed; unset, a clip of any length is taken. Length costs upload and one transcription per soundtrack window. A limit set here is at most a day.',
+  },
+});

@@ -22,13 +22,18 @@ export interface UntranscribedWindow {
 
 /** What the page needs to sample a clip the way this host will compose it. */
 export interface VideoCapabilities {
-  sampling: VideoSampling & { maxEdgePx: number };
+  /** How the page samples the clip: its frames, and `soundtrackWindowMs`, the length it cuts the soundtrack into
+   *  windows of, each capped by `soundtrack`'s limits. */
+  sampling: VideoSampling & { maxEdgePx: number; soundtrackWindowMs: number };
+  /** The longest clip this host composes, in milliseconds, when it sets a limit: the page refuses a longer one
+   *  before it pushes any byte. Absent, a clip of any length is taken. */
+  maxDurationMs?: number;
   /**
-   * The limits each soundtrack window must meet to be transcribed here, or
-   * null when no transcription service is bound: the page extracts audio only
-   * when there are limits, and cuts its windows to meet them.
+   * The limits each soundtrack window must meet to be kept here, or null when
+   * nothing this host runs hears: the page extracts audio only when there are
+   * limits, and cuts its windows to meet them.
    */
-  transcription: Readonly<AudioAdmission> | null;
+  soundtrack: Readonly<AudioAdmission> | null;
 }
 
 /**

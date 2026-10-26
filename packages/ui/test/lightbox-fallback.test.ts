@@ -38,6 +38,23 @@ describe('the video lightbox when the player fails', () => {
     act(() => root.unmount());
   });
 
+  it('moves to another cited moment of the same file in the browser\'s own player', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const video = { src: 'http://host/source', durationMs: 9000, frames: [{ tMs: 0, src: 'http://host/f0' }], atMs: 5000 };
+    await act(async () => { root.render(createElement(Lightbox, { video, onClose: () => {} })); });
+    await act(async () => { await import('../src/video-player.js'); });
+    const fallback = container.querySelector('video')!;
+    act(() => { fallback.dispatchEvent(new Event('loadedmetadata')); });
+    // The file is loaded: a new moment of it fires no second `loadedmetadata`.
+    Object.defineProperty(fallback, 'readyState', { configurable: true, get: () => HTMLMediaElement.HAVE_METADATA });
+    await act(async () => { root.render(createElement(Lightbox, { video: { ...video, atMs: 7000 }, onClose: () => {} })); });
+    expect(container.querySelector('video')).toBe(fallback);
+    expect(fallback.currentTime).toBe(7);
+    act(() => root.unmount());
+  });
+
   it('keeps the transcript as captions in the browser\'s own player, and lets go of the file when it closes', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const container = document.createElement('div');

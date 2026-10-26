@@ -81,7 +81,11 @@ export interface LoadOptions {
  * @category Core
  */
 export enum PoolingType {
-  /** No pooling - raw per-token embeddings */
+  /**
+   * No pooling - raw per-token embeddings. An embedding reads an input whole, in one dispatch, so per-token
+   * embeddings need a model that keeps no memory or attends both ways, as an encoder does. On a model that keeps
+   * memory and attends causally, `encode` and `encodeMultimodal` refuse; give it a pooling type instead.
+   */
   NONE = 0,
   /** Mean pooling - average of all token embeddings */
   MEAN = 1,
@@ -208,7 +212,8 @@ export interface ContextOptions {
    * Pooling type for embedding extraction
    *
    * Only relevant when embeddings=true.
-   * Default: MEAN for embedding contexts, NONE otherwise
+   * Default: MEAN for embedding contexts, NONE otherwise.
+   * NONE cannot embed on every model; see {@link PoolingType.NONE}.
    */
   poolingType?: PoolingType;
 
@@ -1499,6 +1504,30 @@ export interface SessionContext {
   encode(tokens: number[]): Promise<void>;
 
   /**
+   * Encode a multimodal input for embedding extraction: a prompt with media
+   * markers and its inputs (images, audio, a video or a video window, in
+   * marker order), read with the model's own special tokens and placed whole
+   * in one dispatch. Text around the media embeds with it, as one vector.
+   *
+   * Requires a context created with `embeddings: true` and an `mmprojPath`;
+   * any other context throws before any work. An input larger than one
+   * dispatch (`nBatch`) rejects with nothing run, so measure it first with
+   * {@link deltaCells}. Read the vector with {@link getEmbeddings}.
+   *
+   * @param prompt Text with one media marker per input
+   * @param inputs The media, in marker order
+   * @param audioLimits Admission limits for audio inputs
+   * @example
+   * ```typescript
+   * const ctx = await createContext({ modelPath, mmprojPath, embeddings: true, poolingType: PoolingType.MEAN });
+   * await ctx.kvCacheClear();
+   * await ctx.encodeMultimodal(MEDIA_MARKER, [imageBytes]);
+   * const vector = ctx.getEmbeddings();
+   * ```
+   */
+  encodeMultimodal(prompt: string, inputs: MultimodalInput[], audioLimits?: AudioLimits): Promise<void>;
+
+  /**
    * Get embedding vector from context (after encode)
    *
    * Returns the embedding vector for the encoded text.
@@ -1582,9 +1611,14 @@ export interface SessionContext {
    * Free native resources
    *
    * Call when done with context to release model and KV cache memory.
-   * Context becomes unusable after disposal.
+   * Every later call is refused at once. The native state is freed once the
+   * calls already submitted complete, never under one, and the promise
+   * resolves then; it never rejects, and every call answers the same one. A
+   * caller that makes several calls as one unit (clear, encode, read) still
+   * owns waiting for that unit before disposing: only the call in flight is
+   * held.
    */
-  dispose(): void;
+  dispose(): Promise<void>;
 
   // ===== BRANCH API (internal, wrapped by Branch class) =====
 
@@ -1700,7 +1734,9 @@ export interface SessionContext {
 
   /** @internal — KV cells a multimodal prefill WOULD consume, known before
    *  anything decodes. Pays media decode + tokenization, not the encoder
-   *  encode. Wrapped by {@link deltaCells}. */
+   *  encode. On an embedding context it counts the model's own special
+   *  tokens, as {@link encodeMultimodal} places the input. Wrapped by
+   *  {@link deltaCells}. */
   _cellsMultimodal(
     sepTokens: number[],
     prompt: string,

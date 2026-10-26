@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { run, spawn, sleep, until } from 'effection';
-import { waitUntilSettled } from '../src/combinators';
+import { race, run, spawn, sleep, suspend, until, withResolvers } from 'effection';
+import type { Operation } from 'effection';
+import { makePermits, waitUntilSettled } from '../src/combinators';
 
 /**
  * waitUntilSettled is the one Effection helper that survives halt: a queued
@@ -42,6 +43,75 @@ describe('waitUntilSettled', () => {
       // Should resolve cleanly once the promise settles (rejected), no throw here.
       yield* task.halt();
       yield* until(p.then(() => 'ok', () => 'settled-rejected'));
+    });
+  });
+});
+
+/**
+ * The FIFO gate: a permit is never lost, however its holder or a waiter
+ * leaves. A lost permit is a gate that never opens again.
+ */
+describe('makePermits', () => {
+  /** The operation, or a refusal naming it, so a lost permit fails the test rather than hanging it. */
+  function* within<T>(name: string, op: Operation<T>): Operation<T> {
+    return yield* race([op, (function* (): Operation<T> { yield* sleep(200); throw new Error(`${name} never got a permit`); })()]);
+  }
+
+  it('grants in the order asked, one at a time', async () => {
+    const log: string[] = [];
+    await run(function* () {
+      const gate = makePermits(1);
+      const holder = (name: string) => spawn(() => gate.hold(function* () {
+        log.push(`${name}:in`);
+        yield* sleep(5);
+        log.push(`${name}:out`);
+      }));
+      const tasks = [yield* holder('a'), yield* holder('b'), yield* holder('c')];
+      for (const t of tasks) yield* t;
+    });
+    expect(log).toEqual(['a:in', 'a:out', 'b:in', 'b:out', 'c:in', 'c:out']);
+  });
+
+  it('a waiter halted while it waits leaves the queue, and the permit goes to the next', async () => {
+    const log: string[] = [];
+    await run(function* () {
+      const gate = makePermits(1);
+      const running = withResolvers<void>();
+      const holder = yield* spawn(() => gate.hold(() => running.operation));
+      yield* sleep(0);
+      const waiter = yield* spawn(() => gate.hold(function* () { log.push('halted waiter ran'); }));
+      yield* sleep(0);
+      yield* waiter.halt();
+      running.resolve();
+      yield* holder;
+      yield* within('the next caller', gate.hold(function* () {}));
+    });
+    expect(log).toEqual([]);
+  });
+
+  it('a waiter halted after it was handed the permit, before it resumed, gives it back', async () => {
+    await run(function* () {
+      const gate = makePermits(1);
+      const running = withResolvers<void>();
+      const holder = yield* spawn(() => gate.hold(() => running.operation));
+      yield* sleep(0);
+      const waiter = yield* spawn(() => gate.hold(function* () {}));
+      yield* sleep(0);
+      // The holder ends and the waiter is halted in the same turn: the permit is handed over, never resumed into.
+      running.resolve();
+      yield* holder;
+      yield* waiter.halt();
+      yield* within('the next caller', gate.hold(function* () {}));
+    });
+  });
+
+  it('a holder halted inside its work gives the permit back', async () => {
+    await run(function* () {
+      const gate = makePermits(1);
+      const holder = yield* spawn(() => gate.hold(() => suspend()));
+      yield* sleep(0);
+      yield* holder.halt();
+      yield* within('the next caller', gate.hold(function* () {}));
     });
   });
 });

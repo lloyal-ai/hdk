@@ -173,18 +173,6 @@ describe('createReranker — ownership begins with the request', () => {
     expect(order).toEqual(['rerank', 'ctx']);
   });
 
-  it('an explicit dispose is idempotent on the interface; the owner still frees on exit, which the real composition ignores', async () => {
-    // `Rerank.dispose` guards on its own `_disposed`, so the owner's free after an explicit dispose is a no-op
-    // there; the fake counts both calls, and that count is the contract this row states.
-    await run(function* () {
-      const r = yield* createReranker('/fake/reranker.gguf');
-      r.dispose();
-      r.dispose();
-      expect(rerankDispose).toHaveBeenCalledTimes(1);
-    });
-    expect(rerankDispose).toHaveBeenCalledTimes(2);
-  });
-
   it('a halt while the boot canary runs waits for the canary, then frees the composition, then the context — the finding this row holds', async () => {
     // Never `canary-start → context-free → canary-end`: the scope does not leave until the canary has
     // settled, and its teardown runs in reverse order of acquisition.

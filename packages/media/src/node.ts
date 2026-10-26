@@ -10,6 +10,7 @@
  * never installs it; one that normalizes does, and the manifest says so.
  */
 export { createImageIngress, DEFAULT_MAX_PIXELS, normalizeImage } from './image';
+export { encodeVideoFrame } from './video-frame';
 export type { NormalizedImage, NormalizeImage, NormalizeOpts } from './image';
 
 export { FileAttachmentStore } from './file-store';

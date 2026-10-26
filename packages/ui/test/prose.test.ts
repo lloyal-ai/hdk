@@ -7,10 +7,12 @@ import { describe, it, expect } from 'vitest';
 import { lexer } from 'marked';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
-import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
 import { toString } from 'mdast-util-to-string';
-import { headingsOf, linksOf, anchorsOf, splitStreaming, admitUrl } from '../src/prose';
+import { headingsOf, linksOf, anchorsOf, splitStreaming, admitUrl, REMARK_PLUGINS } from '../src/prose';
+
+/** A body's tree as the renderer reads it: its one plugin list, transforms run. */
+const reader = unified().use(remarkParse).use(REMARK_PLUGINS);
+const renderersTree = (md: string): unknown => reader.runSync(reader.parse(md), md);
 
 describe('headingsOf / linksOf', () => {
   it('a heading\'s text is the rendered text: inline markup resolved, at its offset, at its depth', () => {
@@ -40,6 +42,73 @@ describe('headingsOf / linksOf', () => {
     expect(linksOf('see https://bare.io/x now').map((l) => l.href)).toEqual(['https://bare.io/x']);
   });
 
+  it('an address written twice in one paragraph is two links, each where it stands', () => {
+    const md = 'Once at attachment://81cc8d9fd4e4/t/1m24.87s, then\nagain at attachment://81cc8d9fd4e4/t/1m24.87s.';
+    const at = (from: number): number => md.indexOf('attachment://', from);
+    expect(linksOf(md).map((l) => l.offset)).toEqual([at(0), at(at(0) + 1)]);
+  });
+
+  it('an address stands where the source writes it, after a character reference, an escape, or a quote\'s or list\'s own marks', () => {
+    const address = 'attachment://81cc8d9fd4e4/t/1m24.87s';
+    const bodies = [
+      `Tom &amp; Jerry at ${address}.`,
+      `A \\*literal\\* star, then ${address}.`,
+      `> First line\n> then ${address}, quoted.`,
+      `- First line\n  then ${address}, listed.`,
+      `> &amp; once at ${address} and\n> twice at ${address}.`,
+    ];
+    for (const md of bodies) {
+      const offsets = linksOf(md).map((l) => l.offset);
+      expect(offsets.map((o) => md.slice(o, o + address.length)), md).toEqual(offsets.map(() => address));
+      expect(offsets.length, md).toBe(md.split(address).length - 1);
+    }
+  });
+
+  it('an address written with a character reference is not one, as GFM leaves a url written that way; the literal copy beside it stands where it is written', () => {
+    const md = 'See &#97;ttachment://81cc8d9fd4e4/t/5000 then attachment://81cc8d9fd4e4/t/5000.';
+    expect(linksOf(md).map((l) => l.offset)).toEqual([md.lastIndexOf('attachment://')]);
+  });
+
+  it('the scheme is read in any case, as media\'s grammar reads it, bare or in a link', () => {
+    const md = 'At Attachment://81cc8d9fd4e4/t/5000 and ATTACHMENT://81cc8d9fd4e4/page/2, and [here](aTtachment://81cc8d9fd4e4/t/5000).';
+    expect(linksOf(md).map((l) => l.href)).toEqual([
+      'Attachment://81cc8d9fd4e4/t/5000', 'ATTACHMENT://81cc8d9fd4e4/page/2', 'aTtachment://81cc8d9fd4e4/t/5000',
+    ]);
+    expect(linksOf(md)[0].offset).toBe(md.indexOf('Attachment://'));
+  });
+
+  it('a word that begins the scheme and then breaks the line or tabs is text, and the addresses around it still link', () => {
+    const address = 'attachment://81cc8d9fd4e4/t/5000';
+    for (const md of ['look at\nthis', 'pick a\tcat', 'at\r\nnext', 'Att\nx', `A\n${address}`, `${address} and at\nthen ${address}`]) {
+      expect(linksOf(md).map((l) => l.href), JSON.stringify(md)).toEqual(md.split(address).slice(1).map(() => address));
+    }
+  });
+
+  it('a quote or guillemet of any script around an address is the sentence\'s, not the address\'s', () => {
+    const at = 'attachment://81cc8d9fd4e4/t/5000';
+    const page = 'attachment://81cc8d9fd4e4/page/2';
+    const md = `See “${at}”. And ‘${page}’, «${at}», "${page}".`;
+    expect(linksOf(md).map((l) => [l.href, md.slice(l.offset, l.offset + l.href.length)])).toEqual(
+      [at, page, at, page].map((a) => [a, a]),
+    );
+  });
+
+  it('a bare attachment address is a link too, as the renderer links it: a moment or a page, without the sentence\'s own punctuation', () => {
+    const md = 'It brakes at attachment://81cc8d9fd4e4/t/1m24.87s. Page attachment://81cc8d9fd4e4/page/3, and 5 s in (attachment://81cc8d9fd4e4/t/5000).';
+    expect(linksOf(md)).toEqual([
+      { href: 'attachment://81cc8d9fd4e4/t/1m24.87s', text: 'attachment://81cc8d9fd4e4/t/1m24.87s', offset: md.indexOf('attachment://81cc8d9fd4e4/t/1m24.87s') },
+      { href: 'attachment://81cc8d9fd4e4/page/3', text: 'attachment://81cc8d9fd4e4/page/3', offset: md.indexOf('attachment://81cc8d9fd4e4/page/3') },
+      { href: 'attachment://81cc8d9fd4e4/t/5000', text: 'attachment://81cc8d9fd4e4/t/5000', offset: md.indexOf('attachment://81cc8d9fd4e4/t/5000') },
+    ]);
+  });
+
+  it('an address already in a link, or in code, is not linked again; what is not an address stays text', () => {
+    const linked = '[attachment://81cc8d9fd4e4/t/5000](attachment://81cc8d9fd4e4/t/5000) and [at 5 s](attachment://81cc8d9fd4e4/t/5000)';
+    expect(linksOf(linked).map((l) => l.text)).toEqual(['attachment://81cc8d9fd4e4/t/5000', 'at 5 s']);
+    expect(linksOf('`attachment://81cc8d9fd4e4/t/5000`')).toEqual([]);
+    expect(linksOf('attachment://not-hex/t/5000 attachment://81cc8d9fd4e4/t/soon attachment://81cc8d9fd4e4/frame/2')).toEqual([]);
+  });
+
   it('a reference-style link resolves through its FIRST definition; an unresolved reference is text, not a link', () => {
     const md = 'See [the paper][p] and [nothing][gone].\n\n[p]: https://p.io/paper\n[p]: https://p.io/other';
     expect(linksOf(md)).toEqual([{ href: 'https://p.io/paper', text: 'the paper', offset: 4 }]);
@@ -61,7 +130,7 @@ describe('headingsOf / linksOf', () => {
 
   /** The facts of a body read whole by the renderer's own parser: what the split parse must reproduce. */
   const whole = (md: string): { headings: unknown[]; links: unknown[] } => {
-    const root = unified().use(remarkParse).use(remarkGfm).use(remarkMath).parse(md) as { children: unknown[] };
+    const root = renderersTree(md) as { children: unknown[] };
     const nodes: { type: string; depth?: number; url?: string; identifier?: string; children?: unknown[]; position?: { start: { offset: number } } }[] = [];
     const walk = (list: unknown[]): void => { for (const n of list as typeof nodes) { nodes.push(n); if (n.children) walk(n.children); } };
     walk(root.children);
@@ -126,7 +195,7 @@ const tree = (md: string): unknown[] => {
     Array.isArray(n) ? n.map(strip)
     : n && typeof n === 'object' ? Object.fromEntries(Object.entries(n).filter(([k]) => k !== 'position').map(([k, v]) => [k, strip(v)]))
     : n;
-  return strip((unified().use(remarkParse).use(remarkGfm).use(remarkMath).parse(md) as { children: unknown[] }).children) as unknown[];
+  return strip((renderersTree(md) as { children: unknown[] }).children) as unknown[];
 };
 const splitTree = (md: string): unknown[] => {
   const { head, tail } = splitStreaming(md);

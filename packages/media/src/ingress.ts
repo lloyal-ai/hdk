@@ -7,19 +7,30 @@
  */
 import { representationsOf } from './attachment';
 import { PROJECTOR_FORMATS } from './media-type';
-import { resolveVideo, VIDEO_CONFIG_TYPE } from './video';
+import { resolveSoundtrack, resolveVideo, VIDEO_CONFIG_TYPE } from './video';
+import { AUDIO_CONFIG_TYPE, resolveAudio } from './audio';
+import type { AudioAdmission } from './audio';
 import type { VideoInput } from './video';
-import type { Attachment } from './attachment';
+import type { Attachment, AttachmentManifest } from './attachment';
 import { ContentLost } from './store';
 import type { AttachmentStore } from './store';
 
 /**
- * One projector input, behind one marker: an image's admitted bytes, or a
- * video's frames on its timeline. Structurally the SDK's `MultimodalInput`.
+ * One projector input, behind one marker: an image's admitted bytes, a
+ * video's frames on its timeline, or a recording's samples. Structurally the
+ * SDK's `MultimodalInput`.
  *
  * @category Media
  */
-export type ProjectorInput = Uint8Array | VideoInput;
+export type ProjectorInput = Uint8Array | VideoInput | { kind: 'audio'; bytes: Uint8Array };
+
+/** What the projector reading the content can take. */
+export interface MaterializeOpts {
+  /** The projector hears, and a recording, or a video's soundtrack window, must meet this admission to reach it.
+   *  Absent, sound contributes no input: a recording reaches a transcriber instead, and a video its frames and
+   *  transcript alone. */
+  audio?: AudioAdmission;
+}
 
 /**
  * Admitted content, ready for a delta builder.
@@ -36,11 +47,16 @@ export interface PreparedContent {
   /** Roots, in ingest order — what the trace and the fold carry. */
   attachments: readonly Attachment[];
   /** One input per marker, in root order: each image representation as its
-   *  admitted bytes, each video as ONE input of its frames on their timeline.
-   *  A document, whose representation is text, and audio, which reaches a
-   *  transcriber rather than this projector, contribute none. These are the
-   *  EXACT inputs to hand a builder and then the projector. */
+   *  admitted bytes, each video as ONE input of its frames on their timeline,
+   *  then, when the projector hears, one audio input per soundtrack window, and
+   *  each recording as one audio input when the projector hears. A document,
+   *  whose representation is text, contributes none. These are the EXACT
+   *  inputs to hand a builder and then the projector. */
   inputs: readonly ProjectorInput[];
+  /** The roots that gave the projector nothing, and why: a recording, to a
+   *  projector that does not hear (`unheard`), or a root whose representations
+   *  are text, a document's, which the projector reads none of (`text`). */
+  skipped: readonly { root: Attachment; reason: 'unheard' | 'text' }[];
 }
 
 /**
@@ -62,8 +78,10 @@ export interface PreparedContent {
 export function materialize(
   store: AttachmentStore,
   roots: readonly Attachment[],
+  opts: MaterializeOpts = {},
 ): PreparedContent {
   const inputs: ProjectorInput[] = [];
+  const skipped: PreparedContent['skipped'][number][] = [];
   for (const root of roots) {
     const manifest = store.getManifest(root.digest);
     if (!manifest) {
@@ -72,32 +90,41 @@ export function materialize(
           'in the content store, or its bytes no longer hash to its digest.',
       );
     }
-    // A video's frames are not still images: they reach the projector as one
-    // input, so they fuse on their timeline instead of encoding one by one.
-    if (manifest.config.mediaType === VIDEO_CONFIG_TYPE) {
-      inputs.push(resolveVideo(store, root));
-      continue;
-    }
-    for (const rep of representationsOf(manifest)) {
-      // Only what the projector decodes is an input. A text representation is
-      // real content — retrieval reads it — but handing it to the image decoder
-      // would poison the branch it was prefilled on.
-      if (!PROJECTOR_FORMATS.includes(rep.mediaType)) continue;
-      // Replay rebuilds KV from these bytes under this digest. The store
-      // refuses bytes that drifted from their name, so null here means absent
-      // or drifted — either must refuse, not decode as something else.
-      const bytes = store.get(rep.digest);
-      if (!bytes) {
-        throw new ContentLost(
-          `blob ${rep.digest.slice(0, 19)}… (${rep.mediaType}) is ` +
-            'referenced by a manifest but missing from the content store, or its ' +
-            'bytes no longer hash to its digest.',
-        );
-      }
-      inputs.push(bytes);
-    }
+    const own = inputsOf(store, root, manifest, opts);
+    if (own.length === 0) skipped.push({ root, reason: manifest.config.mediaType === AUDIO_CONFIG_TYPE ? 'unheard' : 'text' });
+    inputs.push(...own);
   }
-  return { attachments: roots, inputs };
+  return { attachments: roots, inputs, skipped };
+}
+
+/** What one root gives the projector, by what kind of attachment it is. */
+function inputsOf(store: AttachmentStore, root: Attachment, manifest: AttachmentManifest, opts: MaterializeOpts): ProjectorInput[] {
+  // A video's frames are not still images: they reach the projector as one
+  // input, so they fuse on their timeline instead of encoding one by one.
+  if (manifest.config.mediaType === VIDEO_CONFIG_TYPE) {
+    const soundtrack = opts.audio ? resolveSoundtrack(store, root, opts.audio).map(bytes => ({ kind: 'audio' as const, bytes })) : [];
+    return [resolveVideo(store, root), ...soundtrack];
+  }
+  if (manifest.config.mediaType === AUDIO_CONFIG_TYPE) {
+    return opts.audio ? [{ kind: 'audio', bytes: resolveAudio(store, root, opts.audio).bytes }] : [];
+  }
+  // Only what the projector decodes is an input. A text representation is
+  // real content — retrieval reads it — but handing it to the image decoder
+  // would poison the branch it was prefilled on.
+  return representationsOf(manifest).filter(rep => PROJECTOR_FORMATS.includes(rep.mediaType)).map(rep => {
+    // Replay rebuilds KV from these bytes under this digest. The store
+    // refuses bytes that drifted from their name, so null here means absent
+    // or drifted — either must refuse, not decode as something else.
+    const bytes = store.get(rep.digest);
+    if (!bytes) {
+      throw new ContentLost(
+        `blob ${rep.digest.slice(0, 19)}… (${rep.mediaType}) is ` +
+          'referenced by a manifest but missing from the content store, or its ' +
+          'bytes no longer hash to its digest.',
+      );
+    }
+    return bytes;
+  });
 }
 
 /**

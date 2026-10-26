@@ -22,6 +22,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { WrappedPdfiumModule } from '@embedpdf/pdfium';
+import { loadSharp } from './sharp';
 import type { Attachment, Descriptor } from './attachment';
 import { DERIVE_PREFIX } from './attachment';
 import type { AttachmentStore } from './store';
@@ -606,8 +607,7 @@ function renderRegionRgba(codec: Codec, page: number, pageHeightPt: number, bbox
 
 /** RGBA pixels → PNG, through sharp with its defaults, which are deterministic for a fixed libvips. */
 async function toPng(rgba: Uint8Array, width: number, height: number): Promise<Uint8Array> {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const sharp = require('sharp') as typeof import('sharp').default;
+  const sharp = loadSharp('A document page could not be rendered: `sharp` is not installed. Add it to the harness that accepts documents (npm i sharp).');
   const png = await sharp(Buffer.from(rgba.buffer, rgba.byteOffset, rgba.byteLength), { raw: { width, height, channels: 4 } })
     .removeAlpha()
     .png()

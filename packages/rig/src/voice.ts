@@ -5,6 +5,7 @@ import type { Attachment } from '@lloyal-labs/media';
 import { Services } from './services';
 import { useExecution } from './execution';
 import type { CommandGroup } from './serve-commands';
+import { isRequestId } from '@lloyal-labs/binding';
 import type { VoiceCommand, VoiceEvent, VoiceResult } from '@lloyal-labs/binding';
 
 export interface VoiceCommandsOptions {
@@ -32,7 +33,7 @@ export function useVoiceCommands({ wire, model = 'Transcription', transcribe }: 
           yield* wire.send({ type: 'voice:capabilities', capabilities: asr && !execution.poisoned ? { enabled: true, limits: asr.limits, model } : { enabled: false } });
         },
         *'voice:transcribe'(command) {
-          if (typeof command.requestId !== 'string' || !command.requestId || command.requestId.length > 128) return;
+          if (!isRequestId(command.requestId)) return;
           const requestId = command.requestId;
           if (execution.poisoned) {
             yield* wire.send({ type: 'voice:error', requestId, message: 'Transcription is unavailable after a cleanup failure.' });

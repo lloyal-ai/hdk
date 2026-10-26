@@ -98,8 +98,11 @@ export function planInstall(model: ModelFamily, opts: { lenient?: boolean } = {}
     const role = request.role;
     const step: PlannedStep = { id: role, label: `Downloading the ${request.name}`, status: 'pending', role, file: takesFile(role) && fileWouldBind(request, model) };
     try {
-      step.spec = request.select(model);
-      Object.assign(step, acquires(role, step.spec));
+      const spec = request.select(model);
+      // A projector the model chosen does not have is no step at all.
+      if (!spec) continue;
+      step.spec = spec;
+      Object.assign(step, acquires(role, spec));
     } catch (err) {
       refuse(step, err);
     }
@@ -117,11 +120,14 @@ const sameSpec = (a: ModelSpec | undefined, b: ModelSpec | undefined): boolean =
 /**
  * The steps as the fresh derivation has them, with what the walk already did carried over wherever the
  * derivation agrees: a step whose spec is unchanged keeps its status and its artifact; one whose spec changed,
- * or that the fresh derivation refuses, starts again with its artifact dropped. The machine step is never
- * re-derived. Mutates `steps` in place so the reported list stays the one list.
+ * or that the fresh derivation refuses, starts again with its artifact dropped; one the fresh derivation no
+ * longer has, a projector the model now chosen is not paired with, leaves with its artifact. The machine step is
+ * never re-derived. Mutates `steps` in place so the reported list stays the one list.
  */
 function reconcile(steps: PlannedStep[], fresh: PlannedStep[], artifacts: Record<string, string>): void {
   const before = new Map(steps.map((s) => [s.id, s]));
+  const planned = new Set(fresh.map((s) => s.id));
+  for (const id of Object.keys(artifacts).filter((id) => !planned.has(id))) delete artifacts[id];
   steps.length = 0;
   for (const next of fresh) {
     const prev = before.get(next.id);

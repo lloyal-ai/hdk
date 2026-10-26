@@ -50,6 +50,32 @@ describe('acquire', () => {
     expect(disposed).toEqual([]);
   });
 
+  it('the scope leaves only once what it acquired is freed: a dispose that answers a promise is waited for', async () => {
+    let freed!: () => void;
+    const log: string[] = [];
+    const done = run(function* () {
+      yield* scoped(function* () {
+        yield* acquire(async () => 'ctx', () => new Promise<void>((r) => { freed = () => { log.push('freed'); r(); }; }));
+      });
+      log.push('left');
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(log).toEqual([]);            // still in the scope: the native state is not yet freed
+    freed();
+    await done;
+    expect(log).toEqual(['freed', 'left']);
+  });
+
+  it('a dispose whose promise rejects never stops the scope from closing', async () => {
+    const left = await run(function* () {
+      yield* scoped(function* () {
+        yield* acquire(async () => 'ctx', () => Promise.reject(new Error('free failed')));
+      });
+      return true;
+    });
+    expect(left).toBe(true);
+  });
+
   it('a dispose that throws never stops the scope from closing', async () => {
     let closed = false;
     await run(function* () {

@@ -130,6 +130,26 @@ describe('the video lightbox', () => {
     expect(container.textContent).toContain('from 0:00.25');
   });
 
+  it('while it waits, says why over the poster and loads no player; once the wait is over it plays from the cited moment', async () => {
+    const shown = { ...view, src: 'http://host/source', atMs: 5000 };
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => { root.render(createElement(Lightbox, { video: shown, waiting: 'The video plays once the run is held.', onClose: () => {} })); });
+    await act(async () => { await import('../src/video-player'); });
+    expect(container.querySelector('video')).toBeNull();
+    expect(container.querySelector('[role="status"]')!.textContent).toBe('The video plays once the run is held.');
+    expect(container.querySelector('[role="status"] img')!.getAttribute('src')).toBe('http://host/f0');
+    expect(container.textContent).not.toContain('hover the timeline');
+    expect(made).toHaveLength(0);
+    await act(async () => { root.render(createElement(Lightbox, { video: shown, onClose: () => {} })); });
+    const player = container.querySelector('video')!;
+    expect(player.getAttribute('src')).toBe('http://host/source');
+    act(() => { player.dispatchEvent(new Event('loadedmetadata')); });
+    expect(player.currentTime).toBe(5);
+    expect(container.textContent).not.toContain('The video plays once the run is held.');
+  });
+
   it('without the original, shows the frames the model saw, each with its time', async () => {
     await show(view);
     expect(container.querySelector('video')).toBeNull();

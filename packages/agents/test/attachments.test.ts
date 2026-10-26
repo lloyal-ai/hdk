@@ -540,7 +540,7 @@ describe('prepareBatch — the barrier before any prefill', () => {
       return yield* prepareBatch(
         { ingest: () => Promise.reject(new Error('unused')) }, store, [],
       );
-    })).resolves.toEqual({ attachments: [], inputs: [] }); // text-only: unaffected
+    })).resolves.toEqual({ attachments: [], inputs: [], skipped: [] }); // text-only: unaffected
   });
 
   it('keeps the index writer serialized by staying SYNCHRONOUS', () => {

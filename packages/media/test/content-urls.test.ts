@@ -7,7 +7,8 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import {
-  configUrl, ingestMedia, ingressUrl, manifestUrl, parseAttachmentHref, representationUrl, resolvePrefix, sourceUrl,
+  ATTACHMENT_SCHEME, configUrl, ingestMedia, ingressUrl, isAttachmentUrl, manifestUrl, parseAttachmentHref, parseAttachmentMoment,
+  representationUrl, resolvePrefix, sourceUrl,
 } from '../src/content-urls';
 
 const DIGEST = 'sha256:' + 'a1b2c3d4e5f6'.padEnd(64, '0');
@@ -45,6 +46,13 @@ describe('content urls', () => {
     expect(parseAttachmentHref('attachment://a1b2c3d4e5f6/page/')).toBeNull();
     expect(parseAttachmentHref('attachment://a1b2c3d4e5f6')).toBeNull();
     expect(parseAttachmentHref('https://example.com/attachment://a1b2c3d4e5f6/page/7')).toBeNull();
+  });
+
+  it('the scheme is the content plane\'s in any case, and nothing that only resembles it', () => {
+    for (const url of ['attachment://a1b2c3d4e5f6', 'Attachment://store', 'ATTACHMENT://a1b2c3d4e5f6/t/5000']) expect(isAttachmentUrl(url), url).toBe(true);
+    for (const url of ['attachments://a1', 'attachment:a1', 'https://attachment://a1', ' attachment://a1', '']) expect(isAttachmentUrl(url), url).toBe(false);
+    expect(parseAttachmentHref(`${ATTACHMENT_SCHEME.toUpperCase()}a1b2c3d4e5f6/page/2`)).toEqual({ prefix: 'a1b2c3d4e5f6', page: 2 });
+    expect(parseAttachmentMoment('aTtAcHmEnT://a1b2c3d4e5f6/t/0m5.00s')).toEqual({ prefix: 'a1b2c3d4e5f6', tMs: 5000 });
   });
 
   it('a prefix resolves to exactly one digest the view holds, or to nothing', () => {

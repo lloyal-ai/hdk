@@ -21,13 +21,16 @@
  * @packageDocumentation
  * @category UI
  */
+import { isAttachmentUrl } from '@lloyal-labs/media';
 import { lexer } from 'marked';
 import { unified } from 'unified';
+import type { PluggableList } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import { toString } from 'mdast-util-to-string';
 import type { Root, Content } from 'mdast';
+import { attachmentLinks } from './attachment-links.js';
 
 export interface Heading {
   /** 1–6, the `#` count. */
@@ -58,12 +61,12 @@ export interface Anchor {
  *  imports React at scope and this one is framework-free. */
 const SAFE_PROTOCOL = /^(https?|ircs?|mailto|xmpp)$/i;
 
-/** The ONE url policy of a harness view: the content plane's scheme (`attachment://…`) is admitted, a relative
- *  url or a safe scheme passes, anything else (`javascript:`, `data:`) is stripped to `''`. `Markdown` renders
- *  through it and `linksOf` reports through it, so a citation built from a link carries the href the page
- *  carries. */
+/** The ONE url policy of a harness view: the content plane's scheme (`attachment://…`, as media reads it) is
+ *  admitted, a relative url or a safe scheme passes, anything else (`javascript:`, `data:`) is stripped to `''`.
+ *  `Markdown` renders through it and `linksOf` reports through it, so a citation built from a link carries the
+ *  href the page carries. */
 export function admitUrl(url: string): string {
-  if (url.startsWith('attachment://')) return url;
+  if (isAttachmentUrl(url)) return url;
   const colon = url.indexOf(':');
   const questionMark = url.indexOf('?');
   const numberSign = url.indexOf('#');
@@ -78,9 +81,12 @@ export function admitUrl(url: string): string {
   return '';
 }
 
-/** The renderer's grammar, exactly: `Markdown` parses with these two plugins, so a `$…$` span is math here as
- *  it is there, never emphasis. */
-const parser = unified().use(remarkParse).use(remarkGfm).use(remarkMath);
+/** The ONE grammar a harness view's markdown is read with, in order: GitHub's flavour, math, and attachment
+ *  addresses as links. `Markdown` renders with it and the facts here are read with it, so a `$…$` span is math
+ *  in both, never emphasis, and an address the page links is a link `linksOf` reports. */
+export const REMARK_PLUGINS: PluggableList = [remarkGfm, remarkMath, attachmentLinks];
+
+const parser = unified().use(remarkParse).use(REMARK_PLUGINS);
 
 /** Parsed texts, most recent last. A body is parsed in two pieces (see {@link nodesOf}), and a canvas reads the
  *  settled body, its exchanges and the sections in one pass, so a small memo would thrash; an unbounded one
@@ -95,7 +101,7 @@ function rootOf(markdown: string): Root {
     parsed.set(markdown, hit);
     return hit;
   }
-  const root = parser.parse(markdown) as Root;
+  const root = parser.runSync(parser.parse(markdown), markdown) as Root;
   parsed.set(markdown, root);
   if (parsed.size > KEEP) parsed.delete(parsed.keys().next().value as string);
   return root;

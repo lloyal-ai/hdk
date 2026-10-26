@@ -34,7 +34,9 @@ describe('admitted audio', () => {
     expect(audio.metadata).toMatchObject({ channels: 2, sampleRate: 48000, frames: 160, bitsPerSample: 16, silent: false });
     expect(audio.representation.mediaType).toBe('audio/wav');
     expect(content.getManifest(root.digest)!.config.mediaType).toBe(media.AUDIO_CONFIG_TYPE);
-    expect(materialize(content, [root]).inputs).toEqual([]);
+    // To a consumer that does not hear, a recording is no input, and is named as unheard.
+    expect(materialize(content, [root])).toMatchObject({ inputs: [], skipped: [{ root, reason: 'unheard' }] });
+    expect(materialize(content, [root], { audio: media.audioAdmission() }).skipped).toEqual([]);
   });
 
   it('identifies digital silence from samples, not from headers or the model output', async () => {
@@ -81,5 +83,28 @@ describe('admitted audio', () => {
     const rep = media.resolveAudio(content, root).representation;
     vi.spyOn(content, 'get').mockImplementation(digest => digest === rep.digest ? null : get(digest));
     expect(() => media.resolveAudio(content, root)).toThrow(/missing|digest/i);
+  });
+
+  it('reaches a projector that hears, as one audio input admitted under that projector\'s limits', async () => {
+    const content = store();
+    const bytes = pcmWav();
+    const audio = await createContentIngress(content).ingest(bytes);
+    expect(materialize(content, [audio], { audio: media.audioAdmission() }).inputs).toEqual([{ kind: 'audio', bytes }]);
+    expect(() => materialize(content, [audio], { audio: media.audioAdmission({ maxBytes: 8 }) })).toThrow(/byte limit/);
+  });
+
+  it('keeps what every consumer admits: the least of each limit, and nothing for no consumer', () => {
+    const transcriber = media.audioAdmission({ maxDurationSeconds: 30, maxSampleRate: 16_000 });
+    const embedder = media.audioAdmission({ maxBytes: 4096 });
+    expect(media.commonAdmission([transcriber, embedder])).toEqual({ ...transcriber, maxBytes: 4096 });
+    expect(media.commonAdmission([embedder])).toEqual(embedder);
+    expect(media.commonAdmission([])).toBeNull();
+  });
+
+  it('bounds the native decoder at the projector\'s own rate, with one sample of resampling headroom', () => {
+    expect(media.audioLimitsAt(media.audioAdmission({ maxDurationSeconds: 30 }), 16_000))
+      .toEqual({ maxBytes: media.DEFAULT_AUDIO_ADMISSION.maxBytes, maxSamples: 480_001 });
+    expect(media.audioLimitsAt(media.audioAdmission({ maxDurationSeconds: 0.5, maxBytes: 1024 }), 44_100))
+      .toEqual({ maxBytes: 1024, maxSamples: 22_051 });
   });
 });

@@ -94,9 +94,7 @@ export function createServedHostDriver<E, C>(opts: ServedHostDriverOpts<E, C>): 
           context,
           uiChannel: ch.uiChannel as EventBus<unknown>,
           commands: ch.commands as Signal<unknown, void>,
-          dispose() {
-            try { context.dispose?.(); } catch { /* freeing the served context — not the driver's error to surface */ }
-          },
+          dispose: () => context.dispose(),
         };
       },
       *run(m, sessionId) {

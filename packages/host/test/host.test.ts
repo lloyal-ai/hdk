@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { run, sleep, suspend, call, createSignal, type Operation } from "effection";
+import { run, sleep, spawn, suspend, call, createSignal, type Operation } from "effection";
 import { createBus } from "@lloyal-labs/binding";
 import { createModelRuntimeHost } from "../src/host";
 import type { Materialised, ServedHarness, SessionState } from "../src/types";
@@ -115,6 +115,44 @@ describe("ModelRuntimeHost", () => {
 
     // Host scope unwound → every remaining session was halted + disposed.
     expect(disposed.sort()).toEqual(["A", "B", "C"]);
+  });
+
+  it("holds a slot until its context is freed: a dispose that answers a promise keeps the next session queued until it settles", async () => {
+    let free!: () => void;
+    const started: string[] = [];
+    const served: ServedHarness = {
+      // eslint-disable-next-line @typescript-eslint/require-await
+      async materialise(id: string): Promise<Materialised> {
+        started.push(id);
+        return {
+          context: { id },
+          uiChannel: createBus<unknown>(),
+          commands: createSignal<unknown, void>(),
+          dispose: () => (id === "A" ? new Promise<void>((r) => { free = r; }) : undefined),
+        };
+      },
+      *run(): Operation<void> {
+        yield* suspend();
+      },
+    };
+
+    await run(function* () {
+      const host = yield* createModelRuntimeHost({ served, maxNativeSessions: 1 });
+      host.admit({ sessionId: "A", onState: () => {} });
+      host.admit({ sessionId: "B", onState: () => {} });
+      yield* waitFor(() => host.sessions.has("A") && host.queueDepth === 1, "A live, B queued");
+
+      const releasing = yield* spawn(() => call(() => host.release("A")));
+      yield* sleep(20);
+      // A's context is still freeing: its slot is not B's yet.
+      expect(started).toEqual(["A"]);
+      expect(host.queueDepth).toBe(1);
+
+      free();
+      yield* releasing;
+      yield* waitFor(() => host.sessions.has("B"), "B admitted once A is freed");
+      expect(started).toEqual(["A", "B"]);
+    });
   });
 
   it("a failed materialise dies that session without stalling the pump", async () => {
@@ -383,6 +421,92 @@ describe("ModelRuntimeHost", () => {
       host.admit({ sessionId: "W2", onState: () => {} });
       yield* waitFor(() => host.sessions.has("W2"), "host still admits after a warming cancel");
     });
+  });
+
+  it("a warming-cancelled id stays admitted until its context is freed: a re-admit while it frees is refused", async () => {
+    let releaseMaterialise!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseMaterialise = resolve; });
+    let free!: () => void;
+    let freeing = false;
+    const served: ServedHarness = {
+      async materialise(id: string): Promise<Materialised> {
+        await gate;
+        return {
+          context: { id },
+          uiChannel: createBus<unknown>(),
+          commands: createSignal<unknown, void>(),
+          dispose: () => {
+            if (freeing) return undefined;
+            freeing = true;
+            return new Promise<void>((r) => { free = r; });
+          },
+        };
+      },
+      *run(): Operation<void> {
+        yield* suspend();
+      },
+    };
+
+    await run(function* () {
+      const host = yield* createModelRuntimeHost({ served, maxNativeSessions: 1 });
+      const phasesW: string[] = [];
+      host.admit({ sessionId: "W", onState: (s) => phasesW.push(s.phase) });
+      yield* waitFor(() => phasesW.includes("warming"), "W is warming");
+      yield* call(() => host.release("W"));
+      releaseMaterialise();
+      yield* waitFor(() => freeing, "W's discarded context is being freed");
+
+      const again: string[] = [];
+      host.admit({ sessionId: "W", onState: (s) => again.push(s.phase) });
+      free();
+      expect(again).toEqual(["died"]);
+
+      yield* waitFor(() => phasesW.includes("reaped"), "W's context freed");
+      const after: string[] = [];
+      host.admit({ sessionId: "W", onState: (s) => after.push(s.phase) });
+      yield* waitFor(() => after.includes("live"), "W admitted again once freed");
+    });
+  });
+
+  it("a host halted while a warming-cancelled context is still freeing ends only once it is freed", async () => {
+    const started: string[] = [];
+    const log: string[] = [];
+    let releaseMaterialise!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseMaterialise = resolve; });
+    let free!: () => void;
+    let freeing = false;
+    const served: ServedHarness = {
+      async materialise(id: string): Promise<Materialised> {
+        started.push(id);
+        await gate;
+        return {
+          context: { id },
+          uiChannel: createBus<unknown>(),
+          commands: createSignal<unknown, void>(),
+          dispose: () => { freeing = true; return new Promise<void>((r) => { free = r; }); },
+        };
+      },
+      *run(): Operation<void> {
+        yield* suspend();
+      },
+    };
+
+    const hostRun = run(function* () {
+      const host = yield* createModelRuntimeHost({ served, maxNativeSessions: 1 });
+      host.admit({ sessionId: "W", onState: () => {} });
+      yield* waitFor(() => started.includes("W"), "W is warming");
+      yield* call(() => host.release("W"));
+      releaseMaterialise();
+      // The host's scope ends here, with W's discarded context still freeing.
+      yield* waitFor(() => freeing, "W's context is being freed");
+    }).then(() => log.push("host ended"));
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(log).toEqual([]);
+    log.push("freed");
+    free();
+    await hostRun;
+    expect(log).toEqual(["freed", "host ended"]);
   });
 
   it("survives an onState callback that throws (one bad observer can't sink the host)", async () => {

@@ -45,6 +45,18 @@ describe('audio output recovery', () => {
     await act(async () => root.unmount());
   });
 
+  it('a recovery pending when the video changes neither seeks nor plays the new one', async () => {
+    const { root, element, play } = await failingPlayer();
+    const seeks: number[] = [];
+    Object.defineProperty(element, 'currentTime', { configurable: true, get: () => 4, set: (t: number) => { seeks.push(t); } });
+    element.dispatchEvent(new Event('error'));
+    await act(async () => { root.render(createElement(VideoPlayer, { video: { ...video, src: 'http://host/other' } })); });
+    element.dispatchEvent(new Event('loadedmetadata'));
+    expect(seeks).toEqual([]);
+    expect(play).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
   it('never resumes playback once the player is gone', async () => {
     const { root, element, play } = await failingPlayer();
     element.dispatchEvent(new Event('error'));

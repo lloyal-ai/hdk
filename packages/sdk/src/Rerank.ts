@@ -325,6 +325,7 @@ export class Rerank {
   private _onTruncate?: (event: RerankTruncation) => void;
   private _inflight: Promise<void> = Promise.resolve();
   private _disposed = false;
+  private _freed?: Promise<void>;
 
   private constructor(
     ctx: SessionContext,
@@ -709,17 +710,21 @@ export class Rerank {
     return this._ctx.tokenize(text, false);
   }
 
-  /** Release Rerank state, clear ctx ownership, dispose ctx. Idempotent. */
-  dispose(): void {
-    if (this._disposed) return;
+  /** Release Rerank state, clear ctx ownership, dispose ctx. New scores are refused at once; the release waits for
+   *  the scores already queued, whose native prefills run on the branches it prunes. Idempotent: every call answers
+   *  one promise, resolved once the context is freed. */
+  dispose(): Promise<void> {
+    if (this._freed) return this._freed;
     this._disposed = true;
-    // pruneSubtree (CASCADE) instead of prune (RESTRICT) — if queryBranch or
-    // leaves leaked from a swallowed abandonment, RESTRICT prune would throw
-    // "branch has children" and mask the original error. pruneSubtree is
-    // safe on a childless trunk and correct on a partially-pruned tree.
-    try { this._trunk.pruneSubtreeSync(); } catch { /* already pruned */ }
-    delete (this._ctx as unknown as { __decodeOwner?: string }).__decodeOwner;
-    this._ctx.dispose();
+    return (this._freed = this._inflight.then(() => {
+      // pruneSubtree (CASCADE) instead of prune (RESTRICT) — if queryBranch or
+      // leaves leaked from a swallowed abandonment, RESTRICT prune would throw
+      // "branch has children" and mask the original error. pruneSubtree is
+      // safe on a childless trunk and correct on a partially-pruned tree.
+      try { this._trunk.pruneSubtreeSync(); } catch { /* already pruned */ }
+      delete (this._ctx as unknown as { __decodeOwner?: string }).__decodeOwner;
+      return this._ctx.dispose();
+    }));
   }
 
   // ── Internals ────────────────────────────────────────────────
