@@ -28,9 +28,10 @@ declare module 'micromark-util-types' {
   }
 }
 
-/** Whether `code` is the scheme's character at `index`, in either case, as media reads the scheme. */
+/** Whether `code` is the scheme's character at `index`, in either case, as media reads the scheme. A negative code
+ *  is micromark's line ending, tab or virtual space, never a character. */
 const schemeAt = (code: Code, index: number): boolean =>
-  code !== null && String.fromCodePoint(code).toLowerCase() === ATTACHMENT_SCHEME[index];
+  code !== null && code >= 0 && String.fromCodePoint(code).toLowerCase() === ATTACHMENT_SCHEME[index];
 /** What ends a run outright: markdown punctuation an address never holds. */
 const ENDS = new Set(['<', '(', ')', '[', ']'].map((c) => c.codePointAt(0)!));
 

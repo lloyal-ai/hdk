@@ -77,6 +77,13 @@ describe('headingsOf / linksOf', () => {
     expect(linksOf(md)[0].offset).toBe(md.indexOf('Attachment://'));
   });
 
+  it('a word that begins the scheme and then breaks the line or tabs is text, and the addresses around it still link', () => {
+    const address = 'attachment://81cc8d9fd4e4/t/5000';
+    for (const md of ['look at\nthis', 'pick a\tcat', 'at\r\nnext', 'Att\nx', `A\n${address}`, `${address} and at\nthen ${address}`]) {
+      expect(linksOf(md).map((l) => l.href), JSON.stringify(md)).toEqual(md.split(address).slice(1).map(() => address));
+    }
+  });
+
   it('a quote or guillemet of any script around an address is the sentence\'s, not the address\'s', () => {
     const at = 'attachment://81cc8d9fd4e4/t/5000';
     const page = 'attachment://81cc8d9fd4e4/page/2';
