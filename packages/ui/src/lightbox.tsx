@@ -64,6 +64,13 @@ function NativePlayer({ video, style }: { video: VideoView & { src: string }; st
   );
 }
 
+/** What a video's view shows, whole: its box, what is in it, and what the caption points the reader to. */
+interface Shown { box: CSSProperties; body: ReactNode; hover: string }
+
+/** The lightbox's own tone and type, shared by the scrim, the caption and a video's wait. */
+const SCRIM = 'rgba(20,20,22,.82)';
+const FONT = 'var(--harness-font, system-ui, sans-serif)';
+
 const short = (digest: string): string => digest.replace(/^sha256:/, '').slice(0, 10);
 
 export interface LightboxProps {
@@ -74,24 +81,35 @@ export interface LightboxProps {
   /** Or a video ({@link videoView}): played from its original, opened at `atMs` when it was cited.
    *  Without an original there is nothing to play, and the frames the model saw are shown. */
   video?: VideoView;
+  /** Why the video cannot play yet. While it is set, the poster stands in for the player with this said over it, and
+   *  no player loads; once it is gone, the player opens at `atMs`. */
+  waiting?: string;
   /** The representation's true pixel size, when the caller read it off the loaded element. */
   dims?: string;
   /** What is being shown, when it is not simply "the attached image". */
   label?: string;
   onClose: () => void;
-  /** The caller's register: the scrim, the image and the caption. */
-  styles?: { scrim?: CSSProperties; full?: CSSProperties; pdf?: CSSProperties; caption?: CSSProperties; player?: CSSProperties; frames?: CSSProperties; frame?: CSSProperties };
+  /** The caller's register: the scrim, the image and the caption, and a video's player, its wait and its frames. */
+  styles?: {
+    scrim?: CSSProperties; full?: CSSProperties; pdf?: CSSProperties; caption?: CSSProperties; player?: CSSProperties;
+    waiting?: CSSProperties; reason?: CSSProperties; frames?: CSSProperties; frame?: CSSProperties;
+  };
 }
 
 const S: Required<NonNullable<LightboxProps['styles']>> = {
   scrim: {
-    position: 'fixed', inset: 0, zIndex: 50, cursor: 'zoom-out', background: 'rgba(20,20,22,.82)',
+    position: 'fixed', inset: 0, zIndex: 50, cursor: 'zoom-out', background: SCRIM,
     display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, padding: 32,
   },
   full: { maxWidth: '100%', maxHeight: 'calc(100vh - 110px)', objectFit: 'contain', borderRadius: 12, background: '#fff' },
   pdf: { width: 'min(1100px, 94vw)', height: 'calc(100vh - 110px)', border: 0, borderRadius: 12, background: '#fff' },
-  caption: { font: '12px var(--harness-font, system-ui, sans-serif)', color: '#D8D8D2', margin: 0 },
+  caption: { font: `12px ${FONT}`, color: '#D8D8D2', margin: 0 },
   player: { width: 'min(1100px, 94vw)', maxHeight: 'calc(100vh - 110px)', aspectRatio: '16 / 9' },
+  waiting: { position: 'relative', display: 'grid', placeItems: 'center', width: '100%', height: '100%' },
+  reason: {
+    position: 'absolute', margin: 0, padding: '12px 20px', maxWidth: 520, borderRadius: 12, textAlign: 'center',
+    font: `15px/1.5 ${FONT}`, color: '#F4F4F0', background: SCRIM,
+  },
   frames: {
     display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 8,
     width: 'min(1100px, 94vw)', maxHeight: 'calc(100vh - 110px)', overflowY: 'auto',
@@ -99,7 +117,7 @@ const S: Required<NonNullable<LightboxProps['styles']>> = {
   frame: { width: '100%', borderRadius: 8, display: 'block', background: '#111' },
 };
 
-export function Lightbox({ digest, pdf, video, dims, label, onClose, styles = {} }: LightboxProps): ReactElement | null {
+export function Lightbox({ digest, pdf, video, waiting, dims, label, onClose, styles = {} }: LightboxProps): ReactElement | null {
   const origin = useContentOrigin();
   if (origin === null) return null;
   const s = { ...S, ...styles };
@@ -115,25 +133,43 @@ export function Lightbox({ digest, pdf, video, dims, label, onClose, styles = {}
     const { src } = video;
     const seen = `what the model saw · ${video.frames.length} frame${video.frames.length === 1 ? '' : 's'}${video.transcript?.length ? ', and the transcript as captions' : ''}`;
     const from = video.atMs !== undefined ? ` · from ${momentClock(video.atMs)}` : '';
+    const posterStandIn = video.poster ? <img src={video.poster} alt="" style={s.full} /> : null;
+    const playing = (played: VideoView & { src: string }): Shown => ({
+      box: s.player,
+      hover: 'hover the timeline for ',
+      body: (
+        <PlayerBoundary fallback={<NativePlayer video={played} style={s.full} />}>
+          <Suspense fallback={posterStandIn}>
+            <VideoPlayer video={played} title={`${label ?? 'the attached video'}${from}`} />
+          </Suspense>
+        </PlayerBoundary>
+      ),
+    });
+    const waits = (reason: string): Shown => ({
+      box: s.player,
+      hover: '',
+      body: (
+        <div role="status" style={s.waiting}>
+          {posterStandIn}
+          <p style={s.reason}>{reason}</p>
+        </div>
+      ),
+    });
+    const frames = (): Shown => ({
+      box: s.frames,
+      hover: '',
+      body: video.frames.map((f) => (
+        <figure key={f.tMs} style={{ margin: 0 }}>
+          <img src={f.src} alt={`frame at ${momentClock(f.tMs)}`} style={s.frame} />
+          <figcaption style={s.caption}>{momentClock(f.tMs)}</figcaption>
+        </figure>
+      )),
+    });
+    const shown = src === undefined ? frames() : waiting === undefined ? playing({ ...video, src }) : waits(waiting);
     return (
       <Modal label={label ?? 'Attached video'} style={s.scrim} onClose={onClose}>
-        <div style={src !== undefined ? s.player : s.frames} onClick={(e) => e.stopPropagation()}>
-          {src !== undefined
-            ? (
-                <PlayerBoundary fallback={<NativePlayer video={{ ...video, src }} style={s.full} />}>
-                  <Suspense fallback={video.poster ? <img src={video.poster} alt="" style={s.full} /> : null}>
-                    <VideoPlayer video={{ ...video, src }} title={`${label ?? 'the attached video'}${from}`} />
-                  </Suspense>
-                </PlayerBoundary>
-              )
-            : video.frames.map((f) => (
-                <figure key={f.tMs} style={{ margin: 0 }}>
-                  <img src={f.src} alt={`frame at ${momentClock(f.tMs)}`} style={s.frame} />
-                  <figcaption style={s.caption}>{momentClock(f.tMs)}</figcaption>
-                </figure>
-              ))}
-        </div>
-        <p style={s.caption}>{label ?? 'the attached video'}{from} · {src !== undefined ? 'hover the timeline for ' : ''}{seen}</p>
+        <div style={shown.box} onClick={(e) => e.stopPropagation()}>{shown.body}</div>
+        <p style={s.caption}>{label ?? 'the attached video'}{from} · {shown.hover}{seen}</p>
       </Modal>
     );
   }
