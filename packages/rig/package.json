@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/rig",
-  "version": "6.1.1",
+  "version": "7.0.0",
   "engines": {
     "node": ">=24"
   },
@@ -47,12 +47,12 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@lloyal-labs/binding": "^0.3.0",
+    "@lloyal-labs/binding": "^0.4.0",
     "@lloyal-labs/channel-verify": "^0.3.1",
-    "@lloyal-labs/host": "^0.4.0",
-    "@lloyal-labs/lloyal-agents": "^7.2.0",
-    "@lloyal-labs/media": "^0.3.0",
-    "@lloyal-labs/sdk": "^5.1.0",
+    "@lloyal-labs/host": "^0.5.0",
+    "@lloyal-labs/lloyal-agents": "^7.3.0",
+    "@lloyal-labs/media": "^0.4.0",
+    "@lloyal-labs/sdk": "^5.2.0",
     "@mozilla/readability": "^0.6.0",
     "effection": "^4.1.0",
     "ignore": "^7.0.5",
@@ -63,7 +63,7 @@
     "zod": "^4.6.5"
   },
   "peerDependencies": {
-    "@lloyal-labs/lloyal.node": "^4.1.0"
+    "@lloyal-labs/lloyal.node": "^4.2.0"
   },
   "files": [
     "dist/",

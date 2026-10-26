@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/lloyal-agents",
-  "version": "7.2.0",
+  "version": "7.3.0",
   "engines": {
     "node": ">=24"
   },
@@ -34,8 +34,8 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@lloyal-labs/media": "^0.3.1",
-    "@lloyal-labs/sdk": "^5.1.0",
+    "@lloyal-labs/media": "^0.4.0",
+    "@lloyal-labs/sdk": "^5.2.0",
     "effection": "^4.1.0",
     "eta": "^4.5.1"
   },

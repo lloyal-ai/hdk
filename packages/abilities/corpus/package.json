@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/corpus-ability",
-  "version": "3.0.1",
+  "version": "3.0.2",
   "engines": {
     "node": ">=24"
   },
@@ -30,7 +30,7 @@
   "peerDependencies": {
     "@lloyal-labs/lloyal-agents": ">=7.0.0-0 <8.0.0",
     "@lloyal-labs/lloyal.node": ">=4.0.0-0 <5.0.0",
-    "@lloyal-labs/rig": ">=6.0.0-0 <7.0.0",
+    "@lloyal-labs/rig": ">=6.0.0-0 <8.0.0",
     "effection": "^4.0.2"
   }
 }

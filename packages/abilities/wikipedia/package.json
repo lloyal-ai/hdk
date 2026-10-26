@@ -1,6 +1,6 @@
 {
   "name": "@lloyal-labs/wikipedia-ability",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "engines": {
     "node": ">=24"
   },
@@ -28,7 +28,7 @@
   },
   "peerDependencies": {
     "@lloyal-labs/lloyal-agents": ">=7.0.0-0 <8.0.0",
-    "@lloyal-labs/rig": ">=6.0.0-0 <7.0.0",
+    "@lloyal-labs/rig": ">=6.0.0-0 <8.0.0",
     "effection": "^4.0.2"
   }
 }
