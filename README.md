@@ -136,16 +136,16 @@ by driving `oras` against a layout this code wrote, and this reader against a la
 One contract for every model beside the trunk. A block under `model:` in `harness.yml` requests one; its
 contents select the weights; an absent block is a decision. The install derives its steps from the blocks,
 the machine gate refuses an undersized machine before a byte downloads, and harness or ability code reaches
-a bound service with one call, `yield* service('reranker')`. Three rows ship today, in `rig`:
+a bound service with one call, `yield* service('reranker')`. Four rows ship today, in `rig`:
 
 | service | what binds |
 |---|---|
 | `reranker` | A cross-encoder that scores what an agent fetched against the question it asked, relative within the query, so only the passages that answer it enter context. The [focal lens](https://docs.lloyal.ai/focal-lens). |
 | `vision` | The projector paired with the trunk model, so a page or an image is projected into the model's context the moment an agent must look at it. |
-| `embedding` | An embedder over its own context, serialised, with pooling declared per model: candidates found by distance for the reranker to judge. |
+| `embedding` | An embedder over its own context, serialised, with pooling declared per model: candidates found by distance for the reranker to judge. An empty block binds EmbeddingGemma 2 with its projector, one space for text, images, video and sound, so what a harness saw and what it heard are searched alike. |
+| `transcription` | A speech decoder and its audio projector over their own context, answering the text of one bounded recording: the composer's dictation, and the soundtrack of an attached video. |
 
-The same contract extends to audio encoders, speech sanitizers and specialist decision models: a row in one
-table. [Services](https://docs.lloyal.ai/services) · [harness.yml](https://docs.lloyal.ai/harness-yml).
+The same contract extends to speech sanitizers and specialist decision models: a row in one table. [Services](https://docs.lloyal.ai/services) · [harness.yml](https://docs.lloyal.ai/harness-yml).
 
 ### Surfaces and serving
 
