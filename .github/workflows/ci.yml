@@ -31,25 +31,9 @@ jobs:
           test -f packages/rig/dist/index.js
           test -f packages/rig/dist/index.d.ts
 
-  # The judge runs locally, on the committer's own login, before every commit; a pull request is
-  # accepted only when every commit carries the record hickey wrote into its message. Seconds, no model.
-  accepted:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # The check reads every commit of the pull request.
-          fetch-depth: 0
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
-      - run: npm install
-
-      - name: Every commit carries the gate's record
-        run: npx hickey carried "origin/${{ github.base_ref }}...HEAD"
+  # Judging is local. lefthook runs hickey against PRINCIPLES.md before each commit and writes the
+  # verdict into the message; a reviewer reads it there. It is not a CI gate: a machine that has not
+  # installed the hook can still open a pull request, and the record is the committer's to carry.
 
   unit-tests:
     runs-on: ubuntu-latest
