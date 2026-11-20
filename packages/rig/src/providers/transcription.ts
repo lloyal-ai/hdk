@@ -3,16 +3,34 @@ import { Attachments, waitUntilSettled } from '@lloyal-labs/lloyal-agents';
 import { audioAdmission, audioLimitsAt, resolveAudio } from '@lloyal-labs/media';
 import { ensure, resource } from 'effection';
 import type { Operation } from 'effection';
+import type { BiasMechanism, TranscriptBias } from '@lloyal-labs/binding';
 import { parseTranscription } from '../transcription';
 import type { Transcriber } from '../transcription';
 import type { ModelBlock } from './index';
 import { useServiceContext } from './service-context';
 
-export type TranscriberLoadOpts = Partial<ModelBlock<'transcription'>>;
+export type TranscriberLoadOpts = Partial<ModelBlock<'transcription'>> & {
+  /** How this decoder honours a bias; the Qwen3-ASR prompt context is the default. A decoder that biases at
+   *  decode time needs its own provider row, not this one. */
+  bias?: BiasMechanism;
+};
+
+/** The system-turn sentence a prompt-biased decoder reads. Kept short: it is read on every call. */
+export function biasText(terms: readonly string[], strength: TranscriptBias['strength'] = 'hint'): string {
+  const kept = terms.map(term => term.trim()).filter(term => term.length > 0);
+  if (kept.length === 0) return '';
+  const lead = strength === 'prefer'
+    ? 'These words matter; spell them exactly as written:'
+    : 'These words may be spoken; prefer these spellings:';
+  return `${lead} ${kept.join(', ')}.`;
+}
 
 /** One owned decoder/projector context, with an isolated branch per admitted recording. */
 export function createTranscriber(modelPath: string, projectorPath: string, opts: TranscriberLoadOpts = {}): Operation<Transcriber> {
   return resource(function* (provide) {
+    const requested = opts.bias ?? 'prompt';
+    if (requested === 'decode') throw new Error('this decoder biases through its prompt; decode-time bias needs a transcriber provider that declares it');
+    const bias: 'prompt' | 'none' = requested;
     const context = opts.context ?? 4096;
     const maxTokens = opts.maxTokens ?? 512;
     if (!Number.isSafeInteger(context) || !Number.isSafeInteger(maxTokens) || maxTokens < 1 || context <= maxTokens) {
@@ -30,7 +48,8 @@ export function createTranscriber(modelPath: string, projectorPath: string, opts
     });
     yield* provide({
       limits,
-      transcribe: attachment => service.run(function* (ctx) {
+      bias,
+      transcribe: (attachment, hint) => service.run(function* (ctx) {
         const store = yield* Attachments.expect();
         const audio = resolveAudio(store, attachment, limits);
         const result = {
@@ -39,7 +58,11 @@ export function createTranscriber(modelPath: string, projectorPath: string, opts
         };
         if (audio.metadata.silent) return { ...result, text: '' };
         const audioLimits = audioLimitsAt(limits, sampleRate);
-        const delta = { ...buildUserDeltaMultimodal(ctx, '', [{ kind: 'audio', bytes: audio.bytes }], { audioLimits, enableThinking: false }), sep: [] };
+        const system = bias === 'prompt' && hint ? biasText(hint.terms, hint.strength) : '';
+        const applied = hint && hint.terms.some(term => term.trim())
+          ? { applied: bias, terms: hint.terms.filter(term => term.trim()).length }
+          : undefined;
+        const delta = { ...buildUserDeltaMultimodal(ctx, '', [{ kind: 'audio', bytes: audio.bytes }], { audioLimits, enableThinking: false, ...(system ? { system } : {}) }), sep: [] };
         const demand = yield* waitUntilSettled(deltaCells(ctx, delta));
         if (demand + maxTokens > context) throw new Error('recording and output token limit exceed the transcription context');
         const branch = Branch.create(ctx, 0, { temperature: 0 });
@@ -48,7 +71,7 @@ export function createTranscriber(modelPath: string, projectorPath: string, opts
         let output = '';
         for (let count = 0; ; count++) {
           const next = branch.produceSync();
-          if (next.isStop) return { ...result, ...parseTranscription(output) };
+          if (next.isStop) return { ...result, ...parseTranscription(output), ...(applied ? { bias: applied } : {}) };
           if (count === maxTokens) throw new Error('transcription reached its output token limit without completing');
           output += next.text;
           yield* waitUntilSettled(branch.commit(next.token));

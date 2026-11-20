@@ -1,4 +1,5 @@
 import type { Attachment, AudioAdmission, Descriptor, VideoSampling } from '@lloyal-labs/media';
+import type { BiasMechanism } from './voice';
 
 /** One sampled frame: an admitted image root and the time it was sampled at. */
 export interface VideoFrameRef {
@@ -34,6 +35,9 @@ export interface VideoCapabilities {
    * limits, and cuts its windows to meet them.
    */
   soundtrack: Readonly<AudioAdmission> | null;
+  /** How the transcriber leans on words the app knows matter, when this host binds one: a page can say whether the
+   *  dictionary reaches the clip's transcript. Absent when nothing hears the soundtrack. */
+  bias?: BiasMechanism;
 }
 
 /**

@@ -11,7 +11,8 @@ import type { VoiceCommand, VoiceEvent, VoiceResult } from '@lloyal-labs/binding
 export interface VoiceCommandsOptions {
   wire: { send(event: VoiceEvent): Operation<void> };
   model?: string;
-  /** Harness-owned composition, for example optional text normalization after transcription. */
+  /** Harness-owned composition, for example optional text normalization after transcription. It reads the app's
+   *  own lexicon and passes a bias to the transcriber, so dictionary words never cross the wire. */
   transcribe?: (audio: Attachment) => Operation<VoiceResult>;
 }
 
@@ -30,7 +31,7 @@ export function useVoiceCommands({ wire, model = 'Transcription', transcribe }: 
     yield* provide({
       handlers: {
         *'voice:describe'() {
-          yield* wire.send({ type: 'voice:capabilities', capabilities: asr && !execution.poisoned ? { enabled: true, limits: asr.limits, model } : { enabled: false } });
+          yield* wire.send({ type: 'voice:capabilities', capabilities: asr && !execution.poisoned ? { enabled: true, limits: asr.limits, model, bias: asr.bias } : { enabled: false } });
         },
         *'voice:transcribe'(command) {
           if (!isRequestId(command.requestId)) return;
