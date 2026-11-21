@@ -85,23 +85,46 @@ jobs:
           # follow the batch that produces binding's and media's dist rather than join it.
           npm run build -w packages/ui
 
-      # Publishing authenticates through trusted publishing, and the OIDC token
-      # is minted by the Actions service for the job — including on a
-      # self-hosted runner. This runs unconditionally so a skip_publish
-      # rehearsal proves the plumbing before a real cut depends on it. The
-      # request URL only, never the token.
+      # A GitHub-hosted runner authenticates through trusted publishing. npm
+      # refuses the OIDC token a self-hosted runner is handed, and CircleCI
+      # mints its own from a different endpoint, so a token from the job
+      # environment is the fallback: when it is there the publish uses it, and
+      # when it is not a hosted run keeps the OIDC exchange. This runs
+      # unconditionally so a skip_publish rehearsal proves the plumbing before a
+      # real cut depends on it. The presence of a credential, never its value.
       - name: OIDC available?
         run: |
           echo "runner environment: ${RUNNER_ENVIRONMENT:-<unset>}"
           if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
             echo "OIDC token endpoint present - trusted publishing can authenticate."
+          elif [ -n "${NPM_TOKEN:-}" ]; then
+            echo "No OIDC endpoint here; NPM_TOKEN is set, so the publish will use it."
           else
-            echo "::warning::No OIDC token in this job, so trusted publishing cannot authenticate."
+            echo "::warning::Neither OIDC nor NPM_TOKEN is available; the publish cannot authenticate."
+          fi
+
+      - name: Authenticate to npm
+        run: |
+          # A token when the job environment carries one (CircleCI), nothing when
+          # it does not (a hosted GitHub run, which trusts the OIDC exchange).
+          if [ -n "${NPM_TOKEN:-}" ]; then
+            printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > ~/.npmrc
+            echo "wrote ~/.npmrc from NPM_TOKEN"
           fi
 
       - name: Publish packages
         if: success() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.skip_publish))
         run: |
+          # On GitHub the workflow's own `on:` filters already hold this to v*
+          # tags. Where it runs without them the trigger fires on any tag, so the
+          # pattern is enforced here. A manual dispatch has no tag and is exempt,
+          # because that is how a prerelease goes out.
+          if [ -n "${CIRCLE_TAG:-}" ]; then
+            case "${CIRCLE_TAG}" in
+              v*) ;;
+              *) echo "::warning::${CIRCLE_TAG} is not a v* tag; nothing was published."; exit 0 ;;
+            esac
+          fi
           # channel-verify FIRST: rig and harness-cli both depend on it, and a
           # failure partway through would otherwise leave an already-published
           # rig pointing at a version that does not exist on the registry —
