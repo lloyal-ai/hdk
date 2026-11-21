@@ -1,6 +1,5 @@
 # Harness Development Kit
 
-[![CircleCI](https://dl.circleci.com/status-badge/img/circleci/Di4EYKncyjv7U3oX7ekpJC/mDF5fQ5S94r3r9JoRL6zK/tree/main.svg?style=svg)](https://dl.circleci.com/status-badge/redirect/circleci/Di4EYKncyjv7U3oX7ekpJC/mDF5fQ5S94r3r9JoRL6zK/tree/main)
 [![GPU Tests](https://github.com/lloyal-ai/lloyal.node/actions/workflows/gpu-test.yml/badge.svg)](https://github.com/lloyal-ai/lloyal.node/actions/workflows/gpu-test.yml)
 [![License](https://img.shields.io/badge/license-FSL--1.1--Apache--2.0-blue.svg)](LICENSE)
 [![Commercial Use](https://img.shields.io/badge/commercial%20use-unrestricted-brightgreen.svg)](#why-fsl-instead-of-mit)
