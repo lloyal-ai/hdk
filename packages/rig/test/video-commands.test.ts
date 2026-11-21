@@ -21,7 +21,7 @@ import { useVideoCommands } from '../src/video';
 
 /** A harness's video block, as its config hands it over, from a harness that sets every video setting, a length limit among them. */
 const VIDEO = { fps: DEFAULT_VIDEO_SAMPLING.fps, maxFrames: DEFAULT_VIDEO_SAMPLING.maxFrames, maxEdgePx: DEFAULT_VIDEO_SAMPLING.maxEdgePx, maxDurationSeconds: 600 };
-import type { Transcription } from '../src/transcription';
+import type { Transcription, TranscriptBias } from '../src/transcription';
 
 const fixture = (name: string): Uint8Array =>
   new Uint8Array(readFileSync(join(__dirname, '../../media/test/fixtures/video', name)));
@@ -97,7 +97,7 @@ describe('video commands', () => {
     let calls = 0;
     await run(function* () {
       yield* Attachments.set(content);
-      yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, *transcribe(window) {
+      yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, bias: 'prompt', *transcribe(window) {
         calls++;
         if (window.digest === audio[1].root.digest) return heard(window, '', true);
         if (window.digest === audio[2].root.digest) throw new Error('the decoder ran out of context');
@@ -122,6 +122,103 @@ describe('video commands', () => {
     // Every window is kept for models, heard or not: silence and a failed transcription are still sound.
     const meta = JSON.parse(new TextDecoder().decode(content.get(manifest.config.digest)!));
     expect(meta.soundtrack).toEqual(audio.map((w, i) => ({ startMs: w.startMs, endMs: w.endMs, audio: frames.length + i })));
+  });
+
+  it('leans on the words the app knows matter for the clip, and reports the mechanism a page can state', async () => {
+    const content = store();
+    const { frames, audio } = await parts(content);
+    const events: VideoEvent[] = [];
+    const asked: (TranscriptBias | undefined)[] = [];
+    const lexicon: TranscriptBias = { terms: ['Databricks', 'lloyal'], strength: 'prefer' };
+    await run(function* () {
+      yield* Attachments.set(content);
+      yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, bias: 'prompt', *transcribe(window, hint) {
+        asked.push(hint);
+        return heard(window, 'Databricks and lloyal');
+      } } });
+      const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } }, bias: () => lexicon });
+      yield* group.handlers['video:describe']!({ type: 'video:describe' });
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'v1', frames, audio, durationMs: 1250 });
+      for (let i = 0; i < 50 && !events.some(e => e.type === 'video:composed' || e.type === 'video:error'); i++) yield* sleep(5);
+    });
+    const described = events.find(e => e.type === 'video:capabilities') as Extract<VideoEvent, { type: 'video:capabilities' }>;
+    expect(described.capabilities.bias).toBe('prompt');
+    // Every window hears the same words: the lexicon is the app's, read once per clip.
+    expect(asked).toEqual([lexicon, lexicon, lexicon]);
+  });
+
+  it('passes no bias when the app\'s lexicon has nothing to say', async () => {
+    const content = store();
+    const { frames, audio } = await parts(content);
+    const events: VideoEvent[] = [];
+    const asked: (TranscriptBias | undefined)[] = [];
+    await run(function* () {
+      yield* Attachments.set(content);
+      yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, bias: 'prompt', *transcribe(window, hint) {
+        asked.push(hint);
+        return heard(window, 'one');
+      } } });
+      const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } } });
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'v1', frames, audio, durationMs: 1250 });
+      for (let i = 0; i < 50 && !events.some(e => e.type === 'video:composed' || e.type === 'video:error'); i++) yield* sleep(5);
+    });
+    expect(asked).toEqual([undefined, undefined, undefined]);
+  });
+
+  it('lets the app correct each window\'s words before the transcript is written', async () => {
+    const content = store();
+    const { frames, audio } = await parts(content);
+    const events: VideoEvent[] = [];
+    const corrected: string[] = [];
+    await run(function* () {
+      yield* Attachments.set(content);
+      yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, bias: 'prompt', *transcribe(window) {
+        return heard(window, 'a loyal friend');
+      } } });
+      const group = yield* useVideoCommands({
+        wire: { *send(e) { events.push(e); } },
+        // The app's own rules: the ASR heard "loyal", the dictionary knows the product.
+        transcript: function* (segment) {
+          corrected.push(segment.text);
+          return { ...segment, text: segment.text.replace(/\bloyal\b/g, 'lloyal') };
+        },
+      });
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'v1', frames, audio, durationMs: 1250 });
+      for (let i = 0; i < 50 && !events.some(e => e.type === 'video:composed' || e.type === 'video:error'); i++) yield* sleep(5);
+    });
+    expect(corrected).toEqual(['a loyal friend', 'a loyal friend', 'a loyal friend']);
+    const composed = events.find(e => e.type === 'video:composed') as Extract<VideoEvent, { type: 'video:composed' }>;
+    const transcript = representationsOf(content.getManifest(composed.root.digest)!).find(r => r.mediaType === TRANSCRIPT_MEDIA_TYPE)!;
+    const stored = JSON.parse(new TextDecoder().decode(content.get(transcript.digest)!));
+    // What the app returned is what lands: the ASR's word never reaches the clip.
+    expect(stored.segments.map((s: { text: string }) => s.text)).toEqual(['a lloyal friend', 'a lloyal friend', 'a lloyal friend']);
+  });
+
+  it('reports a window whose correction failed as untranscribed, and still composes the clip', async () => {
+    const content = store();
+    const { frames, audio } = await parts(content);
+    const events: VideoEvent[] = [];
+    await run(function* () {
+      yield* Attachments.set(content);
+      yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, bias: 'prompt', *transcribe(window) {
+        return heard(window, 'one');
+      } } });
+      const group = yield* useVideoCommands({
+        wire: { *send(e) { events.push(e); } },
+        transcript: function* (segment) {
+          if (segment.text === 'one') throw new Error('the dictionary could not be read');
+          return segment;
+        },
+      });
+      yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'v1', frames, audio, durationMs: 1250 });
+      for (let i = 0; i < 50 && !events.some(e => e.type === 'video:composed' || e.type === 'video:error'); i++) yield* sleep(5);
+    });
+    const composed = events.find(e => e.type === 'video:composed') as Extract<VideoEvent, { type: 'video:composed' }>;
+    expect(composed.untranscribed).toEqual([
+      { startMs: 0, endMs: 500, reason: 'the dictionary could not be read' },
+      { startMs: 500, endMs: 1000, reason: 'the dictionary could not be read' },
+      { startMs: 1000, endMs: 1250, reason: 'the dictionary could not be read' },
+    ]);
   });
 
   it('describes and composes under the harness\'s configured video policy, read when it is asked', async () => {
@@ -190,7 +287,7 @@ describe('video commands', () => {
     let heardAny = 0;
     await run(function* () {
       yield* Attachments.set(content);
-      yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, *transcribe(a) { heardAny++; return heard(a, 'x'); } } });
+      yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, bias: 'prompt', *transcribe(a) { heardAny++; return heard(a, 'x'); } } });
       const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } }, config: () => ({ attachments: { video: { ...VIDEO, maxDurationSeconds: 1 } } }) });
       yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'long', frames, audio, durationMs: 1250 });
       for (let i = 0; i < 50 && !events.some(e => e.type === 'video:error'); i++) yield* sleep(5);
@@ -220,7 +317,7 @@ describe('video commands', () => {
       let heardAny = 0;
       await run(function* () {
         yield* Attachments.set(content);
-        yield* Services.set(transcribing ? { transcription: { limits: DEFAULT_AUDIO_ADMISSION, *transcribe(a) { heardAny++; return heard(a, 'x'); } } } : {});
+        yield* Services.set(transcribing ? { transcription: { limits: DEFAULT_AUDIO_ADMISSION, bias: 'prompt', *transcribe(a) { heardAny++; return heard(a, 'x'); } } } : {});
         const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } } });
         yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'forged', frames, audio: [{ root: frames[0].root, startMs: 0, endMs: 500 }], durationMs: 1250 });
         yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'late', frames, audio: [{ ...audio[0], startMs: 1000, endMs: 2000 }], durationMs: 1250 });
@@ -304,7 +401,7 @@ describe('video commands', () => {
     const events: VideoEvent[] = [];
     await run(function* () {
       yield* Attachments.set(content);
-      yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, *transcribe() { yield* suspend(); return heard(audio[0].root, ''); } } });
+      yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, bias: 'prompt', *transcribe() { yield* suspend(); return heard(audio[0].root, ''); } } });
       const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } } });
       yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'v3', frames, audio, durationMs: 1250 });
       yield* sleep(5);
@@ -321,7 +418,7 @@ describe('video commands', () => {
     const events: VideoEvent[] = [];
     await run(function* () {
       yield* Attachments.set(content);
-      yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, *transcribe() { yield* suspend(); return heard(audio[0].root, ''); } } });
+      yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, bias: 'prompt', *transcribe() { yield* suspend(); return heard(audio[0].root, ''); } } });
       const group = yield* useVideoCommands({ wire: { *send(e) { events.push(e); } } });
       yield* group.handlers['video:compose']!({ type: 'video:compose', requestId: 'v4', frames, audio, durationMs: 1250 });
       yield* sleep(5);

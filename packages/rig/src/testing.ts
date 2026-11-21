@@ -224,6 +224,7 @@ const STUBS: { [K in Service]: ServiceMap[K] } = {
   embedding: stubEmbedder,
   transcription: {
     limits: DEFAULT_AUDIO_ADMISSION,
+    bias: 'prompt',
     *transcribe() { throw new Error('provide a transcription test double for this harness'); },
   },
 };

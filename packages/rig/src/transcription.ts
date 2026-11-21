@@ -1,11 +1,14 @@
 import type { Operation } from 'effection';
 import type { Attachment, AudioAdmission } from '@lloyal-labs/media';
-import type { Transcription } from '@lloyal-labs/binding';
-export type { Transcription } from '@lloyal-labs/binding';
+import type { BiasMechanism, Transcription, TranscriptBias } from '@lloyal-labs/binding';
+export type { AppliedBias, BiasMechanism, Transcription, TranscriptBias } from '@lloyal-labs/binding';
 
 export interface Transcriber {
   readonly limits: Readonly<AudioAdmission>;
-  transcribe(audio: Attachment): Operation<Transcription>;
+  /** How this transcriber can honour a bias; declared once at bind time, so a view can say what the dictionary
+   *  will and will not affect. */
+  readonly bias: BiasMechanism;
+  transcribe(audio: Attachment, bias?: TranscriptBias): Operation<Transcription>;
 }
 
 /** Parse only complete output; callers must separately establish that generation reached a stop token. */

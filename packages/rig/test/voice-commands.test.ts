@@ -16,7 +16,7 @@ describe('voice requests', () => {
   it('reports a poisoned voice owner locally, without throwing into the application dispatcher', async () => {
     const events: VoiceEvent[] = [];
     await run(function* () {
-      yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, *transcribe() {
+      yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, bias: 'prompt', *transcribe() {
         yield* ensure(() => { throw new Error('native cleanup failed'); });
         yield* suspend();
         return result;
@@ -33,7 +33,7 @@ describe('voice requests', () => {
   it('keeps work alive after a command handler returns and correlates the result', async () => {
     const events: VoiceEvent[] = [];
     await run(function* () {
-      yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, *transcribe() { yield* sleep(1); return result; } } });
+      yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, bias: 'prompt', *transcribe() { yield* sleep(1); return result; } } });
       const group = yield* useVoiceCommands({ wire: { *send(event) { events.push(event); } } });
       const commands = bufferedCommandSignal<VoiceCommand | { type: 'quit' }>();
       const task = yield* spawn(() => serveCommands<VoiceCommand | { type: 'quit' }>(commands, [group]));
@@ -49,7 +49,7 @@ describe('voice requests', () => {
     const events: VoiceEvent[] = []; const log: string[] = [];
     let release!: () => void; const gate = new Promise<void>(r => { release = r; });
     await run(function* () {
-      yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, *transcribe() {
+      yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, bias: 'prompt', *transcribe() {
         log.push('start'); yield* ensure(function* () { yield* until(gate); log.push('settled'); });
         yield* suspend(); return result;
       } } });
@@ -62,6 +62,38 @@ describe('voice requests', () => {
     });
     expect(log).toEqual(['start', 'settled']);
     expect(events.some(event => event.type === 'voice:result')).toBe(false);
+  });
+
+  it('reports how the transcriber can honour a bias', async () => {
+    const events: VoiceEvent[] = [];
+    await run(function* () {
+      yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, bias: 'none', *transcribe() { return result; } } });
+      const group = yield* useVoiceCommands({ wire: { *send(event) { events.push(event); } } });
+      yield* group.handlers['voice:describe']!({ type: 'voice:describe' });
+      expect(events).toContainEqual({ type: 'voice:capabilities', capabilities: { enabled: true, limits: DEFAULT_AUDIO_ADMISSION, model: 'Transcription', bias: 'none' } });
+    });
+  });
+
+  it('a harness hook may read its own lexicon and bias the transcription', async () => {
+    const events: VoiceEvent[] = [];
+    const biases: unknown[] = [];
+    await run(function* () {
+      yield* Services.set({ transcription: { limits: DEFAULT_AUDIO_ADMISSION, bias: 'prompt', *transcribe(_audio, bias) {
+        biases.push(bias); return result;
+      } } });
+      const group = yield* useVoiceCommands({
+        wire: { *send(event) { events.push(event); } },
+        transcribe: function* (audio) {
+          const asr = (yield* Services.get())?.transcription!;
+          const heard = yield* asr.transcribe(audio, { terms: ['Databricks'], strength: 'prefer' });
+          return { ...heard, rawText: heard.text, text: 'Cleaned.' };
+        },
+      });
+      yield* group.handlers['voice:transcribe']!({ type: 'voice:transcribe', requestId: 'a', audio });
+      yield* sleep(0);
+      expect(biases).toEqual([{ terms: ['Databricks'], strength: 'prefer' }]);
+      expect(events).toContainEqual({ type: 'voice:result', requestId: 'a', result: { ...result, rawText: 'Hello', text: 'Cleaned.' } });
+    });
   });
 
   it('refuses malformed roots and unconfigured transcription without starting work', async () => {

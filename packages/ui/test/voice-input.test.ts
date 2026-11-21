@@ -16,7 +16,7 @@ vi.mock('@lloyal-labs/media', async (original) => ({ ...await original<object>()
 
 const audio = { mediaType: MANIFEST_TYPE, digest: `sha256:${'a'.repeat(64)}`, size: 120 };
 const result = { text: 'spoken words', audio, silent: false } as VoiceResult;
-const capabilities = { enabled: true as const, model: 'Qwen3 ASR', limits: DEFAULT_AUDIO_ADMISSION };
+const capabilities = { enabled: true as const, model: 'Qwen3 ASR', limits: DEFAULT_AUDIO_ADMISSION, bias: 'prompt' as const };
 
 /** The smallest composer: one row that gives the hook's state the same controls a real one does.
  *  The mic has its place from first paint and is switched on, never inserted. */

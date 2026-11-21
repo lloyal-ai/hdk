@@ -52,6 +52,48 @@ describe('the owned transcription service', () => {
     expect(ctx.disposeCount).toBe(1);
   });
 
+  it('leans on words the app knows matter in the system turn and reports how it applied them', async () => {
+    await run(function* () {
+      yield* Attachments.set(content);
+      const asr = yield* createTranscriber('/asr.gguf', '/p.gguf');
+      expect(asr.bias).toBe('prompt');
+      const result = yield* asr.transcribe(root, { terms: ['Databricks', 'lloyal'], strength: 'prefer' });
+      expect(result.text).toBe('Hello world.');
+      expect(result.bias).toEqual({ applied: 'prompt', terms: 2 });
+      const [system] = JSON.parse(ctx.formatChatCalls.at(-1)!);
+      expect(system.role).toBe('system');
+      expect(system.content).toContain('Databricks');
+      expect(system.content).toContain('lloyal');
+      expect(system.content).toMatch(/exactly as written/);
+    });
+  });
+
+  it('reports a bias it cannot use without pretending to have applied it', async () => {
+    await run(function* () {
+      yield* Attachments.set(content);
+      const asr = yield* createTranscriber('/asr.gguf', '/p.gguf', { bias: 'none' });
+      expect(asr.bias).toBe('none');
+      const result = yield* asr.transcribe(root, { terms: ['Databricks'] });
+      expect(result.bias).toEqual({ applied: 'none', terms: 1 });
+      expect(JSON.parse(ctx.formatChatCalls.at(-1)!)[0].content).toBe('');
+    });
+  });
+
+  it('refuses a decode-time bias it does not implement rather than quietly using the prompt', async () => {
+    await expect(run(function* () { yield* Attachments.set(content); return yield* createTranscriber('/asr.gguf', '/p.gguf', { bias: 'decode' }); })).rejects.toThrow(/decode-time bias/);
+  });
+
+  it('answers a silent recording without a bias, and without reading its terms', async () => {
+    const silent = await createAudioIngress(content).ingest(pcmWav({ silent: true }));
+    const result = await run(function* () {
+      yield* Attachments.set(content);
+      const asr = yield* createTranscriber('/asr.gguf', '/p.gguf');
+      return yield* asr.transcribe(silent, { terms: ['Databricks'] });
+    });
+    expect(result).toMatchObject({ text: '', silent: true });
+    expect(result.bias).toBeUndefined();
+  });
+
   it('returns empty text for exact silence without projecting or generating', async () => {
     const silent = await createAudioIngress(content).ingest(pcmWav({ silent: true }));
     const result = await run(function* () {

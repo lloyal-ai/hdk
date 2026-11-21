@@ -159,7 +159,7 @@ export type { AbilityDescriptor } from './ability-descriptors';
 export type { HostResourcesEvent } from './host-resources';
 export { bufferedCommandSignal } from './buffered-command-signal';
 export { HarnessExit } from './harness-exit';
-export type { Transcriber, Transcription } from './transcription';
+export type { AppliedBias, BiasMechanism, Transcriber, Transcription, TranscriptBias } from './transcription';
 export { useVoiceCommands } from './voice';
 export { useVideoCommands } from './video';
 export type { VideoCommandsOptions, VideoSettings } from './video';

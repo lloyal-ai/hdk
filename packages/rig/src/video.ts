@@ -27,6 +27,7 @@ import type { attachmentSettings, ConfigOf } from './config';
 import { Services } from './services';
 import type { ServiceMap } from './services';
 import type { CommandGroup } from './serve-commands';
+import type { Transcription, TranscriptBias } from './transcription';
 
 /** The harness's video block, as its config hands it over: absent keys, or no block, take rig's defaults. */
 export type VideoSettings = { attachments?: { video?: Partial<NonNullable<ConfigOf<typeof attachmentSettings>['attachments']['video']>> } };
@@ -35,6 +36,13 @@ export interface VideoCommandsOptions {
   wire: { send(event: VideoEvent): Operation<void> };
   /** The harness's config, read each time a video is described or composed. */
   config?: () => VideoSettings;
+  /** The words that matter for this clip's soundtrack, read once when a clip is composed. It reads the app's own
+   *  lexicon, so dictionary words never cross the wire. Absent, the soundtrack is transcribed unbiased. */
+  bias?: () => TranscriptBias | undefined;
+  /** The app's own correction of each transcribed window, applied before the transcript is written. It runs on the
+   *  ASR's word and returns what the clip records, so a dictionary's replacement never has to be replayed on read.
+   *  Absent, the ASR's word is what lands. */
+  transcript?: (segment: Transcription) => Operation<Transcription>;
 }
 
 /** The policy a video is sampled and composed under now: the harness's video block over rig's defaults, and
@@ -116,7 +124,7 @@ function soundtrackAdmission(services: Partial<ServiceMap> | undefined): Readonl
 }
 
 /** The commands that compose a video, for a harness to serve beside its own. */
-export function useVideoCommands({ wire, config = () => ({}) }: VideoCommandsOptions): Operation<CommandGroup<VideoCommand>> {
+export function useVideoCommands({ wire, config = () => ({}), bias = () => undefined, transcript }: VideoCommandsOptions): Operation<CommandGroup<VideoCommand>> {
   return resource(function* (provide) {
     const owner = yield* useScope();
     const store = yield* Attachments.expect();
@@ -132,6 +140,8 @@ export function useVideoCommands({ wire, config = () => ({}) }: VideoCommandsOpt
       let provenance: Transcript['provenance'] = {};
       // A video without a soundtrack has nothing to transcribe, and says nothing about it.
       if (windows.length === 0) return { transcript: undefined, untranscribed };
+      // The lexicon is the app's, read once per clip: every window of one clip hears the same words.
+      const hint = bias();
       yield* wire.send({ type: 'video:progress', requestId, phase: 'transcribing', done: 0, total: windows.length });
       for (const [i, w] of windows.entries()) {
         if (!asr) {
@@ -139,10 +149,11 @@ export function useVideoCommands({ wire, config = () => ({}) }: VideoCommandsOpt
           continue;
         }
         try {
-          const heard = yield* asr.transcribe({ ...w.root });
-          provenance = Object.fromEntries(Object.entries(heard.provenance).map(([k, v]) => [k, String(v)]));
-          if (!heard.silent && heard.text.trim()) {
-            segments.push({ startMs: w.startMs, endMs: w.endMs, text: heard.text.trim(), ...(heard.language ? { language: heard.language } : {}) });
+          const heard = yield* asr.transcribe({ ...w.root }, hint);
+          const kept = transcript ? yield* transcript(heard) : heard;
+          provenance = Object.fromEntries(Object.entries(kept.provenance).map(([k, v]) => [k, String(v)]));
+          if (!kept.silent && kept.text.trim()) {
+            segments.push({ startMs: w.startMs, endMs: w.endMs, text: kept.text.trim(), ...(kept.language ? { language: kept.language } : {}) });
           }
         } catch (e) {
           untranscribed.push({ startMs: w.startMs, endMs: w.endMs, reason: message(e) });
@@ -155,7 +166,7 @@ export function useVideoCommands({ wire, config = () => ({}) }: VideoCommandsOpt
     yield* provide({
       handlers: {
         *'video:describe'() {
-          yield* wire.send({ type: 'video:capabilities', capabilities: { ...videoPolicy(config()), soundtrack } });
+          yield* wire.send({ type: 'video:capabilities', capabilities: { ...videoPolicy(config()), soundtrack, ...(asr ? { bias: asr.bias } : {}) } });
         },
         *'video:compose'(command) {
           if (!isRequestId(command.requestId)) return;
