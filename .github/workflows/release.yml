@@ -1,6 +1,9 @@
 name: Release
 
-on:
+# Quoted: under YAML 1.1 an unquoted `on` is the boolean true, and a consumer
+# reading the file with such a parser sees a workflow with no events at all —
+# which is skipped rather than reported. GitHub reads it either way.
+"on":
   push:
     tags:
       - 'v*'
