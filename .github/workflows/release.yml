@@ -10,16 +10,14 @@ on:
         description: 'Skip npm publish (for testing)'
         type: boolean
         default: true
-      runner:
-        description: 'Runner label. self-hosted when hosted minutes are unavailable.'
-        type: string
-        default: 'ubuntu-latest'
 
 jobs:
   build:
-    # `inputs` is null on the tag-push trigger, so the fallback is what keeps a
-    # release tag on hosted runners. An empty label queues forever, silently.
-    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
+    # A literal label, never an expression: a runner that reads this workflow
+    # without GitHub Actions' expression evaluation refuses the whole config.
+    # There is no self-hosted option to offer — npm rejects the OIDC token a
+    # self-hosted runner is handed, so such a run could never publish.
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
