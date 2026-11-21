@@ -137,6 +137,44 @@ jobs:
               npm publish --workspace "$pkg" --access public --tag "$tag"
             done
 
+  test:
+    docker:
+      - image: cimg/node:24
+    resource_class: medium
+    steps:
+      - checkout
+
+      - run:
+          name: Install
+          command: npm install --no-audit --no-fund
+
+      - run:
+          name: Build
+          command: npm run build
+
+      - run:
+          name: Verify dist outputs
+          command: |
+            test -f packages/sdk/dist/index.js
+            test -f packages/sdk/dist/index.d.ts
+            test -f packages/agents/dist/index.js
+            test -f packages/agents/dist/index.d.ts
+            test -f packages/rig/dist/index.js
+            test -f packages/rig/dist/index.d.ts
+
+      - run:
+          name: Typecheck
+          command: |
+            npx tsc -b packages/media packages/sdk packages/agents packages/rig packages/channel-verify packages/binding packages/relay packages/host packages/desktop
+            # `ui` builds with `tsc -p`, which does NOT build the references it
+            # declares, so it must follow the batch that produces binding's and
+            # media's dist rather than join it.
+            npm run build -w packages/ui
+
+      - run:
+          name: Unit tests
+          command: npm run test:unit
+
 workflows:
   release:
     jobs:
@@ -145,4 +183,13 @@ workflows:
             tags:
               only: /^v.*/
             branches:
+              ignore: /.*/
+
+  # The branch build: what the badge reads, and what a pull request runs.
+  # `release` above is tags-only, so the two never both run for one event.
+  ci:
+    jobs:
+      - test:
+          filters:
+            tags:
               ignore: /.*/
